@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "pcomm/core/record.hpp"
@@ -82,13 +83,32 @@ public:
     }
 
     // --- interning -----------------------------------------------------------
+    // NOTE(skeleton): process-wide tables with a per-domain lock, so handles
+    // are consistent across threads (instrumentation thread interns the same
+    // pc/file the recv thread references). The lock-free per-thread design
+    // from UNIFICATION §3.3 (merge in the reader) replaces this later.
 
-    core::Handle intern(InternDomain d, std::string_view v) { return table(d).intern(v); }
-    core::Handle intern(InternDomain d, std::uint64_t key) { return table(d).intern(key); }
+    core::Handle intern(InternDomain d, std::string_view v) {
+        std::lock_guard lock(mutex(d));
+        return table(d).intern(v);
+    }
+    core::Handle intern(InternDomain d, std::uint64_t key) {
+        std::lock_guard lock(mutex(d));
+        return table(d).intern(key);
+    }
 
+    // Direct table access for the flush-time sidecar dump only (single
+    // threaded by then); take mutex(d) yourself if racing recorders.
+    // Leaked (never destroyed): GPU backends flush from exit-time vendor
+    // callbacks that run after static destructors.
     InternTable& table(InternDomain d) {
-        thread_local std::array<InternTable, kInternDomainCount> tables{};
-        return tables[static_cast<std::size_t>(d)];
+        static auto* tables = new std::array<InternTable, kInternDomainCount>;
+        return (*tables)[static_cast<std::size_t>(d)];
+    }
+
+    std::mutex& mutex(InternDomain d) {
+        static auto* mutexes = new std::array<std::mutex, kInternDomainCount>;
+        return (*mutexes)[static_cast<std::size_t>(d)];
     }
 
     // --- time ----------------------------------------------------------------
@@ -104,10 +124,25 @@ private:
     using BufferKey = std::pair<const void*, core::RecordTypeId>;
     using BufferStore = std::map<BufferKey, std::unique_ptr<IDrainable>>;
 
+    // Leaked per-thread store (no TLS destructor): glibc destroys main-thread
+    // TLS *before* atexit handlers, and GPU backends flush from those. The
+    // cost is that buffers do NOT auto-drain at thread exit — every recording
+    // thread must call drain_thread() (or drain its buffers) before exiting.
     static BufferStore& buffer_store() {
-        thread_local BufferStore store;
-        return store;
+        thread_local BufferStore* store = nullptr;  // constant-init: no TLS dtor
+        if (!store) store = new BufferStore();
+        return *store;
     }
+
+public:
+    // Drains every buffer this recorder owns on the calling thread.
+    void drain_thread() {
+        for (auto& [key, buf] : buffer_store()) {
+            if (key.first == this) buf->drain();
+        }
+    }
+
+private:
 
     ISink*         m_sink;
     core::DomainId m_cpu_domain;

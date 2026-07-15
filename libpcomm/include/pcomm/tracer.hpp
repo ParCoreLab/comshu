@@ -5,6 +5,7 @@
 // each other. Skeleton: recorder + sink wiring and start/stop; the dlopen
 // ProviderRegistry and Calibrator land with the first real provider.
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -28,9 +29,13 @@ struct Config {
 
 class Tracer {
 public:
+    // Deliberately leaked (never destroyed): backends invoke stop() from
+    // exit-time vendor callbacks (e.g. NVBit's atexit handler) that can run
+    // after C++ static destructors. All buffered data is flushed by stop();
+    // the leak is process-exit-only.
     static Tracer& instance() {
-        static Tracer t;
-        return t;
+        static Tracer* t = new Tracer();
+        return *t;
     }
 
     void start(const Config& cfg) {
@@ -44,6 +49,8 @@ public:
     void stop() {
         if (!m_recorder) return;
         emit_anchor();  // end-of-run anchor: reader fits offset + skew
+        m_recorder->buffer<core::records::ClockAnchor>().drain();
+        dump_intern_sidecars();
         m_sink->flush();
     }
 
@@ -60,8 +67,30 @@ private:
                                                       s.local_ticks, s.wall_ns, s.mono_ns});
     }
 
+    // Intern dictionaries resolve handles in the streams; written as TSV
+    // sidecars at stop (skeleton form of the sidecar streams in UNIFICATION
+    // §5.1). String domains: handle\tvalue. Numeric domains: handle\tkey.
+    void dump_intern_sidecars() {
+        static constexpr std::string_view names[] = {"pc", "pointer", "string",
+                                                     "kernel", "type"};
+        for (std::size_t d = 0; d < rec::kInternDomainCount; ++d) {
+            auto& table = m_recorder->table(static_cast<rec::InternDomain>(d));
+            if (table.size() == 0) continue;
+            auto path = m_sink->dir() / ("intern-" + std::string(names[d]) + ".tsv");
+            std::FILE* f = std::fopen(path.c_str(), "w");
+            if (!f) continue;
+            core::Handle h = 0;
+            for (const auto& s : table.strings())
+                std::fprintf(f, "%u\t%s\n", ++h, s.c_str());
+            for (const auto& [key, handle] : table.keys())
+                std::fprintf(f, "%u\t0x%llx\n", handle,
+                             static_cast<unsigned long long>(key));
+            std::fclose(f);
+        }
+    }
+
     Config m_config{};
-    std::unique_ptr<rec::ISink> m_sink;
+    std::unique_ptr<rec::FileSink> m_sink;
     std::unique_ptr<rec::Recorder<>> m_recorder;
 };
 

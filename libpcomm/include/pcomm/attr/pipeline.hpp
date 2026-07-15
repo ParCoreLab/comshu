@@ -15,7 +15,7 @@ inline void AttributionPipeline::process(std::span<const RawAccess> accesses) {
         if (!kept) continue;
 
         core::records::GpuAccess rec{};
-        rec.pc         = m_rec->intern(rec::InternDomain::Pc, a.pc);
+        rec.pc         = static_cast<core::Handle>(a.pc);
         rec.address    = a.address;
         rec.size       = a.size;
         rec.op         = a.op;

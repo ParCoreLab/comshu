@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -50,14 +51,19 @@ public:
         for (auto& [id, f] : m_files) std::fclose(f);
     }
 
+    // Serialized: buffers arrive from any recording thread's drain.
     void submit(const BufferView& view) override {
+        std::lock_guard lock(m_mutex);
         std::FILE* f = stream_for(view.type_id);
         if (f && view.bytes > 0) std::fwrite(view.data, 1, view.bytes, f);
     }
 
     void flush() override {
+        std::lock_guard lock(m_mutex);
         for (auto& [id, f] : m_files) std::fflush(f);
     }
+
+    const std::filesystem::path& dir() const { return m_dir; }
 
 private:
     std::FILE* stream_for(core::RecordTypeId id) {
@@ -70,6 +76,7 @@ private:
     }
 
     std::filesystem::path m_dir;
+    std::mutex m_mutex;
     std::unordered_map<core::RecordTypeId, std::FILE*> m_files;
 };
 

@@ -43,8 +43,8 @@ struct RecordMeta {
 class RecordIdTracker {
 public:
     static RecordIdTracker& instance() {
-        static RecordIdTracker t;
-        return t;
+        static RecordIdTracker* t = new RecordIdTracker();  // leaked: see Recorder
+        return *t;
     }
 
     // Returns false if the id is already claimed by a *different* name.

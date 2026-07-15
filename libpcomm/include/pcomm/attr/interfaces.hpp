@@ -20,6 +20,10 @@ namespace pcomm::attr {
 
 // Neutral per-access sample (was snoopie's MemoryAccess / Entry, sans vendor
 // types). The device-side collector fills these; the host drains them.
+// `pc` is a producer-defined identity, already handle-ready: producers with
+// dense instruction indices pass index+1; producers with raw PCs intern them
+// (InternDomain::Pc) before filling RawAccess. The pipeline copies it as-is,
+// so it joins directly against SourceLine/Artifact rows using the same scheme.
 struct RawAccess {
     std::uint64_t address{0};
     std::uint64_t pc{0};

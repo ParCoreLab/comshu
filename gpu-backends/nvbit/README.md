@@ -6,16 +6,30 @@
 driver 580.95; diim test 64/64 with source-line + object attribution,
 2026-07-15).
 
-Port plan:
+Status (2026-07-15): **capture path ported and validated on du04** — diim test
+reproduces the snoopie baseline (64/64 remote accesses, object attribution,
+source-line artifact, clock anchors). Files:
 
-- [ ] Vendor NVBit headers here (EULA: NVBit is redistributable in binary/header form).
-- [ ] `NvbitBackend : IGpuBackend` — `instrument()` = today's
-      `nvbit_at_function_first_load` instrumentation pass; `make_collector()`
-      wraps the device->host channel; `clock_sample()` pairs globaltimer/TSC.
-- [ ] Device-side collector fills neutral `attr::RawAccess` (strip vendor types
-      from the channel structs).
-- [ ] Attributors (Device/Object/SourceLine/CudaIpc) move to the gpumem
-      provider — they are vendor-free and shared with the Sanitizer backend.
+- `nvbit-1.7.7.1/` — vendored NVBit (headers + libnvbit.a + channel utils).
+- `nvbit_backend.cu` — nvbit_at_* callbacks; instrumentation pass; recv thread
+  translating `pcomm_gpu_access_t` -> `attr::RawAccess` -> `gpumem::Engine`.
+- `inject_funcs.cu` / `dev_common.h` — device-side instrumentation function
+  (warp-coalesced channel pushes, per-instruction access size).
 
-Build notes for du04: needs `PATH+=/usr/local/cuda/bin:/opt/nvidia/hpc_sdk/Linux_x86_64/25.9/cuda/13.0/bin`
-(base CUDA install lacks nvdisasm) and `NVSHMEM_HOME=/home/iturimbetov18/nvshmem-2.10`.
+**Exit-safety invariant** (learned the hard way): NVBit destroys contexts from
+an atexit handler that runs *after* C++ static destructors and *after*
+main-thread TLS destructors. Everything reachable from nvbit callbacks is
+therefore deliberately leaked (engine, Globals, Tracer, intern tables, TLS
+buffer stores), and recording threads must call `Engine::drain_thread()`
+before exiting — buffers do not auto-drain.
+
+Not yet ported (follow-ups): NVSHMEM heap ownership (2.x range + 3.x cuMemMap
+regions), sampling (SAMPLE_SIZE), estimated line carry-forward for instructions
+without line info (snoopie's prev-valid fallback + nvdisasm path), python/NCCL
+attribution, data-object callstack attribution (adm), cuMemcpyDtoD synthesis,
+`IGpuBackend` facade over this tool (currently callback-driven directly).
+
+Build on du04 (no spack needed): `PATH=$HOME/.local/bin:/usr/local/cuda/bin:$PATH`
+(pip-installed cmake ≥3.26; node cmake 3.23 lacks CUDA20), `CUDACXX=/usr/local/cuda/bin/nvcc`,
+`cmake -B build -DPCOMM_PROVIDER_GPUMEM=ON`. At *run* time NVBit needs nvdisasm:
+`PATH+=/opt/nvidia/hpc_sdk/Linux_x86_64/25.9/cuda/13.0/bin`.
