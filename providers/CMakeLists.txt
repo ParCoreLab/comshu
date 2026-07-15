@@ -1,0 +1,6 @@
+if(PCOMM_PROVIDER_GPUMEM)
+  add_subdirectory(gpumem)
+endif()
+if(PCOMM_PROVIDER_IBVERBS)
+  add_subdirectory(ibverbs)
+endif()
