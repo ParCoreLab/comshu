@@ -4,10 +4,10 @@
 // path; tables are dumped as sidecar streams at flush and merged by pcomm-read.
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <vector>
 
 #include "pcomm/core/ids.hpp"
 
@@ -46,14 +46,17 @@ public:
     std::size_t size() const { return m_count; }
 
     // Flush support: entries in handle order. String entries own their storage.
-    const std::vector<std::string>& strings() const { return m_strings; }
+    const std::deque<std::string>& strings() const { return m_strings; }
     const std::unordered_map<std::uint64_t, core::Handle>& keys() const { return m_by_key; }
 
 private:
     core::Handle next_handle() { return static_cast<core::Handle>(++m_count); }
 
     std::size_t m_count{0};
-    std::vector<std::string> m_strings;  // stable storage for string_view keys
+    // std::deque (not vector): element references stay valid across growth, so
+    // the string_view keys in m_by_string never dangle. (vector reallocation
+    // invalidated them — passed in Release via SSO luck, aborted in Debug.)
+    std::deque<std::string> m_strings;  // stable storage for string_view keys
     std::unordered_map<std::string_view, core::Handle> m_by_string;
     std::unordered_map<std::uint64_t, core::Handle> m_by_key;
 };
