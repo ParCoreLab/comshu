@@ -2,15 +2,18 @@
 // sidecars -> TimeAligner -> columnar Tables -> exporters (Parquet canonical,
 // Perfetto derived). Heavy deps (Arrow) are allowed here — off the hot path.
 //
-// Skeleton: inventories a trace directory and decodes the known phase-1
-// record types to CSV on stdout (`--dump <type_id>`), enough to inspect and
-// validate captures today. The trait-driven generic decoder replaces the
-// per-type functions here when the Parquet writer lands.
+// Current stage: relational CSV export with intern resolution (`--csv`), a
+// raw per-stream decoder (`--dump`), and a stream inventory. The CSVs are the
+// queryable "log" output until the Parquet writer lands (they load directly
+// into DuckDB/Polars/pandas). The per-type decode functions become a
+// trait-driven generic table builder when the exporter framework lands.
 
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "pcomm/core/records.hpp"
@@ -18,6 +21,7 @@
 
 namespace fs = std::filesystem;
 using namespace pcomm;
+using namespace pcomm::core::records;
 using rec::Stamped;
 
 namespace {
@@ -44,8 +48,111 @@ const char* memop_name(core::MemOp op) {
     return "?";
 }
 
+// One rank's capture: streams + intern dictionaries.
+struct RankDir {
+    int rank{0};
+    fs::path dir;
+    std::unordered_map<core::Handle, std::string> strings;  // intern-string.tsv
+
+    const char* str(core::Handle h) const {
+        auto it = strings.find(h);
+        return it == strings.end() ? "" : it->second.c_str();
+    }
+};
+
+std::vector<RankDir> scan_ranks(const fs::path& root) {
+    std::vector<RankDir> ranks;
+    for (const auto& entry : fs::directory_iterator(root)) {
+        if (!entry.is_directory()) continue;
+        auto name = entry.path().filename().string();
+        if (name.rfind("rank-", 0) != 0) continue;
+        RankDir r;
+        r.rank = std::atoi(name.c_str() + 5);
+        r.dir = entry.path();
+        std::ifstream in(r.dir / "intern-string.tsv");
+        std::string line;
+        while (std::getline(in, line)) {
+            auto tab = line.find('\t');
+            if (tab == std::string::npos) continue;
+            r.strings.emplace(static_cast<core::Handle>(std::stoul(line.substr(0, tab))),
+                              line.substr(tab + 1));
+        }
+        ranks.push_back(std::move(r));
+    }
+    return ranks;
+}
+
+template <core::Record R>
+fs::path stream_path(const RankDir& r) {
+    return r.dir / (std::to_string(core::RecordTrait<R>::type_id) + ".pcs");
+}
+
+// --- CSV export ---------------------------------------------------------------
+
+int export_csv(const fs::path& root, const fs::path& outdir) {
+    auto ranks = scan_ranks(root);
+    if (ranks.empty()) {
+        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n",
+                     root.c_str());
+        return 1;
+    }
+    fs::create_directories(outdir);
+
+    auto open = [&](const char* name, const char* header) {
+        std::FILE* f = std::fopen((outdir / name).c_str(), "w");
+        std::fputs(header, f);
+        return f;
+    };
+
+    std::FILE* access = open("gpu_access.csv",
+        "rank,ticks,pc,object,addr,size,op,run_dev,mem_dev,thread\n");
+    std::FILE* object = open("mem_object.csv",
+        "rank,ticks,id,name,base,size,device\n");
+    std::FILE* source = open("source_line.csv", "rank,pc,file,line\n");
+    std::FILE* anchor = open("clock_anchor.csv",
+        "rank,domain,local_ticks,wall_ns,mono_ns\n");
+
+    std::size_t n_access = 0;
+    for (const auto& r : ranks) {
+        for (const auto& s : load_stream<GpuAccess>(stream_path<GpuAccess>(r))) {
+            std::fprintf(access, "%d,%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u\n", r.rank,
+                         (unsigned long long)s.temporal.a.ticks, s.payload.pc,
+                         s.payload.object, (unsigned long long)s.payload.address,
+                         s.payload.size, memop_name(s.payload.op),
+                         s.payload.run_device, s.payload.mem_device,
+                         s.payload.thread);
+            n_access++;
+        }
+        for (const auto& s : load_stream<MemObject>(stream_path<MemObject>(r))) {
+            std::fprintf(object, "%d,%llu,%u,%s,0x%llx,%llu,%u\n", r.rank,
+                         (unsigned long long)s.temporal.a.ticks, s.payload.id,
+                         r.str(s.payload.name),
+                         (unsigned long long)s.payload.range.base,
+                         (unsigned long long)s.payload.range.size,
+                         s.payload.device);
+        }
+        for (const auto& s : load_stream<SourceLine>(stream_path<SourceLine>(r))) {
+            std::fprintf(source, "%d,%u,%s,%u\n", r.rank, s.payload.pc,
+                         r.str(s.payload.file), s.payload.line);
+        }
+        for (const auto& s : load_stream<ClockAnchor>(stream_path<ClockAnchor>(r))) {
+            std::fprintf(anchor, "%d,%u,%llu,%llu,%llu\n", r.rank, s.payload.domain,
+                         (unsigned long long)s.payload.local_ticks,
+                         (unsigned long long)s.payload.wall_ns,
+                         (unsigned long long)s.payload.mono_ns);
+        }
+    }
+    for (std::FILE* f : {access, object, source, anchor}) std::fclose(f);
+
+    std::printf("pcomm-read: %zu ranks, %zu accesses -> %s/{gpu_access,mem_object,"
+                "source_line,clock_anchor}.csv\n",
+                ranks.size(), n_access, outdir.c_str());
+    return 0;
+}
+
+// --- raw single-stream dump ---------------------------------------------------
+
 void dump(core::RecordTypeId type, const fs::path& file) {
-    using namespace core::records;
     switch (type) {
         case core::RecordTrait<GpuAccess>::type_id: {
             std::puts("ticks,pc,object,addr,size,op,run_dev,mem_dev,thread");
@@ -97,8 +204,9 @@ void dump(core::RecordTypeId type, const fs::path& file) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fputs(
-            "usage: pcomm-read <trace-dir>                 stream inventory\n"
-            "       pcomm-read <trace-dir> --dump <typeid>  decode one stream to CSV\n",
+            "usage: pcomm-read <trace-dir>                    stream inventory\n"
+            "       pcomm-read <trace-dir> --csv <outdir>     export all tables (intern-resolved)\n"
+            "       pcomm-read <trace-dir> --dump <typeid>    decode one raw stream\n",
             stderr);
         return 1;
     }
@@ -107,6 +215,10 @@ int main(int argc, char** argv) {
     if (!fs::is_directory(dir)) {
         std::fprintf(stderr, "pcomm-read: not a directory: %s\n", dir.c_str());
         return 1;
+    }
+
+    if (argc >= 4 && std::strcmp(argv[2], "--csv") == 0) {
+        return export_csv(dir, argv[3]);
     }
 
     if (argc >= 4 && std::strcmp(argv[2], "--dump") == 0) {
