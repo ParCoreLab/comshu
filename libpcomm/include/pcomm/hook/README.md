@@ -12,12 +12,18 @@ implementation, see `../../../../ARCHITECTURE.md` §4):
 
 Port checklist (phase 1, alongside the ibverbs proof provider):
 
-- [ ] Copy `SigmaTrace/Hook/` + `SigmaTrace/SmartDlsym/` here.
-- [ ] s/sigma-namespace/pcomm::hook/ + include paths.
-- [ ] Hook managers emit records through `rec::Recorder<>` instead of the old
-      `EventRecorder`.
-- [ ] Keep the existing SigmaTrace unit tests, retargeted.
+- [x] Copy `SigmaTrace/Hook/` + `SigmaTrace/SmartDlsym/` here (headers under
+      `hook/`, `hook/detail/`, `hook/dlsym/`; runtime `.cpp` under
+      `libpcomm/src/hook/`, compiled into the `pcomm::hook` static lib).
+- [x] Namespaces retargeted: `hook` -> `pcomm::hook`, `smart_dlsym` ->
+      `pcomm::smart_dlsym`, `Helpers` -> `pcomm::helpers`; include paths fixed.
+- [x] Build/link gate: `tests/hook_smoke.cpp` (trait machinery + ELF symbol
+      resolver, vendor-free).
+- [ ] Hook managers emit records through `rec::Recorder<>` — done **in the
+      provider's EventSource**, not the engine (the engine is recorder-free;
+      lands with the ibverbs provider port).
+- [ ] Retarget SigmaTrace's Hook unit tests.
 
-Nothing in this directory may include vendor headers; the trait definitions for
-e.g. `ibv_post_send` live in the ibverbs *provider*, which supplies the vendor
-types at its own compile time.
+The engine has no recorder or vendor coupling: per-symbol trait definitions
+for e.g. `ibv_post_send` live in the ibverbs *provider*, which supplies the
+vendor types at its own compile time. Nothing here may include vendor headers.
