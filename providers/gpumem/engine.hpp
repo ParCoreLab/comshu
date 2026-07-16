@@ -114,11 +114,13 @@ public:
                                              line});
     }
 
-    // Drain path: the backend hands raw accesses with run_device set; the
-    // engine resolves mem_device (unresolved -> run_device, so RemoteFilter
-    // drops it) before the pipeline runs.
+    // Drain path: the backend hands raw accesses with run_device set and
+    // mem_device either already resolved (NVSHMEM heap ownership) or
+    // kUnresolvedDevice; the engine resolves the rest via the alloc registry
+    // (still-unknown -> run_device, so RemoteFilter drops it).
     void process(std::span<attr::RawAccess> batch) {
         for (auto& a : batch) {
+            if (a.mem_device != attr::kUnresolvedDevice) continue;
             const auto* alloc = m_allocs.find(a.address);
             a.mem_device = alloc ? alloc->device : a.run_device;
         }

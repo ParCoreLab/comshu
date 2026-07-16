@@ -13,6 +13,7 @@
 // Vendor types (CUcontext, Instr, ...) are allowed HERE and nowhere above the
 // gpu-backends/ boundary.
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -50,6 +51,15 @@ struct CtxState {
 // destructible) so no exit-ordering can leave a callback with a dead object.
 pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;  // serializes callbacks
 
+// NVSHMEM 3.x symmetric-heap region (cuMemMap-based). All devices map all
+// regions, so ownership is positional: sorted by base, region 0 is the local
+// PE and region i belongs to PE (mype + i) % npes (per-process mapping).
+struct NvshmemHeapRegion {
+    uint64_t base;
+    uint64_t size;
+    int region_index;
+};
+
 struct Globals {
     std::unordered_map<CUcontext, CtxState*> ctx_state;
     std::unordered_set<CUfunction> instrumented;
@@ -57,6 +67,11 @@ struct Globals {
     std::vector<std::string> id_to_opcode;
     std::vector<MemOp> id_to_memop;
     std::string kernel_filter = "all";
+    std::vector<NvshmemHeapRegion> heap_regions;
+    std::unordered_set<uint64_t> heap_bases_seen;
+    bool heap_regions_sorted = false;
+    std::string nvshmem_version = "2.8";  // legacy-path layout selector
+    int nvshmem_ngpus = 10;
 };
 Globals& G() {
     static Globals* g = new Globals();
@@ -74,6 +89,56 @@ struct MutexLock {
     ~MutexLock() { pthread_mutex_unlock(m_m); }
     pthread_mutex_t* m_m;
 };
+
+// NVSHMEM 3.x path: region index -> PE (mype + i) % npes. -1 = not heap.
+int find_nvshmem_heap_owner(uint64_t addr, int mype) {
+    auto& g = G();
+    if (!g.heap_regions_sorted) {
+        std::sort(g.heap_regions.begin(), g.heap_regions.end(),
+                  [](const NvshmemHeapRegion& a, const NvshmemHeapRegion& b) {
+                      return a.base < b.base;
+                  });
+        for (int i = 0; i < (int)g.heap_regions.size(); i++)
+            g.heap_regions[i].region_index = i;
+        g.heap_regions_sorted = true;
+    }
+    int npes = (int)g.heap_regions.size();
+    if (npes == 0) return -1;
+    for (const auto& r : g.heap_regions) {
+        if (addr >= r.base && addr < r.base + r.size)
+            return (mype + r.region_index) % npes;
+    }
+    return -1;
+}
+
+// NVSHMEM 2.x legacy path: fixed VA layout, peers mapped at 0x12020000000 with
+// constant stride (snoopie's find_nvshmem_dev_of_ptr, verbatim logic).
+int64_t find_nvshmem_dev_of_ptr_legacy(int mype, uint64_t mem_addr) {
+    const int size = 15;
+    const uint64_t start = 0x000012020000000;
+    const uint64_t incr = start - (uint64_t)0x000010020000000;
+
+    int region = -1;
+    for (int i = 1; i <= size; i++) {
+        uint64_t bottom = start + (uint64_t)(i - 1) * incr;
+        uint64_t top = start + (uint64_t)i * incr;
+        if (bottom <= mem_addr && mem_addr < top) {
+            region = i - 1;
+            break;
+        }
+    }
+    if (region == -1) return -1;
+
+    auto& g = G();
+    if (g.nvshmem_version == "2.9" || g.nvshmem_version == "2.8") region += mype;
+    if (mype == region) return (mype + 1) % g.nvshmem_ngpus;
+    for (int i = 0; i < size; i++) {
+        if (mype == i) continue;
+        if (region == 0) return i % g.nvshmem_ngpus;
+        region--;
+    }
+    return -1;
+}
 
 MemOp opcode_to_memop(const std::string& opcode) {
     if (opcode.rfind("LD", 0) == 0) return MemOp::Load;
@@ -199,6 +264,17 @@ void* recv_thread_fun(void* args) {
                 a.op = G().id_to_memop[ma->opcode_id];
                 a.space = pcomm::core::MemSpace::Global;
                 a.run_device = static_cast<pcomm::core::DeviceId>(ma->dev_id);
+
+                // NVSHMEM symmetric-heap ownership (3.x regions, then 2.x
+                // fixed layout); anything else stays unresolved and the
+                // engine consults the alloc registry.
+                int owner = find_nvshmem_heap_owner(a.address, ma->dev_id);
+                if (owner < 0 && a.address >= 0x0000010020000000ull) {
+                    owner = (int)find_nvshmem_dev_of_ptr_legacy(ma->dev_id, a.address);
+                }
+                if (owner >= 0)
+                    a.mem_device = static_cast<pcomm::core::DeviceId>(owner);
+
                 batch.push_back(a);
             }
         }
@@ -227,6 +303,8 @@ __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
 void nvbit_at_init() {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
     if (const char* k = std::getenv("PCOMM_KERNEL_NAME")) G().kernel_filter = k;
+    if (const char* v = std::getenv("PCOMM_NVSHMEM_VERSION")) G().nvshmem_version = v;
+    if (const char* v = std::getenv("PCOMM_NVSHMEM_NGPUS")) G().nvshmem_ngpus = std::atoi(v);
     g_engine = new pcomm::gpumem::Engine();
 }
 
@@ -259,6 +337,16 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
     } else if (is_exit && cbid == API_CUDA_cuMemAllocManaged) {
         auto* p = (cuMemAllocManaged_params*)params;
         handle_alloc(*p->dptr, p->bytesize);
+    } else if (is_exit && cbid == API_CUDA_cuMemMap) {
+        // NVSHMEM 3.x symmetric heap: record each distinct mapped base as a
+        // region (ownership resolved positionally on the drain path).
+        auto* p = (cuMemMap_params*)params;
+        auto& g = G();
+        if (g.heap_bases_seen.insert((uint64_t)p->ptr).second) {
+            g.heap_regions.push_back(
+                {(uint64_t)p->ptr, (uint64_t)p->size, (int)g.heap_regions.size()});
+            g.heap_regions_sorted = false;
+        }
     }
 
     g_skip_callback = false;

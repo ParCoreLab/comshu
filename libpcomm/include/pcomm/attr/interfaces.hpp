@@ -24,6 +24,11 @@ namespace pcomm::attr {
 // dense instruction indices pass index+1; producers with raw PCs intern them
 // (InternDomain::Pc) before filling RawAccess. The pipeline copies it as-is,
 // so it joins directly against SourceLine/Artifact rows using the same scheme.
+// mem_device: producers that can resolve ownership themselves (e.g. NVSHMEM
+// symmetric-heap layout) set it; others leave kUnresolvedDevice and the
+// consumer resolves via its allocation registry.
+inline constexpr core::DeviceId kUnresolvedDevice = 0xFFFF;
+
 struct RawAccess {
     std::uint64_t address{0};
     std::uint64_t pc{0};
@@ -32,7 +37,7 @@ struct RawAccess {
     core::MemOp    op{core::MemOp::Load};
     core::MemSpace space{core::MemSpace::Global};
     core::DeviceId run_device{0};
-    core::DeviceId mem_device{0};
+    core::DeviceId mem_device{kUnresolvedDevice};
 };
 
 // Host-side runtime happenings the pipeline reacts to (kernel launch/exit,

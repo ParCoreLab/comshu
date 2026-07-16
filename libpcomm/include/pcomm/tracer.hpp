@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <unistd.h>
 #include <memory>
 #include <string>
 
@@ -97,8 +98,19 @@ private:
 inline Config Config::from_env() {
     Config cfg;
     if (const char* v = std::getenv("PCOMM_OUTPUT_DIR")) cfg.output_dir = v;
-    if (const char* v = std::getenv("PCOMM_RANK")) cfg.rank = std::atoi(v);
     if (const char* v = std::getenv("PCOMM_VERBOSE")) cfg.verbose = *v == '1';
+    // Rank guess (SigmaTrace's RankDetector, minimal port): explicit override,
+    // then launcher-provided env, then pid so concurrent unranked processes
+    // never clobber each other's streams.
+    cfg.rank = -1;
+    for (const char* var : {"PCOMM_RANK", "OMPI_COMM_WORLD_RANK", "PMIX_RANK",
+                            "PMI_RANK", "SLURM_PROCID", "NVSHMEM_MY_PE"}) {
+        if (const char* v = std::getenv(var)) {
+            cfg.rank = std::atoi(v);
+            break;
+        }
+    }
+    if (cfg.rank < 0) cfg.rank = static_cast<int>(getpid());
     return cfg;
 }
 
