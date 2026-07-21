@@ -308,6 +308,112 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
     return 0;
 }
 
+// --- Perfetto native protobuf trace (.pftrace) -------------------------------
+// Canonical Perfetto format: a length-delimited stream of TracePacket (Trace
+// field 1). We emit TrackDescriptors (one track per QP, parented to a per-rank
+// track) and TrackEvents (SLICE_BEGIN/END). Field numbers are from Perfetto's
+// trace_packet.proto / track_event.proto. Validate structure with
+// `protoc --decode_raw < out.pftrace`.
+struct PB {
+    std::string b;
+    void varint(std::uint64_t v) {
+        while (v >= 0x80) { b.push_back(static_cast<char>(v | 0x80)); v >>= 7; }
+        b.push_back(static_cast<char>(v));
+    }
+    void tag(int field, int wire) { varint((static_cast<std::uint64_t>(field) << 3) | wire); }
+    void u64(int field, std::uint64_t v) { tag(field, 0); varint(v); }
+    void str(int field, const std::string& s) { tag(field, 2); varint(s.size()); b += s; }
+    void msg(int field, const PB& m) { tag(field, 2); varint(m.b.size()); b += m.b; }
+};
+
+int export_pftrace(const fs::path& root, const fs::path& outfile) {
+    auto ranks = scan_ranks(root);
+    if (ranks.empty()) {
+        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
+        return 1;
+    }
+    std::vector<RankClock> clk(ranks.size());
+    std::uint64_t origin = ~0ull;
+    for (std::size_t i = 0; i < ranks.size(); ++i) {
+        auto anchors = load_stream<ClockAnchor>(stream_path<ClockAnchor>(ranks[i]));
+        if (!anchors.empty()) {
+            const auto& a = anchors.front().payload;
+            clk[i].t0 = a.local_ticks; clk[i].w0 = a.wall_ns;
+            if (anchors.size() >= 2) {
+                const auto& b = anchors.back().payload;
+                long double dt = static_cast<long double>(b.local_ticks) - a.local_ticks;
+                if (dt > 0)
+                    clk[i].ns_per_tick =
+                        static_cast<double>((static_cast<long double>(b.wall_ns) - a.wall_ns) / dt);
+            }
+            origin = std::min(origin, static_cast<std::uint64_t>(a.wall_ns));
+        }
+    }
+    if (origin == ~0ull) origin = 0;
+
+    constexpr std::uint64_t SEQ = 1;
+    auto rank_uuid = [](int rank) { return static_cast<std::uint64_t>(rank) + 1; };
+    auto qp_uuid = [](int rank, std::uint32_t qp) {
+        return (static_cast<std::uint64_t>(rank) + 1) * 0x100000000ull + qp;
+    };
+    auto ns = [&](const RankClock& c, std::uint64_t tick) { return c.wall_at(tick) - origin; };
+
+    PB trace;
+    auto track = [&](std::uint64_t uuid, const std::string& name, std::uint64_t parent) {
+        PB td; td.u64(1, uuid); td.str(2, name);
+        if (parent) td.u64(5, parent);
+        PB pkt; pkt.msg(60, td); pkt.u64(10, SEQ);
+        trace.msg(1, pkt);
+    };
+    auto slice = [&](std::uint64_t track_uuid, std::uint64_t t_ns, std::uint64_t dur_ns,
+                     const std::string& name) {
+        PB beg; beg.u64(9, dur_ns ? 1u : 3u); beg.u64(11, track_uuid); beg.str(23, name);  // BEGIN|INSTANT
+        PB p1; p1.u64(8, t_ns); p1.msg(11, beg); p1.u64(10, SEQ); trace.msg(1, p1);
+        if (dur_ns) {
+            PB end; end.u64(9, 2u); end.u64(11, track_uuid);  // SLICE_END
+            PB p2; p2.u64(8, t_ns + dur_ns); p2.msg(11, end); p2.u64(10, SEQ); trace.msg(1, p2);
+        }
+    };
+
+    std::size_t n_ev = 0;
+    for (std::size_t i = 0; i < ranks.size(); ++i) {
+        const auto& r = ranks[i];
+        const auto& c = clk[i];
+        track(rank_uuid(r.rank), "rank " + std::to_string(r.rank), 0);
+        std::unordered_map<std::uint32_t, bool> seen;
+        for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
+            if (seen.emplace(s.payload.qp_num, true).second) {
+                char nm[24]; std::snprintf(nm, sizeof nm, "QP 0x%x", s.payload.qp_num);
+                track(qp_uuid(r.rank, s.payload.qp_num), nm, rank_uuid(r.rank));
+            }
+        }
+        auto dur_ns = [&](const core::Temporal& t) -> std::uint64_t {
+            return (t.kind == core::TimeKind::Interval && t.b.ticks > t.a.ticks)
+                       ? static_cast<std::uint64_t>((t.b.ticks - t.a.ticks) * c.ns_per_tick)
+                       : 0;
+        };
+        for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
+            char nm[24]; std::snprintf(nm, sizeof nm, "send %uB", s.payload.length);
+            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal.a.ticks),
+                  dur_ns(s.temporal), nm);
+            n_ev++;
+        }
+        for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
+            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal.a.ticks),
+                  dur_ns(s.temporal), "complete");
+            n_ev++;
+        }
+    }
+
+    std::FILE* f = std::fopen(outfile.c_str(), "wb");
+    if (!f) { std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str()); return 1; }
+    std::fwrite(trace.b.data(), 1, trace.b.size(), f);
+    std::fclose(f);
+    std::printf("pcomm-read: %zu ranks, %zu events -> %s (%zu bytes; load in ui.perfetto.dev)\n",
+                ranks.size(), n_ev, outfile.c_str(), trace.b.size());
+    return 0;
+}
+
 // --- raw single-stream dump ---------------------------------------------------
 
 void dump(core::RecordTypeId type, const fs::path& file) {
@@ -417,6 +523,7 @@ int main(int argc, char** argv) {
             "usage: pcomm-read <trace-dir>                    stream inventory\n"
             "       pcomm-read <trace-dir> --csv <outdir>     export all tables (intern-resolved)\n"
             "       pcomm-read <trace-dir> --perfetto <out>   export Perfetto/Chrome JSON trace\n"
+            "       pcomm-read <trace-dir> --pftrace <out>    export Perfetto native protobuf trace\n"
             "       pcomm-read <trace-dir> --dump <typeid>    decode one raw stream\n",
             stderr);
         return 1;
@@ -434,6 +541,10 @@ int main(int argc, char** argv) {
 
     if (argc >= 4 && std::strcmp(argv[2], "--perfetto") == 0) {
         return export_perfetto(dir, argv[3]);
+    }
+
+    if (argc >= 4 && std::strcmp(argv[2], "--pftrace") == 0) {
+        return export_pftrace(dir, argv[3]);
     }
 
     if (argc >= 4 && std::strcmp(argv[2], "--dump") == 0) {
