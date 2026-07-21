@@ -9,6 +9,7 @@
 // trait-driven generic table builder when the exporter framework lands.
 
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -200,6 +201,94 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     return 0;
 }
 
+// --- Perfetto / Chrome JSON trace --------------------------------------------
+// One process per rank, one thread per QP; post_send/poll_cq become instant
+// events. TSC ticks aren't comparable across nodes (per-CPU, boot-relative), so
+// each rank's ClockAnchors (start+end: local_ticks + wall_ns) calibrate
+// ticks -> wall-ns; a global wall-ns origin keeps µs precision and aligns all
+// ranks on one axis. Load the output in https://ui.perfetto.dev.
+struct RankClock {
+    long double t0{0}, w0{0};   // anchor tick / wall_ns
+    double ns_per_tick{1.0};
+    std::uint64_t wall_at(std::uint64_t tick) const {
+        return static_cast<std::uint64_t>(w0 + (static_cast<long double>(tick) - t0) * ns_per_tick);
+    }
+};
+
+int export_perfetto(const fs::path& root, const fs::path& outfile) {
+    auto ranks = scan_ranks(root);
+    if (ranks.empty()) {
+        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
+        return 1;
+    }
+    std::vector<RankClock> clk(ranks.size());
+    std::uint64_t origin = ~0ull;
+    for (std::size_t i = 0; i < ranks.size(); ++i) {
+        auto anchors = load_stream<ClockAnchor>(stream_path<ClockAnchor>(ranks[i]));
+        if (!anchors.empty()) {
+            const auto& a = anchors.front().payload;
+            clk[i].t0 = a.local_ticks; clk[i].w0 = a.wall_ns;
+            if (anchors.size() >= 2) {
+                const auto& b = anchors.back().payload;
+                long double dt = static_cast<long double>(b.local_ticks) - a.local_ticks;
+                if (dt > 0)
+                    clk[i].ns_per_tick =
+                        static_cast<double>((static_cast<long double>(b.wall_ns) - a.wall_ns) / dt);
+            }
+            origin = std::min(origin, static_cast<std::uint64_t>(a.wall_ns));
+        }
+    }
+    if (origin == ~0ull) origin = 0;
+
+    std::FILE* f = std::fopen(outfile.c_str(), "w");
+    if (!f) { std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str()); return 1; }
+    std::fputs("{\"displayTimeUnit\":\"ns\",\"traceEvents\":[\n", f);
+    bool first = true;
+    auto sep = [&] { if (!first) std::fputs(",\n", f); first = false; };
+    auto us = [&](const RankClock& c, std::uint64_t tick) {
+        return static_cast<double>(c.wall_at(tick) - origin) / 1000.0;  // ns -> µs
+    };
+
+    std::size_t n_ev = 0;
+    for (std::size_t i = 0; i < ranks.size(); ++i) {
+        const auto& r = ranks[i];
+        const auto& c = clk[i];
+        sep();
+        std::fprintf(f, "{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":%d,"
+                        "\"args\":{\"name\":\"rank %d\"}}", r.rank, r.rank);
+        std::unordered_map<std::uint32_t, bool> seen;
+        for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
+            if (seen.emplace(s.payload.qp_num, true).second) {
+                sep();
+                std::fprintf(f, "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":%d,\"tid\":%u,"
+                                "\"args\":{\"name\":\"QP 0x%x\"}}", r.rank, s.payload.qp_num,
+                             s.payload.qp_num);
+            }
+        }
+        for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
+            sep();
+            std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
+                            "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
+                         r.rank, s.payload.qp_num, us(c, s.temporal.a.ticks), s.payload.length,
+                         s.payload.opcode, s.payload.length, (unsigned long long)s.payload.wr_id);
+            n_ev++;
+        }
+        for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
+            sep();
+            std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
+                            "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
+                         r.rank, s.payload.qp_num, us(c, s.temporal.a.ticks), s.payload.status,
+                         s.payload.opcode, s.payload.byte_len);
+            n_ev++;
+        }
+    }
+    std::fputs("\n]}\n", f);
+    std::fclose(f);
+    std::printf("pcomm-read: %zu ranks, %zu events -> %s (load in ui.perfetto.dev)\n",
+                ranks.size(), n_ev, outfile.c_str());
+    return 0;
+}
+
 // --- raw single-stream dump ---------------------------------------------------
 
 void dump(core::RecordTypeId type, const fs::path& file) {
@@ -308,6 +397,7 @@ int main(int argc, char** argv) {
         std::fputs(
             "usage: pcomm-read <trace-dir>                    stream inventory\n"
             "       pcomm-read <trace-dir> --csv <outdir>     export all tables (intern-resolved)\n"
+            "       pcomm-read <trace-dir> --perfetto <out>   export Perfetto/Chrome JSON trace\n"
             "       pcomm-read <trace-dir> --dump <typeid>    decode one raw stream\n",
             stderr);
         return 1;
@@ -321,6 +411,10 @@ int main(int argc, char** argv) {
 
     if (argc >= 4 && std::strcmp(argv[2], "--csv") == 0) {
         return export_csv(dir, argv[3]);
+    }
+
+    if (argc >= 4 && std::strcmp(argv[2], "--perfetto") == 0) {
+        return export_perfetto(dir, argv[3]);
     }
 
     if (argc >= 4 && std::strcmp(argv[2], "--dump") == 0) {
