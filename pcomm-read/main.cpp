@@ -265,20 +265,39 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
                              s.payload.qp_num);
             }
         }
+        auto dur = [&](const core::Temporal& t) {
+            return (t.kind == core::TimeKind::Interval && t.b.ticks > t.a.ticks)
+                       ? (t.b.ticks - t.a.ticks) * c.ns_per_tick / 1000.0
+                       : 0.0;  // µs; 0 -> instant
+        };
         for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
             sep();
-            std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
-                            "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
-                         r.rank, s.payload.qp_num, us(c, s.temporal.a.ticks), s.payload.length,
-                         s.payload.opcode, s.payload.length, (unsigned long long)s.payload.wr_id);
+            double ts = us(c, s.temporal.a.ticks), d = dur(s.temporal);
+            if (d > 0)
+                std::fprintf(f, "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
+                                "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
+                             r.rank, s.payload.qp_num, ts, d, s.payload.length, s.payload.opcode,
+                             s.payload.length, (unsigned long long)s.payload.wr_id);
+            else
+                std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
+                                "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
+                             r.rank, s.payload.qp_num, ts, s.payload.length, s.payload.opcode,
+                             s.payload.length, (unsigned long long)s.payload.wr_id);
             n_ev++;
         }
         for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
             sep();
-            std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
-                            "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
-                         r.rank, s.payload.qp_num, us(c, s.temporal.a.ticks), s.payload.status,
-                         s.payload.opcode, s.payload.byte_len);
+            double ts = us(c, s.temporal.a.ticks), d = dur(s.temporal);
+            if (d > 0)
+                std::fprintf(f, "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
+                                "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
+                             r.rank, s.payload.qp_num, ts, d, s.payload.status, s.payload.opcode,
+                             s.payload.byte_len);
+            else
+                std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
+                                "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
+                             r.rank, s.payload.qp_num, ts, s.payload.status, s.payload.opcode,
+                             s.payload.byte_len);
             n_ev++;
         }
     }

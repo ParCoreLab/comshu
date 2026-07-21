@@ -26,6 +26,13 @@ static pcomm::core::Handle h(const void* p) {
     return rec().intern(InternDomain::Pointer, reinterpret_cast<std::uint64_t>(p));
 }
 
+// Interval [call-start, call-end] from the hook engine's captured rdtsc stamps
+// (same clock domain as the recorder + clock anchors), so post_send/poll_cq
+// render as slices with real durations instead of instants.
+static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
+    return pcomm::core::Temporal::interval({0, t0}, {0, t1});
+}
+
 Profiler::Profiler() {
     // The launcher/preload sets PCOMM_* env; bring up sink + recorder once.
     pcomm::Tracer::instance().start(pcomm::Config::from_env());
@@ -66,33 +73,38 @@ Profiler::Profiler() {
     });
 
     // post_send -> one row per work request in the chain (the comm firehose).
-    this->register_post<post_send_tag>([](int ret, ibv_qp* qp, ibv_send_wr* wr, ibv_send_wr**, auto...) {
-        if (ret != 0 || !qp) return;
-        for (; wr; wr = wr->next) {
-            std::uint32_t length = 0;
-            for (int i = 0; i < wr->num_sge; ++i) length += wr->sg_list[i].length;
-            std::uint64_t raddr = 0;
-            std::uint32_t rkey = 0;
-            if (wr->opcode == IBV_WR_RDMA_WRITE || wr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM ||
-                wr->opcode == IBV_WR_RDMA_READ) {
-                raddr = wr->wr.rdma.remote_addr;
-                rkey = wr->wr.rdma.rkey;
+    // Records carry the call's [start, end] interval for slice rendering.
+    this->register_post<post_send_tag>(
+        [](int ret, ibv_qp* qp, ibv_send_wr* wr, ibv_send_wr**, std::uint64_t t0, std::uint64_t t1) {
+            if (ret != 0 || !qp) return;
+            const auto tspan = span(t0, t1);
+            for (; wr; wr = wr->next) {
+                std::uint32_t length = 0;
+                for (int i = 0; i < wr->num_sge; ++i) length += wr->sg_list[i].length;
+                std::uint64_t raddr = 0;
+                std::uint32_t rkey = 0;
+                if (wr->opcode == IBV_WR_RDMA_WRITE || wr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM ||
+                    wr->opcode == IBV_WR_RDMA_READ) {
+                    raddr = wr->wr.rdma.remote_addr;
+                    rkey = wr->wr.rdma.rkey;
+                }
+                rec().record(tspan, rr::IbPostSend{{}, {}, h(qp), wr->wr_id, raddr, rkey, length,
+                                                   qp->qp_num, static_cast<std::uint8_t>(wr->opcode),
+                                                   static_cast<std::uint8_t>(wr->num_sge)});
             }
-            rec().record(rr::IbPostSend{{}, {}, h(qp), wr->wr_id, raddr, rkey, length,
-                                        qp->qp_num, static_cast<std::uint8_t>(wr->opcode),
-                                        static_cast<std::uint8_t>(wr->num_sge)});
-        }
-    });
+        });
 
     // poll_cq -> one row per reaped completion (predicate skips empty polls).
-    this->register_post<poll_cq_tag>([](int ret, ibv_cq* cq, int, ibv_wc* wc, auto...) {
-        if (ret <= 0 || !wc) return;
-        for (int i = 0; i < ret; ++i) {
-            rec().record(rr::IbPollCq{{}, {}, h(cq), wc[i].wr_id, wc[i].byte_len,
-                                      wc[i].qp_num, static_cast<std::uint8_t>(wc[i].status),
-                                      static_cast<std::uint8_t>(wc[i].opcode)});
-        }
-    });
+    this->register_post<poll_cq_tag>(
+        [](int ret, ibv_cq* cq, int, ibv_wc* wc, std::uint64_t t0, std::uint64_t t1) {
+            if (ret <= 0 || !wc) return;
+            const auto tspan = span(t0, t1);
+            for (int i = 0; i < ret; ++i) {
+                rec().record(tspan, rr::IbPollCq{{}, {}, h(cq), wc[i].wr_id, wc[i].byte_len,
+                                                 wc[i].qp_num, static_cast<std::uint8_t>(wc[i].status),
+                                                 static_cast<std::uint8_t>(wc[i].opcode)});
+            }
+        });
 }
 
 }  // namespace ibv
