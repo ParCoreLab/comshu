@@ -19,9 +19,12 @@
 #include "pcomm/core/records.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
 
+#include "ib_records.hpp"  // provider record schemas (reader knows all types)
+
 namespace fs = std::filesystem;
 using namespace pcomm;
 using namespace pcomm::core::records;
+namespace ibr = pcomm::providers::ibverbs::records;
 using rec::Stamped;
 
 namespace {
@@ -191,6 +194,58 @@ void dump(core::RecordTypeId type, const fs::path& file) {
                             (unsigned long long)r.payload.local_ticks,
                             (unsigned long long)r.payload.wall_ns,
                             (unsigned long long)r.payload.mono_ns);
+            }
+            break;
+        }
+        case core::RecordTrait<ibr::IbMemRegion>::type_id: {
+            std::puts("ticks,mr,pd,base,size,lkey,rkey,access");
+            for (const auto& r : load_stream<ibr::IbMemRegion>(file)) {
+                std::printf("%llu,%u,%u,0x%llx,%llu,0x%x,0x%x,0x%x\n",
+                            (unsigned long long)r.temporal.a.ticks, r.payload.mr,
+                            r.payload.pd, (unsigned long long)r.payload.range.base,
+                            (unsigned long long)r.payload.range.size, r.payload.lkey,
+                            r.payload.rkey, r.payload.access);
+            }
+            break;
+        }
+        case core::RecordTrait<ibr::IbQueuePair>::type_id: {
+            std::puts("ticks,qp,pd,qp_num,qp_type");
+            for (const auto& r : load_stream<ibr::IbQueuePair>(file)) {
+                std::printf("%llu,%u,%u,0x%x,%u\n",
+                            (unsigned long long)r.temporal.a.ticks, r.payload.qp,
+                            r.payload.pd, r.payload.qp_num, r.payload.qp_type);
+            }
+            break;
+        }
+        case core::RecordTrait<ibr::IbModifyQp>::type_id: {
+            std::puts("ticks,qp,qp_num,dest_qp_num,dest_lid,state");
+            for (const auto& r : load_stream<ibr::IbModifyQp>(file)) {
+                std::printf("%llu,%u,0x%x,0x%x,0x%x,%u\n",
+                            (unsigned long long)r.temporal.a.ticks, r.payload.qp,
+                            r.payload.qp_num, r.payload.dest_qp_num,
+                            r.payload.dest_lid, r.payload.state);
+            }
+            break;
+        }
+        case core::RecordTrait<ibr::IbPostSend>::type_id: {
+            std::puts("ticks,qp,wr_id,remote_addr,rkey,length,qp_num,opcode,num_sge");
+            for (const auto& r : load_stream<ibr::IbPostSend>(file)) {
+                std::printf("%llu,%u,%llu,0x%llx,0x%x,%u,0x%x,%u,%u\n",
+                            (unsigned long long)r.temporal.a.ticks, r.payload.qp,
+                            (unsigned long long)r.payload.wr_id,
+                            (unsigned long long)r.payload.remote_addr, r.payload.rkey,
+                            r.payload.length, r.payload.qp_num, r.payload.opcode,
+                            r.payload.num_sge);
+            }
+            break;
+        }
+        case core::RecordTrait<ibr::IbPollCq>::type_id: {
+            std::puts("ticks,cq,wr_id,byte_len,qp_num,status,opcode");
+            for (const auto& r : load_stream<ibr::IbPollCq>(file)) {
+                std::printf("%llu,%u,%llu,%u,0x%x,%u,%u\n",
+                            (unsigned long long)r.temporal.a.ticks, r.payload.cq,
+                            (unsigned long long)r.payload.wr_id, r.payload.byte_len,
+                            r.payload.qp_num, r.payload.status, r.payload.opcode);
             }
             break;
         }
