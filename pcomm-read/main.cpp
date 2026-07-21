@@ -115,7 +115,20 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     std::FILE* anchor = open("clock_anchor.csv",
         "rank,domain,local_ticks,wall_ns,mono_ns\n");
 
-    std::size_t n_access = 0;
+    // ibverbs join tables (network side). qp/mr/cq/pd are interned pointer
+    // handles (stable within a rank); qp_num/dest_qp_num/lid are the wire ids
+    // used to stitch the cross-rank comm graph.
+    std::FILE* ib_qp = open("ib_queue_pair.csv", "rank,ticks,qp,pd,qp_num,qp_type\n");
+    std::FILE* ib_mod = open("ib_modify_qp.csv",
+        "rank,ticks,qp,qp_num,dest_qp_num,dest_lid,state\n");
+    std::FILE* ib_send = open("ib_post_send.csv",
+        "rank,ticks,qp,wr_id,remote_addr,rkey,length,qp_num,opcode,num_sge\n");
+    std::FILE* ib_cq = open("ib_poll_cq.csv",
+        "rank,ticks,cq,wr_id,byte_len,qp_num,status,opcode\n");
+    std::FILE* ib_mr = open("ib_mem_region.csv",
+        "rank,ticks,mr,pd,base,size,lkey,rkey,access\n");
+
+    std::size_t n_access = 0, n_send = 0;
     for (const auto& r : ranks) {
         for (const auto& s : load_stream<GpuAccess>(stream_path<GpuAccess>(r))) {
             std::fprintf(access, "%d,%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u\n", r.rank,
@@ -144,12 +157,46 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
                          (unsigned long long)s.payload.wall_ns,
                          (unsigned long long)s.payload.mono_ns);
         }
+        for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
+            std::fprintf(ib_qp, "%d,%llu,%u,%u,%u,%u\n", r.rank,
+                         (unsigned long long)s.temporal.a.ticks, s.payload.qp,
+                         s.payload.pd, s.payload.qp_num, s.payload.qp_type);
+        }
+        for (const auto& s : load_stream<ibr::IbModifyQp>(stream_path<ibr::IbModifyQp>(r))) {
+            std::fprintf(ib_mod, "%d,%llu,%u,%u,%u,%u,%u\n", r.rank,
+                         (unsigned long long)s.temporal.a.ticks, s.payload.qp,
+                         s.payload.qp_num, s.payload.dest_qp_num, s.payload.dest_lid,
+                         s.payload.state);
+        }
+        for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
+            std::fprintf(ib_send, "%d,%llu,%u,%llu,0x%llx,%u,%u,%u,%u,%u\n", r.rank,
+                         (unsigned long long)s.temporal.a.ticks, s.payload.qp,
+                         (unsigned long long)s.payload.wr_id,
+                         (unsigned long long)s.payload.remote_addr, s.payload.rkey,
+                         s.payload.length, s.payload.qp_num, s.payload.opcode,
+                         s.payload.num_sge);
+            n_send++;
+        }
+        for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
+            std::fprintf(ib_cq, "%d,%llu,%u,%llu,%u,%u,%u,%u\n", r.rank,
+                         (unsigned long long)s.temporal.a.ticks, s.payload.cq,
+                         (unsigned long long)s.payload.wr_id, s.payload.byte_len,
+                         s.payload.qp_num, s.payload.status, s.payload.opcode);
+        }
+        for (const auto& s : load_stream<ibr::IbMemRegion>(stream_path<ibr::IbMemRegion>(r))) {
+            std::fprintf(ib_mr, "%d,%llu,%u,%u,0x%llx,%llu,%u,%u,%u\n", r.rank,
+                         (unsigned long long)s.temporal.a.ticks, s.payload.mr,
+                         s.payload.pd, (unsigned long long)s.payload.range.base,
+                         (unsigned long long)s.payload.range.size, s.payload.lkey,
+                         s.payload.rkey, s.payload.access);
+        }
     }
-    for (std::FILE* f : {access, object, source, anchor}) std::fclose(f);
+    for (std::FILE* f : {access, object, source, anchor,
+                         ib_qp, ib_mod, ib_send, ib_cq, ib_mr}) std::fclose(f);
 
-    std::printf("pcomm-read: %zu ranks, %zu accesses -> %s/{gpu_access,mem_object,"
-                "source_line,clock_anchor}.csv\n",
-                ranks.size(), n_access, outdir.c_str());
+    std::printf("pcomm-read: %zu ranks, %zu gpu-accesses, %zu ib-sends -> %s/"
+                "{gpu_access,mem_object,source_line,clock_anchor,ib_*}.csv\n",
+                ranks.size(), n_access, n_send, outdir.c_str());
     return 0;
 }
 
