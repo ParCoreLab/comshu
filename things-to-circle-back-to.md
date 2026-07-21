@@ -49,6 +49,15 @@ Known limitations / deferred work, recorded so they aren't lost. Newest first.
 - (In progress) **pcomm-read `--csv` for the network side** + the comm graph.
   gpumem `--csv` join tables exist; ibverbs is `--dump`-only until this lands.
 
+## Launcher / rank assignment
+- **RankDetector trusts `SLURM_PROCID`, which is per-srun-step.** Launching N
+  processes as separate `srun --ntasks=1` steps gives every one `SLURM_PROCID=0`
+  → they collide into `rank-0` in a shared output dir. Workaround: set
+  `PCOMM_RANK` explicitly per process (see tests/hpc/ib_ring.sbatch). Proper
+  fix: the `pcomm` launcher should own rank assignment rather than inferring it
+  from an env var whose scope depends on how the job was launched. (The
+  LID-keyed comm graph reconstructs regardless, but per-rank streams are lost.)
+
 ## Infra / process
 - **Memory key/host split.** Canonical pcomm memories live on
   `mobile-base:~/.claude/.../-home-mktips-pockt-uni-lab/memory`. This session
