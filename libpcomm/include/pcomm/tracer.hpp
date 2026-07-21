@@ -50,7 +50,10 @@ public:
     void stop() {
         if (!m_recorder) return;
         emit_anchor();  // end-of-run anchor: reader fits offset + skew
-        m_recorder->buffer<core::records::ClockAnchor>().drain();
+        // Flush every thread's buffers, not just this one's (cross-thread
+        // flush): multi-threaded targets (e.g. a CQ-poll thread) record on
+        // threads that never call stop().
+        rec::ThreadBufferRegistry::instance().drain_all();
         dump_intern_sidecars();
         m_sink->flush();
     }

@@ -19,6 +19,7 @@
 #include "pcomm/helpers/clock.hpp"
 #include "pcomm/rec/intern_table.hpp"
 #include "pcomm/rec/sink.hpp"
+#include "pcomm/rec/thread_buffer_registry.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
 
 namespace pcomm::rec {
@@ -78,6 +79,9 @@ public:
             assert(ok && "duplicate RecordTypeId");
             (void)ok;
             slot = std::make_unique<Buf>(*m_sink);
+            // Track it globally so Tracer::stop() can flush this thread's
+            // buffers even if it isn't the thread calling stop().
+            ThreadBufferRegistry::instance().register_buffer(slot.get());
         }
         return *static_cast<Buf*>(slot.get());
     }
