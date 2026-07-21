@@ -46,8 +46,17 @@ Known limitations / deferred work, recorded so they aren't lost. Newest first.
   relying on it.
 
 ## Reader / export
-- (In progress) **pcomm-read `--csv` for the network side** + the comm graph.
-  gpumem `--csv` join tables exist; ibverbs is `--dump`-only until this lands.
+- **NCCL rank→LID reconstruction is approximate.** The rank-level comm graph
+  derives each rank's LID from `lid[dest_qp_num]=dest_lid` over RTR rows, which
+  is incomplete when a rank's QPs never appear as a `dest` (some ranks resolved
+  to a shared LID in the NCCL run). Good enough for the node-level graph; for a
+  clean rank-level graph, capture the local LID directly (hook `ibv_query_port`
+  or read it at `modify_qp`).
+- **Perfetto `.pftrace` is minimal.** No interned strings or `clock_snapshot`
+  packets — fine at 8 ranks / 96k events, but interning names + a proper clock
+  domain would shrink large traces and give absolute time.
+- **`--perfetto`/`--pftrace` share ~60 lines of clock-calibration + track
+  setup.** Factor out when a third exporter appears.
 
 ## Launcher / rank assignment
 - **RankDetector trusts `SLURM_PROCID`, which is per-srun-step.** Launching N
