@@ -2,6 +2,36 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## Provider coexistence & replay (design)
+**Finding (2026-07-21):** naive dual-`LD_PRELOAD` of gpumem (NVBit) + ibverbs
+**segfaults during program startup, before `main()`** — a load-time collision.
+NVBit takes over the CUDA runtime and interposes `dlsym`; the ibverbs
+SmartDlsym interposer also claims `dlsym` and brings up the Tracer. They fight
+for `dlsym`/init ownership at constructor time. gpumem-alone and ibverbs-alone
+both work. Reproduce on du04: `LD_PRELOAD=libgpumem_trace.so:libibverbs_trace.so
+./diim` → SIGSEGV at startup (need the ibverbs provider built there; verbs.h
+staged from MN5 under `~/ibhdr`).
+
+**Direction (do NOT deep-fix the co-run):**
+- Mark providers **exclusive** = "must take full control of the runtime" (NVBit
+  gpumem is one; NVBit tools can't share a process). Non-exclusive providers
+  (the hook-based network ones — ibverbs/mlx5dv/ucx/libfabric) *can* share one
+  process because they route through the single `pcomm::hook` / SmartDlsym
+  interposer (one dlsym owner).
+- The launcher runs all compatible (non-exclusive + at most one exclusive?)
+  providers in one process; for any combination that isn't co-runnable, use a
+  **replay mechanism**: re-exec the same workload once per exclusive provider
+  and merge the per-run captures. The runs are alignable (same program, wall-ns
+  clock anchors), so the reader stitches them into one graph — at the cost of N
+  runs and run-to-run nondeterminism.
+- **Future:** a resource-arbitration system that models what each provider
+  claims (dlsym, the CUDA driver, specific hooks) and computes the minimal set
+  of runs + which providers co-run, instead of a blunt exclusive flag.
+- Prereq either way: a **single master shim owns dlsym + the control plane**
+  (SigmaTrace's ProfilerShim; pcomm's launcher is meant to be this) so
+  hook-based providers coordinate through one interposer.
+
+
 ## Recorder / fork / threading
 - **Fork child handler is not async-signal-safe** (`Tracer::atfork_child`, tracer.hpp).
   It allocates (new sink/recorder, `std::start`). Safe for the common
