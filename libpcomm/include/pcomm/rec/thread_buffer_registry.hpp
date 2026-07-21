@@ -16,6 +16,7 @@
 // pthread_atfork; port that when a forking launcher needs it.
 
 #include <mutex>
+#include <new>
 #include <vector>
 
 #include "pcomm/rec/thread_local_buffer.hpp"  // IDrainable
@@ -51,6 +52,18 @@ public:
     std::size_t size() {
         std::lock_guard lock(m_mutex);
         return m_buffers.size();
+    }
+
+    // Child-side of a fork: forget every tracked buffer WITHOUT draining. Those
+    // buffers hold the parent's records and, via COW, point at the parent's
+    // sink/files — flushing them from the child would clobber the parent's
+    // output. The parent flushes its own copies. The mutex is placement-reset
+    // because fork() may have copied it locked (another thread held it), which
+    // would deadlock the child. Called only from the pthread_atfork child
+    // handler, where the child is single-threaded.
+    void reset_for_fork() noexcept {
+        new (&m_mutex) std::mutex();  // reset to unlocked; parent's copy untouched
+        m_buffers.clear();
     }
 
 private:

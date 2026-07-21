@@ -8,14 +8,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <pthread.h>
 #include <unistd.h>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "pcomm/core/records.hpp"
 #include "pcomm/helpers/clock.hpp"
 #include "pcomm/rec/recorder.hpp"
 #include "pcomm/rec/sink.hpp"
+#include "pcomm/rec/thread_buffer_registry.hpp"
 
 namespace pcomm {
 
@@ -44,6 +47,7 @@ public:
         auto dir = m_config.output_dir / ("rank-" + std::to_string(m_config.rank));
         m_sink = std::make_unique<rec::FileSink>(dir);
         m_recorder = std::make_unique<rec::Recorder<>>(*m_sink);
+        install_fork_handler();
         emit_anchor();  // start-of-run clock anchor (UNIFICATION §4)
     }
 
@@ -63,6 +67,37 @@ public:
 
 private:
     Tracer() = default;
+
+    // Register the fork child-handler once (idempotent across start() calls,
+    // including the re-init start() the child handler itself performs).
+    void install_fork_handler() {
+        static std::once_flag once;
+        std::call_once(once, [] { pthread_atfork(nullptr, nullptr, &Tracer::atfork_child); });
+    }
+
+    // Runs in the child right after fork(). The child shares (COW) the parent's
+    // sink FILE*s and buffered records; letting the parent's sink/recorder
+    // destruct here would flush+fclose those shared fds and corrupt the
+    // parent's files. So we *release* (leak) them instead of destroying, drop
+    // the tracked buffers unflushed, and re-init into a child-private dir so
+    // the child records independently. The parent process is untouched (child
+    // handler only). Not async-signal-safe (allocates) — matches SigmaTrace;
+    // safe for the common fork-then-record / fork-then-exec patterns, not for
+    // forking while another thread holds malloc/intern locks.
+    static void atfork_child() {
+        Tracer& t = instance();
+        if (!t.m_recorder) return;  // wasn't tracing
+        (void)t.m_sink.release();      // leak parent's sink: do NOT flush/fclose
+        (void)t.m_recorder.release();  // leak parent's recorder: do NOT drain
+        rec::ThreadBufferRegistry::instance().reset_for_fork();
+        // Child rank <- pid: guarantees a distinct rank-<pid> dir from the
+        // parent. A launcher that re-execs overwrites this with the real rank
+        // on its next start(). The fresh Recorder has a new address, so the
+        // per-thread buffer_store rebuilds against the child's sink.
+        Config cfg = t.m_config;
+        cfg.rank = static_cast<int>(::getpid());
+        t.start(cfg);
+    }
 
     void emit_anchor() {
         auto s = helpers::sample_anchor();

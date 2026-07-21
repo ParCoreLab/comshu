@@ -10,3 +10,7 @@ find_package(Threads REQUIRED)
 add_executable(thread_flush_smoke thread_flush_smoke.cpp)
 target_link_libraries(thread_flush_smoke PRIVATE pcomm::pcomm Threads::Threads)
 add_test(NAME thread_flush_smoke COMMAND thread_flush_smoke)
+
+add_executable(fork_smoke fork_smoke.cpp)
+target_link_libraries(fork_smoke PRIVATE pcomm::pcomm Threads::Threads)
+add_test(NAME fork_smoke COMMAND fork_smoke)
