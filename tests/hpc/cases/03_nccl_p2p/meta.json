@@ -1,0 +1,6 @@
+{
+  "case": "03_nccl_p2p",
+  "providers": ["p2p"],
+  "topology": "1 node x4 H100, ncclAllReduce, NVLink P2P",
+  "golden": "pending NVBit on MN5"
+}

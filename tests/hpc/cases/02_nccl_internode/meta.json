@@ -1,0 +1,6 @@
+{
+  "case": "02_nccl_internode",
+  "providers": ["ib"],
+  "topology": "2 nodes x4 H100, ncclAllReduce, P2P off (pure IB)",
+  "golden": "pending pinned run"
+}

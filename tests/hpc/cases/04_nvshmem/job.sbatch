@@ -46,5 +46,6 @@ mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-python3 "$PCOMM_ROOT/tests/hpc/suite/check_capture.py" "$OUT" \
-        "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/expect.json"
+"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem"

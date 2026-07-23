@@ -1,0 +1,6 @@
+{
+  "case": "04_nvshmem",
+  "providers": ["p2p"],
+  "topology": "1 node x4 H100, NVSHMEM put-ring, symmetric heap",
+  "golden": "pending NVBit on MN5"
+}

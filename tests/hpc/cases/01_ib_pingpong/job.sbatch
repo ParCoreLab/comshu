@@ -38,5 +38,6 @@ CLI=$?; wait $SRV; SRV_RC=$?
 echo "client_rc=$CLI server_rc=$SRV_RC"
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-python3 "$PCOMM_ROOT/tests/hpc/suite/check_capture.py" "$OUT" \
-        "$PCOMM_ROOT/tests/hpc/cases/01_ib_pingpong/expect.json"
+"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$PCOMM_ROOT/tests/hpc/cases/01_ib_pingpong"

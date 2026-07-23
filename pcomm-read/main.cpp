@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,47 @@ const char* memop_name(core::MemOp op) {
         case core::MemOp::Prefetch: return "prefetch";
     }
     return "?";
+}
+
+// Stable string names for the ibverbs enums, so CSV columns (and the goldens
+// that query them) read as physics — "send", "success", "rtr" — instead of
+// raw ABI integers, and stay put if the numeric encoding ever changes. Unknown
+// values round-trip losslessly as "op<n>" so nothing silently collapses.
+std::string wr_opcode_name(unsigned op) {  // ibv_wr_opcode
+    switch (op) {
+        case 0: return "rdma_write";  case 1: return "rdma_write_imm";
+        case 2: return "send";        case 3: return "send_imm";
+        case 4: return "rdma_read";   case 5: return "atomic_cmp_swp";
+        case 6: return "atomic_fetch_add";
+    }
+    return "op" + std::to_string(op);
+}
+std::string wc_opcode_name(unsigned op) {  // ibv_wc_opcode
+    switch (op) {
+        case 0: return "send";     case 1: return "rdma_write";
+        case 2: return "rdma_read"; case 3: return "comp_swap";
+        case 4: return "fetch_add"; case 128: return "recv";
+        case 129: return "recv_rdma_imm";
+    }
+    return "wc" + std::to_string(op);
+}
+std::string wc_status_name(unsigned s) {  // ibv_wc_status (0 = success)
+    return s == 0 ? "success" : "err" + std::to_string(s);
+}
+std::string qp_state_name(unsigned st) {  // ibv_qp_state
+    switch (st) {
+        case 0: return "reset"; case 1: return "init"; case 2: return "rtr";
+        case 3: return "rts";   case 4: return "sqd";  case 5: return "sqe";
+        case 6: return "err";
+    }
+    return "st" + std::to_string(st);
+}
+std::string qp_type_name(unsigned t) {  // ibv_qp_type
+    switch (t) {
+        case 2: return "rc"; case 3: return "uc"; case 4: return "ud";
+        case 8: return "raw_packet";
+    }
+    return "qpt" + std::to_string(t);
 }
 
 // One rank's capture: streams + intern dictionaries.
@@ -135,13 +177,18 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     // used to stitch the cross-rank comm graph.
     std::FILE* ib_qp = open("ib_queue_pair.csv", "rank,ticks,qp,pd,qp_num,qp_type\n");
     std::FILE* ib_mod = open("ib_modify_qp.csv",
-        "rank,ticks,qp,qp_num,dest_qp_num,dest_lid,state\n");
+        "rank,ticks,qp,qp_num,dest_qp_num,dest_lid,state\n");   // state: name
     std::FILE* ib_send = open("ib_post_send.csv",
-        "rank,ticks,qp,wr_id,remote_addr,rkey,length,qp_num,opcode,num_sge\n");
+        "rank,ticks,qp,wr_id,remote_addr,rkey,length,qp_num,opcode,num_sge\n");  // opcode: name
     std::FILE* ib_cq = open("ib_poll_cq.csv",
-        "rank,ticks,cq,wr_id,byte_len,qp_num,status,opcode\n");
+        "rank,ticks,cq,wr_id,byte_len,qp_num,status,opcode\n");  // status/opcode: name
     std::FILE* ib_mr = open("ib_mem_region.csv",
         "rank,ticks,mr,pd,base,size,lkey,rkey,access\n");
+
+    // Accumulators for the derived rank-space comm_edges table (built below).
+    std::unordered_map<std::uint32_t, int> qp_owner;          // qp_num -> rank
+    std::map<std::pair<int, std::uint32_t>, std::uint32_t> rtr_dest;  // (rank,qp_num)->dest_qp_num
+    std::map<std::pair<int, std::uint32_t>, std::pair<long, long>> send_by_qp;  // (rank,qp_num)->(sends,bytes)
 
     std::size_t n_access = 0, n_send = 0;
     for (const auto& r : ranks) {
@@ -173,30 +220,38 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
                          (unsigned long long)s.payload.mono_ns);
         }
         for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
-            std::fprintf(ib_qp, "%d,%llu,%u,%u,%u,%u\n", r.rank,
+            std::fprintf(ib_qp, "%d,%llu,%u,%u,%u,%s\n", r.rank,
                          (unsigned long long)s.temporal.a.ticks, s.payload.qp,
-                         s.payload.pd, s.payload.qp_num, s.payload.qp_type);
+                         s.payload.pd, s.payload.qp_num,
+                         qp_type_name(s.payload.qp_type).c_str());
+            qp_owner[s.payload.qp_num] = r.rank;
         }
         for (const auto& s : load_stream<ibr::IbModifyQp>(stream_path<ibr::IbModifyQp>(r))) {
-            std::fprintf(ib_mod, "%d,%llu,%u,%u,%u,%u,%u\n", r.rank,
+            std::fprintf(ib_mod, "%d,%llu,%u,%u,%u,%u,%s\n", r.rank,
                          (unsigned long long)s.temporal.a.ticks, s.payload.qp,
                          s.payload.qp_num, s.payload.dest_qp_num, s.payload.dest_lid,
-                         s.payload.state);
+                         qp_state_name(s.payload.state).c_str());
+            if (s.payload.state == 2 /*RTR*/ && s.payload.dest_qp_num)
+                rtr_dest[{r.rank, s.payload.qp_num}] = s.payload.dest_qp_num;
         }
         for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
-            std::fprintf(ib_send, "%d,%llu,%u,%llu,0x%llx,%u,%u,%u,%u,%u\n", r.rank,
+            std::fprintf(ib_send, "%d,%llu,%u,%llu,0x%llx,%u,%u,%u,%s,%u\n", r.rank,
                          (unsigned long long)s.temporal.a.ticks, s.payload.qp,
                          (unsigned long long)s.payload.wr_id,
                          (unsigned long long)s.payload.remote_addr, s.payload.rkey,
-                         s.payload.length, s.payload.qp_num, s.payload.opcode,
-                         s.payload.num_sge);
+                         s.payload.length, s.payload.qp_num,
+                         wr_opcode_name(s.payload.opcode).c_str(), s.payload.num_sge);
+            auto& agg = send_by_qp[{r.rank, s.payload.qp_num}];
+            agg.first += 1;
+            agg.second += s.payload.length;
             n_send++;
         }
         for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
-            std::fprintf(ib_cq, "%d,%llu,%u,%llu,%u,%u,%u,%u\n", r.rank,
+            std::fprintf(ib_cq, "%d,%llu,%u,%llu,%u,%u,%s,%s\n", r.rank,
                          (unsigned long long)s.temporal.a.ticks, s.payload.cq,
                          (unsigned long long)s.payload.wr_id, s.payload.byte_len,
-                         s.payload.qp_num, s.payload.status, s.payload.opcode);
+                         s.payload.qp_num, wc_status_name(s.payload.status).c_str(),
+                         wc_opcode_name(s.payload.opcode).c_str());
         }
         for (const auto& s : load_stream<ibr::IbMemRegion>(stream_path<ibr::IbMemRegion>(r))) {
             std::fprintf(ib_mr, "%d,%llu,%u,%u,0x%llx,%llu,%u,%u,%u\n", r.rank,
@@ -206,11 +261,37 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
                          s.payload.rkey, s.payload.access);
         }
     }
+    // Derived: rank-space communication graph. Each rank's post_sends on a QP
+    // reach the peer that owns that QP's RTR dest_qp_num — collapsing wire ids
+    // (qp_num/LID, which differ every run) to a stable src_rank->dst_rank shape
+    // with total sends and bytes. This is the table topology assertions query,
+    // so tests never touch run-specific identifiers.
+    //
+    // NB qp_num is HCA-local, so across nodes two QPs can share a number; the
+    // owner map is exact for a single HCA / few ranks (pingpong, one node) and
+    // approximate at multinode scale until the local LID is captured directly
+    // (things-to-circle-back-to.md). Deterministic either way → golden-safe.
+    std::FILE* edges = open("comm_edges.csv", "src_rank,dst_rank,sends,bytes\n");
+    std::map<std::pair<int, int>, std::pair<long, long>> edge_agg;
+    for (const auto& [key, agg] : send_by_qp) {
+        auto [src_rank, qp_num] = key;
+        int dst_rank = -1;
+        if (auto it = rtr_dest.find({src_rank, qp_num}); it != rtr_dest.end())
+            if (auto o = qp_owner.find(it->second); o != qp_owner.end())
+                dst_rank = o->second;
+        auto& e = edge_agg[{src_rank, dst_rank}];
+        e.first += agg.first;
+        e.second += agg.second;
+    }
+    for (const auto& [rk, e] : edge_agg)
+        std::fprintf(edges, "%d,%d,%ld,%ld\n", rk.first, rk.second, e.first, e.second);
+    std::fclose(edges);
+
     for (std::FILE* f : {access, object, source, anchor,
                          ib_qp, ib_mod, ib_send, ib_cq, ib_mr}) std::fclose(f);
 
     std::printf("pcomm-read: %zu ranks, %zu gpu-accesses, %zu ib-sends -> %s/"
-                "{gpu_access,mem_object,source_line,clock_anchor,ib_*}.csv\n",
+                "{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv\n",
                 ranks.size(), n_access, n_send, outdir.c_str());
     return 0;
 }

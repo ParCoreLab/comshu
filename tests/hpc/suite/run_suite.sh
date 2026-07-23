@@ -22,10 +22,11 @@ cmd="${1:-list}"; shift || true
 
 case "$cmd" in
   list)
-    printf '%-20s %s\n' CASE PROVIDERS
+    printf '%-20s %-6s %s\n' CASE PROV CHECKS
     for c in $(all_cases); do
-      p=$(python3 -c "import json,sys;print(','.join(json.load(open('$CASES_DIR/$c/expect.json'))['providers']))" 2>/dev/null)
-      printf '%-20s %s\n' "$c" "$p"
+      p=$(python3 -c "import json;print(','.join(json.load(open('$CASES_DIR/$c/meta.json'))['providers']))" 2>/dev/null)
+      n=$(ls "$CASES_DIR/$c"/checks/*.sql 2>/dev/null | wc -l | tr -d ' ')
+      printf '%-20s %-6s %s sql\n' "$c" "$p" "$n"
     done ;;
 
   submit)
@@ -40,15 +41,17 @@ case "$cmd" in
     fail=0
     printf '%-20s %-6s %s\n' CASE VERDICT DETAIL
     for c in $(resolve "$@"); do
-      # newest output dir for this case
-      d=$(ls -1dt "$OUT_ROOT/$c"-* 2>/dev/null | head -1)
+      # captures are named by the short label (case dir minus the NN_ prefix),
+      # e.g. 02_nccl_internode -> nccl_internode-<jobid>.csv/result.json
+      label="${c#*_}"
+      d=$(ls -1dt "$OUT_ROOT/$label"-*.csv 2>/dev/null | head -1)
       if [ -z "$d" ] || [ ! -f "$d/result.json" ]; then
-        printf '%-20s %-6s %s\n' "$c" "----" "no result yet ($OUT_ROOT/$c-*)"; fail=1; continue
+        printf '%-20s %-6s %s\n' "$c" "----" "no result yet ($OUT_ROOT/$label-*.csv)"; fail=1; continue
       fi
       ok=$(python3 -c "import json;print(json.load(open('$d/result.json'))['ok'])")
-      n=$(python3 -c "import json;d=json.load(open('$d/result.json'));print(sum(1 for x in d['checks'] if not x['ok']))")
-      if [ "$ok" = "True" ]; then printf '%-20s %-6s %s\n' "$c" PASS "$(basename "$d")"
-      else printf '%-20s %-6s %s\n' "$c" FAIL "$n failed check(s): $(basename "$d")"; fail=1; fi
+      n=$(python3 -c "import json;print(json.load(open('$d/result.json')).get('checks',0))")
+      if [ "$ok" = "True" ]; then printf '%-20s %-6s %s\n' "$c" PASS "$n checks · $(basename "$d")"
+      else printf '%-20s %-6s %s\n' "$c" FAIL "see job .out · $(basename "$d")"; fail=1; fi
     done
     exit $fail ;;
 

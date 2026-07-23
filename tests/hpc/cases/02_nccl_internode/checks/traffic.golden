@@ -1,0 +1,17 @@
+rank,opcode,n,bytes
+0,rdma_write,2240,1174476800
+0,rdma_write_imm,1120,0
+1,rdma_write,2240,1174476800
+1,rdma_write_imm,1120,0
+2,rdma_write,2240,1174476800
+2,rdma_write_imm,1120,0
+3,rdma_write,2240,1174476800
+3,rdma_write_imm,1120,0
+4,rdma_write,2240,1174476800
+4,rdma_write_imm,1120,0
+5,rdma_write,2240,1174476800
+5,rdma_write_imm,1120,0
+6,rdma_write,2240,1174476800
+6,rdma_write_imm,1120,0
+7,rdma_write,2240,1174476800
+7,rdma_write_imm,1120,0

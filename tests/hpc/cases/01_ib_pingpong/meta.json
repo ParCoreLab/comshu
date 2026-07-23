@@ -1,0 +1,6 @@
+{
+  "case": "01_ib_pingpong",
+  "providers": ["ib"],
+  "topology": "2 nodes, ibv_rc_pingpong over NDR IB",
+  "golden": "committed (verified)"
+}

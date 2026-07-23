@@ -37,12 +37,16 @@ OUT=$(pcomm_out nccl_p2p); rm -rf "$OUT"; mkdir -p "$OUT"
 
 # Single node, P2P on ⇒ NVLink peer copies. `-p p2p` = gpumem provider (NVBit),
 # exclusive but single-provider here, so it runs in one pass (no replay).
+# NCCL pinned (Ring/Simple, fixed channels) for a byte-repeatable capture.
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NCCL_DEBUG=WARN \
   -x NCCL_P2P_DISABLE=0 -x NCCL_P2P_LEVEL=NVL \
+  -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
+  -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
   "$PCOMM" -p p2p -o "$OUT" -- "$APP" 8388608 20
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-python3 "$PCOMM_ROOT/tests/hpc/suite/check_capture.py" "$OUT" \
-        "$PCOMM_ROOT/tests/hpc/cases/03_nccl_p2p/expect.json"
+"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$PCOMM_ROOT/tests/hpc/cases/03_nccl_p2p"
