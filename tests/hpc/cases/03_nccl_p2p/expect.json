@@ -1,0 +1,13 @@
+{
+  "case": "03_nccl_p2p",
+  "providers": ["p2p"],
+  "topology": "1 node × 4 H100, ncclAllReduce 32MB, NVLink P2P on (no IB)",
+  "note": "gpumem/NVBit records GPU-initiated peer access; requires NVBit on MN5",
+  "assert": {
+    "min_rank_dirs": 4,
+    "streams": [
+      {"type": 700, "name": "gpu_access", "min_ranks": 4, "min_total_bytes": 4096},
+      {"type": 720, "name": "mem_object", "min_ranks": 4}
+    ]
+  }
+}

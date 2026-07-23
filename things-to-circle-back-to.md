@@ -23,6 +23,18 @@ aliases (`ib`/`net`, `p2p`/`nvlink`/`snoopie`), `--list`, `--dry-run`. Single
 pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
 
 **Still to do:**
+- **Replay under MPI is not per-rank fork.** The launcher's fork-a-pass-per-
+  exclusive-provider works for a single-process app, but under `mpirun` each MPI
+  task *is* `pcomm`; if it forks and the grandchild does `MPI_Init`, PMI wireup
+  breaks, and a second `MPI_Init` after pass 1's `MPI_Finalize` is unsupported.
+  For MPI jobs, replay must wrap `mpirun` (outer loop: pass 1 for all ranks,
+  then pass 2), not fork inside each rank. The integration suite sidesteps this
+  by giving every case a single provider; a combined intra+inter case waits on
+  this. See tests/hpc/suite/README.md.
+- **gpumem/NVBit not staged on MN5.** The `ib` provider builds there; gpumem
+  needs NVBit (present on du04 at ~/waste/nvbit-1.7.7.1). Suite cases 03/04
+  (nccl_p2p, nvshmem) are written + ready but unvalidated until NVBit is staged
+  and libgpumem_trace.so builds on MN5 (H100/sm_90, CUDA 12.9 compat unverified).
 - **Wall-align across passes for real.** Passes are re-runs of the same program
   so ClockAnchors make them *alignable*, but the reader doesn't yet fuse the two
   timelines into one Perfetto trace — it merges by rank for the graph/CSV, not

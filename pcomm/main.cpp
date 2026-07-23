@@ -79,7 +79,18 @@ void init_exe_dir(const char* argv0) {
 // PCOMM_PROVIDER_PATH.
 std::string find_so(const Provider& p) {
     std::vector<fs::path> roots;
-    if (const char* e = std::getenv("PCOMM_PROVIDER_PATH")) roots.emplace_back(e);
+    // PCOMM_PROVIDER_PATH is a colon-list (providers may build into separate
+    // per-provider dirs), searched before the launcher's own directory.
+    if (const char* e = std::getenv("PCOMM_PROVIDER_PATH")) {
+        std::string_view list = e;
+        for (size_t s = 0; s <= list.size();) {
+            size_t c = list.find(':', s);
+            auto seg = list.substr(s, c == std::string_view::npos ? c : c - s);
+            if (!seg.empty()) roots.emplace_back(seg);
+            if (c == std::string_view::npos) break;
+            s = c + 1;
+        }
+    }
     if (!g_exe_dir.empty()) roots.emplace_back(g_exe_dir);
     for (const auto& root : roots)
         if (fs::exists(root / p.so)) return (root / p.so).string();

@@ -1,0 +1,15 @@
+{
+  "case": "02_nccl_internode",
+  "providers": ["ib"],
+  "topology": "2 nodes × 4 H100, ncclAllReduce 32MB, NCCL_P2P_DISABLE=1 (pure IB)",
+  "assert": {
+    "min_rank_dirs": 8,
+    "streams": [
+      {"type": 100, "name": "ib_mem_region", "min_ranks": 8},
+      {"type": 102, "name": "ib_queue_pair", "min_ranks": 8},
+      {"type": 104, "name": "ib_modify_qp",  "min_ranks": 8},
+      {"type": 110, "name": "ib_post_send",  "min_ranks": 8, "min_total_bytes": 10000},
+      {"type": 112, "name": "ib_poll_cq",    "min_ranks": 8, "min_total_bytes": 10000}
+    ]
+  }
+}

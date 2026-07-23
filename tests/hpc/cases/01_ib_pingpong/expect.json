@@ -1,0 +1,15 @@
+{
+  "case": "01_ib_pingpong",
+  "providers": ["ib"],
+  "topology": "2 nodes, 1 rank each, ibv_rc_pingpong over NDR IB",
+  "assert": {
+    "min_rank_dirs": 2,
+    "streams": [
+      {"type": 100, "name": "ib_mem_region", "min_ranks": 2},
+      {"type": 102, "name": "ib_queue_pair", "min_ranks": 2},
+      {"type": 104, "name": "ib_modify_qp",  "min_ranks": 2},
+      {"type": 110, "name": "ib_post_send",  "min_ranks": 2},
+      {"type": 112, "name": "ib_poll_cq",    "min_ranks": 2}
+    ]
+  }
+}

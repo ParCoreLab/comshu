@@ -1,0 +1,13 @@
+{
+  "case": "04_nvshmem",
+  "providers": ["p2p"],
+  "topology": "1 node × 4 H100, NVSHMEM put-ring, NVLink symmetric heap",
+  "note": "asserts capture (device peer stores + symmetric allocs), not owner attribution (NVSHMEM 3.7 heap fragmentation)",
+  "assert": {
+    "min_rank_dirs": 4,
+    "streams": [
+      {"type": 700, "name": "gpu_access", "min_ranks": 4, "min_total_bytes": 4096},
+      {"type": 720, "name": "mem_object", "min_ranks": 4}
+    ]
+  }
+}
