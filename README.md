@@ -33,6 +33,31 @@ pcomm-read/      reader binary (binary streams -> Parquet/Perfetto)
 tests/           core unit/smoke tests (no GPU required)
 ```
 
+## Usage
+
+Pick what to capture by short name; `pcomm` assembles the run and reads it back.
+
+```bash
+pcomm --list                       # what can I capture, and how?
+pcomm -p ib      -- ./app args     # InfiniBand wire traffic (inter-node)
+pcomm -p p2p     -- ./app args     # GPU-initiated NVLink peer r/w (intra-node, Snoopie)
+pcomm -p ib,p2p  -- ./app args     # both — see "replay" below
+pcomm-read pcomm-out               # inspect / export the capture
+```
+
+Providers are chosen with `-p name[,name...]` (each accepts short aliases, e.g.
+`ib`/`net`, `p2p`/`nvlink`/`snoopie`). Add `--dry-run` to print the plan.
+
+**Replay.** Some engines must own the whole runtime — NVBit (`p2p`) takes over
+the CUDA runtime and `dlsym`, so it can't share a process with anything else.
+When a selection mixes such an *exclusive* provider with others, one process
+can't host them, so `pcomm` **replays**: it runs the workload once per exclusive
+provider and drops each pass under one `-o` directory (`out/ib/`, `out/gpumem/`,
+…). The passes are wall-clock-aligned, and `pcomm-read` stitches them back into
+one per-rank picture (each provider owns a disjoint record-type range, so a
+rank's network and NVLink traffic merge cleanly). Hook-based providers (all the
+network ones) share a single pass — no replay needed among them.
+
 ## Phase 1 scope (decided 2026-07-15)
 
 1. New four-archetype record model with interning, from day one.

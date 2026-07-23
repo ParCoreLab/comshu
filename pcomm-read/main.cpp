@@ -64,12 +64,21 @@ struct RankDir {
     }
 };
 
-std::vector<RankDir> scan_ranks(const fs::path& root) {
-    std::vector<RankDir> ranks;
-    for (const auto& entry : fs::directory_iterator(root)) {
+// Find every rank-* directory under `root`. A single run lays them out flat
+// (root/rank-*); a replayed run nests one level per pass (root/<pass>/rank-*),
+// e.g. root/ib/rank-0 and root/gpumem/rank-0 for the same logical rank 0. We
+// recurse and accept duplicate rank numbers across passes — each RankDir loads
+// its own intern table, so pass-local handles never collide, and because each
+// provider emits a disjoint record-type range the passes merge by rank number.
+void scan_ranks_into(const fs::path& root, std::vector<RankDir>& ranks) {
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
         if (!entry.is_directory()) continue;
         auto name = entry.path().filename().string();
-        if (name.rfind("rank-", 0) != 0) continue;
+        if (name.rfind("rank-", 0) != 0) {
+            scan_ranks_into(entry.path(), ranks);  // descend into a pass subdir
+            continue;
+        }
         RankDir r;
         r.rank = std::atoi(name.c_str() + 5);
         r.dir = entry.path();
@@ -83,6 +92,11 @@ std::vector<RankDir> scan_ranks(const fs::path& root) {
         }
         ranks.push_back(std::move(r));
     }
+}
+
+std::vector<RankDir> scan_ranks(const fs::path& root) {
+    std::vector<RankDir> ranks;
+    scan_ranks_into(root, ranks);
     return ranks;
 }
 

@@ -12,24 +12,32 @@ both work. Reproduce on du04: `LD_PRELOAD=libgpumem_trace.so:libibverbs_trace.so
 ./diim` → SIGSEGV at startup (need the ibverbs provider built there; verbs.h
 staged from MN5 under `~/ibhdr`).
 
-**Direction (do NOT deep-fix the co-run):**
-- Mark providers **exclusive** = "must take full control of the runtime" (NVBit
-  gpumem is one; NVBit tools can't share a process). Non-exclusive providers
-  (the hook-based network ones — ibverbs/mlx5dv/ucx/libfabric) *can* share one
-  process because they route through the single `pcomm::hook` / SmartDlsym
-  interposer (one dlsym owner).
-- The launcher runs all compatible (non-exclusive + at most one exclusive?)
-  providers in one process; for any combination that isn't co-runnable, use a
-  **replay mechanism**: re-exec the same workload once per exclusive provider
-  and merge the per-run captures. The runs are alignable (same program, wall-ns
-  clock anchors), so the reader stitches them into one graph — at the cost of N
-  runs and run-to-run nondeterminism.
-- **Future:** a resource-arbitration system that models what each provider
-  claims (dlsym, the CUDA driver, specific hooks) and computes the minimal set
-  of runs + which providers co-run, instead of a blunt exclusive flag.
-- Prereq either way: a **single master shim owns dlsym + the control plane**
-  (SigmaTrace's ProfilerShim; pcomm's launcher is meant to be this) so
-  hook-based providers coordinate through one interposer.
+**Shipped (2026-07-23):** the launcher now marks providers **exclusive** and
+**replays**. `pcomm -p ib,p2p -- ./app`: the registry (in `pcomm/main.cpp`) tags
+gpumem exclusive; non-exclusive (hook-based) providers share one pass, each
+exclusive provider gets its own pass. Multiple passes ⇒ fork+exec the workload
+once per pass, each pass under `out/<label>/`. `pcomm-read` recurses so
+`out/ib/rank-0` + `out/gpumem/rank-0` merge as logical rank 0 (disjoint
+record-type ranges + per-pass intern tables ⇒ no handle collision). UX: short
+aliases (`ib`/`net`, `p2p`/`nvlink`/`snoopie`), `--list`, `--dry-run`. Single
+pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
+
+**Still to do:**
+- **Wall-align across passes for real.** Passes are re-runs of the same program
+  so ClockAnchors make them *alignable*, but the reader doesn't yet fuse the two
+  timelines into one Perfetto trace — it merges by rank for the graph/CSV, not
+  yet time-overlaid. Thread the anchors through a cross-pass clock origin.
+- **Richer conflict model.** Today `exclusive` is a blunt bool → gpumem alone,
+  everything else together. cupti (when ported) likely conflicts with gpumem but
+  not with ib; that needs the **resource-arbitration** system (model what each
+  provider claims — dlsym, the CUDA driver, specific hooks — and compute the
+  minimal set of passes + which co-run) rather than one flag.
+- **Single master shim owns dlsym + the control plane** (SigmaTrace's
+  ProfilerShim). The hook-based providers already share one SmartDlsym per
+  process; the launcher is the process-level owner. Formalize when a third
+  hook-based provider lands.
+- **Replay cost is N full runs + run-to-run nondeterminism** — inherent; warn
+  (done) and, later, offer a "record once, attribute many" path where feasible.
 
 
 ## Recorder / fork / threading
