@@ -53,20 +53,37 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
 
 
 ## gpumem / NVBit — workload constraints
-- **NCCL deadlocks under NVBit** (found 2026-07-23 on MN5 H100). NCCL runs a
-  *persistent* collective kernel that occupies the GPU for the whole op; NVBit's
-  bounded device→host channel fills, and the flush kernel can't launch behind the
-  persistent kernel → producer/consumer deadlock (init proceeds, NCCL prints its
-  version, then hangs). This is intrinsic to instrumenting persistent-kernel
-  collectives with NVBit — Snoopie has the same limitation. So the intra-node
-  p2p case uses a **discrete peer-write microkernel** (`03_p2p_kernel`), the
-  right NVBit target and a cleaner oracle (known access counts). Don't expect the
-  gpumem provider to trace NCCL/persistent-kernel collectives; capture their IB
-  side with the `ib` provider (case 02) instead.
+- **NCCL deadlocks under NVBit** (found 2026-07-23 on MN5 H100) — **a real
+  limitation to FIX, not to design away.** NCCL runs a *persistent* collective
+  kernel that occupies the GPU for the whole op; NVBit's bounded device→host
+  channel fills, and the flush kernel can't launch behind the persistent kernel
+  → producer/consumer deadlock (init proceeds, NCCL prints its version, then
+  hangs). Intrinsic to instrumenting persistent-kernel collectives with NVBit;
+  Snoopie has the same limitation. **Kept as a live known-failing test**
+  (`tests/hpc/cases/05_nccl_p2p_xfail`, marked `expect_fail` → run_suite reports
+  XFAIL) so the gap stays visible; `03_p2p_kernel` (discrete kernel) is the
+  passing stand-in, not a replacement. **Fix ideas:** a spillable/unbounded or
+  host-pinned ring channel that doesn't need a device-side flush kernel; or a
+  cooperative-launch flush that can preempt/interleave with the persistent
+  kernel; or instrument NCCL's kernels with a bounded-buffer backpressure that
+  the persistent kernel yields to. Until then, capture NCCL's inter-node story
+  on its IB side with the `ib` provider (case 02).
 - **The provider allocates in `nvbit_at_ctx_init`** (`cudaMallocManaged` for the
   channel; nvbit_backend.cu:360). NVBit warns this risks deadlock and says to
   allocate in `nvbit_tool_init`. It works for discrete-kernel apps; revisit if a
-  discrete workload ever deadlocks at startup.
+  discrete workload ever deadlocks at startup (and it may be part of the NCCL fix
+  above).
+- **Full instrumentation is the firehose; filter to the app kernel.** Unfiltered,
+  NVBit instruments *all* device code — for nvshmem that means its internal
+  put/spin machinery (~400 MB/rank, asymmetric, non-repeatable). The provider
+  honours `PCOMM_KERNEL_NAME=<kernel>` (nvbit_backend.cu:216) to restrict capture
+  to the user kernel; case 04 uses it. A production tool wants richer selection
+  (module/kernel globs, or an allocation-region filter) rather than one name.
+- **NVSHMEM 3.7 device attribution is unreliable** (compounds the 3.x heuristic
+  break already noted below): with the kernel filter, case 04's per-access
+  `mem_device` comes out as synthetic ids (76–80, not 0–3) and would shift
+  run-to-run, so the test asserts the fan-out *count*, not the ids. Fix is the
+  host-side ownership path (hook `nvshmem_malloc` / `nvshmem_ptr`).
 
 ## Recorder / fork / threading
 - **Fork child handler is not async-signal-safe** (`Tracer::atfork_child`, tracer.hpp).

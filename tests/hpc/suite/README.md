@@ -41,8 +41,17 @@ Axis = **which transport / provider**:
 | 02 | `nccl_internode` | 2 nodes × 4 H100     | IB (P2P disabled)  | `ib`  | **verified** |
 | 03 | `p2p_kernel`     | 1 node × 4 H100      | NVLink peer r/w    | `p2p` | **verified** |
 | 04 | `nvshmem`        | 1 node × 4 H100      | NVLink, sym. heap  | `p2p` | **verified** |
+| 05 | `nccl_p2p_xfail` | 1 node × 4 H100      | NVLink P2P         | `p2p` | **xfail (deadlock)** |
 
-All four passed the determinism gate (two independent MN5 runs → byte-identical).
+Cases 01–04 passed the determinism gate (two independent MN5 runs → byte-identical).
+
+**Case 05 is a known-failing (xfail) test, kept on purpose.** Tracing NCCL over
+NVLink with the gpumem provider is a major use case that currently deadlocks (see
+below). We do **not** delete or weaken the test to go green — it stays as an
+`expect_fail` case (`meta.json`), bounded by a `timeout`, and `run_suite check`
+reports it **XFAIL** (expected — suite stays green) or **XPASS** (an alert: it
+started working, so remove the marker and add goldens). Its `checks/*.sql`
+document the capture we'll assert once it's fixed.
 Cases 02 (inter-node IB) and 03 (intra-node NVLink) are the "who moves data to
 whom" question on opposite transports/providers: case 02's `comm_edges` vs case
 03's `peer_topology`.

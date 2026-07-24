@@ -1,0 +1,12 @@
+{
+  "case": "05_nccl_p2p_xfail",
+  "providers": ["p2p"],
+  "topology": "1 node x4 H100, ncclAllReduce over NVLink",
+  "expect_fail": {
+    "mode": "deadlock",
+    "reason": "NCCL persistent collective kernel occupies the GPU; NVBit's bounded channel can't flush -> producer/consumer deadlock",
+    "fix_ideas": "spillable/unbounded channel, or cooperative flush that preempts the persistent kernel",
+    "passing_stand_in": "03_p2p_kernel"
+  },
+  "golden": "n/a — kept red on purpose (checks/*.sql document intended capture for when it is fixed)"
+}

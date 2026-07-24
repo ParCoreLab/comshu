@@ -26,7 +26,8 @@ case "$cmd" in
     for c in $(all_cases); do
       p=$(python3 -c "import json;print(','.join(json.load(open('$CASES_DIR/$c/meta.json'))['providers']))" 2>/dev/null)
       n=$(ls "$CASES_DIR/$c"/checks/*.sql 2>/dev/null | wc -l | tr -d ' ')
-      printf '%-20s %-6s %s sql\n' "$c" "$p" "$n"
+      x=$(python3 -c "import json;print('  [xfail]' if 'expect_fail' in json.load(open('$CASES_DIR/$c/meta.json')) else '')" 2>/dev/null)
+      printf '%-22s %-6s %s sql%s\n' "$c" "$p" "$n" "$x"
     done ;;
 
   submit)
@@ -45,8 +46,22 @@ case "$cmd" in
       # e.g. 02_nccl_internode -> nccl_internode-<jobid>.csv/result.json
       label="${c#*_}"
       d=$(ls -1dt "$OUT_ROOT/$label"-*.csv 2>/dev/null | head -1)
+      # A case marked expect_fail in meta.json is xfail: failing/deadlocking is
+      # the *expected* state (XFAIL, suite stays green); completing is an alert
+      # (XPASS → time to remove the marker and add goldens).
+      xfail=$(python3 -c "import json;print('expect_fail' in json.load(open('$CASES_DIR/$c/meta.json')))" 2>/dev/null)
       if [ -z "$d" ] || [ ! -f "$d/result.json" ]; then
-        printf '%-20s %-6s %s\n' "$c" "----" "no result yet ($OUT_ROOT/$label-*.csv)"; fail=1; continue
+        printf '%-20s %-6s %s\n' "$c" "----" "no result yet ($OUT_ROOT/$label-*.csv)"
+        [ "$xfail" = "True" ] || fail=1; continue
+      fi
+      if [ "$xfail" = "True" ]; then
+        outcome=$(python3 -c "import json;print(json.load(open('$d/result.json')).get('outcome','?'))")
+        if [ "$outcome" = "completed" ]; then
+          printf '%-20s %-6s %s\n' "$c" XPASS "unexpectedly ran — remove xfail, add goldens · $(basename "$d")"
+        else
+          printf '%-20s %-6s %s\n' "$c" XFAIL "known: $outcome (see meta.json) · $(basename "$d")"
+        fi
+        continue
       fi
       ok=$(python3 -c "import json;print(json.load(open('$d/result.json'))['ok'])")
       n=$(python3 -c "import json;print(json.load(open('$d/result.json')).get('checks',0))")
@@ -55,8 +70,7 @@ case "$cmd" in
     done
     exit $fail ;;
 
-  status) squeue -u "$USER" -n \
-      pcomm-01-ib-pingpong,pcomm-02-nccl-internode,pcomm-03-nccl-p2p,pcomm-04-nvshmem ;;
+  status) squeue -u "$USER" | tail -n +2 ;;
 
   *) echo "usage: run_suite.sh {list|submit|check|status} [case ...]" >&2; exit 2 ;;
 esac
