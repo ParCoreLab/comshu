@@ -37,13 +37,29 @@ Axis = **which transport / provider**:
 
 | # | case | topology | transport | provider | golden |
 |---|------|----------|-----------|----------|--------|
-| 01 | `ib_pingpong`    | 2 nodes, 1 rank each | IB verbs, direct | `ib`  | **committed, verified** |
-| 02 | `nccl_internode` | 2 nodes × 4 H100     | IB (P2P disabled) | `ib`  | pending pinned run |
-| 03 | `nccl_p2p`       | 1 node × 4 H100      | NVLink P2P        | `p2p` | pending NVBit on MN5 |
-| 04 | `nvshmem`        | 1 node × 4 H100      | NVLink, sym. heap | `p2p` | pending NVBit on MN5 |
+| 01 | `ib_pingpong`    | 2 nodes, 1 rank each | IB verbs, direct   | `ib`  | **verified** |
+| 02 | `nccl_internode` | 2 nodes × 4 H100     | IB (P2P disabled)  | `ib`  | **verified** |
+| 03 | `p2p_kernel`     | 1 node × 4 H100      | NVLink peer r/w    | `p2p` | **verified** |
+| 04 | `nvshmem`        | 1 node × 4 H100      | NVLink, sym. heap  | `p2p` | **verified** |
 
-02 and 03 are the same NCCL all-reduce with opposite transport (IB vs NVLink) and
-opposite provider — the "inter-node, no p2p" and "intra-node p2p" pair.
+All four passed the determinism gate (two independent MN5 runs → byte-identical).
+Cases 02 (inter-node IB) and 03 (intra-node NVLink) are the "who moves data to
+whom" question on opposite transports/providers: case 02's `comm_edges` vs case
+03's `peer_topology`.
+
+**Why case 03 is a custom kernel, not NCCL:** NCCL runs a *persistent* collective
+kernel that occupies the GPU, so NVBit's bounded channel deadlocks (the gpumem
+provider inits, NCCL prints its version, then hangs). That's intrinsic to
+persistent-kernel collectives under NVBit — Snoopie has the same limit. A
+discrete peer-write microkernel is the right NVBit target and a cleaner oracle;
+NCCL's inter-node story is captured on its IB side by case 02.
+
+**Why case 04 filters kernels:** unfiltered, NVBit instruments all of nvshmem's
+internal device code (~400 MB/rank, not repeatable). `PCOMM_KERNEL_NAME=put_to_next`
+restricts capture to the user kernel → a small deterministic golden. NVSHMEM 3.7's
+fragmented heap breaks positional device attribution, so `peer_fanout` asserts the
+run-stable fan-out count, not the (unreliable) device ids; `traffic` is the real
+volume oracle.
 
 ## Layout
 
@@ -74,9 +90,17 @@ tests/hpc/suite/sql_check.sh <out>.csv cases/<case> --update
 
 ## Prerequisites / gaps (see ../../../things-to-circle-back-to.md)
 
-- `pcomm`, `pcomm-read`, providers built under `~/proj/pcomm/build`. `ib` cases
-  build on MN5 today. `p2p` cases (03/04) need **NVBit** (not yet staged on MN5;
-  present on du04 `~/waste/nvbit-1.7.7.1`) → their goldens are pending.
+- `pcomm`, `pcomm-read`, providers built under `~/proj/pcomm/build`. Build the
+  `p2p` (gpumem/NVBit) provider on MN5 with the gcc-11.4 host and CUDA C++20:
+  ```
+  module load gcc/11.4.0 nvidia-hpc-sdk/25.7 cmake
+  cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF \
+        -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 \
+        -DCMAKE_CUDA_HOST_COMPILER=g++
+  cmake --build build-gpumem --target gpumem_trace
+  cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/
+  ```
+  (NVBit 1.7.7 lives at `gpu-backends/nvbit/nvbit-1.7.7.1/`; 1.8 needs CUDA 13.)
 - Toolchain split (`common.sh`): compile CUDA with gcc-11.4, run with gcc-13.2
   libstdc++ (`pcomm-read` needs `GLIBCXX_3.4.31` → `module load gcc/13.2.0`).
 - **Replay under MPI** isn't per-rank fork (breaks PMI); every case uses a single

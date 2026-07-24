@@ -41,9 +41,14 @@ fi
 
 OUT=$(pcomm_out nvshmem); rm -rf "$OUT"; mkdir -p "$OUT"
 
+# PCOMM_KERNEL_NAME restricts instrumentation to our put kernel — otherwise NVBit
+# instruments all of nvshmem's internal device code (spin/retry loops), which is
+# enormous and not byte-repeatable. With the filter, only the user put-ring's
+# peer stores are captured: a small, deterministic golden.
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
-  "$PCOMM" -p p2p -o "$OUT" -- "$APP" 65536 3     # small: NVBit instruments every instr
+  -x PCOMM_KERNEL_NAME=put_to_next \
+  "$PCOMM" -p p2p -o "$OUT" -- "$APP" 65536 3
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
