@@ -86,6 +86,24 @@ suite/
 
 ## Running
 
+**One command, from a checkout** (syncs to MN5, builds tools + both providers,
+runs every case, prints the board):
+
+```bash
+tests/hpc/run_on_mn5.sh                 # sync + build + run all + check
+tests/hpc/run_on_mn5.sh --cases "03"    # a subset
+tests/hpc/run_on_mn5.sh --check-only    # just re-aggregate existing results
+tests/hpc/run_on_mn5.sh --no-build      # skip the rebuild
+```
+
+Config via env (defaults = the ParCore MN5 account): `PCOMM_REMOTE`,
+`PCOMM_REMOTE_DIR`. Cases run serially (acc_debug allows one submitted job at a
+time); a full run is ~15 min incl. the case-05 deadlock timeout. Exit code is the
+board's: 0 when all PASS/XFAIL, non-zero on any real FAIL. It builds the gpumem
+provider with the gcc-11.4 host + CUDA C++20 recipe automatically.
+
+### Lower-level (on MN5 directly)
+
 ```bash
 tests/hpc/suite/run_suite.sh list
 tests/hpc/suite/run_suite.sh submit 01_ib_pingpong   # sbatch one (acc_debug = 1 job at a time)
