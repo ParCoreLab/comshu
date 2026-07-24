@@ -18,6 +18,8 @@ add_library(gpumem_trace SHARED
 set_target_properties(gpumem_trace PROPERTIES
   PREFIX "lib" OUTPUT_NAME "gpumem_trace"
   CUDA_SEPARABLE_COMPILATION ON
+  CUDA_STANDARD 20               # engine.hpp/recorder use C++20 concepts; nvcc
+  CUDA_STANDARD_REQUIRED ON      # defaults to C++17 and chokes on `concept`
 )
 
 target_include_directories(gpumem_trace PRIVATE
@@ -36,7 +38,9 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.
   PROPERTIES COMPILE_FLAGS "-maxrregcount=24 --keep-device-functions")
 
 target_compile_options(gpumem_trace PRIVATE
-  $<$<COMPILE_LANGUAGE:CUDA>:-allow-unsupported-compiler --keep-device-functions>)
+  # -std=c++20 explicitly: the CUDA_STANDARD property doesn't emit the flag with
+  # this nvcc/CMake combo, and the recorder headers use C++20 concepts.
+  $<$<COMPILE_LANGUAGE:CUDA>:-allow-unsupported-compiler --keep-device-functions -std=c++20>)
 
 target_link_options(gpumem_trace PRIVATE
   $<DEVICE_LINK:-allow-unsupported-compiler -Xptxas=-astoolspatch --keep-device-functions>)

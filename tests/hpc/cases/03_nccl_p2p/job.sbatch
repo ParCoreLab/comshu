@@ -14,8 +14,9 @@
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:4
-#SBATCH --time=00:08:00
+#SBATCH --time=00:15:00
 #SBATCH --output=%x.%j.out
 
 set -x
@@ -43,7 +44,7 @@ mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x NCCL_P2P_DISABLE=0 -x NCCL_P2P_LEVEL=NVL \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  "$PCOMM" -p p2p -o "$OUT" -- "$APP" 8388608 20
+  "$PCOMM" -p p2p -o "$OUT" -- "$APP" 262144 3    # small: NVBit instruments every instr
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"

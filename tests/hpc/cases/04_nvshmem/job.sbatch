@@ -17,8 +17,9 @@
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:4
-#SBATCH --time=00:08:00
+#SBATCH --time=00:15:00
 #SBATCH --output=%x.%j.out
 
 set -x
@@ -42,7 +43,7 @@ OUT=$(pcomm_out nvshmem); rm -rf "$OUT"; mkdir -p "$OUT"
 
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
-  "$PCOMM" -p p2p -o "$OUT" -- "$APP" 1048576 10
+  "$PCOMM" -p p2p -o "$OUT" -- "$APP" 65536 3     # small: NVBit instruments every instr
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
