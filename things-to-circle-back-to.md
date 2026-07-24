@@ -52,6 +52,22 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   (done) and, later, offer a "record once, attribute many" path where feasible.
 
 
+## gpumem / NVBit — workload constraints
+- **NCCL deadlocks under NVBit** (found 2026-07-23 on MN5 H100). NCCL runs a
+  *persistent* collective kernel that occupies the GPU for the whole op; NVBit's
+  bounded device→host channel fills, and the flush kernel can't launch behind the
+  persistent kernel → producer/consumer deadlock (init proceeds, NCCL prints its
+  version, then hangs). This is intrinsic to instrumenting persistent-kernel
+  collectives with NVBit — Snoopie has the same limitation. So the intra-node
+  p2p case uses a **discrete peer-write microkernel** (`03_p2p_kernel`), the
+  right NVBit target and a cleaner oracle (known access counts). Don't expect the
+  gpumem provider to trace NCCL/persistent-kernel collectives; capture their IB
+  side with the `ib` provider (case 02) instead.
+- **The provider allocates in `nvbit_at_ctx_init`** (`cudaMallocManaged` for the
+  channel; nvbit_backend.cu:360). NVBit warns this risks deadlock and says to
+  allocate in `nvbit_tool_init`. It works for discrete-kernel apps; revisit if a
+  discrete workload ever deadlocks at startup.
+
 ## Recorder / fork / threading
 - **Fork child handler is not async-signal-safe** (`Tracer::atfork_child`, tracer.hpp).
   It allocates (new sink/recorder, `std::start`). Safe for the common

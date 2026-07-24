@@ -1,0 +1,6 @@
+{
+  "case": "03_p2p_kernel",
+  "providers": ["p2p"],
+  "topology": "1 node x4 H100, custom ring peer-write kernel over NVLink",
+  "golden": "pending first verified run"
+}
