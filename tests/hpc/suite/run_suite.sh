@@ -9,6 +9,11 @@
 # Each case's job runs check_capture.py itself and drops result.json in its
 # output dir; `check` gathers those into one PASS/FAIL table. Cases 03/04 need
 # the gpumem provider (NVBit) built on MN5 — see README.md.
+#
+# Env: PCOMM_OUT_ROOT     where captures live (default $HOME/pcomm-suite)
+#      PCOMM_RUN_MANIFEST "<case> <jobid>" table pinning each verdict to the job
+#                         from that run, so a dead job can't inherit an older
+#                         run's PASS. run_on_mn5.sh writes one automatically.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PCOMM_ROOT="${PCOMM_ROOT:-$(cd "$HERE/../../.." && pwd)}"
@@ -17,6 +22,17 @@ OUT_ROOT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}"
 
 all_cases() { for d in "$CASES_DIR"/*/; do basename "$d"; done; }
 resolve() { [ "$#" -eq 0 ] && all_cases || printf '%s\n' "$@"; }
+
+# A run manifest ("<case> <jobid>" per line, written by run_on_mn5.sh) pins each
+# verdict to the job that was actually submitted for THIS run. Without it we can
+# only take the newest capture on disk, which silently reports an older run's
+# PASS when a job dies before writing anything. Cases absent from the manifest —
+# or a bare `check` with no manifest at all — keep the newest-wins behaviour.
+MANIFEST="${PCOMM_RUN_MANIFEST:-}"
+manifest_jid() {
+  [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
+  awk -v c="$1" '$1==c{print $2; exit}' "$MANIFEST"
+}
 
 cmd="${1:-list}"; shift || true
 
@@ -45,13 +61,22 @@ case "$cmd" in
       # captures are named by the short label (case dir minus the NN_ prefix),
       # e.g. 02_nccl_internode -> nccl_internode-<jobid>.csv/result.json
       label="${c#*_}"
-      d=$(ls -1dt "$OUT_ROOT/$label"-*.csv 2>/dev/null | head -1)
+      jid=$(manifest_jid "$c")
+      if [ -n "$jid" ]; then
+        # pinned: only this job's capture counts (jid may be a sentinel like
+        # SUBMIT_FAILED, which simply never matches a directory → no result)
+        d="$OUT_ROOT/$label-$jid.csv"; [ -d "$d" ] || d=""
+        want="$OUT_ROOT/$label-$jid.csv (job $jid)"
+      else
+        d=$(ls -1dt "$OUT_ROOT/$label"-*.csv 2>/dev/null | head -1)
+        want="$OUT_ROOT/$label-*.csv"
+      fi
       # A case marked expect_fail in meta.json is xfail: failing/deadlocking is
       # the *expected* state (XFAIL, suite stays green); completing is an alert
       # (XPASS → time to remove the marker and add goldens).
       xfail=$(python3 -c "import json;print('expect_fail' in json.load(open('$CASES_DIR/$c/meta.json')))" 2>/dev/null)
       if [ -z "$d" ] || [ ! -f "$d/result.json" ]; then
-        printf '%-20s %-6s %s\n' "$c" "----" "no result yet ($OUT_ROOT/$label-*.csv)"
+        printf '%-20s %-6s %s\n' "$c" "----" "no result ($want)"
         [ "$xfail" = "True" ] || fail=1; continue
       fi
       if [ "$xfail" = "True" ]; then
