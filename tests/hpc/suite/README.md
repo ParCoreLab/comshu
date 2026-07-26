@@ -42,8 +42,36 @@ Axis = **which transport / provider**:
 | 03 | `p2p_kernel`     | 1 node × 4 H100      | NVLink peer r/w    | `p2p` | **verified** |
 | 04 | `nvshmem`        | 1 node × 4 H100      | NVLink, sym. heap  | `p2p` | **verified** |
 | 05 | `nccl_p2p_xfail` | 1 node × 4 H100      | NVLink P2P         | `p2p` | **xfail (deadlock)** |
+| 06 | `nvshmem_coexist` | 1 node × 4 H100     | NVLink, sym. heap  | `ib`+`p2p` | **verified** |
+| 07 | `nvshmem_multinode_xfail` | 2 nodes × 4 H100 | NVLink + IB   | `ib`+`p2p` | **xfail (deadlock)** |
 
-Cases 01–04 passed the determinism gate (two independent MN5 runs → byte-identical).
+Cases 01–04 and 06 passed the determinism gate (two independent MN5 runs →
+byte-identical query output; the raw CSVs always differ, they carry ticks,
+addresses, `qp_num` and `wr_id`).
+
+**Case 06 is the coexistence regression test.** It is case 04's workload and
+topology with exactly one variable changed — both providers loaded into one
+process — so a coexistence regression shows up here and nowhere else, every
+other case loading a single provider. Its `traffic` golden is *identical* to
+case 04's, which is the actual assurance: adding `ib` does not perturb what
+`p2p` captures. Scope, stated honestly: on one node every peer is
+NVLink-reachable, so NVSHMEM builds its IB transport but never posts a send —
+the `ib` side contributes entities (MR/QP/modify_qp), not traffic, and
+`ib_post_send`/`ib_poll_cq` are legitimately empty.
+
+**Case 07 is the unified NVLink+IB *traffic* capture, and it is xfail.**
+Multinode NVSHMEM deadlocks under NVBit. This was isolated (2026-07-27) because
+the obvious suspect — the coexistence we had just enabled — was wrong:
+
+| topology | providers | result |
+|---|---|---|
+| 1 node  | `ib`+`p2p` | exit 0 |
+| 2 nodes | `p2p` alone | exit 124 (hang) |
+| 2 nodes | `p2p`, `NO_EAGER_LOAD=0` | exit 124 |
+
+So it is the same family as case 05 (a comm library spinning on the device vs
+NVBit's bounded channel), not a provider conflict. Case 06 is its passing
+stand-in for the coexistence property.
 
 **Case 05 is a known-failing (xfail) test, kept on purpose.** Tracing NCCL over
 NVLink with the gpumem provider is a major use case that currently deadlocks (see

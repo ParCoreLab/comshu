@@ -2,6 +2,37 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## NVBit deadlocks with multinode NVSHMEM (2026-07-27)
+
+`07_nvshmem_multinode_xfail` — 8 PEs over 2 nodes hangs before the workload
+reports. **Isolated, because the obvious suspect was wrong.** The tempting
+conclusion was that the freshly-enabled provider coexistence broke it; it did
+not:
+
+| topology | providers | result |
+|---|---|---|
+| 1 node, 4 PEs  | ib + p2p                 | exit 0   |
+| 2 nodes, 8 PEs | p2p **alone**            | exit 124 |
+| 2 nodes, 8 PEs | p2p, `NO_EAGER_LOAD=0`   | exit 124 |
+
+Two nodes hang with gpumem alone, so ibverbs is not involved; and NVBit's own
+banner hint for deadlocks (`NO_EAGER_LOAD=0`) does not help. This is the same
+family as case 05's NCCL deadlock: a comm library spinning on the device while
+NVBit's bounded channel needs to flush. Multinode NVSHMEM's IBRC path has the
+device waiting on a host proxy, which is exactly the shape that starves the
+channel.
+
+Fix ideas (same shortlist as 05): spillable/host-pinned channel that needs no
+device-side flush; a cooperative-launch flush that can preempt the spinning
+kernel; or IBGDA transport, where the GPU posts WQEs directly and there is no
+host proxy to wait on — though IBGDA would also bypass host verbs, so the ib
+provider would see nothing and that half of the capture needs another route.
+
+**Consequence:** the unified NVLink+IB *traffic* timeline is blocked. Case 06
+covers the coexistence property (one process, one capture, both providers) but
+single-node NVSHMEM never posts an IB send, so cross-transport traffic
+correlation has no regression test until this is fixed.
+
 ## Provider coexistence & replay (design)
 **Finding (2026-07-21) — SUPERSEDED, THE DIAGNOSIS BELOW WAS WRONG.** It read:
 *"NVBit takes over the CUDA runtime and interposes `dlsym`; the ibverbs
@@ -50,12 +81,18 @@ ptrace, so debug from the core, not a live gdb).
 
 **Verified:** all four load combinations rc=0, libstdc++ resolves to GCC/13.2.0
 even with gpumem first, and the full 5-case suite still passes with the shared
-tracer change. NOT yet verified: that a real workload emits IB *and* NVLink
-records into one unified capture — that needs the combined case (below).
+tracer change. Co-capture then verified under a real
+workload by case 06 (`06_nvshmem_coexist`): both providers write into one
+recorder and one rank space, and its NVLink `traffic` golden is byte-identical
+to case 04's — i.e. adding `ib` does not perturb what `p2p` captures.
 
-**Shipped (2026-07-23):** the launcher now marks providers **exclusive** and
-**replays**. `pcomm -p ib,p2p -- ./app`: the registry (in `pcomm/main.cpp`) tags
-gpumem exclusive; non-exclusive (hook-based) providers share one pass, each
+**Shipped (2026-07-23), amended 2026-07-27:** the launcher marks providers
+**exclusive** and **replays**. gpumem is **no longer exclusive** — that flag was
+set because of the segfault above, whose cause turned out to be fixable, so
+`pcomm -p ib,p2p -- ./app` now plans ONE pass (verified: case 06). Replay remains
+for genuinely exclusive providers (cupti, when ported). Prefer co-running: replay
+re-executes the workload, so its passes are different executions and cannot carry
+cross-transport causality. Non-exclusive (hook-based) providers share one pass, each
 exclusive provider gets its own pass. Multiple passes ⇒ fork+exec the workload
 once per pass, each pass under `out/<label>/`. `pcomm-read` recurses so
 `out/ib/rank-0` + `out/gpumem/rank-0` merge as logical rank 0 (disjoint
@@ -70,12 +107,9 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   breaks, and a second `MPI_Init` after pass 1's `MPI_Finalize` is unsupported.
   For MPI jobs, replay must wrap `mpirun` (outer loop: pass 1 for all ranks,
   then pass 2), not fork inside each rank. The integration suite sidesteps this
-  by giving every case a single provider; a combined intra+inter case waits on
-  this. See tests/hpc/suite/README.md.
-- **gpumem/NVBit not staged on MN5.** The `ib` provider builds there; gpumem
-  needs NVBit (present on du04 at ~/waste/nvbit-1.7.7.1). Suite cases 03/04
-  (nccl_p2p, nvshmem) are written + ready but unvalidated until NVBit is staged
-  and libgpumem_trace.so builds on MN5 (H100/sm_90, CUDA 12.9 compat unverified).
+  by giving every case a single provider *except* case 06, which co-runs both in
+  one pass and so sidesteps replay-under-MPI entirely — co-running is now the
+  preferred answer to this, not a workaround for it. See tests/hpc/suite/README.md.
 - **Wall-align across passes for real.** Passes are re-runs of the same program
   so ClockAnchors make them *alignable*, but the reader doesn't yet fuse the two
   timelines into one Perfetto trace — it merges by rank for the graph/CSV, not

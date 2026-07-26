@@ -28,8 +28,11 @@ namespace {
 
 // ── Provider registry ─────────────────────────────────────────────────────
 // One row per capture engine. `aliases[0]` is the short name we print; the rest
-// are accepted on the command line. `exclusive` = must own the process (can't
-// share dlsym / the CUDA runtime with anything else) → gets its own replay pass.
+// are accepted on the command line. `exclusive` = must own the process → gets
+// its own replay pass. Prefer co-running: replay re-executes the workload, so
+// its passes are different executions and cannot express cross-transport
+// causality (this GPU peer-write caused that IB send). Mark a provider exclusive
+// only for a demonstrated, un-fixable conflict — not a suspected one.
 struct Provider {
     const char*                     canonical;   // matches ProviderInfo::name
     const char*                     so;          // library basename
@@ -46,8 +49,17 @@ const std::vector<Provider>& registry() {
          {"ib", "net", "ibverbs"}, /*exclusive*/false, /*built*/true,
          "InfiniBand wire traffic — QPs, sends, completions (host-side verbs)",
          "inter-node"},
+        // No longer exclusive as of 7a5b55a. It was marked so because dual-preload
+        // with ibverbs segfaulted, which we attributed to NVBit fighting for
+        // dlsym — wrong on both counts: NVBit only *imports* dlsym, and the crash
+        // was two embedded copies of the engine sharing a Tracer singleton through
+        // weak-symbol interposition. With that fixed (and gpumem's DT_RPATH turned
+        // into DT_RUNPATH so load order stops mattering), gpumem co-runs in the
+        // shared pass — which is what makes one unified NVLink+IB timeline possible
+        // at all, since replay's two executions can't carry cross-transport
+        // causality. Case 06 is the regression test.
         {"gpumem", "libgpumem_trace.so",
-         {"p2p", "nvlink", "gpumem", "snoopie"}, /*exclusive*/true, /*built*/true,
+         {"p2p", "nvlink", "gpumem", "snoopie"}, /*exclusive*/false, /*built*/true,
          "GPU-initiated peer read/write over NVLink (NVBit, à la Snoopie)",
          "intra-node"},
         {"cupti", "libcupti_trace.so",

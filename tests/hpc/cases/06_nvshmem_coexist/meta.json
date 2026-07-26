@@ -1,0 +1,8 @@
+{
+  "case": "06_nvshmem_coexist",
+  "providers": ["ib", "p2p"],
+  "topology": "1 node x4 H100, NVSHMEM put-ring, BOTH providers in one process",
+  "golden": "committed (verified, 2-run determinism gate)",
+  "why": "regression test for provider coexistence (7a5b55a): ib + gpumem loaded into ONE process, both writing into ONE capture. Same workload/topology as 04, the only variable is the second provider — so a coexistence regression shows up here and nowhere else.",
+  "scope_note": "single-node, so NVSHMEM never posts an IB send (every peer is NVLink-reachable): the ib side contributes entities (MR/QP/modify_qp), not traffic. Cross-transport TRAFFIC correlation needs 2 nodes — see 07_nvshmem_multinode_xfail."
+}

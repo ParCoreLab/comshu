@@ -41,10 +41,14 @@ fi
 
 OUT=$(pcomm_out nvshmem); rm -rf "$OUT"; mkdir -p "$OUT"
 
-# PCOMM_KERNEL_NAME restricts instrumentation to our put kernel — otherwise NVBit
-# instruments all of nvshmem's internal device code (spin/retry loops), which is
-# enormous and not byte-repeatable. With the filter, only the user put-ring's
-# peer stores are captured: a small, deterministic golden.
+# PCOMM_KERNEL_NAME restricts instrumentation to our put kernel. NB the mechanism
+# is not what it looks like: nvshmem_int_p is *inlined* into put_to_next, so the
+# puts have no name of their own to filter on — they are captured precisely
+# because they are part of put_to_next's SASS. What the filter excludes is
+# NVSHMEM's own separately-launched kernels (barriers and friends), which are
+# enormous and not byte-repeatable. Corollary worth knowing (nvbit_backend.cu:216
+# tests each related function's name individually): a callee that is *not*
+# inlined has its own name, won't match, and its accesses are silently dropped.
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
   -x PCOMM_KERNEL_NAME=put_to_next \
