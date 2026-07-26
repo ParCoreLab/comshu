@@ -57,3 +57,12 @@ target_compile_options(gpumem_trace PRIVATE
 
 target_link_options(gpumem_trace PRIVATE
   $<DEVICE_LINK:-allow-unsupported-compiler -Xptxas=-astoolspatch --keep-device-functions>)
+
+# The NVHPC driver bakes a DT_RPATH to its own compilers/lib + the gcc-11.4 host
+# lib64 into this .so. DT_RPATH outranks LD_LIBRARY_PATH, so when gpumem is
+# preloaded ahead of a hook provider it supplies gcc-11.4's libstdc++ to the
+# whole process and the gcc-13.2-built provider dies on a missing GLIBCXX_3.4.31
+# — coexistence would then depend on LD_PRELOAD order. New dtags emit DT_RUNPATH
+# instead, which is searched *after* LD_LIBRARY_PATH, so the runtime module
+# (gcc/13.2.0, per common.sh) wins and either order works.
+target_link_options(gpumem_trace PRIVATE $<HOST_LINK:-Xlinker --enable-new-dtags>)

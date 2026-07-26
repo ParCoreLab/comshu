@@ -3,14 +3,55 @@
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
 ## Provider coexistence & replay (design)
-**Finding (2026-07-21):** naive dual-`LD_PRELOAD` of gpumem (NVBit) + ibverbs
-**segfaults during program startup, before `main()`** — a load-time collision.
-NVBit takes over the CUDA runtime and interposes `dlsym`; the ibverbs
-SmartDlsym interposer also claims `dlsym` and brings up the Tracer. They fight
-for `dlsym`/init ownership at constructor time. gpumem-alone and ibverbs-alone
-both work. Reproduce on du04: `LD_PRELOAD=libgpumem_trace.so:libibverbs_trace.so
-./diim` → SIGSEGV at startup (need the ibverbs provider built there; verbs.h
-staged from MN5 under `~/ibhdr`).
+**Finding (2026-07-21) — SUPERSEDED, THE DIAGNOSIS BELOW WAS WRONG.** It read:
+*"NVBit takes over the CUDA runtime and interposes `dlsym`; the ibverbs
+SmartDlsym interposer also claims `dlsym`. They fight for `dlsym`/init
+ownership at constructor time."* Neither half holds. Kept only so the old
+conclusion isn't re-derived: it pointed future work at a `dlsym` arbitration
+problem that does not exist.
+
+**Corrected root cause + fix (2026-07-27).** Two separate bugs, both fixed.
+
+*Bug 1 — duplicated engine, weak-symbol interposition (the SIGSEGV).* NVBit
+never interposes `dlsym`: `nm -D` shows `libnvbit.a` and `libgpumem_trace.so`
+only *import* it (`U dlsym@GLIBC_2.34`), while `libibverbs_trace.so` is the sole
+definer (`T dlsym`, from pcomm_hook's Dlsym.cpp). The real cause is that both
+providers statically embed the header-only engine, so **969 symbols are defined
+by both, all weak** — including `guard variable for pcomm::Tracer::instance()::t`,
+`rec::ThreadBufferRegistry::instance()::r`, `core::RecordIdTracker::instance()::t`.
+The dynamic linker binds every reference to whichever copy loaded first, so the
+two providers unknowingly shared one Tracer singleton. gpumem's ctor started a
+capture; ibverbs' ctor then called `Tracer::start()` on that same live singleton,
+which assigned over `m_recorder` and destroyed gpumem's in-flight Recorder —
+SIGSEGV in `~ThreadLocalBuffer<ClockAnchor>::drain()` inside `_dl_init`. Nor was
+it "before `main()` in a dlsym fight": the stack is
+`_dl_init → pcomm_ibverbs_load → Tracer::start → ~Recorder`.
+FIX: `Tracer::start()` is now **attach-if-running** with a refcount — a second
+provider joins the running capture instead of re-initialising it (which is the
+semantics we want anyway: one process, one recorder, one timeline). `stop()` is
+symmetric (last one out finalizes), `atfork_child()` restores the count so a
+forked child still flushes, and an `atexit` backstop calls a once-only
+`finalize()` so a provider that never calls `stop()` can't strand the capture.
+
+*Bug 2 — `DT_RPATH` leaking the wrong libstdc++ (order-dependence).* The NVHPC
+driver bakes `DT_RPATH=[...NVIDIA-HPC-SDK/.../compilers/lib:...GCC/11.4.0/lib64]`
+into `libgpumem_trace.so`. `DT_RPATH` outranks `LD_LIBRARY_PATH`, so preloading
+gpumem *first* supplied gcc-11.4's libstdc++ process-wide and the gcc-13.2-built
+ibverbs provider died on a missing `GLIBCXX_3.4.31/32` — coexistence silently
+depended on `LD_PRELOAD` order. FIX: `-Xlinker --enable-new-dtags` emits
+`DT_RUNPATH`, which is searched *after* `LD_LIBRARY_PATH`, so the runtime module
+(`gcc/13.2.0`, per common.sh) wins and both orders work.
+
+**Reproducer (much cheaper than the old one).** No GPU, no SLURM, no du04 —
+on an MN5 login node, with `module load gcc/13.2.0 nvidia-hpc-sdk/25.7`:
+`LD_PRELOAD=libibverbs_trace.so:libgpumem_trace.so /bin/true` → was rc=139,
+now rc=0 in both orders. `ulimit -c unlimited` gives a core (login nodes block
+ptrace, so debug from the core, not a live gdb).
+
+**Verified:** all four load combinations rc=0, libstdc++ resolves to GCC/13.2.0
+even with gpumem first, and the full 5-case suite still passes with the shared
+tracer change. NOT yet verified: that a real workload emits IB *and* NVLink
+records into one unified capture — that needs the combined case (below).
 
 **Shipped (2026-07-23):** the launcher now marks providers **exclusive** and
 **replays**. `pcomm -p ib,p2p -- ./app`: the registry (in `pcomm/main.cpp`) tags

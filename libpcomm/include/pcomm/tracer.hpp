@@ -42,17 +42,60 @@ public:
         return *t;
     }
 
+    // Bringing the engine up is *attach-if-running*, not re-init. Two providers
+    // preloaded together (e.g. ib + gpumem) each run their own ELF ctor and each
+    // call start(); the engine is one singleton, so the second call used to
+    // assign over m_recorder and destroy the first provider's live Recorder
+    // mid-flight — SIGSEGV inside ~ThreadLocalBuffer during _dl_init. The second
+    // provider now simply joins the running capture, which is also what we want
+    // semantically: one process, one recorder, one timeline.
     void start(const Config& cfg) {
+        std::lock_guard<std::mutex> lk(m_lifecycle);
+        ++m_active;
+        if (m_recorder) {
+            // Providers all build their Config from the same env, so a mismatch
+            // means someone is being started differently — first one wins, but
+            // say so rather than silently splitting the capture.
+            if (cfg.output_dir != m_config.output_dir || cfg.rank != m_config.rank)
+                std::fprintf(stderr,
+                             "[pcomm] provider requested %s/rank-%d but capture is "
+                             "already running as %s/rank-%d; joining the latter\n",
+                             cfg.output_dir.c_str(), cfg.rank,
+                             m_config.output_dir.c_str(), m_config.rank);
+            return;
+        }
         m_config = cfg;
         auto dir = m_config.output_dir / ("rank-" + std::to_string(m_config.rank));
         m_sink = std::make_unique<rec::FileSink>(dir);
         m_recorder = std::make_unique<rec::Recorder<>>(*m_sink);
         install_fork_handler();
+        // Backstop: with refcounted stop(), a provider that never stops (a
+        // vendor teardown path that skips our dtor) would otherwise hold the
+        // count above zero and the capture would never be flushed at all.
+        std::atexit([] { instance().finalize(); });
         emit_anchor();  // start-of-run clock anchor (UNIFICATION §4)
     }
 
+    // Symmetric: only the last provider to leave finalizes the capture, so one
+    // provider unloading early can't flush and seal the streams the other is
+    // still writing to (and we don't emit a second end-of-run anchor).
     void stop() {
-        if (!m_recorder) return;
+        {
+            std::lock_guard<std::mutex> lk(m_lifecycle);
+            if (!m_recorder) return;
+            if (m_active > 0 && --m_active > 0) return;
+        }
+        finalize();
+    }
+
+    // The actual end-of-capture work, run exactly once however we get here
+    // (last stop(), or the atexit backstop).
+    void finalize() {
+        {
+            std::lock_guard<std::mutex> lk(m_lifecycle);
+            if (!m_recorder || m_finalized) return;
+            m_finalized = true;
+        }
         emit_anchor();  // end-of-run anchor: reader fits offset + skew
         // Flush every thread's buffers, not just this one's (cross-thread
         // flush): multi-threaded targets (e.g. a CQ-poll thread) record on
@@ -96,7 +139,12 @@ private:
         // per-thread buffer_store rebuilds against the child's sink.
         Config cfg = t.m_config;
         cfg.rank = static_cast<int>(::getpid());
+        // The providers are still attached in the child, so re-init must not
+        // count as an extra start() — otherwise the refcount never reaches zero
+        // and the child's capture is never flushed.
+        const int attached = t.m_active;
         t.start(cfg);
+        t.m_active = attached;
     }
 
     void emit_anchor() {
@@ -131,6 +179,12 @@ private:
     Config m_config{};
     std::unique_ptr<rec::FileSink> m_sink;
     std::unique_ptr<rec::Recorder<>> m_recorder;
+    // How many providers have start()ed and not yet stop()ped. Guards the
+    // attach/finalize decisions above; ctors normally run single-threaded under
+    // _dl_init, but stop() can arrive from a vendor exit callback on any thread.
+    int m_active{0};
+    bool m_finalized{false};
+    std::mutex m_lifecycle;
 };
 
 inline Config Config::from_env() {
