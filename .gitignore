@@ -3,3 +3,8 @@ build/
 compile_commands.json
 pcomm-out/
 build-x/
+
+# Your global ignore (~/.config/git/ignore) has PLAN-*.md; plans/ is a tracked
+# part of this repo on purpose — a plan that only exists on disk is exactly the
+# thing plans/ exists to prevent. Repo .gitignore outranks the global excludes.
+!plans/PLAN-*.md
