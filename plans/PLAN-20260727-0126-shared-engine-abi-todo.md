@@ -99,12 +99,29 @@ teeth (check at acquire, refuse on mismatch).
    providers: **3 -> 0** (total co-defined symbols 969 -> 771, but the rest are
    pure functions/vtables — harmless vague linkage).
 
-   **[todo — 2b] The C ABI itself.** Providers still call C++ methods across the
+   **[done — 2b] The C ABI itself.** Commit `4dd6a69`. Providers still call C++ methods across the
    `.so` boundary, so the cross-compiler hazard that motivated choosing A over B
    is *centralized, not removed*: gpumem is still built by nvcc/gcc-11.4 and now
-   calls into a gcc-13.2-built engine. Wrap the boundary in
-   `pcomm_engine_acquire/release/buffer/flush/intern` and have the templated
-   `record<R>()` become an inline wrapper over it.
+   calls into a gcc-13.2-built engine. Landed as
+   `pcomm/engine_abi.h`: records append into a POD arena
+   (`pcomm_engine_arena`/`_flush`) cached in a thread_local, so the per-record
+   `std::map` lookup is gone too. gpumem and ibverbs now import **only**
+   `pcomm_engine_*` from the engine; co-defined symbols 771 -> 160.
+
+   Which crossing actually mattered was narrower than assumed:
+   `RegisteredSymbols` is ibverbs-only and same-compiler, so the real hazard was
+   `buffer_store()` — gcc-11.4 doing `operator[]` on a gcc-13.2 `std::map`, once
+   per record. Also had to *reverse* 2a's `extern template`: correct while the
+   Recorder owned state, but afterwards it made providers import
+   intern/drain_thread as mangled C++.
+
+   **REMAINING GAP:** hook providers still reach
+   `smart_dlsym::register_symbol`, which manipulates a
+   `std::unordered_map<std::string, std::function>` inline. ibverbs only today,
+   same compiler as the engine, so safe *now* — a hazard the moment a hook
+   provider is built by another toolchain. Give it a C shim
+   (`pcomm_engine_register_symbol(name, fn_ptr, user_data)`) when the second
+   hook provider (UCX/libfabric) lands, or sooner if convenient.
 
    **HARD-WON CONSTRAINT for 2b — the engine must be PRELOADED, not just
    linked.** The linker searches preloaded objects before the executable's own
