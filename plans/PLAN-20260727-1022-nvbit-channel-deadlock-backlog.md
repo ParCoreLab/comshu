@@ -175,7 +175,64 @@ below would have changed nothing.
 
 </details>
 
-## Next step (rewritten after the measurement)
+## LOCATED (2026-07-27): the ring-wrap reset in ChannelDev is racy
+
+Case 07's hang is in NVBit's `ChannelDev` buffer wrap. Evidence, all measured
+with `PCOMM_CHANNEL_SIZE` (new knob) forcing a small 16 MiB ring so wraps happen
+often and progress is visible:
+
+```
+N=163840  ->  OK    69,304,608 B   (4.13 wraps... completes)
+N=196608  ->  HUNG  67,108,608 B   = 4.00 x 16 MiB ring
+N=262144  ->  HUNG 100,662,912 B   = 6.00 x 16 MiB ring
+```
+
+Healthy runs capture exactly **423.00 bytes/element**; the hung ones stop
+mid-stream at an **integer ring-wrap boundary** (within one record of it). It is
+a race, not a capacity limit — which is why it needs several wraps to trigger
+and why it looked volume-dependent.
+
+The suspect code, `channel.hpp` `flush()`:
+
+```cpp
+buff_write_tail_ptr = buff;   // reset
+__threadfence();
+buff_write_head_ptr = buff;
+```
+
+while other warps are concurrently in `push()` doing
+`atomicAdd((ULL*)&buff_write_head_ptr, nbytes)`. A warp that reserved space just
+before the reset holds a `curr_ptr` past `buff_end`; after the reset the
+flushing warp's `while (buff_write_tail_ptr != curr_ptr)` wait can never be
+satisfied. Device spins forever -> 100% SM, 0% memory traffic, host sees no
+further data. Matches every observation.
+
+**What this rules out** (each killed by measurement, not argument): bounded
+channel starving the producer; doorbell not volatile/not visible (it is volatile
+both sides with `__threadfence_system`, and flushes demonstrably work — 27.7 MB
+passed through a 16 MiB ring); `push()` spinning before ever flushing; ring
+capacity (hangs at ~7% occupancy on the 1 GiB ring); launch count (10 launches
+fine); host-side deadlock (main thread `R`, spinning in
+`cudaDeviceSynchronize`); NVBit's mere presence; provider coexistence; the
+`g.heap_regions` race.
+
+**One thing still unexplained:** at the default 1 GiB ring, N=196608 hangs having
+delivered *zero* bytes, though 83 MB should fit without a single wrap (and 69 MB
+at the same ring completed fine). Either the 1 GiB pinned allocation is not
+really giving a 1 GiB ring, or there is a second failure mode. Worth resolving
+before trusting any fix.
+
+## Next step
+
+1. Add device-side counters (wrap count, warps parked in each spin) to confirm
+   the wrap race directly rather than by inference.
+2. Then fix in our vendored copy: make the wrap reset safe against concurrent
+   `atomicAdd` reservations — e.g. monotonically increasing head/tail with
+   modulo indexing instead of pointer reset, so a stale reservation is still
+   ordered correctly.
+3. Resolve the 1 GiB anomaly above.
+
+## Superseded next step (kept: it produced the measurements)
 
 Find where the hang actually is, given it is *before* any access is pushed.
 Cheapest first: run case 05 under `PCOMM_CHANNEL_DEBUG=1` again and get a host

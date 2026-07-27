@@ -39,7 +39,21 @@
 using pcomm::attr::RawAccess;
 using pcomm::core::MemOp;
 
-#define CHANNEL_SIZE (1l << 30)
+// Ring size per CUDA context, host-pinned. Overridable with PCOMM_CHANNEL_SIZE
+// (bytes) — needed to test whether the case 07 hang tracks the ring size, and
+// useful anyway: 1 GiB *per context* is a lot to pin on a 4-GPU node, and the
+// recv thread mallocs the same amount again for its staging buffer.
+#define CHANNEL_SIZE_DEFAULT (1l << 30)
+static long channel_size() {
+    static long sz = [] {
+        if (const char* e = std::getenv("PCOMM_CHANNEL_SIZE")) {
+            long v = std::atol(e);
+            if (v >= (1l << 20)) return v;   // sanity floor: 1 MiB
+        }
+        return (long)CHANNEL_SIZE_DEFAULT;
+    }();
+    return sz;
+}
 
 namespace {
 
@@ -256,7 +270,8 @@ void* recv_thread_fun(void* args) {
         ch_host = &G().ctx_state.at(ctx)->channel_host;
     }
 
-    char* recv_buffer = (char*)malloc(CHANNEL_SIZE);
+    const long chan_sz = channel_size();
+    char* recv_buffer = (char*)malloc(chan_sz);
     std::vector<RawAccess> batch;
 
     // PCOMM_CHANNEL_DEBUG=1 — diagnostic for the NVBit deadlock (cases 05/07,
@@ -273,6 +288,8 @@ void* recv_thread_fun(void* args) {
     //   recv() returns data then we stall    -> we are the bottleneck; look at
     //                                           process()/the drain path.
     const bool dbg = std::getenv("PCOMM_CHANNEL_DEBUG") != nullptr;
+    if (dbg)
+        std::fprintf(stderr, "[pcomm-chan] ctx=%p ring=%ld bytes\n", (void*)ctx, chan_sz);
     unsigned long long recv_calls = 0, empty_calls = 0, total_bytes = 0;
     unsigned long max_n = 0;
     auto t_start = std::chrono::steady_clock::now();
@@ -280,7 +297,7 @@ void* recv_thread_fun(void* args) {
 
     bool done = false;
     while (!done) {
-        uint32_t n = ch_host->recv(recv_buffer, CHANNEL_SIZE);
+        uint32_t n = ch_host->recv(recv_buffer, chan_sz);
         ++recv_calls;
         if (n == 0) {
             ++empty_calls;
@@ -421,7 +438,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
     assert(G().ctx_state.find(ctx) == G().ctx_state.end());
     G().ctx_state[ctx] = state;
     cudaMallocManaged(&state->channel_dev, sizeof(ChannelDev));
-    state->channel_host.init((int)G().ctx_state.size() - 1, CHANNEL_SIZE,
+    state->channel_host.init((int)G().ctx_state.size() - 1, channel_size(),
                              state->channel_dev, recv_thread_fun, ctx);
     nvbit_set_tool_pthread(state->channel_host.get_thread());
 }
