@@ -29,7 +29,26 @@ covers the coexistence property (one process, one capture, both providers) but
 single-node NVSHMEM never posts an IB send, so cross-transport traffic
 correlation has no regression test until this is fixed.
 
-## NVBit "bounded channel deadlock" — REFUTED by measurement (2026-07-27)
+## NVBit "deadlock" — case 05 was a TIMEOUT, not a deadlock (2026-07-27)
+
+**Case 05 completes.** Raise its deadline from 180s to 1800s and
+NCCL-over-NVLink under NVBit finishes (rc=0, job 43878352) with a valid capture:
+`700.pcs` 7440 B on each of 4 ranks, plus peer topology and clock anchors. It
+was never deadlocked — NVBit slowdown simply exceeded a 3-minute bound. So the
+claim repeated since 2026-07-21, that this is "intrinsic to persistent-kernel
+collectives under NVBit, Snoopie has the same limit", is wrong. Case 05 is
+promotable to a passing case once it has goldens.
+
+**Case 07 is a different bug and is still open.** It still times out at 1800s
+(job 43879008, 30:08) and emits *no gpumem records at all* while ib records
+appear. Do not treat 05 and 07 as one failure — that grouping was an inference
+from `bytes=0` and it did not survive.
+
+Instrumentation is required to trigger either: NVBit loaded with
+`PCOMM_KERNEL_NAME` matching no kernel runs fine; instrumenting the kernel
+hangs. So this is our side, not a blanket NVBit/NCCL incompatibility.
+
+## Superseded: the "bounded channel" theory — REFUTED by measurement
 
 Since 2026-07-21 we recorded, in two meta.json files, two plans and this
 document, that cases 05/07 hang because *a comm library spins on the device

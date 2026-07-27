@@ -1,12 +1,61 @@
-# PLAN — fix the NVBit bounded-channel deadlock
+# PLAN — the NVBit "channel deadlock" (mostly RESOLVED — it was not one)
 
 - **Created:** 2026-07-27 10:22 +03
 - **Status:** backlog
-- **Unblocks:** `05_nccl_p2p_xfail`, `07_nvshmem_multinode_xfail` — and with 07,
-  the unified NVLink+IB *traffic* timeline, which is the project's headline
-  result and currently has no regression test at all.
-- **Related:** `plans/PLAN-20260727-0126-shared-engine-abi-todo.md` (its
-  Sequencing section notes this gap), `things-to-circle-back-to.md`
+- **Resolved for case 05:** it was never a deadlock. Measured 2026-07-27
+  (job 43878352): raise the deadline 180s -> 1800s and NCCL-over-NVLink under
+  NVBit **completes** with a valid capture (700.pcs 7440B x4 ranks). Just NVBit
+  slowdown against a 3-minute bound. Case 05 is promotable — see its meta.json.
+- **Still open for case 07 only:** multinode NVSHMEM still times out at 1800s
+  (job 43879008) and emits no gpumem records at all. A different bug from 05.
+- **Related:** `plans/PLAN-20260727-0126-shared-engine-abi-todo.md`,
+  `things-to-circle-back-to.md`
+
+## What this file got wrong, so it is not re-derived
+
+Three explanations were recorded and each was refuted by measurement rather than
+argument. Worth keeping as a caution about how confident the wrong ones sounded.
+
+1. **"NVBit's bounded channel starves the producer."** Carried since 2026-07-21
+   across two meta.json files, two plans and things-to-circle-back-to.md; cited
+   Snoopie's real documented limitation. Never measured. Instrumented the recv
+   thread: `bytes=0`, doorbell never set, ring never filled, recv threads
+   healthy at ~19M polls/sec. No producer was ever blocked on it.
+
+2. **"So the hang precedes any data being produced."** My own inference from
+   `bytes=0`, and also wrong. `flush()` only fires when the 1 GiB-per-context
+   ring *fills*; a kernel producing far less simply never flushes. Records were
+   accumulating in the buffer the whole time. `bytes=0` was uninformative.
+
+3. **"Cases 05 and 07 are one bug."** Built on (2), and collapsed with it. 05
+   completes at 1800s; 07 does not. Different failures.
+
+The one thing that held throughout: the producer never blocked on a full
+channel. That was enough to kill (1), and not enough to support (2) or (3).
+
+## What is actually true
+
+| | case 05 (NCCL, 1 node) | case 07 (NVSHMEM, 2 nodes) |
+|---|---|---|
+| 100s deadline | hangs | hangs |
+| 1800s deadline | **completes, valid capture** | still times out |
+| channel during hang | empty | empty |
+| gpumem records | produced | **none** |
+| ib records | n/a | 110.pcs present |
+
+Isolation already established for 07: 2 nodes with gpumem alone also hangs, so
+coexistence is not involved; 1 node with both providers completes; NVBit's own
+`NO_EAGER_LOAD=0` hint does not help; the `g.heap_regions` race was fixed and
+did not help. Instrumentation *is* required — NVBit loaded with
+`PCOMM_KERNEL_NAME` matching nothing runs fine, instrumenting the kernel hangs.
+
+## Next step (case 07 only)
+
+Host backtrace of a stuck rank. Login nodes block ptrace, so either attach with
+gdb on a compute node inside the allocation, or `ulimit -c unlimited` and debug
+the core. The sharpest clue to chase: **gpumem produced no records at all here
+while ib did**, so look at the gpumem/NVBit side of multinode NVSHMEM
+initialisation rather than at the workload.
 
 ## The failure
 

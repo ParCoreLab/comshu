@@ -88,15 +88,12 @@ Cases 02 (inter-node IB) and 03 (intra-node NVLink) are the "who moves data to
 whom" question on opposite transports/providers: case 02's `comm_edges` vs case
 03's `peer_topology`.
 
-**Why case 03 is a custom kernel, not NCCL:** NCCL under NVBit hangs — the
-gpumem provider inits, NCCL prints its version, then nothing. The *reason* was
-long recorded as "NCCL's persistent collective kernel occupies the GPU, so
-NVBit's bounded channel deadlocks", but that was never measured and has now been
-**refuted**: during the hang the channel is completely empty (see
-things-to-circle-back-to.md). The hang is real and reproducible; its cause is
-open. Either way a discrete peer-write microkernel is the right NVBit target and
-a cleaner oracle, and NCCL's inter-node story is captured on its IB side by
-case 02.
+**Why case 03 is a custom kernel, not NCCL:** originally because "NCCL under
+NVBit deadlocks". That turned out to be false — NCCL under NVBit **completes**,
+it is just slow, and case 05 timed out at a 180s bound rather than hanging (see
+things-to-circle-back-to.md). A discrete peer-write microkernel is still the
+better case: seconds instead of minutes, and a cleaner oracle. But it is a
+speed/clarity choice, not a workaround for a limitation.
 
 **Why case 04 filters kernels:** unfiltered, NVBit instruments all of nvshmem's
 internal device code (~400 MB/rank, not repeatable). `PCOMM_KERNEL_NAME=put_to_next`
