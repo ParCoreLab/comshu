@@ -92,12 +92,36 @@ teeth (check at acquire, refuse on mismatch).
    `stop()`; `atfork_child()` count restore; `atexit` → once-only `finalize()`.
    Commit `7a5b55a`.
 
-2. **[todo] Create `libpcomm_engine.so` with the C ABI.** Move in: `Tracer`,
-   `Recorder`, sink, intern tables, `ThreadBufferRegistry`, `RecordIdTracker`,
-   **and `src/hook/Dlsym.cpp`**. Providers stop embedding the engine and link
-   the engine `.so` instead.
+2. **[done — 2a] `libpcomm_engine.so` exists and owns the singletons.** Commit
+   `d5675e2`. `Tracer`, `Recorder<DefaultConfig>`, intern tables,
+   `ThreadBufferRegistry`, `RecordIdTracker` and `Dlsym.cpp` all moved in;
+   `pcomm_hook` went STATIC -> SHARED. Guard variables co-defined by both
+   providers: **3 -> 0** (total co-defined symbols 969 -> 771, but the rest are
+   pure functions/vtables — harmless vague linkage).
 
-3. **[todo] `-fvisibility=hidden` + version scripts on every provider.** Today
+   **[todo — 2b] The C ABI itself.** Providers still call C++ methods across the
+   `.so` boundary, so the cross-compiler hazard that motivated choosing A over B
+   is *centralized, not removed*: gpumem is still built by nvcc/gcc-11.4 and now
+   calls into a gcc-13.2-built engine. Wrap the boundary in
+   `pcomm_engine_acquire/release/buffer/flush/intern` and have the templated
+   `record<R>()` become an inline wrapper over it.
+
+   **HARD-WON CONSTRAINT for 2b — the engine must be PRELOADED, not just
+   linked.** The linker searches preloaded objects before the executable's own
+   dependencies. With `dlsym` in a mere `DT_NEEDED`, libc's `dlsym` wins, the
+   SmartDlsym interposer never runs, and everything the target resolves at
+   runtime goes uncaptured. It cost 12 of 16 memory regions and 36 of 432 queue
+   pairs in case 06 — silently, no crash, no error. The launcher now puts the
+   engine first in every LD_PRELOAD chain (self-located via `dladdr`, override
+   with `PCOMM_ENGINE_PATH`). Do not undo that in 2b.
+
+3. **[todo] `-fvisibility=hidden` + version scripts on every provider.**
+   Also add here: **a startup assertion that the interposer is actually live.**
+   Every bug in this refactor failed by producing a plausible green rather than
+   an error (stale captures, the case 07 label mismatch, the dlsym loss). Only a
+   golden with enough entities in it noticed the last one; the build and runtime
+   said nothing. The engine should verify at acquire that its `dlsym` is the one
+   a caller resolves, and complain loudly if not. Today
    ibverbs exports 3831 dynamic symbols and gpumem 4482; a provider needs
    roughly `pcomm_create_provider`, `pcomm_abi_version`, and its interposers.
    That export surface *is* the bug class of `7a5b55a`. Cheap defense-in-depth
