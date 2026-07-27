@@ -16,22 +16,52 @@ not:
 | 2 nodes, 8 PEs | p2p, `NO_EAGER_LOAD=0`   | exit 124 |
 
 Two nodes hang with gpumem alone, so ibverbs is not involved; and NVBit's own
-banner hint for deadlocks (`NO_EAGER_LOAD=0`) does not help. This is the same
-family as case 05's NCCL deadlock: a comm library spinning on the device while
-NVBit's bounded channel needs to flush. Multinode NVSHMEM's IBRC path has the
-device waiting on a host proxy, which is exactly the shape that starves the
-channel.
+banner hint for deadlocks (`NO_EAGER_LOAD=0`) does not help.
 
-Fix ideas (same shortlist as 05): spillable/host-pinned channel that needs no
-device-side flush; a cooperative-launch flush that can preempt the spinning
-kernel; or IBGDA transport, where the GPU posts WQEs directly and there is no
-host proxy to wait on — though IBGDA would also bypass host verbs, so the ib
-provider would see nothing and that half of the capture needs another route.
+**The "same family as case 05" claim is now doubtful, and the shared cause both
+were filed under is refuted** — see the section below. Case 05 was measured to
+hang with a completely empty channel. Case 07 has not been re-measured since,
+and a real data race in *this specific path* (`g.heap_regions`, recv thread vs
+CUDA-callback thread) was fixed afterwards, so re-run it before assuming
+anything about its cause.
 
 **Consequence:** the unified NVLink+IB *traffic* timeline is blocked. Case 06
 covers the coexistence property (one process, one capture, both providers) but
 single-node NVSHMEM never posts an IB send, so cross-transport traffic
 correlation has no regression test until this is fixed.
+
+## NVBit "bounded channel deadlock" — REFUTED by measurement (2026-07-27)
+
+Since 2026-07-21 we recorded, in two meta.json files, two plans and this
+document, that cases 05/07 hang because *a comm library spins on the device
+while NVBit's bounded channel cannot drain*. It was plausible, it matched
+Snoopie's documented limits, and it was **never measured**.
+
+Instrumented `recv_thread_fun` (`PCOMM_CHANNEL_DEBUG=1`) and ran case 05:
+
+```
+recv_calls=933,389,980   empty=933,389,980   bytes=0   max_recv=0
+```
+
+All four contexts, for the entire hang. `ChannelDev::flush()` sets the doorbell
+and `recv()` returns >0 exactly when it is set, so: the device never flushed,
+the ring never filled, no producer was ever blocked on it, and the recv threads
+were healthy the whole time (~19M polls/sec — they were scheduled, just idle).
+
+`bytes=0` also locates it: **the hang precedes any instrumented access being
+produced at all**, consistent with the original note that NCCL "inits, prints
+version, then hangs". So look at NVBit's interaction with the comm library's
+*init* path — instrumentation installation, the CUDA event callbacks under
+`g_mutex`, NVBit's lazy module loading — not at data flow. Every fix previously
+shortlisted (spillable channel, cooperative flush, IBGDA) targeted the drain
+path and would have changed nothing.
+
+Also observed, not the bug but worth knowing: the recv thread busy-polls with no
+backoff, burning a core per context.
+
+Aside: `CHANNEL_SIZE` is 1 GiB **per context**, plus a 1 GiB host `malloc` in
+each recv thread — 8 GiB of the 4-GPU run is channel buffers that, in case 05,
+never receive a byte.
 
 ## Provider coexistence & replay (design)
 **Finding (2026-07-21) — SUPERSEDED, THE DIAGNOSIS BELOW WAS WRONG.** It read:

@@ -1,12 +1,14 @@
 {
   "case": "05_nccl_p2p_xfail",
-  "providers": ["p2p"],
+  "providers": [
+    "p2p"
+  ],
   "topology": "1 node x4 H100, ncclAllReduce over NVLink",
   "expect_fail": {
     "mode": "deadlock",
-    "reason": "NCCL persistent collective kernel occupies the GPU; NVBit's bounded channel can't flush -> producer/consumer deadlock",
-    "fix_ideas": "spillable/unbounded channel, or cooperative flush that preempts the persistent kernel",
+    "reason": "hangs before any instrumented access is recorded. MEASURED 2026-07-27 with PCOMM_CHANNEL_DEBUG=1: recv_calls=933M, empty=933M, bytes=0, doorbell never set across all 4 contexts -> the device never flushed and the channel never filled. The previous explanation (NCCL's persistent kernel starves NVBit's bounded channel) was never measured and is REFUTED. Actual location unknown; it precedes any data flow, so suspect NVBit's interaction with NCCL's init path.",
+    "fix_ideas": "unknown \u2014 the channel fixes previously listed here targeted a mechanism that measurement refuted. Find the actual stall point first (host backtrace of a stuck rank; or set PCOMM_KERNEL_NAME to a non-matching name so nothing is instrumented, to test whether NVBit's mere presence during init is enough).",
     "passing_stand_in": "03_p2p_kernel"
   },
-  "golden": "n/a — kept red on purpose (checks/*.sql document intended capture for when it is fixed)"
+  "golden": "n/a \u2014 kept red on purpose (checks/*.sql document intended capture for when it is fixed)"
 }

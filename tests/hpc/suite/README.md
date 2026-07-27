@@ -69,9 +69,13 @@ the obvious suspect — the coexistence we had just enabled — was wrong:
 | 2 nodes | `p2p` alone | exit 124 (hang) |
 | 2 nodes | `p2p`, `NO_EAGER_LOAD=0` | exit 124 |
 
-So it is the same family as case 05 (a comm library spinning on the device vs
-NVBit's bounded channel), not a provider conflict. Case 06 is its passing
-stand-in for the coexistence property.
+So it is not a provider conflict. It was filed as "the same family as case 05
+(a comm library spinning on the device vs NVBit's bounded channel)" — but that
+shared explanation has since been **refuted by measurement** for case 05 (the
+channel is empty during the hang; see things-to-circle-back-to.md), and case 07
+has not been re-measured since a real data race in its path was fixed. Treat its
+cause as unknown. Case 06 remains its passing stand-in for the coexistence
+property.
 
 **Case 05 is a known-failing (xfail) test, kept on purpose.** Tracing NCCL over
 NVLink with the gpumem provider is a major use case that currently deadlocks (see
@@ -84,12 +88,15 @@ Cases 02 (inter-node IB) and 03 (intra-node NVLink) are the "who moves data to
 whom" question on opposite transports/providers: case 02's `comm_edges` vs case
 03's `peer_topology`.
 
-**Why case 03 is a custom kernel, not NCCL:** NCCL runs a *persistent* collective
-kernel that occupies the GPU, so NVBit's bounded channel deadlocks (the gpumem
-provider inits, NCCL prints its version, then hangs). That's intrinsic to
-persistent-kernel collectives under NVBit — Snoopie has the same limit. A
-discrete peer-write microkernel is the right NVBit target and a cleaner oracle;
-NCCL's inter-node story is captured on its IB side by case 02.
+**Why case 03 is a custom kernel, not NCCL:** NCCL under NVBit hangs — the
+gpumem provider inits, NCCL prints its version, then nothing. The *reason* was
+long recorded as "NCCL's persistent collective kernel occupies the GPU, so
+NVBit's bounded channel deadlocks", but that was never measured and has now been
+**refuted**: during the hang the channel is completely empty (see
+things-to-circle-back-to.md). The hang is real and reproducible; its cause is
+open. Either way a discrete peer-write microkernel is the right NVBit target and
+a cleaner oracle, and NCCL's inter-node story is captured on its IB side by
+case 02.
 
 **Why case 04 filters kernels:** unfiltered, NVBit instruments all of nvshmem's
 internal device code (~400 MB/rank, not repeatable). `PCOMM_KERNEL_NAME=put_to_next`

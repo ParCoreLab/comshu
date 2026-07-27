@@ -28,6 +28,9 @@
 
 #include "nvbit.h"
 #include "nvbit_tool.h"
+#include <atomic>
+#include <chrono>
+
 #include "utils/channel.hpp"
 
 #include "dev_common.h"
@@ -67,9 +70,19 @@ struct Globals {
     std::vector<std::string> id_to_opcode;
     std::vector<MemOp> id_to_memop;
     std::string kernel_filter = "all";
+    // Written only by the CUDA-callback thread under g_mutex.
     std::vector<NvshmemHeapRegion> heap_regions;
     std::unordered_set<uint64_t> heap_bases_seen;
-    bool heap_regions_sorted = false;
+    // What the recv thread actually reads: an immutable, already-sorted
+    // snapshot, published atomically. The reader used to sort `heap_regions` in
+    // place on first use while the callback thread could be push_back()ing into
+    // it — a reallocation mid-sort is a use-after-free, and it sits in the
+    // multinode NVSHMEM path. Readers never mutate now, so there is nothing to
+    // race with. Old snapshots are leaked on purpose: they are a few dozen bytes
+    // and republishing happens only when a new symmetric-heap region appears, so
+    // reclaiming them would need hazard pointers to be safe against a reader
+    // that is mid-iteration.
+    std::atomic<const std::vector<NvshmemHeapRegion>*> heap_snapshot{nullptr};
     std::string nvshmem_version = "2.8";  // legacy-path layout selector
     int nvshmem_ngpus = 10;
 };
@@ -90,21 +103,26 @@ struct MutexLock {
     pthread_mutex_t* m_m;
 };
 
-// NVSHMEM 3.x path: region index -> PE (mype + i) % npes. -1 = not heap.
-int find_nvshmem_heap_owner(uint64_t addr, int mype) {
+// Publish a fresh sorted snapshot for readers. Caller must hold g_mutex.
+void publish_heap_snapshot() {
     auto& g = G();
-    if (!g.heap_regions_sorted) {
-        std::sort(g.heap_regions.begin(), g.heap_regions.end(),
-                  [](const NvshmemHeapRegion& a, const NvshmemHeapRegion& b) {
-                      return a.base < b.base;
-                  });
-        for (int i = 0; i < (int)g.heap_regions.size(); i++)
-            g.heap_regions[i].region_index = i;
-        g.heap_regions_sorted = true;
-    }
-    int npes = (int)g.heap_regions.size();
-    if (npes == 0) return -1;
-    for (const auto& r : g.heap_regions) {
+    auto* snap = new std::vector<NvshmemHeapRegion>(g.heap_regions);
+    std::sort(snap->begin(), snap->end(),
+              [](const NvshmemHeapRegion& a, const NvshmemHeapRegion& b) {
+                  return a.base < b.base;
+              });
+    for (int i = 0; i < (int)snap->size(); i++) (*snap)[i].region_index = i;
+    g.heap_snapshot.store(snap, std::memory_order_release);
+}
+
+// NVSHMEM 3.x path: region index -> PE (mype + i) % npes. -1 = not heap.
+// Read-only and lock-free: called per access from the recv thread, so taking
+// g_mutex here would serialize the drain path against every CUDA callback.
+int find_nvshmem_heap_owner(uint64_t addr, int mype) {
+    const auto* snap = G().heap_snapshot.load(std::memory_order_acquire);
+    if (!snap || snap->empty()) return -1;
+    const int npes = (int)snap->size();
+    for (const auto& r : *snap) {
         if (addr >= r.base && addr < r.base + r.size)
             return (mype + r.region_index) % npes;
     }
@@ -241,10 +259,50 @@ void* recv_thread_fun(void* args) {
     char* recv_buffer = (char*)malloc(CHANNEL_SIZE);
     std::vector<RawAccess> batch;
 
+    // PCOMM_CHANNEL_DEBUG=1 — diagnostic for the NVBit deadlock (cases 05/07,
+    // plans/PLAN-20260727-1022-nvbit-channel-deadlock-backlog.md). The decisive
+    // question is whether the device is stalled waiting on us.
+    //
+    // ChannelDev::flush() sets the doorbell and then spins *inside the kernel*
+    // until the host clears it, and recv() returns >0 exactly when the doorbell
+    // is non-zero. So the two states are distinguishable from here alone, with
+    // no change to the vendored channel.hpp:
+    //   recv() keeps returning 0 while hung  -> device never flushed; the ring
+    //                                           is NOT full and the channel is
+    //                                           not what is blocking.
+    //   recv() returns data then we stall    -> we are the bottleneck; look at
+    //                                           process()/the drain path.
+    const bool dbg = std::getenv("PCOMM_CHANNEL_DEBUG") != nullptr;
+    unsigned long long recv_calls = 0, empty_calls = 0, total_bytes = 0;
+    unsigned long max_n = 0;
+    auto t_start = std::chrono::steady_clock::now();
+    auto t_last_data = t_start, t_last_report = t_start;
+
     bool done = false;
     while (!done) {
         uint32_t n = ch_host->recv(recv_buffer, CHANNEL_SIZE);
-        if (n == 0) continue;
+        ++recv_calls;
+        if (n == 0) {
+            ++empty_calls;
+            if (dbg) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - t_last_report >= std::chrono::seconds(10)) {
+                    t_last_report = now;
+                    auto since_data = std::chrono::duration_cast<std::chrono::seconds>(
+                                          now - t_last_data).count();
+                    std::fprintf(stderr,
+                        "[pcomm-chan] ctx=%p idle: recv_calls=%llu empty=%llu "
+                        "bytes=%llu max_recv=%lu no_data_for=%llds "
+                        "=> doorbell is 0, device is NOT waiting on the host\n",
+                        (void*)ctx, recv_calls, empty_calls, total_bytes, max_n,
+                        (long long)since_data);
+                }
+            }
+            continue;
+        }
+        total_bytes += n;
+        if (n > max_n) max_n = n;
+        t_last_data = std::chrono::steady_clock::now();
 
         for (uint32_t off = 0; off + sizeof(pcomm_gpu_access_t) <= n;
              off += sizeof(pcomm_gpu_access_t)) {
@@ -283,6 +341,11 @@ void* recv_thread_fun(void* args) {
         batch.clear();
     }
 
+    if (dbg)
+        std::fprintf(stderr,
+            "[pcomm-chan] ctx=%p done: recv_calls=%llu empty=%llu bytes=%llu "
+            "max_recv=%lu\n",
+            (void*)ctx, recv_calls, empty_calls, total_bytes, max_n);
     g_engine->drain_thread();  // buffers never auto-drain (leaked TLS)
     free(recv_buffer);
     return nullptr;
@@ -345,7 +408,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
         if (g.heap_bases_seen.insert((uint64_t)p->ptr).second) {
             g.heap_regions.push_back(
                 {(uint64_t)p->ptr, (uint64_t)p->size, (int)g.heap_regions.size()});
-            g.heap_regions_sorted = false;
+            publish_heap_snapshot();  // sorted under g_mutex, read lock-free
         }
     }
 

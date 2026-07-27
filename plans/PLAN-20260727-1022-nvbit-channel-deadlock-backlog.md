@@ -17,12 +17,33 @@ Two independent workloads hang under the gpumem/NVBit provider:
 | 05 | NCCL all-reduce | 1 node × 4 H100 | deadlock (rc 124) |
 | 07 | NVSHMEM put-ring | 2 nodes × 4 H100 | deadlock (rc 124) |
 
-Both are the same shape: **a comm library that spins on the device, versus
-NVBit's bounded host↔device channel that needs the kernel to make progress in
-order to drain.** NCCL's persistent collective kernel occupies the GPU
-outright. Multinode NVSHMEM's IBRC path has device code waiting on a host proxy
-thread. Either way the producer fills the channel, the consumer can't drain it,
-and nobody advances.
+**MEASURED 2026-07-27 — the long-standing "bounded channel" explanation is
+WRONG.** Ran case 05 with `PCOMM_CHANNEL_DEBUG=1` (instrumentation now in
+`recv_thread_fun`). Across all four contexts, for the whole hang:
+
+```
+recv_calls=933,389,980   empty=933,389,980   bytes=0   max_recv=0
+```
+
+Zero bytes ever received; the doorbell was never once non-zero; the recv threads
+polled ~19M times/second, so they were scheduled and healthy throughout. Since
+`ChannelDev::flush()` sets the doorbell and `recv()` returns >0 exactly when it
+is set, **the device never flushed, the ring never filled, and no producer was
+ever blocked on it.** The channel is not the deadlock.
+
+The old story — "NCCL's persistent kernel occupies the GPU, NVBit's bounded
+channel can't drain, producer/consumer deadlock" — was plausible, matched
+Snoopie's known limits, and was repeated in two meta.json files, this plan and
+things-to-circle-back-to.md. It was never measured. It is now refuted.
+
+**Where it actually hangs: before any instrumented access is recorded at all.**
+`bytes=0` means not one memory access was ever pushed, so the hang precedes the
+instrumented kernel producing data. That matches the original observation that
+NCCL "inits, prints version, then hangs". Look at NVBit's interaction with the
+comm library's *initialization* path, not at data flow: instrumentation
+installation (`handle_launch` / `instrument_function_if_needed`), the CUDA
+event callbacks under `g_mutex`, or NVBit's lazy module loading during NCCL
+bootstrap.
 
 Single-provider vs. co-run is **not** a factor — this was isolated 2026-07-27:
 
@@ -70,7 +91,14 @@ race, not a cycle) but it is a real defect and it is in the multinode NVSHMEM
 path, which is where case 07 hangs. Worth fixing regardless, and worth ruling
 out before hunting further.
 
-## Candidate fixes (unevaluated — that is the first task)
+## Candidate fixes — SUPERSEDED, all three targeted the channel
+
+Kept only so they are not re-proposed. All three assumed the producer was
+blocked on a full channel; the measurement above shows it never was. Any fix
+below would have changed nothing.
+
+<details>
+<summary>Original list (do not implement)</summary>
 
 1. **Remove the device-side wait.** (Reworded after the code read above — the
    buffer is already host-pinned, so relocating it achieves nothing.) The
@@ -90,7 +118,26 @@ out before hunting further.
    case 07 exists for. Only useful as a diagnostic to confirm the proxy-wait
    theory, not as the fix.
 
-## Suggested first step (unchanged, and now clearly the right one)
+</details>
+
+## Next step (rewritten after the measurement)
+
+Find where the hang actually is, given it is *before* any access is pushed.
+Cheapest first: run case 05 under `PCOMM_CHANNEL_DEBUG=1` again and get a host
+backtrace of the stuck ranks (`gdb -p` on a compute node, or a core via
+`ulimit -c unlimited` — login nodes block ptrace, compute nodes may not). That
+says directly whether the app thread is parked in a CUDA call, inside an NVBit
+callback, or on `g_mutex`.
+
+Also worth trying, both one-line experiments:
+- `PCOMM_KERNEL_NAME` set to a name that matches nothing, so NVBit instruments
+  no kernel at all. If it still hangs, the cause is NVBit's presence during
+  init, not our instrumentation.
+- The `heap_regions` race fixed alongside this instrumentation could plausibly
+  have caused a hang in case 07 (not 05 — 05 has no NVSHMEM). Re-run 07 now that
+  it is fixed before assuming both cases share one cause.
+
+## Old suggested first step (done — it is what produced the measurement)
 
 Confirm the mechanism before building anything. The code read above narrowed
 *where* to look but did **not** identify the cause, and one plausible-sounding
