@@ -43,6 +43,17 @@
 #define ULL unsigned long long int
 
 class ChannelDev {
+  public:
+    // --- pcomm addition (diagnostic, opt-in) --------------------------------
+    // Host-mapped counters so we can see exactly where the device stops. Set by
+    // the backend after ChannelHost::init; NULL disables all of it. Slots:
+    //   0 push entry      1 buffer-full seen   2 flusher branch  3 waiter branch
+    //   4 flush() body    5 doorbell written   6 doorbell cleared 7 flush() done
+    volatile unsigned long long* pcomm_dbg = nullptr;
+    __device__ __forceinline__ void pcomm_bump(int slot) {
+        if (pcomm_dbg) atomicAdd((unsigned long long*)&pcomm_dbg[slot], 1ull);
+    }
+
   private:
     int id;
     volatile int* doorbell;
@@ -62,6 +73,7 @@ class ChannelDev {
         // assert(nbytes != 0);
 #endif
 
+        pcomm_bump(0);
         uint8_t* curr_ptr = NULL;
 
         while (curr_ptr == NULL) {
@@ -73,9 +85,11 @@ class ChannelDev {
              * Many warps could find condition true, but only the first warp
              * will find true the condition after. */
             if (curr_ptr + nbytes > buff_end) {
+                pcomm_bump(1);
                 /* I am the first warp that found the buffer full and
                  * I am the one responsible for flushing the buffer out */
                 if (curr_ptr <= buff_end) {
+                    pcomm_bump(2);
                     /* wait until everyone completed to write */
                     while (buff_write_tail_ptr != curr_ptr) {
                     }
@@ -83,6 +97,7 @@ class ChannelDev {
                     /* flush buffer */
                     flush();
                 } else {
+                    pcomm_bump(3);
                     /* waiting for buffer to flush */
                     while (buff_write_head_ptr > buff_end) {
                     }
@@ -102,6 +117,7 @@ class ChannelDev {
             return;
         }
 
+        pcomm_bump(4);
         /* make sure everything is visible in memory */
         __threadfence_system();
 
@@ -110,15 +126,29 @@ class ChannelDev {
 #endif
         /* notify current buffer has something*/
         *doorbell = nbytes;
+        pcomm_bump(5);
 
         /* wait for host to release the doorbell */
         while (*doorbell != 0)
             ;
+        pcomm_bump(6);
 
-        /* reset head/tail */
-        buff_write_tail_ptr = buff;
-        __threadfence();
-        buff_write_head_ptr = buff;
+        /* reset head/tail
+         *
+         * pcomm change (2026-07-27), correctness hardening — NOT a fix for the
+         * case 07 hang. These were plain stores racing the
+         * `atomicAdd((ULL*)&buff_write_head_ptr, nbytes)` that waiting warps
+         * issue on the same address; a plain store colliding with an atomic RMW
+         * is a genuine lost update, so atomicExch is correct where a store is
+         * not. Kept on those grounds alone.
+         *
+         * It does NOT resolve case 07. Measured: with a 1 GiB ring the hang
+         * reproduces with full=0 flusher=0 flushbody=0 — the ring never fills,
+         * this code never executes, and it still hangs. The channel is not the
+         * mechanism; the earlier "flusher stuck at 4" reading was a downstream
+         * symptom of warps parking mid-push once the kernel wedged elsewhere. */
+        atomicExch((ULL*)&buff_write_head_ptr, (ULL)buff);
+        pcomm_bump(7);
 
         // printf("FLUSH CHANNEL#%d: DONE\n", id);
     }

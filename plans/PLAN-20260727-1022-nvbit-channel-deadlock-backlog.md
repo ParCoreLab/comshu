@@ -175,7 +175,46 @@ below would have changed nothing.
 
 </details>
 
-## LOCATED (2026-07-27): the ring-wrap reset in ChannelDev is racy
+## CHANNEL EXONERATED (2026-07-27, second measurement) — read this first
+
+The section below ("the ring-wrap reset is racy") reached the wrong conclusion.
+Device-side counters (`PCOMM_CHANNEL_DEBUG`, slots documented in channel.hpp)
+settled it:
+
+```
+1 GiB ring, N=196608:  push=289,426  full=0  flusher=0  flushbody=0  -> HUNG
+case 07 config      :  push=18,432   full=0  flusher=0  flushbody=0  -> HUNG
+```
+
+With a large ring the buffer **never fills**, so the entire full/flush/reset
+path never executes — and it still hangs. The channel cannot be the mechanism.
+
+The earlier evidence (`flusher=4`, `waiter=22,294`, frozen) was a *downstream
+symptom*: once the kernel wedges for the real reason, warps that happen to be
+mid-`push` park wherever they are. With a small ring some park in the waiter
+spin, which looked like a channel deadlock. Its internal consistency
+(flusher+waiter == full, ring==cleared==done) was real but proved only that the
+channel's own bookkeeping was sound.
+
+An `atomicExch` fix for the plain-store/atomicAdd race was written and tested:
+**all four hanging configurations still hang.** The race is genuine (a plain
+store colliding with an atomic RMW is a lost update) so the change is kept as
+correctness hardening, but it fixes nothing here.
+
+**Where it actually is:** the kernel wedges with the channel uninvolved, and
+instrumentation is required to trigger it (NVBit loaded with `PCOMM_KERNEL_NAME`
+matching nothing runs fine). `push` counts freeze rather than climbing, so the
+kernel is NOT spinning in an instrumented loop generating records — it is parked
+in a wait with no instrumented memory traffic. Combined with case 06 (single
+node, same code) passing, the only structural difference is the **IBRC proxy
+wait on the multinode path**. That is where to look next: what the instrumented
+kernel is waiting on, and why the host-side proxy never satisfies it.
+
+Note `push=18,432` for the real case 07 config — it wedges very early, after
+very little data. Volume was never the trigger either; the earlier N-thresholds
+were measuring how long different configs took to reach the wedge, not a limit.
+
+## SUPERSEDED: the ring-wrap reset theory
 
 Case 07's hang is in NVBit's `ChannelDev` buffer wrap. Evidence, all measured
 with `PCOMM_CHANNEL_SIZE` (new knob) forcing a small 16 MiB ring so wraps happen

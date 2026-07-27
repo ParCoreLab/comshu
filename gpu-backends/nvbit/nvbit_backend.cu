@@ -60,6 +60,7 @@ namespace {
 struct CtxState {
     ChannelDev* channel_dev{nullptr};
     ChannelHost channel_host;
+    volatile unsigned long long* dbg_host{nullptr};  // PCOMM_CHANNEL_DEBUG counters
 };
 
 // NVBit drives context teardown from an atexit handler, which can run after
@@ -307,12 +308,16 @@ void* recv_thread_fun(void* args) {
                     t_last_report = now;
                     auto since_data = std::chrono::duration_cast<std::chrono::seconds>(
                                           now - t_last_data).count();
+                    const volatile unsigned long long* d = nullptr;
+                    { MutexLock lk(g_mutex); auto it = G().ctx_state.find(ctx);
+                      if (it != G().ctx_state.end()) d = it->second->dbg_host; }
                     std::fprintf(stderr,
-                        "[pcomm-chan] ctx=%p idle: recv_calls=%llu empty=%llu "
-                        "bytes=%llu max_recv=%lu no_data_for=%llds "
-                        "=> doorbell is 0, device is NOT waiting on the host\n",
-                        (void*)ctx, recv_calls, empty_calls, total_bytes, max_n,
-                        (long long)since_data);
+                        "[pcomm-chan] ctx=%p idle: bytes=%llu no_data_for=%llds "
+                        "| dev push=%llu full=%llu flusher=%llu waiter=%llu "
+                        "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
+                        (void*)ctx, total_bytes, (long long)since_data,
+                        d ? d[0] : 0ull, d ? d[1] : 0ull, d ? d[2] : 0ull, d ? d[3] : 0ull,
+                        d ? d[4] : 0ull, d ? d[5] : 0ull, d ? d[6] : 0ull, d ? d[7] : 0ull);
                 }
             }
             continue;
@@ -438,6 +443,20 @@ void nvbit_at_ctx_init(CUcontext ctx) {
     assert(G().ctx_state.find(ctx) == G().ctx_state.end());
     G().ctx_state[ctx] = state;
     cudaMallocManaged(&state->channel_dev, sizeof(ChannelDev));
+    // Diagnostic counters (PCOMM_CHANNEL_DEBUG): host-mapped so the recv thread
+    // can watch where the device stops. See channel.hpp pcomm_bump slots.
+    if (std::getenv("PCOMM_CHANNEL_DEBUG")) {
+        unsigned long long* h = nullptr;
+        if (cudaHostAlloc((void**)&h, 8 * sizeof(unsigned long long),
+                          cudaHostAllocMapped) == cudaSuccess) {
+            memset(h, 0, 8 * sizeof(unsigned long long));
+            unsigned long long* d = nullptr;
+            if (cudaHostGetDevicePointer((void**)&d, h, 0) == cudaSuccess) {
+                state->dbg_host = h;
+                state->channel_dev->pcomm_dbg = d;
+            }
+        }
+    }
     state->channel_host.init((int)G().ctx_state.size() - 1, channel_size(),
                              state->channel_dev, recv_thread_fun, ctx);
     nvbit_set_tool_pthread(state->channel_host.get_thread());
