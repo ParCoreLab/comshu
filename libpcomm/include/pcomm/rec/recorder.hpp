@@ -18,6 +18,7 @@
 #include "pcomm/core/time.hpp"
 #include "pcomm/helpers/clock.hpp"
 #include "pcomm/rec/intern_table.hpp"
+#include "pcomm/engine_abi.h"
 #include "pcomm/rec/sink.hpp"
 #include "pcomm/rec/thread_buffer_registry.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
@@ -37,53 +38,53 @@ public:
     explicit Recorder(ISink& sink, core::DomainId cpu_domain = 0)
         : m_sink(&sink), m_cpu_domain(cpu_domain) {}
 
+    // Provider-side proxy. Every recording operation now goes through the C ABI
+    // in engine_abi.h, so a provider needs no sink and — importantly — must not
+    // hold a reference into the engine's Recorder: that would put a C++ object
+    // layout back on the cross-compiler boundary this ABI exists to remove.
+    Recorder() = default;
+
     Recorder(const Recorder&) = delete;
     Recorder& operator=(const Recorder&) = delete;
 
-    // Drains and releases this recorder's buffers on the destroying thread.
-    // NOTE(skeleton): buffers created by *other* threads are drained at those
-    // threads' exit; the production ThreadBufferRegistry (from SigmaTrace)
-    // will own cross-thread flush instead.
-    ~Recorder() {
-        auto& s = buffer_store();
-        for (auto it = s.begin(); it != s.end();) {
-            if (it->first.first == this) it = s.erase(it);
-            else ++it;
-        }
-    }
+    // Arenas are owned by the engine (see engine_abi.h) and outlive any single
+    // Recorder, so there is nothing to reclaim here. Cross-thread flush is
+    // ThreadBufferRegistry's job, driven from Tracer::finalize().
+    ~Recorder() = default;
 
     // --- recording -----------------------------------------------------------
 
     // Auto-timestamped instant Event (or timeless record when R is an
     // Artifact/Edge — pass Temporal explicitly for those if needed).
     template <core::Record R>
-    void record(const R& r) {
-        buffer<R>().record(now_instant(), r);
-    }
+    void record(const R& r) { append(now_instant(), r); }
 
     template <core::Record R>
-    void record(const core::Temporal& t, const R& r) {
-        buffer<R>().record(t, r);
-    }
+    void record(const core::Temporal& t, const R& r) { append(t, r); }
 
     // Per-thread, per-(recorder, record-type) buffer. Hoist this lookup out of
     // hot loops (it is a map lookup in the skeleton; the production version
     // caches the pointer in the event source).
+    // Append into this thread's arena for R. The arena pointer is cached in a
+    // thread_local, so the steady-state cost is a bounds check and two stores —
+    // the old path did a std::map lookup keyed {recorder, type_id} per record.
+    //
+    // Crucially this is also the ABI boundary: only POD crosses into the engine.
+    // gpumem is compiled by nvcc/gcc-11.4 and the engine by gcc-13.2; the old
+    // code had that gcc-11.4 inline calling operator[] on a gcc-13.2 std::map.
     template <core::Record R>
-    ThreadLocalBuffer<R, Config::buffer_capacity>& buffer() {
-        using Buf = ThreadLocalBuffer<R, Config::buffer_capacity>;
-        auto& slot = buffer_store()[{this, core::RecordTrait<R>::type_id}];
-        if (!slot) {
-            bool ok = core::RecordIdTracker::instance().claim(
-                core::RecordTrait<R>::type_id, core::RecordTrait<R>::name);
-            assert(ok && "duplicate RecordTypeId");
-            (void)ok;
-            slot = std::make_unique<Buf>(*m_sink);
-            // Track it globally so Tracer::stop() can flush this thread's
-            // buffers even if it isn't the thread calling stop().
-            ThreadBufferRegistry::instance().register_buffer(slot.get());
-        }
-        return *static_cast<Buf*>(slot.get());
+    void append(const core::Temporal& t, const R& r) {
+        static thread_local pcomm_arena* arena = pcomm_engine_arena(
+            core::RecordTrait<R>::type_id,
+            static_cast<std::uint8_t>(core::RecordTrait<R>::kind),
+            static_cast<std::uint32_t>(sizeof(Stamped<R>)),
+            static_cast<std::uint32_t>(Config::buffer_capacity));
+        if (arena->count == arena->capacity) pcomm_engine_arena_flush(arena);
+        auto* slot = reinterpret_cast<Stamped<R>*>(
+            static_cast<std::byte*>(arena->slots) + std::size_t{arena->count} * arena->stride);
+        slot->temporal = t;
+        slot->payload  = r;
+        ++arena->count;
     }
 
     // --- interning -----------------------------------------------------------
@@ -93,12 +94,10 @@ public:
     // from UNIFICATION §3.3 (merge in the reader) replaces this later.
 
     core::Handle intern(InternDomain d, std::string_view v) {
-        std::lock_guard lock(mutex(d));
-        return table(d).intern(v);
+        return pcomm_engine_intern_str(static_cast<std::uint8_t>(d), v.data(), v.size());
     }
     core::Handle intern(InternDomain d, std::uint64_t key) {
-        std::lock_guard lock(mutex(d));
-        return table(d).intern(key);
+        return pcomm_engine_intern_key(static_cast<std::uint8_t>(d), key);
     }
 
     // Direct table access for the flush-time sidecar dump only (single
@@ -124,27 +123,12 @@ public:
 
     ISink& sink() { return *m_sink; }
 
-private:
-    using BufferKey = std::pair<const void*, core::RecordTypeId>;
-    using BufferStore = std::map<BufferKey, std::unique_ptr<IDrainable>>;
-
-    // Leaked per-thread store (no TLS destructor): glibc destroys main-thread
-    // TLS *before* atexit handlers, and GPU backends flush from those. The
-    // cost is that buffers do NOT auto-drain at thread exit — every recording
-    // thread must call drain_thread() (or drain its buffers) before exiting.
-    static BufferStore& buffer_store() {
-        thread_local BufferStore* store = nullptr;  // constant-init: no TLS dtor
-        if (!store) store = new BufferStore();
-        return *store;
-    }
-
 public:
-    // Drains every buffer this recorder owns on the calling thread.
-    void drain_thread() {
-        for (auto& [key, buf] : buffer_store()) {
-            if (key.first == this) buf->drain();
-        }
-    }
+    // Drains every arena this thread owns. Recording threads must call this
+    // before exiting: arenas deliberately have no TLS destructor, because glibc
+    // tears down main-thread TLS *before* atexit handlers and GPU backends
+    // flush from those.
+    void drain_thread() { pcomm_engine_drain_thread(); }
 
 private:
 
@@ -153,11 +137,14 @@ private:
 };
 
 
-// Instantiated once, in src/engine.cpp. Without this each provider emits its
-// own Recorder<DefaultConfig> — and with it its own buffer_store() and intern
-// tables — which is the duplication that made coexistence a linker accident.
-// Member templates (record<R>/buffer<R>) still instantiate per provider on
-// purpose: they are the hot path and each provider owns a disjoint id range.
-extern template class Recorder<DefaultConfig>;
+// NB deliberately NOT `extern template` any more. It was needed while the
+// Recorder owned state (buffer_store, intern tables) that had to exist once per
+// process; that state now lives behind the C ABI in the engine, so the class is
+// a stateless inline wrapper. Suppressing instantiation here would make a
+// provider *import* record/intern/drain_thread as mangled C++ symbols from the
+// engine — putting gcc-11.4 -> gcc-13.2 calls back on the boundary this ABI
+// exists to remove. Let them inline; the only members with function-local
+// statics (table/mutex) are engine-internal and simply aren't instantiated in a
+// provider that never calls them.
 
 }  // namespace pcomm::rec

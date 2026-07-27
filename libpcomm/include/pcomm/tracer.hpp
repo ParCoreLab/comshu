@@ -107,6 +107,9 @@ public:
     }
 
     rec::Recorder<>& recorder() { return *m_recorder; }
+    // Deliberately lock-free: the arena drain path calls this, and drain can be
+    // reached from inside start() (emit_anchor) which already holds m_lifecycle.
+    bool has_recorder() const { return m_recorder != nullptr; }
     const Config& config() const { return m_config; }
 
 private:

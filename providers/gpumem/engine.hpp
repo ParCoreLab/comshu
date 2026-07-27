@@ -15,6 +15,7 @@
 
 #include "pcomm/attr/pipeline.hpp"
 #include "pcomm/core/records.hpp"
+#include "pcomm/engine_abi.h"
 #include "pcomm/tracer.hpp"
 
 namespace pcomm::gpumem {
@@ -81,14 +82,24 @@ class Engine {
 public:
     // Starts the Tracer (env config) and builds the pipeline.
     Engine() {
-        Tracer::instance().start(Config::from_env());
+        // C ABI, not Tracer::start(Config): Config carries a std::filesystem::path
+        // and this file is compiled by nvcc/gcc-11.4 while the engine is gcc-13.2.
+        // from_env() itself is fine here — it only reads env vars locally; only
+        // POD crosses the boundary.
+        const Config cfg = Config::from_env();
+        pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
         auto& rec = recorder();
         m_pipeline = std::make_unique<attr::AttributionPipeline>(rec);
         m_pipeline->add_filter(std::make_unique<RemoteFilter>());
         m_pipeline->add_attributor(std::make_unique<ObjectAttributor>(m_allocs));
     }
 
-    rec::Recorder<>& recorder() { return Tracer::instance().recorder(); }
+    // A local, stateless proxy — NOT a reference into the engine's Recorder.
+    // All its operations are inline calls into the C ABI.
+    rec::Recorder<>& recorder() {
+        static rec::Recorder<> proxy;
+        return proxy;
+    }
     AllocRegistry& allocs() { return m_allocs; }
 
     // Backend callbacks ------------------------------------------------------
@@ -135,7 +146,7 @@ public:
     // inside an exit handler — everything reachable from here is leak-safe).
     void shutdown() {
         drain_thread();
-        Tracer::instance().stop();
+        pcomm_engine_release();
     }
 
 private:

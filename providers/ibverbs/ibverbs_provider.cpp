@@ -10,6 +10,7 @@
 
 #include "pcomm/provider/provider.hpp"
 #include "pcomm/rec/intern_table.hpp"
+#include "pcomm/engine_abi.h"
 #include "pcomm/tracer.hpp"
 
 #include "ib_event_source.hpp"
@@ -19,7 +20,12 @@ namespace ibv {
 namespace rr = pcomm::providers::ibverbs::records;
 using pcomm::rec::InternDomain;
 
-static pcomm::rec::Recorder<>& rec() { return pcomm::Tracer::instance().recorder(); }
+// Stateless proxy over the C ABI rather than a reference into the engine's
+// Recorder — same reason as gpumem: no C++ object layout on the .so boundary.
+static pcomm::rec::Recorder<>& rec() {
+    static pcomm::rec::Recorder<> proxy;
+    return proxy;
+}
 
 // Intern a vendor handle (pointer) into a stable Handle for cross-record joins.
 static pcomm::core::Handle h(const void* p) {
@@ -35,7 +41,8 @@ static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
 
 Profiler::Profiler() {
     // The launcher/preload sets PCOMM_* env; bring up sink + recorder once.
-    pcomm::Tracer::instance().start(pcomm::Config::from_env());
+    const pcomm::Config cfg = pcomm::Config::from_env();
+    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>([](ibv_context* ctx, ibv_device*, auto...) {
@@ -158,8 +165,8 @@ public:
         return true;
     }
     void shutdown() override {
-        Tracer::instance().recorder().drain_thread();
-        Tracer::instance().stop();
+        pcomm_engine_drain_thread();
+        pcomm_engine_release();
     }
 };
 
@@ -173,6 +180,6 @@ PCOMM_EXPORT_PROVIDER(pcomm::providers::IbverbsProvider)
 // SigmaTrace) for a complete cross-thread flush — a follow-up.
 static void __attribute__((constructor)) pcomm_ibverbs_load() { ibv::Profiler::instance(); }
 static void __attribute__((destructor)) pcomm_ibverbs_unload() {
-    pcomm::Tracer::instance().recorder().drain_thread();
-    pcomm::Tracer::instance().stop();
+    pcomm_engine_drain_thread();
+    pcomm_engine_release();
 }

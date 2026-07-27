@@ -16,8 +16,13 @@
 
 #include <dlfcn.h>
 
+#include <cstdlib>
+#include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
+#include "pcomm/engine_abi.h"
 #include "pcomm/core/record.hpp"
 #include "pcomm/rec/recorder.hpp"
 #include "pcomm/rec/thread_buffer_registry.hpp"
@@ -42,13 +47,6 @@ ThreadBufferRegistry& ThreadBufferRegistry::instance() {
     return *r;
 }
 
-// Emitting the default Recorder here rather than in every provider is what
-// gives the process a single buffer_store() and a single set of intern tables.
-// Member *templates* (record<R>/buffer<R>) are deliberately left to instantiate
-// per provider — they are the hot path, and each provider owns a disjoint slice
-// of the RecordTypeId space, so those instantiations don't collide.
-template class Recorder<DefaultConfig>;
-
 }  // namespace rec
 
 namespace core {
@@ -59,7 +57,114 @@ RecordIdTracker& RecordIdTracker::instance() {
 }
 
 }  // namespace core
+
+// ── C ABI implementation (engine_abi.h) ─────────────────────────────────────
+namespace {
+
+// The engine-side arena. `pub` is the only part a provider ever sees, and it is
+// plain POD — which is the point: gpumem is built by nvcc/gcc-11.4 and this
+// object by gcc-13.2, so nothing with a C++ ABI may cross between them.
+struct Arena final : rec::IDrainable {
+    pcomm_arena              pub{};
+    std::vector<std::byte>   storage;
+    core::RecordTypeId       type_id{};
+    core::RecordKind         kind{};
+
+    Arena(core::RecordTypeId id, core::RecordKind k, std::uint32_t stride,
+          std::uint32_t capacity)
+        : storage(static_cast<std::size_t>(stride) * capacity), type_id(id), kind(k) {
+        pub.slots    = storage.data();
+        pub.count    = 0;
+        pub.capacity = capacity;
+        pub.stride   = stride;
+        pub._owner   = this;
+    }
+
+    void drain() override {
+        if (pub.count == 0) return;
+        auto& tracer = Tracer::instance();
+        if (!tracer.has_recorder()) { pub.count = 0; return; }
+        tracer.recorder().sink().submit(rec::BufferView{
+            .type_id = type_id,
+            .kind    = kind,
+            .data    = static_cast<const std::byte*>(pub.slots),
+            .bytes   = std::size_t{pub.count} * pub.stride,
+            .count   = pub.count,
+        });
+        pub.count = 0;
+    }
+};
+
+// Per-thread arena table, keyed by record type. Leaked on purpose (raw pointer,
+// no TLS destructor): glibc destroys main-thread TLS *before* atexit handlers
+// and GPU backends flush from those, so the arenas must outlive their thread.
+using ArenaMap = std::unordered_map<core::RecordTypeId, std::unique_ptr<Arena>>;
+ArenaMap& arenas_for_this_thread() {
+    thread_local ArenaMap* m = nullptr;
+    if (!m) m = new ArenaMap();
+    return *m;
+}
+
+}  // namespace
 }  // namespace pcomm
+
+extern "C" {
+
+std::uint32_t pcomm_engine_abi_version(void) { return PCOMM_ENGINE_ABI_VERSION; }
+
+int pcomm_engine_acquire(const char* output_dir, int rank, int verbose) {
+    pcomm::Config cfg;
+    if (output_dir && *output_dir) cfg.output_dir = output_dir;
+    cfg.rank    = rank;
+    cfg.verbose = verbose != 0;
+    pcomm::Tracer::instance().start(cfg);
+    return 0;
+}
+
+void pcomm_engine_release(void) { pcomm::Tracer::instance().stop(); }
+
+pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind,
+                                std::uint32_t stride, std::uint32_t capacity) {
+    auto& map = pcomm::arenas_for_this_thread();
+    auto  it  = map.find(type_id);
+    if (it == map.end()) {
+        auto a = std::make_unique<pcomm::Arena>(
+            type_id, static_cast<pcomm::core::RecordKind>(kind), stride, capacity);
+        // Registered so Tracer::finalize() can flush arenas belonging to threads
+        // that never call drain_thread() (NCCL's proxy threads, NVBit's).
+        pcomm::rec::ThreadBufferRegistry::instance().register_buffer(a.get());
+        it = map.emplace(type_id, std::move(a)).first;
+    }
+    return &it->second->pub;
+}
+
+void pcomm_engine_arena_flush(pcomm_arena* arena) {
+    if (arena && arena->_owner) static_cast<pcomm::Arena*>(arena->_owner)->drain();
+}
+
+void pcomm_engine_drain_thread(void) {
+    for (auto& [id, a] : pcomm::arenas_for_this_thread()) a->drain();
+}
+
+std::uint32_t pcomm_engine_intern_str(std::uint8_t domain, const char* s, std::size_t n) {
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder()) return 0;
+    auto  d   = static_cast<pcomm::rec::InternDomain>(domain);
+    auto& rec = tracer.recorder();
+    std::lock_guard lock(rec.mutex(d));
+    return rec.table(d).intern(std::string_view(s, n));
+}
+
+std::uint32_t pcomm_engine_intern_key(std::uint8_t domain, std::uint64_t key) {
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder()) return 0;
+    auto  d   = static_cast<pcomm::rec::InternDomain>(domain);
+    auto& rec = tracer.recorder();
+    std::lock_guard lock(rec.mutex(d));
+    return rec.table(d).intern(key);
+}
+
+}  // extern "C"
 
 // Where this .so lives on disk, so the launcher can put it in LD_PRELOAD.
 //
