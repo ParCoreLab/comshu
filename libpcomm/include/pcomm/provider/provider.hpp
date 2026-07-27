@@ -47,3 +47,8 @@ public:
     extern "C" std::uint32_t pcomm_abi_version() {                    \
         return ::pcomm::provider::kAbiVersion;                        \
     }
+
+// Absolute path of the loaded libpcomm_engine.so, or nullptr if it can't be
+// determined. The launcher needs this to put the engine in LD_PRELOAD — see the
+// definition in libpcomm/src/engine.cpp for why merely linking it is not enough.
+extern "C" const char* pcomm_engine_so_path();

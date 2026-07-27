@@ -27,10 +27,7 @@ class ThreadBufferRegistry {
 public:
     // Leaked (never destroyed): backends flush from exit-time callbacks that
     // can run after static destructors, same as the Recorder/Tracer.
-    static ThreadBufferRegistry& instance() {
-        static ThreadBufferRegistry* r = new ThreadBufferRegistry();
-        return *r;
-    }
+    static ThreadBufferRegistry& instance();  // src/engine.cpp — one per process
 
     // Called once per (thread, record-type) buffer, when the Recorder first
     // creates it on a thread.

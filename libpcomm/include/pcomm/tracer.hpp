@@ -37,10 +37,11 @@ public:
     // exit-time vendor callbacks (e.g. NVBit's atexit handler) that can run
     // after C++ static destructors. All buffered data is flushed by stop();
     // the leak is process-exit-only.
-    static Tracer& instance() {
-        static Tracer* t = new Tracer();
-        return *t;
-    }
+    // Defined in src/engine.cpp, NOT here: a function-local static in a header
+    // gives every provider .so its own copy with weak linkage, which is exactly
+    // how two providers came to share a Tracer by accident and destroy each
+    // other's Recorder (7a5b55a). One definition site, one instance.
+    static Tracer& instance();
 
     // Bringing the engine up is *attach-if-running*, not re-init. Two providers
     // preloaded together (e.g. ib + gpumem) each run their own ELF ctor and each

@@ -10,3 +10,12 @@ add_library(ibverbs_trace SHARED
 set_target_properties(ibverbs_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "ibverbs_trace")
 target_include_directories(ibverbs_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ibverbs_trace PRIVATE pcomm::pcomm pcomm::hook ${IBVERBS_LIB})
+
+# The provider .so now has a DT_NEEDED on libpcomm_engine.so, so it must be
+# findable at runtime. $ORIGIN/../../libpcomm resolves correctly for both build
+# layouts: build/providers/<p>/ (ibverbs, and gpumem after run_on_mn5.sh copies
+# it there from build-gpumem/). New dtags so LD_LIBRARY_PATH can still override.
+set_target_properties(ibverbs_trace PROPERTIES
+  BUILD_RPATH "$ORIGIN/../../libpcomm"
+  INSTALL_RPATH "$ORIGIN/../../libpcomm")
+target_link_options(ibverbs_trace PRIVATE -Wl,--enable-new-dtags)

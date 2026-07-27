@@ -152,4 +152,12 @@ private:
     core::DomainId m_cpu_domain;
 };
 
+
+// Instantiated once, in src/engine.cpp. Without this each provider emits its
+// own Recorder<DefaultConfig> — and with it its own buffer_store() and intern
+// tables — which is the duplication that made coexistence a linker accident.
+// Member templates (record<R>/buffer<R>) still instantiate per provider on
+// purpose: they are the hot path and each provider owns a disjoint id range.
+extern template class Recorder<DefaultConfig>;
+
 }  // namespace pcomm::rec

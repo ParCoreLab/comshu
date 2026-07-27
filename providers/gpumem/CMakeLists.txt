@@ -31,10 +31,11 @@ set_target_properties(gpumem_trace PROPERTIES
 # property: with this nvcc CMake fails to map the "CUDA20" dialect and errors at
 # configure, and it doesn't emit the -std flag anyway.
 
-# NB: we take pcomm's *headers* directly rather than linking pcomm::pcomm. That
-# INTERFACE target carries `cxx_std_20`, which would propagate onto this CUDA
-# target and make CMake demand a "CUDA20" dialect it can't map for nvcc 12.9
-# (clean-configure error). The C++20 dialect is supplied by -std=c++20 below.
+# NB: still no link to pcomm::pcomm. That INTERFACE target carries `cxx_std_20`,
+# which would propagate onto this CUDA target and make CMake demand a "CUDA20"
+# dialect it can't map for nvcc 12.9 (clean-configure error, 877ab90). The C++20
+# dialect is supplied by -std=c++20 below. pcomm::engine is safe to link: its
+# cxx_std_20 is PRIVATE, so we get its INTERFACE include dir and nothing else.
 target_include_directories(gpumem_trace PRIVATE
   ${NVBIT_ROOT}
   ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit
@@ -42,7 +43,11 @@ target_include_directories(gpumem_trace PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# Linking the shared engine (rather than embedding the header-only one) is what
+# makes this provider share ONE Tracer/Recorder/intern-table set with every
+# other provider in the process, by construction instead of by linker accident.
 target_link_libraries(gpumem_trace PRIVATE
+  pcomm::engine
   ${NVBIT_ROOT}/libnvbit.a
   cuda
 )
@@ -66,3 +71,11 @@ target_link_options(gpumem_trace PRIVATE
 # instead, which is searched *after* LD_LIBRARY_PATH, so the runtime module
 # (gcc/13.2.0, per common.sh) wins and either order works.
 target_link_options(gpumem_trace PRIVATE $<HOST_LINK:-Xlinker --enable-new-dtags>)
+
+# The provider .so now has a DT_NEEDED on libpcomm_engine.so, so it must be
+# findable at runtime. $ORIGIN/../../libpcomm resolves correctly for both build
+# layouts: build/providers/<p>/ (ibverbs, and gpumem after run_on_mn5.sh copies
+# it there from build-gpumem/). New dtags so LD_LIBRARY_PATH can still override.
+set_target_properties(gpumem_trace PROPERTIES
+  BUILD_RPATH "$ORIGIN/../../libpcomm"
+  INSTALL_RPATH "$ORIGIN/../../libpcomm")

@@ -13,6 +13,10 @@
 export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
 export PCOMM_READ="$PCOMM_BUILD/pcomm-read/pcomm-read"
 export PCOMM_PROVIDER_PATH="$PCOMM_BUILD/providers/ibverbs:$PCOMM_BUILD/providers/gpumem"
+# Providers link the shared engine (libpcomm_engine.so); they carry an $ORIGIN
+# rpath to it, but export the dir too so a provider .so copied elsewhere (as the
+# gpumem build does) still resolves it.
+export LD_LIBRARY_PATH="$PCOMM_BUILD/libpcomm:${LD_LIBRARY_PATH:-}"
 
 # NVIDIA HPC SDK 25.7 = CUDA 12.9 + NCCL 2.26 + NVSHMEM + HPC-X MPI.
 : "${PCOMM_SDK:=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7}"

@@ -1,12 +1,14 @@
 // pcomm — the launcher (successor of SigmaTrace's Profiler in spirit): resolves
 // providers by short name, plans how to run them, and drives the workload.
 //
-// Some providers can share one process (the hook-based network ones all route
-// through a single dlsym interposer); others must own the whole runtime (NVBit
-// takes over the CUDA runtime + dlsym, so it can't share). When a selection
-// mixes the two, one process can't host them — so pcomm *replays*: it re-runs
-// the workload once per exclusive provider and drops every pass under one
-// output dir, wall-clock-aligned so pcomm-read stitches them into one picture.
+// Providers co-run by default: they share one process, one recorder and one
+// timeline, all hosted by libpcomm_engine.so (which the launcher preloads first
+// because it owns the dlsym interposer). A provider only gets its own pass if it
+// is marked `exclusive` — a demonstrated conflict, not a suspected one. When a
+// selection mixes the two, pcomm *replays*: it re-runs the workload once per
+// exclusive provider and drops every pass under one output dir, wall-aligned so
+// pcomm-read stitches them together. Replay is the fallback, not the default:
+// its passes are separate executions and cannot carry cross-transport causality.
 //
 //   pcomm -p ib,p2p -- ./app args...      # co-run what can co-run, replay the rest
 //   pcomm --list                          # what can I capture, and how?
@@ -21,6 +23,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+
+#include "pcomm/provider/provider.hpp"   // pcomm_engine_so_path()
 
 namespace fs = std::filesystem;
 
@@ -235,6 +239,22 @@ int main(int argc, char** argv) {
 
     const bool replay = passes.size() > 1;
 
+    // The engine goes FIRST in every chain. It is not enough that the providers
+    // link it: the dynamic linker searches preloaded objects before the
+    // executable's own dependencies, and `dlsym` lives in the engine. Left as a
+    // mere DT_NEEDED of a preloaded provider it loses the `dlsym` lookup to
+    // libc, the SmartDlsym interposer never runs, and anything the target
+    // resolves at runtime goes uncaptured (NVSHMEM resolves its verbs entry
+    // points that way — it cost 12 of 16 memory regions before this was caught).
+    std::string engine_so;
+    if (const char* e = std::getenv("PCOMM_ENGINE_PATH"); e && *e) engine_so = e;
+    else if (const char* e = pcomm_engine_so_path()) engine_so = e;
+    if (engine_so.empty())
+        std::fprintf(stderr,
+                     "pcomm: warning — cannot locate libpcomm_engine.so; symbols the "
+                     "target resolves via dlsym will not be captured. Set "
+                     "PCOMM_ENGINE_PATH.\n");
+
     // ── Report the plan ─────────────────────────────────────────────────────
     std::fprintf(stderr, "pcomm: %zu provider%s → %zu %s\n",
                  selected.size(), selected.size() == 1 ? "" : "s",
@@ -253,6 +273,7 @@ int main(int argc, char** argv) {
     if (dry_run) {
         for (const auto& pass : passes) {
             std::fprintf(stderr, "  [%s] LD_PRELOAD=", pass.label.c_str());
+            if (!engine_so.empty()) std::fprintf(stderr, "%s:", engine_so.c_str());
             for (size_t j = 0; j < pass.so_paths.size(); ++j)
                 std::fprintf(stderr, "%s%s", pass.so_paths[j].c_str(),
                              j + 1 < pass.so_paths.size() ? ":" : "");
@@ -266,7 +287,7 @@ int main(int argc, char** argv) {
     if (const char* prev = std::getenv("LD_PRELOAD"); prev && *prev) prev_preload = prev;
 
     auto set_pass_env = [&](const Pass& pass) {
-        std::string preload;
+        std::string preload = engine_so;   // first: it owns dlsym (see above)
         for (const auto& s : pass.so_paths) preload += (preload.empty() ? "" : ":") + s;
         if (!prev_preload.empty()) preload += ":" + prev_preload;
         fs::path out = replay ? fs::path(output_dir) / pass.label : fs::path(output_dir);

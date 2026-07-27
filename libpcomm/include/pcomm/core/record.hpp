@@ -42,10 +42,7 @@ struct RecordMeta {
 // Registration happens lazily, the first time a record type reaches a Recorder.
 class RecordIdTracker {
 public:
-    static RecordIdTracker& instance() {
-        static RecordIdTracker* t = new RecordIdTracker();  // leaked: see Recorder
-        return *t;
-    }
+    static RecordIdTracker& instance();  // src/engine.cpp — one per process
 
     // Returns false if the id is already claimed by a *different* name.
     bool claim(RecordTypeId id, std::string_view name) {
