@@ -18,12 +18,11 @@ not:
 Two nodes hang with gpumem alone, so ibverbs is not involved; and NVBit's own
 banner hint for deadlocks (`NO_EAGER_LOAD=0`) does not help.
 
-**The "same family as case 05" claim is now doubtful, and the shared cause both
-were filed under is refuted** — see the section below. Case 05 was measured to
-hang with a completely empty channel. Case 07 has not been re-measured since,
-and a real data race in *this specific path* (`g.heap_regions`, recv thread vs
-CUDA-callback thread) was fixed afterwards, so re-run it before assuming
-anything about its cause.
+**Same family as case 05 — confirmed by measurement, but not for the recorded
+reason.** Both hang with a completely empty channel (`bytes=0`), so the
+"bounded channel starves" explanation is refuted for both; see the section
+below. The `g.heap_regions` race in this path was fixed and did *not* resolve
+it. One cause, still unlocated, upstream of any data flow.
 
 **Consequence:** the unified NVLink+IB *traffic* timeline is blocked. Case 06
 covers the coexistence property (one process, one capture, both providers) but
@@ -55,6 +54,11 @@ version, then hangs". So look at NVBit's interaction with the comm library's
 `g_mutex`, NVBit's lazy module loading — not at data flow. Every fix previously
 shortlisted (spillable channel, cooperative flush, IBGDA) targeted the drain
 path and would have changed nothing.
+
+**Case 07 shows the identical signature** (job 43877771, measured after the
+`heap_regions` race fix): `bytes=0` across all 8 contexts for 290s, still
+hanging. So the race was not its cause, and 05/07 are one bug rather than two —
+sharing "hangs before producing a byte", not "starves the channel".
 
 Also observed, not the bug but worth knowing: the recv thread busy-polls with no
 backoff, burning a core per context.

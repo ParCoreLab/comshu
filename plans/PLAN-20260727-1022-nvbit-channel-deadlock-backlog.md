@@ -36,6 +36,12 @@ channel can't drain, producer/consumer deadlock" — was plausible, matched
 Snoopie's known limits, and was repeated in two meta.json files, this plan and
 things-to-circle-back-to.md. It was never measured. It is now refuted.
 
+**Case 07 measured too (job 43877771), after the `heap_regions` race was fixed:
+identical signature — `bytes=0` across all 8 contexts for 290s, and it still
+hangs.** Two conclusions. The race was NOT case 07's cause. And 05 and 07 really
+are one bug, not two — but the shared property is "hangs before producing a
+single byte", not "starves the channel". Look for one cause, not two.
+
 **Where it actually hangs: before any instrumented access is recorded at all.**
 `bytes=0` means not one memory access was ever pushed, so the hang precedes the
 instrumented kernel producing data. That matches the original observation that
@@ -133,9 +139,9 @@ Also worth trying, both one-line experiments:
 - `PCOMM_KERNEL_NAME` set to a name that matches nothing, so NVBit instruments
   no kernel at all. If it still hangs, the cause is NVBit's presence during
   init, not our instrumentation.
-- The `heap_regions` race fixed alongside this instrumentation could plausibly
-  have caused a hang in case 07 (not 05 — 05 has no NVSHMEM). Re-run 07 now that
-  it is fixed before assuming both cases share one cause.
+- ~~The `heap_regions` race could plausibly have caused case 07~~ — tested,
+  it did not: 07 still hangs after the fix, with the same `bytes=0` signature as
+  05. Both cases share one cause and it is upstream of any data flow.
 
 ## Old suggested first step (done — it is what produced the measurement)
 

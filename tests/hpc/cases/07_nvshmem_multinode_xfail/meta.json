@@ -7,8 +7,8 @@
   "topology": "2 nodes x4 H100, NVSHMEM put-ring over 8 PEs, both providers",
   "expect_fail": {
     "mode": "deadlock",
-    "reason": "multinode NVSHMEM under NVBit hangs before the workload reports. Isolated 2026-07-27: NOT a coexistence problem \u2014 2 nodes with gpumem ALONE also deadlocks (exit 124) while 1 node with BOTH providers completes (exit 0); NVBit's NO_EAGER_LOAD=0 hint does not help. NOTE the shared-cause assumption with case 05 is now doubtful: 05 was measured to hang with an empty channel, refuting the bounded-channel theory both cases were filed under. Also, a real data race on g.heap_regions in this exact path (recv thread sorting while the callback thread push_backs) was fixed after this was filed \u2014 re-measure before assuming the cause.",
-    "fix_ideas": "spillable/host-pinned channel; cooperative flush that preempts the spinning kernel; or IBGDA transport so the device posts WQEs without a host proxy to wait on",
+    "reason": "multinode NVSHMEM under NVBit hangs before the workload reports. NOT a coexistence problem (2 nodes with gpumem ALONE also hangs; 1 node with BOTH providers completes). MEASURED 2026-07-27 with PCOMM_CHANNEL_DEBUG=1, job 43877771: bytes=0 across all 8 contexts for 290s \u2014 same signature as case 05, so the device never flushed and the channel is not the blocker. The old 'NVBit's bounded channel starves' explanation is REFUTED for both cases. A real data race on g.heap_regions in this path was fixed first and did NOT resolve it. 05 and 07 share one cause, upstream of any data being produced; location still unknown.",
+    "fix_ideas": "unknown. Next: host backtrace of a stuck rank (compute node gdb, or a core \u2014 login nodes block ptrace), and set PCOMM_KERNEL_NAME to a name matching nothing so NVBit instruments no kernel, to test whether NVBit's mere presence during init suffices to hang it.",
     "passing_stand_in": "06_nvshmem_coexist"
   },
   "golden": "n/a \u2014 kept red on purpose. checks/*.sql document the intended cross-transport oracle for when it is fixed.",
