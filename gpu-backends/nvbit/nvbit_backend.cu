@@ -193,9 +193,27 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 
         const std::vector<Instr*>& instrs = nvbit_get_instrs(ctx, f);
         for (auto instr : instrs) {
-            if (instr->getMemorySpace() == InstrType::MemorySpace::NONE ||
-                instr->getMemorySpace() == InstrType::MemorySpace::CONSTANT) {
-                continue;
+            // Only GLOBAL (and GENERIC, which resolves to global at run time)
+            // can be communication. LOCAL is per-thread stack and spilled
+            // registers; SHARED is intra-block. Instrumenting them produced
+            // records that are meaningless for a communication trace, and it
+            // is the majority of injected calls: in one 64-instruction window
+            // of nvshmemi_transfer_rma_p<int>, 84 of the accesses were
+            // LDS/LDL/STL.
+            //
+            // It is also the case 07 hang. Bisected to a single instruction
+            // (job 43920181): instrumenting index 1006, an LDL.64 at
+            // +0x19680 inside nvshmemi_transfer_rma_p<int>, flips the run from
+            // completing in 22s to hanging. Instrumenting everything below it,
+            // including the 64-bit global atomic and the STRONG.SYS stores
+            // around it, completes.
+            {
+                const auto sp = instr->getMemorySpace();
+                if (sp != InstrType::MemorySpace::GLOBAL &&
+                    sp != InstrType::MemorySpace::GENERIC &&
+                    sp != InstrType::MemorySpace::GLOBAL_TO_SHARED) {
+                    continue;
+                }
             }
 
             auto [it, inserted] = G().opcode_to_id.emplace(instr->getOpcode(),
@@ -225,6 +243,18 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
                     return e ? (uint32_t)std::strtoul(e, nullptr, 10) : UINT32_MAX;
                 }();
                 if (instr_index < lo || instr_index >= hi) continue;
+            }
+
+            // PCOMM_INSTR_DUMP: print the index -> instruction mapping so a
+            // bisect result (an index) can be turned back into an opcode, a
+            // function and an offset. Diagnostic only.
+            if (std::getenv("PCOMM_INSTR_DUMP")) {
+                const char* fn = nvbit_get_func_name(ctx, f, true);
+                std::fprintf(stderr,
+                    "[pcomm-instr] idx=%u opcode=%s space=%d size=%d off=0x%x fn=%s\n",
+                    instr_index, instr->getOpcode(),
+                    (int)instr->getMemorySpace(), instr->getSize(),
+                    (unsigned)instr->getOffset(), fn ? fn : "?");
             }
 
             // Source-line artifact (nvbit_get_line_info needs -lineinfo in the
