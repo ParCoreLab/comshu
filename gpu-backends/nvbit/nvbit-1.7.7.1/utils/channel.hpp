@@ -136,17 +136,24 @@ class ChannelDev {
         /* reset head/tail
          *
          * pcomm change (2026-07-27), correctness hardening — NOT a fix for the
-         * case 07 hang. These were plain stores racing the
-         * `atomicAdd((ULL*)&buff_write_head_ptr, nbytes)` that waiting warps
-         * issue on the same address; a plain store colliding with an atomic RMW
-         * is a genuine lost update, so atomicExch is correct where a store is
-         * not. Kept on those grounds alone.
+         * case 07 hang. Upstream uses plain stores here, racing the
+         * `atomicAdd((ULL*)&buff_write_head_ptr, nbytes)` that warps entering
+         * push() issue on the same address; a plain store colliding with an
+         * atomic RMW is a genuine lost update, so atomicExch is correct where a
+         * store is not. Kept on those grounds alone.
+         *
+         * BOTH pointers must be reset, and tail before head (the fence between
+         * them is upstream's and is load-bearing: a warp released by the head
+         * reset must not observe the stale tail). An earlier revision of this
+         * patch dropped the tail reset entirely, which wedges the channel after
+         * the first flush — `nbytes = tail - buff` then grows without bound and
+         * the next flusher's `while (tail != curr_ptr)` can never match.
          *
          * It does NOT resolve case 07. Measured: with a 1 GiB ring the hang
          * reproduces with full=0 flusher=0 flushbody=0 — the ring never fills,
-         * this code never executes, and it still hangs. The channel is not the
-         * mechanism; the earlier "flusher stuck at 4" reading was a downstream
-         * symptom of warps parking mid-push once the kernel wedged elsewhere. */
+         * this code never executes, and it still hangs. */
+        atomicExch((ULL*)&buff_write_tail_ptr, (ULL)buff);
+        __threadfence();
         atomicExch((ULL*)&buff_write_head_ptr, (ULL)buff);
         pcomm_bump(7);
 
