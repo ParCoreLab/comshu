@@ -37,7 +37,17 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(
 
     if (first_laneid == laneid) {
         ChannelDev* channel_dev = (ChannelDev*)pchannel_dev;
+#ifndef PCOMM_INJECT_NO_PUSH
         channel_dev->push(&ma, sizeof(pcomm_gpu_access_t));
+#else
+        // Diagnostic build (-DPCOMM_INJECT_NO_PUSH): every instruction is still
+        // instrumented — same injected calls, same register pressure, same SASS
+        // perturbation — but nothing is ever pushed to the channel. Separates
+        // "the injected code changes the kernel" from "push() interacts badly
+        // with the workload". Never enabled in a normal build.
+        (void)channel_dev;
+        asm volatile("" ::"r"(ma.dev_id) : "memory");
+#endif
     }
 }
 

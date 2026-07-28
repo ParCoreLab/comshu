@@ -208,6 +208,25 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 
             uint32_t instr_index = g_next_instr_index++;
 
+            // PCOMM_INSTR_LO/HI: instrument only instructions whose dense index
+            // falls in [LO, HI). Diagnostic for case 07 — the hang needs push()
+            // to run, so bisecting the instrumented set names the instruction
+            // whose records trigger it. Indices are assigned in a fixed order
+            // (module load order, then instruction offset), so a given index
+            // denotes the same instruction across runs of the same binary.
+            // Unset = instrument everything, the normal path.
+            {
+                static const uint32_t lo = [] {
+                    const char* e = std::getenv("PCOMM_INSTR_LO");
+                    return e ? (uint32_t)std::strtoul(e, nullptr, 10) : 0u;
+                }();
+                static const uint32_t hi = [] {
+                    const char* e = std::getenv("PCOMM_INSTR_HI");
+                    return e ? (uint32_t)std::strtoul(e, nullptr, 10) : UINT32_MAX;
+                }();
+                if (instr_index < lo || instr_index >= hi) continue;
+            }
+
             // Source-line artifact (nvbit_get_line_info needs -lineinfo in the
             // target app; silently absent otherwise, like snoopie).
             char* file_name = nullptr;
@@ -266,9 +285,19 @@ void* recv_thread_fun(void* args) {
     CUcontext ctx = (CUcontext)args;
 
     ChannelHost* ch_host;
+    // Grab the debug counters here too, while we already hold the lock and
+    // while the thread is guaranteed to be joinable. Do NOT take g_mutex again
+    // later in this function: nvbit_at_ctx_term holds it across the
+    // pthread_join of this very thread, so any exit-path lock deadlocks at
+    // teardown for every workload size. dbg_host is assigned in
+    // nvbit_at_ctx_init before channel_host.init() spawns us, so it is already
+    // visible.
+    const volatile unsigned long long* dbg_ctrs = nullptr;
     {
         MutexLock lock(g_mutex);
-        ch_host = &G().ctx_state.at(ctx)->channel_host;
+        CtxState* st = G().ctx_state.at(ctx);
+        ch_host = &st->channel_host;
+        dbg_ctrs = st->dbg_host;
     }
 
     const long chan_sz = channel_size();
@@ -308,9 +337,7 @@ void* recv_thread_fun(void* args) {
                     t_last_report = now;
                     auto since_data = std::chrono::duration_cast<std::chrono::seconds>(
                                           now - t_last_data).count();
-                    const volatile unsigned long long* d = nullptr;
-                    { MutexLock lk(g_mutex); auto it = G().ctx_state.find(ctx);
-                      if (it != G().ctx_state.end()) d = it->second->dbg_host; }
+                    const volatile unsigned long long* d = dbg_ctrs;
                     std::fprintf(stderr,
                         "[pcomm-chan] ctx=%p idle: bytes=%llu no_data_for=%llds "
                         "| dev push=%llu full=%llu flusher=%llu waiter=%llu "
@@ -363,11 +390,22 @@ void* recv_thread_fun(void* args) {
         batch.clear();
     }
 
-    if (dbg)
+    if (dbg) {
+        // Device counters on the done line too, not just the idle reports —
+        // otherwise a *completing* run reports no push total, and there is
+        // nothing to compare a hung run's frozen count against.
+        const volatile unsigned long long* d = dbg_ctrs;
         std::fprintf(stderr,
             "[pcomm-chan] ctx=%p done: recv_calls=%llu empty=%llu bytes=%llu "
-            "max_recv=%lu\n",
-            (void*)ctx, recv_calls, empty_calls, total_bytes, max_n);
+            "max_recv=%lu%s",
+            (void*)ctx, recv_calls, empty_calls, total_bytes, max_n,
+            d ? "" : "\n");
+        if (d)
+            std::fprintf(stderr,
+                " | dev push=%llu full=%llu flusher=%llu waiter=%llu "
+                "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
+                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+    }
     g_engine->drain_thread();  // buffers never auto-drain (leaked TLS)
     free(recv_buffer);
     return nullptr;
