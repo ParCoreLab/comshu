@@ -41,7 +41,7 @@ Axis = **which transport / provider**:
 | 02 | `nccl_internode` | 2 nodes × 4 H100     | IB (P2P disabled)  | `ib`  | **verified** |
 | 03 | `p2p_kernel`     | 1 node × 4 H100      | NVLink peer r/w    | `p2p` | **verified** |
 | 04 | `nvshmem`        | 1 node × 4 H100      | NVLink, sym. heap  | `p2p` | **verified** |
-| 05 | `nccl_p2p_xfail` | 1 node × 4 H100      | NVLink P2P         | `p2p` | **xfail (deadlock)** |
+| 05 | `nccl_p2p` | 1 node × 4 H100      | NVLink P2P         | `p2p` | pass (~435s) |
 | 06 | `nvshmem_coexist` | 1 node × 4 H100     | NVLink, sym. heap  | `ib`+`p2p` | **verified** |
 | 07 | `nvshmem_multinode` | 2 nodes × 4 H100 | NVLink + IB   | `ib`+`p2p` | pass |
 
@@ -86,23 +86,19 @@ GLOBAL/GENERIC/GLOBAL_TO_SHARED (`3c5d55f`). `NVSHMEM_DISABLE_P2P=1` reproduces
 the old hang on a single node — that is what isolated it. The mechanism is still
 unexplained; see things-to-circle-back-to.md.
 
-**Case 05 is a known-failing (xfail) test, kept on purpose.** Tracing NCCL over
-NVLink with the gpumem provider is a major use case that currently deadlocks (see
-below). We do **not** delete or weaken the test to go green — it stays as an
-`expect_fail` case (`meta.json`), bounded by a `timeout`, and `run_suite check`
-reports it **XFAIL** (expected — suite stays green) or **XPASS** (an alert: it
-started working, so remove the marker and add goldens). Its `checks/*.sql`
-document the capture we'll assert once it's fixed.
-Cases 02 (inter-node IB) and 03 (intra-node NVLink) are the "who moves data to
-whom" question on opposite transports/providers: case 02's `comm_edges` vs case
-03's `peer_topology`.
+**Case 05 runs NCCL over NVLink and passes, but takes ~435s.** That is a fixed
+cost of NVBit processing NCCL's module — 223 device-function specializations,
+434k instructions — not of the workload. Measured at N=100, 1024, 16384, 65536
+and 262144: every one takes 433-443s while the capture scales from 0.6 MB to
+47 MB; uninstrumented is 6s. Restricting instrumentation to the single launched
+kernel does not help (438s vs 436s), and neither does skipping the per-launch
+arming of the other 222. Its DEADLINE is 600s for that reason. Do not try to
+make it faster by shrinking the message — that was tested across a 2621x range
+and changes nothing.
 
-**Why case 03 is a custom kernel, not NCCL:** originally because "NCCL under
-NVBit deadlocks". That turned out to be false — NCCL under NVBit **completes**,
-it is just slow, and case 05 timed out at a 180s bound rather than hanging (see
-things-to-circle-back-to.md). A discrete peer-write microkernel is still the
-better case: seconds instead of minutes, and a cleaner oracle. But it is a
-speed/clarity choice, not a workaround for a limitation.
+Its checks assert structure rather than volume, because volume is not
+repeatable: NCCL's LL protocol spins on flag polling, so two identical runs
+recorded 295,044 and 550,064 loads on rank 0. See the case's meta.json.
 
 **Why case 04 filters kernels:** unfiltered, NVBit instruments all of nvshmem's
 internal device code (~400 MB/rank, not repeatable). `PCOMM_KERNEL_NAME=put_to_next`

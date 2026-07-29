@@ -311,12 +311,22 @@ void handle_launch(CUcontext ctx, CUfunction func) {
 
     for (auto f : related) {
         std::string func_name(nvbit_get_func_name(ctx, f));
-        if (G().kernel_filter == "all" ||
-            G().kernel_filter == func_name.substr(0, func_name.find('('))) {
-            instrument_function_if_needed(ctx, f);
-        }
-        nvbit_set_at_launch(ctx, f, g_grid_launch_id);
-        g_grid_launch_id++;
+        const bool want = (G().kernel_filter == "all" ||
+                           G().kernel_filter ==
+                               func_name.substr(0, func_name.find('(')));
+        if (want) instrument_function_if_needed(ctx, f);
+
+        // The launch id is consumed for every related function whether or not
+        // we instrument it, so that filtering cannot shift the id sequence and
+        // move existing goldens.
+        const uint64_t launch_id = g_grid_launch_id++;
+
+        // NB: these run for every related function, not just instrumented ones.
+        // Skipping them for unfiltered functions was measured (job 43971039)
+        // and changes nothing — 436s vs 436s, 438s vs 438s — so the knob was
+        // removed rather than left as a dead option. See case 05's meta.json:
+        // the cost is NVBit module processing, which we cannot reach from here.
+        nvbit_set_at_launch(ctx, f, launch_id);
         nvbit_enable_instrumented(ctx, f, true);
     }
 }
