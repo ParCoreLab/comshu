@@ -43,7 +43,7 @@ Axis = **which transport / provider**:
 | 04 | `nvshmem`        | 1 node × 4 H100      | NVLink, sym. heap  | `p2p` | **verified** |
 | 05 | `nccl_p2p_xfail` | 1 node × 4 H100      | NVLink P2P         | `p2p` | **xfail (deadlock)** |
 | 06 | `nvshmem_coexist` | 1 node × 4 H100     | NVLink, sym. heap  | `ib`+`p2p` | **verified** |
-| 07 | `nvshmem_multinode_xfail` | 2 nodes × 4 H100 | NVLink + IB   | `ib`+`p2p` | **xfail (deadlock)** |
+| 07 | `nvshmem_multinode` | 2 nodes × 4 H100 | NVLink + IB   | `ib`+`p2p` | pass |
 
 Cases 01–04 and 06 passed the determinism gate (two independent MN5 runs →
 byte-identical query output; the raw CSVs always differ, they carry ticks,
@@ -59,23 +59,32 @@ NVLink-reachable, so NVSHMEM builds its IB transport but never posts a send —
 the `ib` side contributes entities (MR/QP/modify_qp), not traffic, and
 `ib_post_send`/`ib_poll_cq` are legitimately empty.
 
-**Case 07 is the unified NVLink+IB *traffic* capture, and it is xfail.**
-Multinode NVSHMEM deadlocks under NVBit. This was isolated (2026-07-27) because
-the obvious suspect — the coexistence we had just enabled — was wrong:
+**Case 07 is the unified NVLink+IB *traffic* capture, and it passes.** Eight PEs
+over two nodes, both providers in one process, one execution: six ring hops go
+over NVLink and two cross the node boundary over IB.
 
-| topology | providers | result |
-|---|---|---|
-| 1 node  | `ib`+`p2p` | exit 0 |
-| 2 nodes | `p2p` alone | exit 124 (hang) |
-| 2 nodes | `p2p`, `NO_EAGER_LOAD=0` | exit 124 |
+    rank  nvlink_accesses  ib_sends
+    0..2  196608           ~85          <- NVLink hops
+    3     0                196691       <- PE3->PE4 crosses nodes
+    4..6  196608           ~82
+    7     0                196690       <- PE7->PE0 crosses nodes
 
-So it is not a provider conflict. It was filed as "the same family as case 05
-(a comm library spinning on the device vs NVBit's bounded channel)" — but that
-shared explanation has since been **refuted by measurement** for case 05 (the
-channel is empty during the hang; see things-to-circle-back-to.md), and case 07
-has not been re-measured since a real data race in its path was fixed. Treat its
-cause as unknown. Case 06 remains its passing stand-in for the coexistence
-property.
+The asymmetry is the point, not a defect. Inter-node NVSHMEM does not move
+payload with GPU loads/stores into a PGAS window — the device enqueues a
+descriptor and the NIC performs the transfer — so an address tracer sees
+*nothing* on those hops (`nvlink_accesses = 0`), while `ibverbs` sees all of it.
+Pairing the two providers is what makes the whole ring observable, and doing it
+in one execution is what makes cross-transport causality recoverable; replay
+cannot express this, because its passes are different runs.
+
+It was xfail from 2026-07-21 to 2026-07-28. The cause was not coexistence, not
+the bounded channel and not multinode as such: the backend instrumented
+LOCAL-memory accesses (per-thread stack, spilled registers) inside NVSHMEM's
+inlined proxy-enqueue path, which wedged the kernel. Bisected to a single
+`LDL.64` in `nvshmemi_transfer_rma_p<int>` and fixed by instrumenting only
+GLOBAL/GENERIC/GLOBAL_TO_SHARED (`3c5d55f`). `NVSHMEM_DISABLE_P2P=1` reproduces
+the old hang on a single node — that is what isolated it. The mechanism is still
+unexplained; see things-to-circle-back-to.md.
 
 **Case 05 is a known-failing (xfail) test, kept on purpose.** Tracing NCCL over
 NVLink with the gpumem provider is a major use case that currently deadlocks (see

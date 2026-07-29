@@ -10,24 +10,18 @@
 # execution, so cross-transport causality is recoverable — which replay can never
 # give, its passes being different runs.
 #
-# KEPT RED ON PURPOSE (project policy: don't weaken a major use case to go
-# green). Multinode NVSHMEM deadlocks under NVBit. Isolated 2026-07-27, and the
-# isolation matters because the obvious suspect was wrong:
+# Was xfail from 2026-07-21 to 2026-07-28. The hang was NOT a coexistence bug,
+# not the bounded channel, and not multinode as such: instrumenting LOCAL-memory
+# accesses (per-thread stack / spilled registers) inside NVSHMEM's inlined
+# proxy-enqueue path wedged the kernel. Bisected to one LDL.64 in
+# nvshmemi_transfer_rma_p<int>; fixed in 3c5d55f by instrumenting only
+# GLOBAL/GENERIC/GLOBAL_TO_SHARED. NVSHMEM_DISABLE_P2P=1 reproduces the old hang
+# on a single node, which is what finally isolated it.
 #
-#   1 node  + BOTH providers  -> exit 0    (coexistence is fine)
-#   2 nodes + gpumem ALONE    -> exit 124  (hangs without ib in the picture)
-#   2 nodes + NO_EAGER_LOAD=0 -> exit 124  (NVBit's own deadlock hint no help)
+# `timeout` stays as a guard so a regression self-reports instead of burning the
+# wall clock — but it is now a real failure, not an expected one.
 #
-# So this is NOT a coexistence bug; it is the same family as case 05 — a comm
-# library spinning on the device vs NVBit's bounded channel. 06_nvshmem_coexist
-# is the passing stand-in for the coexistence property itself.
-#
-# `timeout 300` bounds the hang so the job self-reports (rc=124) instead of
-# burning its wall clock, exactly as case 05 does.
-#
-#   sbatch tests/hpc/cases/07_nvshmem_multinode_xfail/job.sbatch
-#
-#SBATCH --job-name=pcomm-07-nvshmem-multinode-xfail
+#SBATCH --job-name=pcomm-07-nvshmem-multinode
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -63,7 +57,7 @@ fi
 export NVSHMEM_REMOTE_TRANSPORT=ibrc
 export NVSHMEM_IB_ENABLE_IBGDA=0
 
-OUT=$(pcomm_out nvshmem_multinode_xfail); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(pcomm_out nvshmem_multinode); rm -rf "$OUT"; mkdir -p "$OUT"
 
 # PCOMM_KERNEL_NAME restricts NVBit instrumentation to our put kernel; without it
 # NVBit instruments all of NVSHMEM's internal device code (spin/retry loops),
@@ -74,14 +68,17 @@ timeout 300 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_KERNEL_NAME=put_to_next \
   "$PCOMM" -p ib,p2p -o "$OUT" -- "$APP" 65536 3
 rc=$?; echo "mpirun exit=$rc"
-# Self-report the expected outcome so run_suite can classify XFAIL vs XPASS.
-if [ $rc -eq 124 ]; then outcome=deadlock; else outcome=completed; fi
-mkdir -p "$OUT.csv"
-printf '{"case":"07_nvshmem_multinode_xfail","outcome":"%s","rc":%d}\n' "$outcome" "$rc" \
-  > "$OUT.csv/result.json"
-[ $rc -eq 124 ] && exit 0
+if [ $rc -ne 0 ]; then
+  echo "FAILED: workload did not complete (rc=$rc; 124 = timed out)."
+  echo "If this is a hang again, check the instrumentation memory-space filter"
+  echo "in nvbit_backend.cu — see things-to-circle-back-to.md."
+  mkdir -p "$OUT.csv"
+  printf '{"case":"07_nvshmem_multinode","ok":false,"checks":0,"rc":%d}\n' "$rc" \
+    > "$OUT.csv/result.json"
+  exit 1
+fi
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
 "$PCOMM_READ" "$OUT" --csv "$OUT.csv"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/07_nvshmem_multinode_xfail"
+     "$PCOMM_ROOT/tests/hpc/cases/07_nvshmem_multinode"

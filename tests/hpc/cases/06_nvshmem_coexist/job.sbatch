@@ -15,7 +15,7 @@
 # entities (mem_region / queue_pair / modify_qp), NOT traffic — ib_post_send and
 # ib_poll_cq are legitimately empty here. Cross-transport *traffic* correlation
 # needs 2 nodes, which currently deadlocks under NVBit: see
-# 07_nvshmem_multinode_xfail.
+# 07_nvshmem_multinode.
 #
 #   sbatch tests/hpc/cases/06_nvshmem_coexist/job.sbatch
 #
