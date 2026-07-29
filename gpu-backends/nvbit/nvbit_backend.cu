@@ -293,6 +293,22 @@ void handle_launch(CUcontext ctx, CUfunction func) {
     std::vector<CUfunction> related = nvbit_get_related_functions(ctx, func);
     related.push_back(func);
 
+    // PCOMM_LAUNCH_DUMP: report the kernel actually being launched, in exactly
+    // the form the filter compares against, once per distinct name. This is the
+    // input PCOMM_KERNEL_NAME has always needed and had no way to discover —
+    // dumping every *instrumented* function instead gives a list that is both
+    // enormous (NCCL ships 223 specializations) and truncated by any timeout.
+    // Pair it with a filter that matches nothing to skip instrumentation
+    // entirely, so the run finishes in seconds.
+    if (std::getenv("PCOMM_LAUNCH_DUMP")) {
+        static std::unordered_set<std::string>* seen =
+            new std::unordered_set<std::string>();
+        std::string launched(nvbit_get_func_name(ctx, func));
+        launched = launched.substr(0, launched.find('('));
+        if (seen->insert(launched).second)
+            std::fprintf(stderr, "[pcomm-launch] %s\n", launched.c_str());
+    }
+
     for (auto f : related) {
         std::string func_name(nvbit_get_func_name(ctx, f));
         if (G().kernel_filter == "all" ||
