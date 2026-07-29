@@ -1,15 +1,55 @@
-# PLAN — the NVBit "channel deadlock" (mostly RESOLVED — it was not one)
+# PLAN — the NVBit "channel deadlock" (RESOLVED — it was never the channel)
 
 - **Created:** 2026-07-27 10:22 +03
-- **Status:** backlog
-- **Resolved for case 05:** it was never a deadlock. Measured 2026-07-27
-  (job 43878352): raise the deadline 180s -> 1800s and NCCL-over-NVLink under
-  NVBit **completes** with a valid capture (700.pcs 7440B x4 ranks). Just NVBit
-  slowdown against a 3-minute bound. Case 05 is promotable — see its meta.json.
-- **Still open for case 07 only:** multinode NVSHMEM still times out at 1800s
-  (job 43879008) and emits no gpumem records at all. A different bug from 05.
-- **Related:** `plans/PLAN-20260727-0126-shared-engine-abi-todo.md`,
-  `things-to-circle-back-to.md`
+- **Closed:** 2026-07-29
+- **Status:** done
+
+## Outcome
+
+Both cases are promoted; the suite is green with no xfails.
+
+**Case 07** — instrumenting LOCAL-memory accesses (per-thread stack / spilled
+registers) inside NVSHMEM's inlined proxy-enqueue path wedged the kernel.
+Bisected to one `LDL.64` at `+0x19680` in `nvshmemi_transfer_rma_p<int>` using
+`PCOMM_INSTR_LO/HI`: instrumenting `[0,1006)` completes in 22s, `[0,1007)` hangs.
+Fixed in `3c5d55f` by instrumenting only GLOBAL/GENERIC/GLOBAL_TO_SHARED — which
+is the correct rule anyway, since stack and shared memory can never be
+communication. `NVSHMEM_DISABLE_P2P=1` reproduces the old hang on a single node,
+which is what finally isolated it: node count was never the variable, the IBRC
+proxy transport was. The *mechanism* is still unexplained and is recorded in
+things-to-circle-back-to.md for an upstream report.
+
+**Case 05** — never a deadlock and not a workload problem either. A fixed ~435s
+of NVBit module processing (NCCL ships 223 device-function specializations /
+434k instructions in one module). Measured at N=100 through 262144: 433-443s at
+every size while the capture scales 0.6 MB -> 47 MB; uninstrumented is 6s.
+Filtering to the single launched kernel gives 438s vs 436s. Deadline raised to
+600s and the case documents that shrinking the message does not work.
+
+## What this file got wrong, and it is worth reading
+
+Eight explanations were recorded and refuted, several of which sounded
+authoritative at the time:
+
+1. "NVBit's bounded channel starves the producer" — channel measured empty.
+2. "The hang precedes any data being produced" — inference from (1), also wrong.
+3. "Cases 05 and 07 are one bug" — built on (2), collapsed with it.
+4. The channel ring-wrap reset race — `atomicExch` fix did not help.
+5. A hard 64 MiB channel ceiling — an artifact of a timeout.
+6. Workload volume — single node completes at 4x the volume.
+7. PCIe zero-copy contention — a device-memory ring behaves identically.
+8. Grid/occupancy — the same work in a 4x smaller grid still hangs.
+9. The NVSHMEM barrier kernel — removing the barriers changes nothing.
+
+Two self-inflicted failures also produced convincing data: a debug counter read
+at recv-thread exit took `g_mutex` while `nvbit_at_ctx_term` held it across
+`pthread_join` (wedged teardown at every size, invalidated a whole job), and an
+earlier "fix" deleted `flush()`'s tail reset while claiming to harden it.
+
+The pattern in every case: a plausible mechanism was adopted and then defended,
+instead of being tested against the cheapest measurement that could kill it. The
+bisect worked because it manipulated the causal variable directly rather than
+reasoning about correlates.
 
 ## What this file got wrong, so it is not re-derived
 
