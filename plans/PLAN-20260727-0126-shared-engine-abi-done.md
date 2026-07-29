@@ -1,7 +1,7 @@
 # PLAN — shared engine ABI (one engine per process, N plugins)
 
 - **Created:** 2026-07-27 01:26 +03
-- **Status:** todo
+- **Status:** done (2026-07-29)
 - **Ready to start.** Its prerequisite (case 06, the coexistence regression
   test) landed in `584fc2a`. One caveat carried into "Sequencing" below: the
   cross-transport *traffic* half of the safety net is still missing, blocked on
@@ -132,7 +132,17 @@ teeth (check at acquire, refuse on mismatch).
    engine first in every LD_PRELOAD chain (self-located via `dladdr`, override
    with `PCOMM_ENGINE_PATH`). Do not undo that in 2b.
 
-3. **[todo] `-fvisibility=hidden` + version scripts on every provider.**
+3. **[done — 2c8515b] Version scripts on every provider.** ibverbs 2536 -> 9
+   exports, gpumem 3438 -> 9. `-fvisibility=hidden` turned out unnecessary: an
+   explicit version script already reduces the dynamic table to the listed
+   names, and it is the safer of the two because the export set is written down
+   rather than inferred. Startup assertion landed as
+   `pcomm_engine_interposer_live()`, verified in BOTH directions (job 43972895):
+   a deliberately mis-launched run — provider preloaded with the engine only as
+   a DT_NEEDED — does trigger it. A check that cannot fire reads as reassurance.
+   nvc++ needs raw `LINK_FLAGS`; see the CMakeLists.
+
+   ~~[todo] `-fvisibility=hidden` + version scripts on every provider.~~
    Also add here: **a startup assertion that the interposer is actually live.**
    Every bug in this refactor failed by producing a plausible green rather than
    an error (stale captures, the case 07 label mismatch, the dlsym loss). Only a
@@ -144,7 +154,14 @@ teeth (check at acquire, refuse on mismatch).
    That export surface *is* the bug class of `7a5b55a`. Cheap defense-in-depth
    even once the engine is shared.
 
-4. **[todo] Enforce at acquire:** ABI version match; reject overlapping
+4. **[done — 957939a] Enforce at acquire:** `pcomm_engine_declare_provider`
+   checks ABI version and rejects overlapping id ranges; `pcomm_engine_arena`
+   warns once per record type outside every declared range. The engine declares
+   its own internal range (500-599) rather than the check special-casing it —
+   a consistency check with a hidden exception is one you stop trusting. ABI
+   bumped 1 -> 2.
+
+   ~~[todo] Enforce at acquire:~~ ABI version match; reject overlapping
    `id_range` claims; flag records emitted outside a provider's declared range.
    Disjointness is what lets N plugins merge into one stream and `pcomm-read`
    already assumes it — nothing checks today.
@@ -184,6 +201,10 @@ both providers in one process, goldens verified across two independent jobs. So
 step 2 now has a net for the *coexistence* property: if the refactor
 reintroduces symbol duplication or breaks the shared Tracer, case 06 fails and
 no other case would notice.
+
+**[RESOLVED 2026-07-29 — the net is complete.]** Case 07 is green and asserts
+cross-transport traffic in one execution, so steps 3-4 had the full safety net
+that step 2 went in without. Historical text follows.
 
 **But half the net is missing.** The unified NVLink+IB *traffic* correlation has
 no regression test, because the 2-node case deadlocks under NVBit
