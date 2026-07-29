@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "pcomm/attr/pipeline.hpp"
+#include "pcomm/core/ids.hpp"
 #include "pcomm/core/records.hpp"
 #include "pcomm/engine_abi.h"
 #include "pcomm/tracer.hpp"
@@ -87,6 +88,11 @@ public:
         // from_env() itself is fine here — it only reads env vars locally; only
         // POD crosses the boundary.
         const Config cfg = Config::from_env();
+        // See ibverbs: declare the 700-799 range and our ABI before acquiring.
+        if (pcomm_engine_declare_provider("gpumem", core::id_range::gpumem_lo,
+                                          core::id_range::gpumem_hi,
+                                          PCOMM_ENGINE_ABI_VERSION) != 0)
+            return;
         pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
         auto& rec = recorder();
         m_pipeline = std::make_unique<attr::AttributionPipeline>(rec);

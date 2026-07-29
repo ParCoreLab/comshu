@@ -16,13 +16,16 @@
 
 #include <dlfcn.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "pcomm/engine_abi.h"
+#include "pcomm/core/ids.hpp"
 #include "pcomm/core/record.hpp"
 #include "pcomm/rec/recorder.hpp"
 #include "pcomm/rec/thread_buffer_registry.hpp"
@@ -108,6 +111,8 @@ ArenaMap& arenas_for_this_thread() {
 }  // namespace
 }  // namespace pcomm
 
+static void warn_if_undeclared(std::uint16_t type_id);
+
 extern "C" {
 
 std::uint32_t pcomm_engine_abi_version(void) { return PCOMM_ENGINE_ABI_VERSION; }
@@ -117,7 +122,33 @@ int pcomm_engine_acquire(const char* output_dir, int rank, int verbose) {
     if (output_dir && *output_dir) cfg.output_dir = output_dir;
     cfg.rank    = rank;
     cfg.verbose = verbose != 0;
+    // The engine emits its own records (clock anchors, 500-599) and is
+    // therefore a provider of record ids too. Declaring here rather than
+    // special-casing the check keeps one rule: every id in a capture belongs to
+    // exactly one declared range.
+    pcomm_engine_declare_provider("pcomm-engine", pcomm::core::id_range::internal_lo,
+                                  pcomm::core::id_range::internal_hi,
+                                  PCOMM_ENGINE_ABI_VERSION);
+
     pcomm::Tracer::instance().start(cfg);
+
+    // Loud, once: a linked-but-not-preloaded engine still "works" — it just
+    // captures less, with no error anywhere. That cost 12 of 16 memory regions
+    // and 36 of 432 queue pairs, and only a sufficiently detailed golden
+    // noticed. Never let that be silent again.
+    static bool checked = false;
+    if (!checked) {
+        checked = true;
+        if (!pcomm_engine_interposer_live())
+            std::fprintf(stderr,
+                "[pcomm] WARNING: libpcomm_engine.so is not the resolver for "
+                "`dlsym` — it was linked but not PRELOADED. Preload-based "
+                "capture will be silently incomplete. Put the engine first in "
+                "LD_PRELOAD (the pcomm launcher does this; PCOMM_ENGINE_PATH "
+                "overrides the location).\n");
+        else if (cfg.verbose)
+            std::fprintf(stderr, "[pcomm] interposer live: dlsym resolves to the engine\n");
+    }
     return 0;
 }
 
@@ -128,6 +159,7 @@ pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind,
     auto& map = pcomm::arenas_for_this_thread();
     auto  it  = map.find(type_id);
     if (it == map.end()) {
+        warn_if_undeclared(type_id);
         auto a = std::make_unique<pcomm::Arena>(
             type_id, static_cast<pcomm::core::RecordKind>(kind), stride, capacity);
         // Registered so Tracer::finalize() can flush arenas belonging to threads
@@ -179,6 +211,98 @@ std::uint32_t pcomm_engine_intern_key(std::uint8_t domain, std::uint64_t key) {
 // Self-reporting via dladdr rather than making the launcher guess a path keeps
 // this correct across build layouts (build/ vs build-gpumem/, installed, or a
 // provider .so copied elsewhere).
+// --- step 3/4: enforcement at the boundary ---------------------------------
+//
+// Every bug in this refactor failed by producing a plausible green rather than
+// an error: stale suite captures inheriting an older PASS, the case 07 label
+// mismatch that left an xfail unverified for days, and the dlsym loss that
+// silently dropped 12 of 16 memory regions. Only a golden with enough entities
+// in it caught the last one. These two checks turn the remaining instances of
+// that class into loud failures.
+
+namespace {
+
+struct DeclaredProvider {
+    std::string name;
+    std::uint16_t lo{0}, hi{0};
+};
+
+std::vector<DeclaredProvider>& declared() {
+    static auto* v = new std::vector<DeclaredProvider>();
+    return *v;
+}
+
+std::mutex& declared_mutex() {
+    static auto* m = new std::mutex();
+    return *m;
+}
+
+}  // namespace
+
+extern "C" int pcomm_engine_declare_provider(const char* name, std::uint16_t id_lo,
+                                             std::uint16_t id_hi,
+                                             std::uint32_t abi_version) {
+    const char* who = name ? name : "?";
+    if (abi_version != PCOMM_ENGINE_ABI_VERSION) {
+        std::fprintf(stderr,
+            "[pcomm] provider '%s' was built against engine ABI %u but this "
+            "engine is ABI %u — refusing. Rebuild the provider.\n",
+            who, abi_version, PCOMM_ENGINE_ABI_VERSION);
+        return 1;
+    }
+    if (id_lo > id_hi) {
+        std::fprintf(stderr, "[pcomm] provider '%s' declares an inverted id "
+                             "range [%u,%u] — refusing.\n", who, id_lo, id_hi);
+        return 1;
+    }
+    std::lock_guard lock(declared_mutex());
+    for (const auto& d : declared()) {
+        if (d.name == who && d.lo == id_lo && d.hi == id_hi) return 0;  // idempotent
+        // pcomm-read merges provider streams by record-type id and assumes the
+        // ranges are disjoint. Nothing enforced that until now.
+        if (id_lo <= d.hi && d.lo <= id_hi) {
+            std::fprintf(stderr,
+                "[pcomm] provider '%s' claims record ids [%u,%u], which overlaps "
+                "'%s' [%u,%u]. Streams would collide and pcomm-read would merge "
+                "unrelated records — refusing.\n",
+                who, id_lo, id_hi, d.name.c_str(), d.lo, d.hi);
+            return 1;
+        }
+    }
+    declared().push_back({who, id_lo, id_hi});
+    return 0;
+}
+
+// Warn once per offending type id: a record outside every declared range means
+// a provider is emitting into id space it never claimed, which is exactly what
+// the disjointness check above exists to prevent.
+static void warn_if_undeclared(std::uint16_t type_id) {
+    std::lock_guard lock(declared_mutex());
+    if (declared().empty()) return;  // nobody declared; nothing to check against
+    for (const auto& d : declared())
+        if (type_id >= d.lo && type_id <= d.hi) return;
+    static auto* warned = new std::unordered_map<std::uint16_t, bool>();
+    if (warned->emplace(type_id, true).second)
+        std::fprintf(stderr,
+            "[pcomm] record type %u is outside every declared provider id "
+            "range — the capture may be unreadable or merged wrongly.\n",
+            type_id);
+}
+
+extern "C" int pcomm_engine_interposer_live(void) {
+    // Resolve "dlsym" the way an external caller would, then ask which object
+    // actually defines what came back. If it is not us, we were linked rather
+    // than preloaded and preload-based capture is silently incomplete.
+    void* sym = ::dlsym(RTLD_DEFAULT, "dlsym");
+    if (!sym) return 0;
+    Dl_info theirs{}, ours{};
+    if (!dladdr(sym, &theirs) || !theirs.dli_fname) return 0;
+    if (!dladdr(reinterpret_cast<const void*>(&pcomm_engine_interposer_live), &ours) ||
+        !ours.dli_fname)
+        return 0;
+    return std::string(theirs.dli_fname) == std::string(ours.dli_fname) ? 1 : 0;
+}
+
 extern "C" const char* pcomm_engine_so_path() {
     static const std::string path = [] {
         Dl_info info{};

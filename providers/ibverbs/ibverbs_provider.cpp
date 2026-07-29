@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "pcomm/core/ids.hpp"
 #include "pcomm/provider/provider.hpp"
 #include "pcomm/rec/intern_table.hpp"
 #include "pcomm/engine_abi.h"
@@ -42,6 +43,14 @@ static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
 Profiler::Profiler() {
     // The launcher/preload sets PCOMM_* env; bring up sink + recorder once.
     const pcomm::Config cfg = pcomm::Config::from_env();
+    // Declare before acquiring: checks our ABI against the engine's and that
+    // nobody else has claimed the 100-199 record-id range. pcomm-read merges
+    // provider streams assuming those ranges are disjoint; until now nothing
+    // verified it.
+    if (pcomm_engine_declare_provider("ibverbs", pcomm::core::id_range::ibverbs_lo,
+                                      pcomm::core::id_range::ibverbs_hi,
+                                      PCOMM_ENGINE_ABI_VERSION) != 0)
+        return;  // the engine has already explained why on stderr
     pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     // Install object-ops trampolines into each device context as it opens.

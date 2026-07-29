@@ -27,7 +27,7 @@ extern "C" {
 #endif
 
 /* Bump on any incompatible change below. Checked at acquire. */
-#define PCOMM_ENGINE_ABI_VERSION 1u
+#define PCOMM_ENGINE_ABI_VERSION 2u
 
 /* A per-(thread, record-type) append region. The engine owns the storage and
  * the lifetime; the provider only appends into `slots` and bumps `count`.
@@ -42,6 +42,27 @@ typedef struct pcomm_arena {
 } pcomm_arena;
 
 uint32_t pcomm_engine_abi_version(void);
+
+/* Declare a provider before acquiring. Checks three things nothing checked
+ * before:
+ *   - the provider was compiled against a compatible PCOMM_ENGINE_ABI_VERSION;
+ *   - its record-type id range does not overlap an already-declared provider's
+ *     (pcomm-read merges provider streams assuming disjointness, and nothing
+ *     enforced it);
+ *   - later, that records actually land inside the declared range.
+ * Returns 0 on success, non-zero on rejection (and reports why on stderr).
+ * Safe to call more than once with identical arguments. */
+int pcomm_engine_declare_provider(const char* name, uint16_t id_lo,
+                                  uint16_t id_hi, uint32_t abi_version);
+
+/* Is our `dlsym` the one an external caller resolves?
+ *
+ * 1 = yes; 0 = something else (usually libc) wins, which means preload-based
+ * capture is silently degraded — not absent, just incomplete, which is the
+ * worst failure mode. This library must be PRELOADED, not merely linked: as a
+ * plain DT_NEEDED it loses the lookup and 12 of 16 memory regions and 36 of
+ * 432 queue pairs went missing with no error at all. Checked at acquire. */
+int pcomm_engine_interposer_live(void);
 
 /* Bring the capture up / take it down. Refcounted: the second provider to
  * acquire joins the running capture rather than re-initialising it, and only
