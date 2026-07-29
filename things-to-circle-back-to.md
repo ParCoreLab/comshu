@@ -45,10 +45,20 @@ register pressure changing the spill pattern that the instrumented code is
 itself reading — are speculation, and speculation lost eight times on this bug.
 
 **Why it matters beyond us:** any NVBit tool that instruments local memory around
-NVSHMEM's proxy path should hit this. **Snoopie instruments the same way** (our
-`inject_funcs.cu` is a port of its `instrument_mem`, and its filter is the same
-NONE/CONSTANT blocklist), so its documented "multinode NVSHMEM doesn't work"
-limitation is plausibly this bug rather than anything intrinsic.
+NVSHMEM's proxy path should hit this. Snoopie instruments the same way — our
+`inject_funcs.cu` is a port of its `instrument_mem` and carries the same
+NONE/CONSTANT blocklist — so it is a plausible second victim.
+
+**Do NOT conflate this with Snoopie's documented multinode limitation.** That one
+is about *coverage*, not hanging: an address tracer sees load/store instructions,
+and inter-node NVSHMEM does not move payload with GPU loads/stores into a PGAS
+window — the device enqueues a descriptor and the NIC performs the transfer, so
+there is nothing at the instruction level to observe. Our own case 07 capture
+demonstrates it directly: the two node-crossing senders (PE3, PE7) record
+`nvlink_accesses = 0` while carrying ~196,690 IB sends each. This is precisely
+why pcomm pairs `gpumem` with `ibverbs` and why the cross-transport oracle
+exists — the IB half is unreachable from instruction tracing by construction.
+The hang is a separate, genuine bug that happens to live on the same code path.
 
 **For the report, we already have:** a single-node 2-GPU reproducer, the exact
 instruction (opcode/offset/function), a bisect harness (`PCOMM_INSTR_LO/HI`,
