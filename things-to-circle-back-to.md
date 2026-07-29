@@ -2,32 +2,88 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
-## NVBit deadlocks with multinode NVSHMEM (2026-07-27)
+## OPEN (upstream): why instrumenting a LOCAL-memory access wedges NVSHMEM
 
-`07_nvshmem_multinode_xfail` — 8 PEs over 2 nodes hangs before the workload
-reports. **Isolated, because the obvious suspect was wrong.** The tempting
-conclusion was that the freshly-enabled provider coexistence broke it; it did
-not:
+**This is the one to file a bug report about.** The case 07 hang is fixed on our
+side (below), but the *mechanism* is not understood, and it is very likely not
+specific to pcomm.
 
-| topology | providers | result |
-|---|---|---|
-| 1 node, 4 PEs  | ib + p2p                 | exit 0   |
-| 2 nodes, 8 PEs | p2p **alone**            | exit 124 |
-| 2 nodes, 8 PEs | p2p, `NO_EAGER_LOAD=0`   | exit 124 |
+Bisected to a single instruction (jobs 43918460..43920181, `PCOMM_INSTR_LO/HI`):
 
-Two nodes hang with gpumem alone, so ibverbs is not involved; and NVBit's own
-banner hint for deadlocks (`NO_EAGER_LOAD=0`) does not help.
+| instrumented range | outcome |
+|---|---|
+| `[0,1006)` | completes, 22s |
+| `[0,1007)` | hangs forever |
 
-**Same family as case 05 — confirmed by measurement, but not for the recorded
-reason.** Both hang with a completely empty channel (`bytes=0`), so the
-"bounded channel starves" explanation is refuted for both; see the section
-below. The `g.heap_regions` race in this path was fixed and did *not* resolve
-it. One cause, still unlocated, upstream of any data flow.
+Index 1006 is `LDL.64` at `+0x19680` in `nvshmemi_transfer_rma_p<int>` — a
+**local**-memory access, i.e. a spilled-register reload. Instrumenting every
+instruction below it is fine, *including* the 64-bit global atomic at index 1000
+(`ATOMG.E.MAX.64.STRONG.GPU`) and the system-scope strong stores at 996 and 1007
+(`ST.E.STRONG.SYS`, `STG.E.64.STRONG.SYS`) that sit on either side of it. Those
+were the obvious suspects — a proxy-queue reserve/publish handshake — and they
+are innocent. One stack reload is the whole trigger.
 
-**Consequence:** the unified NVLink+IB *traffic* timeline is blocked. Case 06
-covers the coexistence property (one process, one capture, both providers) but
-single-node NVSHMEM never posts an IB send, so cross-transport traffic
-correlation has no regression test until this is fixed.
+**What we know:**
+- Needs NVSHMEM's IBRC proxy transport. `NVSHMEM_DISABLE_P2P=1` reproduces it on
+  a *single node*, 2 GPUs, with identical push counts and threshold to the
+  2-node case, so node count was never the variable.
+- Needs `push()` to actually run: a provider built with the identical injected
+  call but `-DPCOMM_INJECT_NO_PUSH` completes in 10s.
+- The channel is not involved: `full=0 flusher=0 flushbody=0` in every hanging
+  run at the default 1 GiB ring — the ring never fills and `flush()` never
+  executes.
+- No host-side deadlock: 26 threads, none blocked on a lock; the main thread is
+  legitimately in `cudaDeviceSynchronize` waiting for a kernel that never
+  retires.
+- The kernel issues *every* memory access it was ever going to (freezes at or
+  just past `47 x warps`) plus a few hundred extra from some retry path, then
+  will not exit.
+
+**What we do not know:** why a call injected before a stack reload deadlocks a
+proxy handshake. Plausible stories — added latency in a timing-sensitive window,
+register pressure changing the spill pattern that the instrumented code is
+itself reading — are speculation, and speculation lost eight times on this bug.
+
+**Why it matters beyond us:** any NVBit tool that instruments local memory around
+NVSHMEM's proxy path should hit this. **Snoopie instruments the same way** (our
+`inject_funcs.cu` is a port of its `instrument_mem`, and its filter is the same
+NONE/CONSTANT blocklist), so its documented "multinode NVSHMEM doesn't work"
+limitation is plausibly this bug rather than anything intrinsic.
+
+**For the report, we already have:** a single-node 2-GPU reproducer, the exact
+instruction (opcode/offset/function), a bisect harness (`PCOMM_INSTR_LO/HI`,
+`PCOMM_INSTR_DUMP`), and a one-line fix that removes it. Missing: the mechanism,
+and confirmation on a second site/NVSHMEM version. du04 (4x A100, live mlx5_0,
+`ptrace_scope=0`, sudo, cuda-gdb + compute-sanitizer available under
+`/home/iturimbetov18/cuda-12.3/`) is where a debugger can actually be attached —
+MN5 blocks ptrace everywhere. Caveat: du04 is NVSHMEM **2.10** vs MN5's 3.7, a
+different major version of exactly the code under suspicion.
+
+## RESOLVED: case 07 — instrument GLOBAL memory only (2026-07-28)
+
+`07_nvshmem_multinode_xfail` hung for a week. Root cause: the backend's
+instruction filter was a **blocklist** (skip `NONE`/`CONSTANT`), so it injected
+into `LOCAL` (per-thread stack, spilled registers) and `SHARED` (intra-block)
+too. Neither can ever be communication, so those records were meaningless *and*
+they were the bulk of the work — in one 64-instruction window of
+`nvshmemi_transfer_rma_p<int>`, 84 of the accesses were `LDS`/`LDL`/`STL`.
+
+Fix (`3c5d55f`): allowlist `GLOBAL` / `GENERIC` / `GLOBAL_TO_SHARED`. The IBRC
+path drops from 47 to ~7.6 injected calls per warp; the NVLink path is
+unchanged (`push=18433` before and after), so cases 03/04/06 keep their goldens.
+Case 07 now completes on 2 nodes with both providers and captures both
+transports in one execution.
+
+**Six theories died on the way, each refuted by measurement, not argument:** the
+channel ring-wrap race, a hard 64 MiB channel ceiling, workload volume, PCIe
+zero-copy contention (`USE_ASYNC_STREAM` behaves identically), grid/occupancy
+(same work in a 4x smaller grid still hangs), and the NVSHMEM barrier kernel
+(removing the barriers changes nothing). Two self-inflicted failures also
+produced convincing-looking data and are worth remembering: a debug counter read
+at recv-thread exit took `g_mutex` while `nvbit_at_ctx_term` held it across
+`pthread_join` (wedged teardown at every workload size, invalidated a whole
+job), and an earlier "fix" deleted `flush()`'s tail reset while claiming to
+harden it (`6f53291` restored it).
 
 ## NVBit "deadlock" — case 05 was a TIMEOUT, not a deadlock (2026-07-27)
 
