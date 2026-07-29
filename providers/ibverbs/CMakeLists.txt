@@ -19,3 +19,11 @@ set_target_properties(ibverbs_trace PROPERTIES
   BUILD_RPATH "$ORIGIN/../../libpcomm"
   INSTALL_RPATH "$ORIGIN/../../libpcomm")
 target_link_options(ibverbs_trace PRIVATE -Wl,--enable-new-dtags)
+
+# Export only what must be exported (see ibverbs.map). Cuts the dynamic symbol
+# table from 2536 to 9 and removes the weak-duplicate surface that made
+# provider coexistence a linker accident (7a5b55a).
+target_link_options(ibverbs_trace PRIVATE
+  "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/ibverbs.map")
+set_target_properties(ibverbs_trace PROPERTIES
+  LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ibverbs.map")

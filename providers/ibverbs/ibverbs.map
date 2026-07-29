@@ -1,0 +1,32 @@
+/* Export surface for libibverbs_trace.so.
+ *
+ * Everything else is local. Before this, the provider exported 2536 dynamic
+ * symbols; nine are load-bearing. That surplus is exactly the bug class of
+ * 7a5b55a: 969 symbols were defined by BOTH providers with weak (vague)
+ * linkage, so the dynamic linker bound every reference to whichever copy
+ * loaded first and the two providers shared a Tracer by accident — then
+ * destroyed each other's Recorder on the way up.
+ *
+ * The ibv_* entries MUST stay global: they are LD_PRELOAD interposers, and
+ * interposition is precisely "be the first global definition of this name".
+ * Hiding one does not fail loudly — it silently stops capturing that call.
+ * Cases 01 and 06 assert MR/QP/modify_qp counts, so a mistake here shows up
+ * as a golden diff rather than as nothing at all.
+ *
+ * NB `dlsym` is NOT here: it lives in libpcomm_engine.so, which must own the
+ * single definition (see Dlsym.hpp, and pcomm_engine_interposer_live()).
+ */
+{
+  global:
+    ibv_alloc_pd;
+    ibv_create_qp;
+    ibv_dereg_mr;
+    ibv_destroy_qp;
+    ibv_modify_qp;
+    ibv_open_device;
+    ibv_reg_mr;
+    pcomm_create_provider;
+    pcomm_abi_version;
+  local:
+    *;
+};

@@ -79,3 +79,15 @@ target_link_options(gpumem_trace PRIVATE $<HOST_LINK:-Xlinker --enable-new-dtags
 set_target_properties(gpumem_trace PROPERTIES
   BUILD_RPATH "$ORIGIN/../../libpcomm"
   INSTALL_RPATH "$ORIGIN/../../libpcomm")
+
+# Export only what must be exported (see gpumem.map): 3438 -> 9. HOST_LINK so
+# the flag goes to the host linker, not to nvcc's device link step.
+# NB the host linker here is nvc++ (NVHPC driver) and CMake's link-option list
+# processing does not survive the trip: "-Wl,--version-script=..." gets split at
+# the comma ("Switch -Wl expects an argument") and "-Xlinker --version-script=..."
+# arrives with -Xlinker detached, so nvc++ rejects the path as its own switch.
+# LINK_FLAGS is a raw string appended to the link line with no list mangling.
+set_target_properties(gpumem_trace PROPERTIES
+  LINK_FLAGS "-Xlinker --version-script=${CMAKE_CURRENT_SOURCE_DIR}/gpumem.map")
+set_target_properties(gpumem_trace PROPERTIES
+  LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gpumem.map")

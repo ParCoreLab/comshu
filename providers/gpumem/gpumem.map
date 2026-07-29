@@ -1,0 +1,23 @@
+/* Export surface for libgpumem_trace.so. See ibverbs.map for why.
+ *
+ * The nvbit_at_* entries MUST stay global: NVBit resolves its tool callbacks
+ * by name at load time, so hiding one silently disables that callback rather
+ * than failing to load. pcomm_instrument_mem is the injected device function
+ * NVBit looks up to insert calls to.
+ *
+ * 3438 dynamic symbols before this; nine are load-bearing.
+ */
+{
+  global:
+    nvbit_at_init;
+    nvbit_at_term;
+    nvbit_at_ctx_init;
+    nvbit_at_ctx_term;
+    nvbit_at_cuda_event;
+    nvbit_at_graph_node_launch;
+    pcomm_instrument_mem;
+    pcomm_create_provider;
+    pcomm_abi_version;
+  local:
+    *;
+};
