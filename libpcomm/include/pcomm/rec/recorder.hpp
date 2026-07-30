@@ -83,19 +83,17 @@ public:
         if (arena->count == arena->capacity) pcomm_engine_arena_flush(arena);
         auto* slot = reinterpret_cast<Stamped<R>*>(
             static_cast<std::byte*>(arena->slots) + std::size_t{arena->count} * arena->stride);
-        // Zero the slot before writing the fields. Member assignment never
-        // touches padding, so without this every record carries whatever was
-        // in the arena — measured 2026-07-30: 2000/2000 records in a real
-        // capture had stack residue in Temporal's padding, recognisable
-        // pointer fragments among it.
+        // NOTE: this does NOT currently clean the padding, and the capture
+        // still carries stack residue — verified 2026-07-30, 5000/5000 records
+        // in a fresh capture. Zeroing the destination is useless because
+        // `slot->temporal = t` copies a trivially-copyable struct, so the
+        // compiler memcpys all 48 bytes of `t` including ITS padding, which the
+        // caller never initialised. Kept only because it costs ~0.4 ns and is a
+        // precondition for the real fix.
         //
-        // Three things this buys, none of them cosmetic: captures stop leaking
-        // process memory; identical runs produce byte-identical .pcs, so the
-        // determinism gate can compare files and not just query output; and the
-        // records become bit-identical to the FlatBuffers structs in
-        // libpcomm/schema/pcomm.fbs (verified by libpcomm/tests/
-        // schema_conformance), which is what makes a capture readable from
-        // other languages via flatc.
+        // The real fix is to give Temporal/TimePoint (and any padded record)
+        // explicit, value-initialised padding members, so there is no
+        // uninitialised hole to copy from. See things-to-circle-back-to.md.
         std::memset(static_cast<void*>(slot), 0, sizeof(Stamped<R>));
         slot->temporal = t;
         slot->payload  = r;
