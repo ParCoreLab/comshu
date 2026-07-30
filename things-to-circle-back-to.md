@@ -397,6 +397,27 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   LID-keyed comm graph reconstructs regardless, but per-rank streams are lost.)
 
 ## Infra / process
+- **BLOCKER (2026-07-30): `build-gpumem` will not rebuild on MN5**, failing with
+  `nvcc fatal : Value 'c++20' is not defined for option 'std'` even after
+  `rm -rf build-gpumem` and reconfiguring with the documented flag set
+  (`-DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF
+  -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90
+  -DCMAKE_CUDA_HOST_COMPILER=g++`). Suspect the nvcc on PATH is not the
+  nvidia-hpc-sdk/25.7 one when the modules are loaded outside
+  `run_on_mn5.sh`'s exact environment — the error means an nvcc older than 12.0,
+  and 25.7 ships 12.9. Check `which nvcc` against what the driver script gets.
+- **The CUDA target does not track header dependencies.** Changing
+  `libpcomm/include/**` does NOT rebuild `gpumem_trace`; make reports
+  "Built target gpumem_trace" and relinks nothing. `run_on_mn5.sh` then `cp`s
+  the stale `.so` into `build/providers/gpumem/`, where its fresh mtime makes it
+  look current. **Consequence: a green suite can be reporting on a gpumem binary
+  from a previous day.** Verified 2026-07-30 — the padding fix (449fb3b) was
+  absent from the .so used in the suite run that "confirmed" it, and the fresh
+  capture still showed 5000/5000 records with dirty padding. Always check
+  `build-gpumem/providers/gpumem/libgpumem_trace.so`'s own mtime, not the copy.
+  Fix: make the CUDA target depend on the libpcomm headers, or have
+  `run_on_mn5.sh` force a gpumem rebuild.
+
 - **Memory key/host split.** Canonical pcomm memories live on
   `mobile-base:~/.claude/.../-home-mktips-pockt-uni-lab/memory`. This session
   runs under the `-home-mktips-pockt-uni-lab-pcomm` key on university-base, and
