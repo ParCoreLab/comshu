@@ -113,8 +113,22 @@ if [ "$do_build" -eq 1 ]; then
     || { echo 'tools/ibverbs build FAILED' >&2; exit 1; }
 
   say "build gpumem provider (NVBit, gcc-11.4 host, CUDA C++20, sm_90)"
+  # CMAKE_CUDA_COMPILER is pinned to the *versioned* 12.9 tree on purpose. The
+  # SDK ships $SDK/compilers/bin/nvcc (CUDA 11.8, no c++20) and that is what
+  # PATH resolves, so an unpinned configure silently downgrades the toolchain
+  # and dies on -std=c++20. $SDK/cuda/bin/nvcc is 12.9 but its root lacks the
+  # static libs, giving "cannot find -lcudadevrt"; only $SDK/cuda/12.9/bin/nvcc
+  # has both. This used to work only because an old CMakeCache happened to hold
+  # the right compiler — one `rm -rf build-gpumem` turned that into a blocker.
+  #
+  # The touch is a blunt fix for a real hazard: the CUDA target does not track
+  # libpcomm/include headers, so editing one leaves gpumem_trace stale while
+  # make reports success, and the stale .so then gets copied into build/ with a
+  # fresh mtime. A green suite was reporting on a day-old binary.
   rsh "module load gcc/11.4.0 nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1; cd $RDIR &&
-       cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ >/dev/null &&
+       SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
+       cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
+       touch gpu-backends/nvbit/nvbit_backend.cu gpu-backends/nvbit/inject_funcs.cu providers/gpumem/gpumem_provider.cpp &&
        cmake --build build-gpumem --target gpumem_trace -j 2>&1 | tail -2 &&
        mkdir -p build/providers/gpumem &&
        cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/ &&
