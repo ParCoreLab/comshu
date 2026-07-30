@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "pcomm/core/records.hpp"
+#include "pcomm/rec/stream_reader.hpp"
+#include "pcomm/rec/version_map.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
 
 #include "ib_records.hpp"  // provider record schemas (reader knows all types)
@@ -31,51 +33,11 @@ using rec::Stamped;
 
 namespace {
 
-// Every `.pcs` opens with a 32-byte StreamHeader. It is validated, not skipped:
-// a capture that disagrees with this build about the record type or the stride
-// is refused by name rather than decoded into plausible-looking nonsense, which
-// is what happened for as long as the files carried no framing at all.
-//
-// Captures written before format 1 have no header and are not readable here.
-// That is deliberate — they are indistinguishable from current ones except by
-// the absence this check is looking for, so re-capture rather than guess.
-template <core::Record R>
-std::vector<Stamped<R>> load_stream(const fs::path& file) {
-    std::vector<Stamped<R>> out;
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return out;
-
-    const auto bytes = fs::file_size(file);
-    if (bytes < sizeof(rec::StreamHeader)) {
-        std::fprintf(stderr, "pcomm-read: %s is too short to hold a stream header\n",
-                     file.c_str());
-        return out;
-    }
-
-    rec::StreamHeader h{};
-    in.read(reinterpret_cast<char*>(&h), sizeof h);
-    if (const char* err = rec::stream_header_error(h, core::RecordTrait<R>::type_id,
-                                                   sizeof(Stamped<R>))) {
-        std::fprintf(stderr, "pcomm-read: %s: %s\n", file.c_str(), err);
-        return out;
-    }
-    // A different schema wrote this, but the type and stride still agree, so the
-    // records decode. Say so rather than either failing or staying quiet: an
-    // unrelated record changing is not a reason to refuse this stream, and a
-    // silent mismatch is the whole thing the header exists to end.
-    if (h.schema_hash != rec::kSchemaHash) {
-        std::fprintf(stderr,
-                     "pcomm-read: %s: written by schema %016llx, this build has "
-                     "%016llx — layout agrees, decoding anyway\n",
-                     file.c_str(), (unsigned long long)h.schema_hash,
-                     (unsigned long long)rec::kSchemaHash);
-    }
-
-    out.resize((bytes - sizeof(rec::StreamHeader)) / sizeof(Stamped<R>));
-    in.read(reinterpret_cast<char*>(out.data()),
-            static_cast<std::streamsize>(out.size() * sizeof(Stamped<R>)));
-    return out;
-}
+// Stream loading (header validation included) lives in
+// pcomm/rec/stream_reader.hpp so it can be tested and so the versioning reader
+// uses the same path. It used to be a local template here, where nothing could
+// reach it.
+using rec::load_stream;
 
 const char* kind_name(core::RecordKind k) {
     switch (k) {
@@ -150,6 +112,22 @@ struct RankDir {
     }
 };
 
+// Every record type this build can decode. Anything else in a capture is data
+// we are dropping, and dropping data quietly is the failure the record schema
+// exists to prevent — so export_csv reports it rather than producing a table
+// that merely looks complete.
+const std::vector<core::RecordTypeId> kKnownTypes = {
+    core::RecordTrait<GpuAccess>::type_id,   core::RecordTrait<MemObject>::type_id,
+    core::RecordTrait<SourceLine>::type_id,  core::RecordTrait<Attribution>::type_id,
+    core::RecordTrait<ClockAnchor>::type_id, core::RecordTrait<ibr::IbMemRegion>::type_id,
+    core::RecordTrait<ibr::IbQueuePair>::type_id, core::RecordTrait<ibr::IbModifyQp>::type_id,
+    core::RecordTrait<ibr::IbPostSend>::type_id,  core::RecordTrait<ibr::IbPollCq>::type_id,
+};
+
+// A rank's stream file for record type R.
+template <core::Record R>
+fs::path stream_path(const RankDir& r) { return rec::stream_path<R>(r.dir); }
+
 // Find every rank-* directory under `root`. A single run lays them out flat
 // (root/rank-*); a replayed run nests one level per pass (root/<pass>/rank-*),
 // e.g. root/ib/rank-0 and root/gpumem/rank-0 for the same logical rank 0. We
@@ -186,10 +164,6 @@ std::vector<RankDir> scan_ranks(const fs::path& root) {
     return ranks;
 }
 
-template <core::Record R>
-fs::path stream_path(const RankDir& r) {
-    return r.dir / (std::to_string(core::RecordTrait<R>::type_id) + ".pcs");
-}
 
 // --- CSV export ---------------------------------------------------------------
 
@@ -201,6 +175,19 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
         return 1;
     }
     fs::create_directories(outdir);
+
+    // Say what we cannot represent, before writing tables that omit it.
+    std::size_t unhandled = 0;
+    for (const auto& r : ranks)
+        for (const auto& d : rec::unhandled_streams(r.dir, kKnownTypes)) {
+            std::fprintf(stderr, "pcomm-read: rank %d: %s\n", r.rank, d.message.c_str());
+            ++unhandled;
+        }
+    if (unhandled)
+        std::fprintf(stderr,
+                     "pcomm-read: %zu stream(s) not exported — this build is older "
+                     "than the capture, or was built without a provider it used\n",
+                     unhandled);
 
     auto open = [&](const char* name, const char* header) {
         std::FILE* f = std::fopen((outdir / name).c_str(), "w");

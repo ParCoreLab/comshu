@@ -31,9 +31,10 @@ by construction, and the checks are the whole story:
 | check | catches | runs as |
 |---|---|---|
 | `tests/schema_conformance.cpp` | a record whose layout, size or *enum values* drift from the schema — byte-level, all 10 records and the stream header | ctest `schema_conformance` |
-| `tools/schema_check.py` | a record with no schema entry at all, a reordered or renamed field, a wrong `type_id`/kind, an enum out of step, a stale `kSchemaHash`, a record missing from the conformance test | **the build**, plus ctest `schema_check` |
+| `tools/schema_check.py` | a record with no schema entry at all, a reordered or renamed field, a wrong `type_id`/kind/version, an enum out of step, a stale `kSchemaHash`, a broken versioning rule, a record missing from the conformance test | **the build**, plus ctest `schema_check` |
 | `tests/stream_format.cpp` | the file framing: what FileSink writes, that it round-trips, and that a wrong magic / version / type / stride is refused | ctest `stream_format` |
 | `tools/check_generated.sh` | committed generated code that is no longer what flatc makes of `pcomm.fbs` | ctest `schema_generated_current` |
+| `tests/record_versioning.cpp` | the versioning mechanism: captures from both sides of a schema bump reading into one table, and a stream from a newer build being reported rather than dropped | ctest `record_versioning` |
 | `tools/read_pcs.py` | the portability claim itself — reads a real capture from Python and recomputes case 01's goldens | ctest `schema_python_reader` |
 
 `schema_check.py` is attached to the build on purpose. `schema_conformance` can
@@ -69,15 +70,48 @@ see: reorder a C++ enumerator and every record keeps its size, its offsets and
 by name now decodes it wrong. `schema_conformance` asserts each value
 individually. **The values are on disk — do not renumber either side.**
 
-## Structs cannot gain fields
+## Structs cannot gain fields — so records are versioned
 
-Record types are versioned by `type_id` (ibverbs 100-199, internal 500-599,
-gpumem 700-799), so a schema change means a new `type_id`, not an edit in place.
-That is the deliberate trade for making writes free — tables would allow
-evolution at ~2.3x the write cost. The convention for *how* a version bump is
-numbered, and how `pcomm-read` serves both old and new captures, is still
-neither written down nor tested: gap 6 in
-`plans/PLAN-20260730-1900-flatbuffers-gaps-todo.md`.
+A record's layout is frozen the moment a capture holding it exists. FlatBuffers
+structs cannot gain fields, and even if they could, the files already written
+would not gain them. So "add a field to `IbPostSend`" is never an edit: it is a
+new record type, **same family name, next version, fresh `type_id`**.
+
+    PCOMM_RECORD  (IbPostSend,   Event, 110, "ib_post_send")        // v1
+    PCOMM_RECORD_V(IbPostSendV2, Event, 114, "ib_post_send", 2)     // v2
+
+Records sharing a name are one **family**; the name is the stable identity that
+the CSV tables, the goldens and every query are written against, while the
+`type_id` is the on-disk discriminator and never means two things. The id is
+just the next free one in the provider's range — there is deliberately no
+arithmetic rule tying v2's id to v1's, because the ids already allocated are
+irregularly spaced, so any such rule would be false for the existing records and
+would run out of room the first time it mattered.
+
+`tools/schema_check.py` enforces the rest: versions start at 1 and are
+contiguous, `(name, version)` and `type_id` are each unique, and every version
+of a family has the same `RecordKind`. All four rules were verified by writing
+the violation and watching it fail.
+
+The reader's half is `pcomm/rec/version_map.hpp`. `pcomm-read` loads every
+version present and upgrades the old ones forward one step at a time, so a
+capture written before the bump and one written after produce the same table.
+An upgrade takes `Stamped<Old>` to `Stamped<New>` and carries the temporal stamp
+untouched — a version bump must never restamp a record. Where the old version
+simply did not record something, the upgrade has to be able to say *unknown*
+rather than defaulting: `device = 0` is a real device, and a query over a mixed
+capture would silently attribute old records to it.
+
+`libpcomm/tests/record_versioning.cpp` proves it end to end on a demo family.
+That family lives in the test, at ids 900+ outside every allocated range, and
+`schema_check.py` exempts test directories — inventing a field no provider wants
+purely to have something to bump would put a permanent fiction in the format.
+
+Streams whose `type_id` this build does not know (a capture from a newer schema,
+or a provider it was built without) are **reported**, with a record count, by
+both `pcomm-read --csv` and `unhandled_streams`. Nothing about them makes the
+rest of the read fail, which is exactly why they have to be announced: an
+ignored stream produces no rows and no error, and the export looks complete.
 
 ## The schema hash
 
@@ -99,7 +133,7 @@ saying nothing is the thing the header exists to end.
 Intern tables, `comm_edges` and the CSV export have no schema (gap 9), so a
 capture is still not self-describing end to end: the handles in a record are
 meaningless without the intern tables, and those are bare TSV sidecars with no
-header of their own. Schema *evolution* is also still a convention rather than a
-mechanism (gap 6) — `format_version` now exists to be bumped, but nothing
-carries a record through a version bump or tests that `pcomm-read` serves both
-sides of one.
+header of their own. Record versioning is a mechanism now, but no *real* record has been through a
+bump — the proof runs on a demo family in the test. The first production
+evolution is where the convention meets a provider that has to emit both
+versions during a transition, and that has not happened yet.

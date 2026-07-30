@@ -83,6 +83,15 @@ if(PCOMM_BUILD_TESTS)
   add_test(NAME stream_format COMMAND pcomm_stream_format)
 endif()
 
+# Record versioning: a capture from before a schema bump and one from after must
+# read into the same table. Header-only for the same reason stream_format is.
+if(PCOMM_BUILD_TESTS)
+  add_executable(pcomm_record_versioning tests/record_versioning.cpp)
+  target_link_libraries(pcomm_record_versioning PRIVATE pcomm)
+  target_compile_features(pcomm_record_versioning PRIVATE cxx_std_20)
+  add_test(NAME record_versioning COMMAND pcomm_record_versioning)
+endif()
+
 # Schema coverage: every PCOMM_RECORD in the tree is in pcomm.fbs, with the same
 # fields in the same order, the same type_id, and a case in the conformance test.
 #

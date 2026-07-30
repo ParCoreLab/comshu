@@ -61,7 +61,10 @@ VOCAB_HEADERS = ["libpcomm/include/pcomm/core/vocab.hpp",
 # Where the schema hash constant lives, and what it hashes.
 STREAM_HEADER_HPP = "libpcomm/include/pcomm/rec/stream_header.hpp"
 
-SKIP_DIRS = {"build", "build-x", "third_party", ".tools", ".git", ".cache", "pcomm-out"}
+SKIP_DIRS = {"build", "build-all", "build-x", "third_party", ".tools", ".git",
+             ".cache", "pcomm-out"}
+# Records declared here are fixtures, not format. See parse_records.
+TEST_DIRS = {"tests"}
 
 errors = []
 notes = []
@@ -105,24 +108,45 @@ def parse_fields(body):
     return fields
 
 
+# Matches PCOMM_RECORD(...) and PCOMM_RECORD_V(..., Version). The version group
+# is absent for the plain form, which means 1 — see PCOMM_RECORD_V in
+# core/record.hpp for what a version is and how ids relate to it.
 RECORD_RE = re.compile(
-    r"PCOMM_RECORD\(\s*(\w+)\s*,\s*(?:\w+::)?RecordKind::(\w+)\s*,\s*(\d+)\s*,"
-    r'\s*"([^"]+)"\s*\)\s*\{(.*?)\n\};',
+    r"PCOMM_RECORD(_V)?\(\s*(\w+)\s*,\s*(?:\w+::)?RecordKind::(\w+)\s*,\s*(\d+)\s*,"
+    r'\s*"([^"]+)"\s*(?:,\s*(\d+)\s*)?\)\s*\{(.*?)\s*\};',
     re.S)
 
 
 def parse_records(root):
+    """Every PCOMM_RECORD in the tree, wherever it is declared.
+
+    .cpp as well as .hpp: a record declared in a translation unit is just as
+    much on disk as one in a header, and scanning only headers would leave a
+    way to add a record type that no check ever sees.
+
+    Test directories are exempt, and that exemption is the point rather than an
+    oversight — libpcomm/tests/record_versioning.cpp declares a demo family to
+    prove the versioning mechanism, and inventing a real record (and a real
+    type_id, and a schema entry) purely to have something to bump would put a
+    permanent fiction in the on-disk format. Test records live at ids 900+,
+    outside every range allocated in core/ids.hpp.
+    """
     records = {}
-    for path in sorted(root.rglob("*.hpp")):
-        if set(path.relative_to(root).parts) & SKIP_DIRS:
+    paths = sorted(list(root.rglob("*.hpp")) + list(root.rglob("*.cpp")))
+    for path in paths:
+        parts = set(path.relative_to(root).parts)
+        if parts & SKIP_DIRS or parts & TEST_DIRS:
             continue
         text = path.read_text()
         for m in RECORD_RE.finditer(text):
-            name, kind, type_id, wire, body = m.groups()
+            versioned, name, kind, type_id, wire, version, body = m.groups()
+            if versioned and version is None:
+                fail(f"{path}:{name}: PCOMM_RECORD_V without a version argument")
             if name in records:
                 fail(f"record {name} declared twice ({records[name]['path']} and {path})")
             records[name] = {
                 "kind": kind, "type_id": int(type_id), "wire": wire,
+                "version": int(version) if version else 1,
                 "fields": parse_fields(body),
                 "path": path.relative_to(root),
             }
@@ -163,7 +187,7 @@ FBS_STRUCT_RE = re.compile(r"\bstruct\s+(\w+)\s*\{(.*?)\}", re.S)
 FBS_FIELD_RE = re.compile(r"(\w+)\s*:\s*(\w+)\s*;")
 # The type_id and kind live in the comment above each struct — the only place
 # the schema records them, so they are checked rather than trusted.
-FBS_TYPE_RE = re.compile(r"//\s*type\s+(\d+)\s*,\s*(\w+)")
+FBS_TYPE_RE = re.compile(r"//\s*type\s+(\d+)\s*,\s*(\w+)(?:\s*,\s*v(\d+))?")
 
 
 def parse_fbs(path):
@@ -196,7 +220,8 @@ def parse_fbs(path):
     for line in text.splitlines():
         hit = FBS_TYPE_RE.search(line)
         if hit:
-            pending = (int(hit.group(1)), hit.group(2))
+            pending = (int(hit.group(1)), hit.group(2),
+                       int(hit.group(3)) if hit.group(3) else 1)
         s = re.match(r"\s*struct\s+(\w+)", line)
         if s:
             if pending:
@@ -306,11 +331,15 @@ def main():
                  f"annotation — that comment is the only place the schema states "
                  f"which stream the struct describes")
         else:
-            fb_id, fb_kind = fb_types[name]
+            fb_id, fb_kind, fb_version = fb_types[name]
             if fb_id != rec["type_id"]:
                 fail(f"{where}: type_id {rec['type_id']} in C++ but {fb_id} in pcomm.fbs")
             if fb_kind != rec["kind"]:
                 fail(f"{where}: RecordKind::{rec['kind']} in C++ but {fb_kind} in pcomm.fbs")
+            if fb_version != rec["version"]:
+                fail(f"{where}: version {rec['version']} in C++ but v{fb_version} in "
+                     f"pcomm.fbs — annotate the struct '// type {rec['type_id']}, "
+                     f"{rec['kind']}, v{rec['version']}'")
 
         if name not in conf["sizes"]:
             fail(f"{where}: no PCOMM_SCHEMA_MATCH line in schema_conformance.cpp — "
@@ -357,7 +386,44 @@ def main():
     for name in sorted(set(fb_enums) - used):
         notes.append(f"schema enum {name} is declared but no record field uses it")
 
-    # 4. The schema hash every capture is stamped with actually identifies this
+    # 4. The versioning convention (PCOMM_RECORD_V in core/record.hpp). None of
+    #    this is enforceable by the compiler: two records can happily claim the
+    #    same type_id in different headers, and the writer would then produce two
+    #    different layouts in one filename. These are the rules that make "a new
+    #    type_id per version" a mechanism rather than an intention.
+    by_id = {}
+    for name, rec in sorted(records.items()):
+        by_id.setdefault(rec["type_id"], []).append(name)
+    for type_id, names in sorted(by_id.items()):
+        if len(names) > 1:
+            fail(f"type_id {type_id} is claimed by {' and '.join(names)} — an id is "
+                 f"the on-disk discriminator and must never mean two things")
+
+    families = {}
+    for name, rec in sorted(records.items()):
+        families.setdefault(rec["wire"], []).append((rec["version"], name, rec))
+    for wire, members in sorted(families.items()):
+        members.sort()
+        versions = [v for v, _n, _r in members]
+        if len(set(versions)) != len(versions):
+            dupes = sorted({v for v in versions if versions.count(v) > 1})
+            fail(f'family "{wire}": version {dupes} declared more than once — '
+                 f'(name, version) identifies a record layout')
+        elif versions != list(range(1, len(versions) + 1)):
+            fail(f'family "{wire}": versions {versions} must start at 1 and be '
+                 f'contiguous — a gap means a version exists in captures that no '
+                 f'code can name, or one was deleted, and old versions are never '
+                 f'deleted because captures still hold them')
+        kinds = {r["kind"] for _v, _n, r in members}
+        if len(kinds) > 1:
+            fail(f'family "{wire}": versions disagree on RecordKind ({", ".join(sorted(kinds))}) '
+                 f'— a record does not change kind across versions')
+        if len(members) > 1:
+            notes.append(f'family "{wire}": v' +
+                         ", v".join(f"{v} (type {r['type_id']}, {n})"
+                                    for v, n, r in members))
+
+    # 5. The schema hash every capture is stamped with actually identifies this
     #    schema. Left to a human to update, it would be wrong the first time
     #    someone edited pcomm.fbs in a hurry — and a stale hash is worse than
     #    none, since it asserts sameness that is not true.

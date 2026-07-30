@@ -1,8 +1,8 @@
 # PLAN — close the gaps in the FlatBuffers adoption
 
 - **Created:** 2026-07-30 19:00 +03
-- **Status:** gaps 1-5 **done** 2026-07-30 (see below). 6-9 open; the case for 8
-  is now weaker than when this was written.
+- **Status:** gaps 1-6 **done** (1-5 on 2026-07-30, 6 on 2026-07-31). 7-9 open;
+  the case for 8 is now weaker than when this was written.
 - **Context commits:** `7034091` (schema + generated header), `76498db`
   (retracted a false padding claim), `449fb3b` (real padding fix), `17480f5`
   and `2e37d56` (byte-level conformance for all 10 records)
@@ -134,7 +134,7 @@ checks all four rejection paths (bad magic, wrong version, wrong type, wrong
 stride) plus the append-without-a-second-header case. It is header-only on
 purpose — see the note below about `tests/`.
 
-### 6. Schema evolution is a plan, not a mechanism
+### 6. Schema evolution is a plan, not a mechanism — **DONE**
 FB structs cannot gain fields; the intended answer is a new `type_id` per
 version. Nothing implements or tests that, and the id ranges (100-199, 700-799)
 have no versioning convention. First time a record needs a field, this gets
@@ -142,6 +142,39 @@ decided under pressure.
 
 *Acceptance:* write the convention down, and prove it with one record carried
 through a version bump that `pcomm-read` handles for both old and new captures.
+
+*Done:* `PCOMM_RECORD_V` carries a version; records sharing a wire name are a
+*family*, and the name — not the version — is the stable identity every query is
+written against. The type_id is simply the next free id in the range: there is
+deliberately no arithmetic rule (no "+1", no reserved digit), because the
+existing ids are irregularly spaced, so any such rule would be a retrofit that
+is false for the records already on disk. The link between versions lives in the
+declaration, where it can be checked, rather than in the arithmetic of the
+number, where it can only be assumed.
+
+`schema_check.py` enforces four rules — contiguous versions from 1, unique
+(name, version), unique type_id, constant kind across a family — each verified
+by writing the violation and watching it fail. Doing that exposed a hole worth
+more than the rules: the record regex required `};` to start a line, so a record
+written on one line was invisible to *every* check. The first four mutations
+"passed" for that reason. Fixed, and the scan now covers `.cpp` as well as
+`.hpp`, with test directories exempt on purpose.
+
+The reader's half is `pcomm/rec/version_map.hpp`: upgrades are single-step
+(v1->v2->v3) rather than one function per (old, newest) pair, since the pair
+count grows quadratically and each is somewhere to encode the same field twice
+and get it wrong once. An upgrade carries the temporal stamp untouched, and must
+be able to say *unknown* where the old version recorded nothing — `device = 0`
+is a real device, and defaulting would silently attribute old records to it.
+
+`stream_reader.hpp` was extracted from pcomm-read/main.cpp so the test exercises
+the same load path the tool does, rather than a copy of it. Verified
+output-neutral: `comm_edges` still matches case 01's topology golden exactly.
+
+Streams with an unknown type_id are now reported by `pcomm-read --csv` with a
+record count. That is the same failure one level up: the file is skipped, no row
+appears, nothing errors, and the export looks complete. Checked both ways — the
+real fixture is silent, and a capture with a type this build lacks names it.
 
 ### 7. Reflection is claimed but unused
 Listed as a benefit; nothing uses it. Either build something real on it (a
