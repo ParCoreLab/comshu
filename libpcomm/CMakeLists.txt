@@ -48,3 +48,17 @@ target_include_directories(pcomm_engine INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+
+# Schema conformance: assert the C++ records still match libpcomm/schema/pcomm.fbs.
+# Needs the FlatBuffers headers; skipped when they are absent (MN5 is airgapped),
+# so this guards developer builds rather than the HPC build.
+if(PCOMM_BUILD_TESTS AND DEFINED PCOMM_FLATBUFFERS_INCLUDE)
+  add_executable(pcomm_schema_conformance tests/schema_conformance.cpp)
+  target_include_directories(pcomm_schema_conformance PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/schema/generated
+    ${CMAKE_SOURCE_DIR}/providers/ibverbs
+    ${PCOMM_FLATBUFFERS_INCLUDE})
+  target_compile_features(pcomm_schema_conformance PRIVATE cxx_std_20)
+  add_test(NAME schema_conformance COMMAND pcomm_schema_conformance)
+endif()

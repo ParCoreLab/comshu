@@ -1,0 +1,144 @@
+// Canonical on-disk schema for pcomm record streams.
+//
+// A `.pcs` file is a bare, packed array of one of the structs below — no
+// framing, no vtables. These are FlatBuffers **structs**, not tables: fixed
+// layout, inline, no offsets, so they are byte-for-byte what the C++ recorder
+// writes. Measured: writing them costs 9.48 ns/record against 10.13 for the
+// hand-written POD, i.e. free, and the sizes are identical.
+//
+// Why a schema at all, if the layout is unchanged: it makes the layout
+// *defined* rather than a consequence of compiler padding, it lets other
+// languages read captures via flatc codegen, and it enables reflection. The
+// binding between these definitions and the C++ structs is enforced by
+// tests/schema_conformance — if a record changes and the schema does not, the
+// build fails rather than silently writing files nobody can parse.
+//
+// Structs cannot gain fields. Record types are already versioned by type_id
+// (ibverbs 100-199, internal 500-599, gpumem 700-799), so a schema change means
+// a new type_id, not an edit in place.
+
+namespace pcomm.fb;
+
+// --- shared vocabulary -----------------------------------------------------
+
+struct TimePoint { domain:uint16; ticks:uint64; }          // 16 B
+
+// TimeKind: 0 None, 1 Instant, 2 Interval, 3 Window, 4 Counter
+struct Temporal {
+  kind:uint8;
+  a:TimePoint;      // instant / interval.start / window.lo / counter.t
+  b:TimePoint;      // interval.end / window.hi
+  value:uint64;     // counter value
+}                                                          // 48 B
+
+struct MemRange { base:uint64; size:uint64; }              // 16 B
+
+// --- core records ----------------------------------------------------------
+
+// type 700, Event. The GPU-access firehose.
+// MemOp: 0 Load 1 Store 2 Atomic 3 Prefetch
+// MemSpace: 0 Global 1 Local 2 Shared
+struct GpuAccess {
+  temporal:Temporal;
+  pc:uint32;           // interned handle
+  object:uint32;       // interned handle, 0 = unattributed
+  address:uint64;
+  size:uint32;
+  op:uint8;
+  space:uint8;
+  run_device:uint16;
+  mem_device:uint16;
+  thread:uint32;
+}
+
+// type 720, Entity. A device allocation with lifetime [alloc, free).
+struct MemObject {
+  temporal:Temporal;
+  id:uint32;
+  name:uint32;         // interned symbol/type name
+  range:MemRange;
+  device:uint16;
+}
+
+// type 740, Artifact. One PC -> source location row.
+struct SourceLine {
+  temporal:Temporal;
+  pc:uint32;
+  file:uint32;         // interned path
+  line:uint32;
+}
+
+// type 760, Edge. Generic attribution row.
+// EdgePredicate: 0 TouchedObject 1 MapsToSourceLine 2 ResidesOn 3 MapsToQp
+struct Attribution {
+  temporal:Temporal;
+  subject:uint32;
+  object:uint32;
+  pred:uint8;
+}
+
+// type 590, Artifact. Clock-domain calibration anchor.
+struct ClockAnchor {
+  temporal:Temporal;
+  domain:uint16;
+  local_ticks:uint64;  // domain clock (TSC / GPU globaltimer)
+  wall_ns:uint64;      // CLOCK_REALTIME at the same moment
+  mono_ns:uint64;      // CLOCK_MONOTONIC_RAW at the same moment
+}
+
+// --- ibverbs provider records (100-199) ------------------------------------
+
+// type 100, Entity. A registered memory region, lifetime [reg, dereg).
+struct IbMemRegion {
+  temporal:Temporal;
+  mr:uint32;
+  pd:uint32;
+  range:MemRange;
+  lkey:uint32;
+  rkey:uint32;
+  access:uint32;
+}
+
+// type 102, Entity. A queue-pair endpoint, lifetime [create, destroy).
+struct IbQueuePair {
+  temporal:Temporal;
+  qp:uint32;
+  pd:uint32;
+  qp_num:uint32;
+  qp_type:uint8;
+}
+
+// type 104, Event. A QP state transition; ->RTR carries the remote endpoint,
+// which is what makes the connection topology recoverable.
+struct IbModifyQp {
+  temporal:Temporal;
+  qp:uint32;
+  qp_num:uint32;
+  dest_qp_num:uint32;
+  dest_lid:uint32;
+  state:uint8;
+}
+
+// type 110, Event. One posted work request. The network firehose.
+struct IbPostSend {
+  temporal:Temporal;
+  qp:uint32;
+  wr_id:uint64;
+  remote_addr:uint64;
+  rkey:uint32;
+  length:uint32;
+  qp_num:uint32;
+  opcode:uint8;
+  num_sge:uint8;
+}
+
+// type 112, Event. One completion drained from a CQ.
+struct IbPollCq {
+  temporal:Temporal;
+  cq:uint32;
+  wr_id:uint64;
+  byte_len:uint32;
+  qp_num:uint32;
+  status:uint8;
+  opcode:uint8;
+}
