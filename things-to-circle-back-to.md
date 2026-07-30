@@ -296,6 +296,33 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   mid-run while threads are live (would need per-buffer synchronization).
 
 ## ibverbs provider
+- **The per-record intern is ~87% of tracing overhead.** Tracing costs ~5x
+  throughput on small-message ibverbs (`ib_send_bw`, 64 B), and it is not the
+  hooks. Measured 2026-07-30 (jobs 43986473, 43986804) by disabling parts of the
+  path:
+
+  | variant | ns/msg | attributable to |
+  |---|---|---|
+  | untraced | ~155 | — |
+  | hooks installed, nothing recorded | ~157 | interception ~free |
+  | record, but skip `h(cq)` | ~208 | record write ~50 ns |
+  | full | ~556-740 | **intern ~350-530 ns** |
+
+  `h(cq)` calls `pcomm_engine_intern_key`, which takes `std::lock_guard` on the
+  domain mutex per record to look up a pointer that is virtually always already
+  interned. Fix candidates: a thread-local memo of recently-interned pointers
+  (hit rate should be near 100% — the same CQ/QP repeat for the whole run), or a
+  lock-free read path with the mutex only on insert.
+
+  Caveat on the numbers: run-to-run spread is large (`traced` measured 1.30,
+  1.35 and 1.80 Mpps across three runs, i.e. +/-30% on the absolutes). The
+  ordering is stable and the intern step is ~2.7x, well outside that, but do not
+  quote the nanosecond figures precisely.
+
+  This also reframes the record-format question: at ~50 ns for the actual write,
+  FlatBuffers' +25 ns/record is real but small, and the intern is a ~7x larger
+  lever than the format choice.
+
 - **`post_send` is invisible for apps using the new WR API — and SigmaTrace has
   the same gap.** Measured 2026-07-30 (job 43976008): `ib_send_bw` traced end to
   end produced 202,000 `ib_poll_cq` records and **zero** `ib_post_send`
