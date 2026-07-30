@@ -22,6 +22,8 @@ struct Temporal;
 
 struct MemRange;
 
+struct StreamHeader;
+
 struct GpuAccess;
 
 struct MemObject;
@@ -79,6 +81,42 @@ inline const char *EnumNameTimeKind(TimeKind e) {
   if (::flatbuffers::IsOutRange(e, TimeKind_None, TimeKind_Counter)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesTimeKind()[index];
+}
+
+enum RecordKind : uint8_t {
+  RecordKind_Event = 0,
+  RecordKind_Entity = 1,
+  RecordKind_Artifact = 2,
+  RecordKind_Edge = 3,
+  RecordKind_MIN = RecordKind_Event,
+  RecordKind_MAX = RecordKind_Edge
+};
+
+inline const RecordKind (&EnumValuesRecordKind())[4] {
+  static const RecordKind values[] = {
+    RecordKind_Event,
+    RecordKind_Entity,
+    RecordKind_Artifact,
+    RecordKind_Edge
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesRecordKind() {
+  static const char * const names[5] = {
+    "Event",
+    "Entity",
+    "Artifact",
+    "Edge",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameRecordKind(RecordKind e) {
+  if (::flatbuffers::IsOutRange(e, RecordKind_Event, RecordKind_Edge)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesRecordKind()[index];
 }
 
 enum MemOp : uint8_t {
@@ -288,6 +326,66 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemRange FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(MemRange, 16);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) StreamHeader FLATBUFFERS_FINAL_CLASS {
+ private:
+  uint64_t magic_;
+  uint16_t format_version_;
+  uint16_t type_id_;
+  uint32_t stride_;
+  uint64_t schema_hash_;
+  uint8_t kind_;
+  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+
+ public:
+  StreamHeader()
+      : magic_(0),
+        format_version_(0),
+        type_id_(0),
+        stride_(0),
+        schema_hash_(0),
+        kind_(0),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  StreamHeader(uint64_t _magic, uint16_t _format_version, uint16_t _type_id, uint32_t _stride, uint64_t _schema_hash, pcomm::fb::RecordKind _kind)
+      : magic_(::flatbuffers::EndianScalar(_magic)),
+        format_version_(::flatbuffers::EndianScalar(_format_version)),
+        type_id_(::flatbuffers::EndianScalar(_type_id)),
+        stride_(::flatbuffers::EndianScalar(_stride)),
+        schema_hash_(::flatbuffers::EndianScalar(_schema_hash)),
+        kind_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_kind))),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  uint64_t magic() const {
+    return ::flatbuffers::EndianScalar(magic_);
+  }
+  uint16_t format_version() const {
+    return ::flatbuffers::EndianScalar(format_version_);
+  }
+  uint16_t type_id() const {
+    return ::flatbuffers::EndianScalar(type_id_);
+  }
+  uint32_t stride() const {
+    return ::flatbuffers::EndianScalar(stride_);
+  }
+  uint64_t schema_hash() const {
+    return ::flatbuffers::EndianScalar(schema_hash_);
+  }
+  pcomm::fb::RecordKind kind() const {
+    return static_cast<pcomm::fb::RecordKind>(::flatbuffers::EndianScalar(kind_));
+  }
+};
+FLATBUFFERS_STRUCT_END(StreamHeader, 32);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
  private:

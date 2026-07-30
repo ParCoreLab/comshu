@@ -73,6 +73,16 @@ if(PCOMM_BUILD_TESTS AND EXISTS ${PCOMM_FLATBUFFERS_INCLUDE})
   add_test(NAME schema_conformance COMMAND pcomm_schema_conformance)
 endif()
 
+# Stream format round-trip. Header-only (FileSink and StreamHeader both are), so
+# unlike tests/ this needs neither pcomm::engine nor a provider — it is the only
+# local exercise of the writer.
+if(PCOMM_BUILD_TESTS)
+  add_executable(pcomm_stream_format tests/stream_format.cpp)
+  target_link_libraries(pcomm_stream_format PRIVATE pcomm)
+  target_compile_features(pcomm_stream_format PRIVATE cxx_std_20)
+  add_test(NAME stream_format COMMAND pcomm_stream_format)
+endif()
+
 # Schema coverage: every PCOMM_RECORD in the tree is in pcomm.fbs, with the same
 # fields in the same order, the same type_id, and a case in the conformance test.
 #
@@ -93,6 +103,8 @@ if(Python3_Interpreter_FOUND)
       ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/records.hpp
       ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/vocab.hpp
       ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/time.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/ids.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/rec/stream_header.hpp
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/schema_conformance.cpp
       ${CMAKE_SOURCE_DIR}/providers/ibverbs/ib_records.hpp
     COMMENT "Checking C++ records against libpcomm/schema/pcomm.fbs"
@@ -126,7 +138,7 @@ endif()
 # was never once exercised until this ran. Needs no flatc and no network: the
 # bindings and the FlatBuffers Python runtime are both committed.
 if(PCOMM_BUILD_TESTS AND Python3_Interpreter_FOUND
-   AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-43996904)
+   AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-43997525)
   add_test(NAME schema_python_reader
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/read_pcs.py)
 endif()

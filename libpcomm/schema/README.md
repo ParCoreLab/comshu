@@ -1,13 +1,27 @@
 # `pcomm.fbs` — the on-disk record schema
 
-A `.pcs` file is a packed array of one record type. `pcomm.fbs` declares those
-layouts as FlatBuffers **structs** (fixed layout, inline, no vtables), so a
-capture is a valid FlatBuffers struct array and can be read from any language
-flatc supports.
+A `.pcs` file is a 32-byte `StreamHeader` followed by a packed array of one
+record type. `pcomm.fbs` declares both as FlatBuffers **structs** (fixed layout,
+inline, no vtables), so a capture is a valid FlatBuffers struct array and can be
+read from any language flatc supports.
 
-Adopting it changed no layout and cost nothing: the structs are byte-identical
-to what the recorder already wrote (`sizeof` matches for all 10 record types),
-and writing them measured 9.48 ns/record against 10.13 for the hand-written POD.
+The header is what makes a capture self-describing: magic, format version,
+`type_id`, `stride`, `kind`, and a hash of the schema that wrote it. Before it
+existed, which record type a file held came from its *filename* and which schema
+wrote it came from nowhere at all — a capture written before a schema change was
+byte-indistinguishable from one written after, so a reader that guessed wrong
+misparsed in silence. It is written once when a stream file is created, never
+per record, so it costs nothing on the hot path.
+
+**Captures written before format 1 are not readable.** They have no header, and
+the only thing that distinguishes them is the absence the check is looking for,
+so `pcomm-read` names the file and refuses it rather than guessing.
+
+Adopting FlatBuffers changed no record layout and cost nothing: the structs are
+byte-identical to what the recorder already wrote (`sizeof` matches for all 10
+record types), and writing them measured 9.48 ns/record against 10.13 for the
+hand-written POD. The header added 32 bytes per *file* on top of that and
+nothing per record.
 
 **We do not call FlatBuffers at runtime.** The recorder writes `Stamped<R>` with
 a memcpy exactly as before and nothing links the FlatBuffers runtime; what was
@@ -16,8 +30,9 @@ by construction, and the checks are the whole story:
 
 | check | catches | runs as |
 |---|---|---|
-| `tests/schema_conformance.cpp` | a record whose layout, size or *enum values* drift from the schema — byte-level, all 10 records | ctest `schema_conformance` |
-| `tools/schema_check.py` | a record with no schema entry at all, a reordered or renamed field, a wrong `type_id`/kind, an enum out of step, a record missing from the conformance test | **the build**, plus ctest `schema_check` |
+| `tests/schema_conformance.cpp` | a record whose layout, size or *enum values* drift from the schema — byte-level, all 10 records and the stream header | ctest `schema_conformance` |
+| `tools/schema_check.py` | a record with no schema entry at all, a reordered or renamed field, a wrong `type_id`/kind, an enum out of step, a stale `kSchemaHash`, a record missing from the conformance test | **the build**, plus ctest `schema_check` |
+| `tests/stream_format.cpp` | the file framing: what FileSink writes, that it round-trips, and that a wrong magic / version / type / stride is refused | ctest `stream_format` |
 | `tools/check_generated.sh` | committed generated code that is no longer what flatc makes of `pcomm.fbs` | ctest `schema_generated_current` |
 | `tools/read_pcs.py` | the portability claim itself — reads a real capture from Python and recomputes case 01's goldens | ctest `schema_python_reader` |
 
@@ -64,11 +79,27 @@ numbered, and how `pcomm-read` serves both old and new captures, is still
 neither written down nor tested: gap 6 in
 `plans/PLAN-20260730-1900-flatbuffers-gaps-todo.md`.
 
+## The schema hash
+
+`StreamHeader.schema_hash` is FNV-1a over `pcomm.fbs` with comments stripped and
+whitespace collapsed, so prose edits do not churn it but any declaration change
+does. The constant lives in `pcomm/rec/stream_header.hpp`;
+`tools/schema_check.py` recomputes it and **fails the build** when it drifts,
+because a hash that is merely *maintained* would be wrong the first time someone
+edited the schema in a hurry — and a stale hash is worse than no hash, since it
+asserts a sameness that is not true.
+
+A capture whose hash differs but whose `type_id` and `stride` still agree is
+decoded, with a warning naming both hashes. An unrelated record changing moves
+the hash without making this stream unreadable; refusing it would be wrong, and
+saying nothing is the thing the header exists to end.
+
 ## What is still not covered
 
-The file itself records nothing about which schema wrote it — no magic, no
-format version, no `type_id`, no stride. `read_pcs.py` takes the record type
-from the *filename*, the same convention pcomm-read relies on, which is exactly
-the original defect (gap 5). Intern tables, `comm_edges` and the CSV export have
-no schema at all (gap 9), so a capture is not self-describing end to end: the
-handles in a record are meaningless without the intern tables.
+Intern tables, `comm_edges` and the CSV export have no schema (gap 9), so a
+capture is still not self-describing end to end: the handles in a record are
+meaningless without the intern tables, and those are bare TSV sidecars with no
+header of their own. Schema *evolution* is also still a convention rather than a
+mechanism (gap 6) — `format_version` now exists to be bumped, but nothing
+carries a record through a version bump or tests that `pcomm-read` serves both
+sides of one.

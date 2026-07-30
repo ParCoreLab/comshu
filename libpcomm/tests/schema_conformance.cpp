@@ -1,6 +1,7 @@
 // Binds libpcomm/schema/pcomm.fbs to the C++ record structs.
 //
-// A `.pcs` file is a packed array of Stamped<R>. The schema declares the same
+// A `.pcs` file is a StreamHeader followed by a packed array of Stamped<R>.
+// Both are checked here. The schema declares the same
 // layout as FlatBuffers structs, so a capture is readable from any language via
 // flatc — but only while the two agree. Nothing else checks that: change a
 // record and forget the schema, and pcomm keeps writing files that every
@@ -16,6 +17,7 @@
 #include "pcomm_generated.h"
 
 #include "pcomm/core/records.hpp"
+#include "pcomm/rec/stream_header.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
 #include "ib_records.hpp"
 
@@ -40,6 +42,13 @@ PCOMM_SCHEMA_MATCH(ir::IbModifyQp,  fb::IbModifyQp);
 PCOMM_SCHEMA_MATCH(ir::IbPostSend,  fb::IbPostSend);
 PCOMM_SCHEMA_MATCH(ir::IbPollCq,    fb::IbPollCq);
 
+// The file framing is on disk in every capture, so it is held to the same
+// standard as the records: if StreamHeader and the schema disagree, every
+// reader misreads the first 32 bytes of every stream and then misreads the
+// records too, having taken the wrong stride from a header it got wrong.
+static_assert(sizeof(pcomm::rec::StreamHeader) == sizeof(fb::StreamHeader),
+              "StreamHeader and pcomm.fbs StreamHeader disagree on size");
+
 // The shared vocabulary has to line up too, or every record inherits the skew.
 static_assert(sizeof(pcomm::core::Temporal) == sizeof(fb::Temporal));
 static_assert(sizeof(pcomm::core::MemRange) == sizeof(fb::MemRange));
@@ -61,6 +70,11 @@ PCOMM_SCHEMA_ENUM(pcomm::core::TimeKind::Interval, fb::TimeKind_Interval);
 PCOMM_SCHEMA_ENUM(pcomm::core::TimeKind::Window,   fb::TimeKind_Window);
 PCOMM_SCHEMA_ENUM(pcomm::core::TimeKind::Counter,  fb::TimeKind_Counter);
 
+PCOMM_SCHEMA_ENUM(pcomm::core::RecordKind::Event,    fb::RecordKind_Event);
+PCOMM_SCHEMA_ENUM(pcomm::core::RecordKind::Entity,   fb::RecordKind_Entity);
+PCOMM_SCHEMA_ENUM(pcomm::core::RecordKind::Artifact, fb::RecordKind_Artifact);
+PCOMM_SCHEMA_ENUM(pcomm::core::RecordKind::Edge,     fb::RecordKind_Edge);
+
 PCOMM_SCHEMA_ENUM(pcomm::core::MemOp::Load,     fb::MemOp_Load);
 PCOMM_SCHEMA_ENUM(pcomm::core::MemOp::Store,    fb::MemOp_Store);
 PCOMM_SCHEMA_ENUM(pcomm::core::MemOp::Atomic,   fb::MemOp_Atomic);
@@ -80,7 +94,7 @@ PCOMM_SCHEMA_ENUM(pcomm::core::EdgePredicate::MapsToQp,         fb::EdgePredicat
 // tools/schema_check.py compares the C++ enum bodies against the .fbs, so a new
 // value on either side has to be added here deliberately.
 static_assert(fb::TimeKind_MAX == 4 && fb::MemOp_MAX == 3 && fb::MemSpace_MAX == 2 &&
-                  fb::EdgePredicate_MAX == 3,
+                  fb::EdgePredicate_MAX == 3 && fb::RecordKind_MAX == 3,
               "an enum gained a value in pcomm.fbs — add the matching C++ "
               "enumerator assertion above and update this count");
 
@@ -190,9 +204,16 @@ int main() {
         fb::IbPollCq f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1,0x60), fb::TimePoint(1,0x70), 0),
                        31, 0xFEEDFACE, 4096, 0x1EFFD, 0, 1);
         expect_identical("IbPollCq", &c, &f, sizeof(c)); }
+    {   // StreamHeader: not a record, but the first thing in every file.
+        pcomm::rec::StreamHeader c(710, pcomm::core::RecordKind::Entity, 0xDEADBEEF);
+        c.schema_hash = 0x0123456789ABCDEFull;
+        fb::StreamHeader f(pcomm::rec::kStreamMagic, pcomm::rec::kStreamFormatVersion,
+                           710, 0xDEADBEEF, 0x0123456789ABCDEFull,
+                           fb::RecordKind_Entity);
+        expect_identical("StreamHeader", &c, &f, sizeof(c)); }
     std::printf("  sizes: Stamped<GpuAccess]=%zu Stamped<IbPostSend]=%zu Temporal=%zu\n",
                 sizeof(Stamped<cr::GpuAccess>), sizeof(Stamped<ir::IbPostSend>),
                 sizeof(pcomm::core::Temporal));
-    std::printf("%s\n", g_fail ? "FAIL" : "PASS — all 10 records byte-identical to the schema");
+    std::printf("%s\n", g_fail ? "FAIL" : "PASS — all 10 records + the stream header byte-identical to the schema");
     return g_fail;
 }

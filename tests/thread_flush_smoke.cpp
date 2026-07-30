@@ -14,8 +14,10 @@
 #include "pcomm/core/records.hpp"
 #include "pcomm/rec/recorder.hpp"
 #include "pcomm/rec/sink.hpp"
+#include "pcomm/rec/stream_header.hpp"
 #include "pcomm/rec/thread_buffer_registry.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
+#include "pcomm/tracer.hpp"
 
 namespace fs = std::filesystem;
 using namespace pcomm;
@@ -29,8 +31,16 @@ int main() {
     fs::path dir = fs::temp_directory_path() / "pcomm-thread-flush";
     fs::remove_all(dir);
 
-    rec::FileSink sink(dir);
-    rec::Recorder<> recorder(sink);
+    // Records go into engine-owned arenas (engine_abi.h), not into a sink this
+    // test holds — so the engine is what has to be started, and the sink it
+    // owns is the one that ends up on disk. Constructing a local FileSink here
+    // and expecting records in it, as this test used to, silently observes
+    // nothing: the arenas belong to the engine either way.
+    Config cfg;
+    cfg.output_dir = dir;
+    cfg.rank = 0;
+    Tracer::instance().start(cfg);
+    auto& recorder = Tracer::instance().recorder();
 
     std::vector<std::thread> workers;
     for (int t = 0; t < kThreads; ++t) {
@@ -52,11 +62,13 @@ int main() {
     std::printf("registry buffers before drain = %zu\n",
                 rec::ThreadBufferRegistry::instance().size());
     rec::ThreadBufferRegistry::instance().drain_all();
-    sink.flush();
+    Tracer::instance().finalize();
 
-    auto path = dir / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
+    // Tracer::start writes into <output_dir>/rank-<N>/.
+    auto path = dir / "rank-0" / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
     if (!fs::exists(path)) { std::printf("MISSING stream %s\n", path.c_str()); return 2; }
-    auto bytes = fs::file_size(path);
+    // Every stream opens with a 32-byte StreamHeader; the records follow it.
+    auto bytes = fs::file_size(path) - sizeof(rec::StreamHeader);
     auto rec_size = sizeof(rec::Stamped<MemObject>);
     auto count = bytes / rec_size;
 

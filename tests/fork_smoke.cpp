@@ -31,7 +31,9 @@ static void record_n(int n, std::uint16_t dev) {
 static std::size_t stream_count(const fs::path& dir) {
     auto path = dir / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
     if (!fs::exists(path)) return 0;
-    return fs::file_size(path) / sizeof(rec::Stamped<MemObject>);
+    // Past the 32-byte StreamHeader every stream file opens with.
+    return (fs::file_size(path) - sizeof(rec::StreamHeader)) /
+           sizeof(rec::Stamped<MemObject>);
 }
 
 int main() {

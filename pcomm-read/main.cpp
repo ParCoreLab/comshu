@@ -31,16 +31,60 @@ using rec::Stamped;
 
 namespace {
 
+// Every `.pcs` opens with a 32-byte StreamHeader. It is validated, not skipped:
+// a capture that disagrees with this build about the record type or the stride
+// is refused by name rather than decoded into plausible-looking nonsense, which
+// is what happened for as long as the files carried no framing at all.
+//
+// Captures written before format 1 have no header and are not readable here.
+// That is deliberate — they are indistinguishable from current ones except by
+// the absence this check is looking for, so re-capture rather than guess.
 template <core::Record R>
 std::vector<Stamped<R>> load_stream(const fs::path& file) {
     std::vector<Stamped<R>> out;
     std::ifstream in(file, std::ios::binary);
     if (!in) return out;
-    auto bytes = fs::file_size(file);
-    out.resize(bytes / sizeof(Stamped<R>));
+
+    const auto bytes = fs::file_size(file);
+    if (bytes < sizeof(rec::StreamHeader)) {
+        std::fprintf(stderr, "pcomm-read: %s is too short to hold a stream header\n",
+                     file.c_str());
+        return out;
+    }
+
+    rec::StreamHeader h{};
+    in.read(reinterpret_cast<char*>(&h), sizeof h);
+    if (const char* err = rec::stream_header_error(h, core::RecordTrait<R>::type_id,
+                                                   sizeof(Stamped<R>))) {
+        std::fprintf(stderr, "pcomm-read: %s: %s\n", file.c_str(), err);
+        return out;
+    }
+    // A different schema wrote this, but the type and stride still agree, so the
+    // records decode. Say so rather than either failing or staying quiet: an
+    // unrelated record changing is not a reason to refuse this stream, and a
+    // silent mismatch is the whole thing the header exists to end.
+    if (h.schema_hash != rec::kSchemaHash) {
+        std::fprintf(stderr,
+                     "pcomm-read: %s: written by schema %016llx, this build has "
+                     "%016llx — layout agrees, decoding anyway\n",
+                     file.c_str(), (unsigned long long)h.schema_hash,
+                     (unsigned long long)rec::kSchemaHash);
+    }
+
+    out.resize((bytes - sizeof(rec::StreamHeader)) / sizeof(Stamped<R>));
     in.read(reinterpret_cast<char*>(out.data()),
             static_cast<std::streamsize>(out.size() * sizeof(Stamped<R>)));
     return out;
+}
+
+const char* kind_name(core::RecordKind k) {
+    switch (k) {
+        case core::RecordKind::Event: return "event";
+        case core::RecordKind::Entity: return "entity";
+        case core::RecordKind::Artifact: return "artifact";
+        case core::RecordKind::Edge: return "edge";
+    }
+    return "?";
 }
 
 const char* memop_name(core::MemOp op) {
@@ -659,13 +703,34 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // The inventory reads each file's own header rather than inferring anything
+    // from its name or its size. This is the first thing in the tree that is
+    // told what a capture is by the capture itself.
     std::printf("streams in %s:\n", dir.c_str());
+    std::printf("  %-34s %6s %-9s %7s %9s %16s\n",
+                "file", "type", "kind", "stride", "records", "schema");
     for (const auto& entry : fs::recursive_directory_iterator(dir)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".pcs") {
-            std::printf("  %-40s %10ju bytes\n",
-                        fs::relative(entry.path(), dir).c_str(),
-                        static_cast<std::uintmax_t>(entry.file_size()));
+        if (!entry.is_regular_file() || entry.path().extension() != ".pcs") continue;
+
+        const auto rel = fs::relative(entry.path(), dir);
+        const auto bytes = static_cast<std::uintmax_t>(entry.file_size());
+        rec::StreamHeader h{};
+        std::ifstream in(entry.path(), std::ios::binary);
+        if (bytes < sizeof h || !in.read(reinterpret_cast<char*>(&h), sizeof h) ||
+            h.magic != rec::kStreamMagic) {
+            std::printf("  %-34s %10ju bytes  (no stream header — pre-format-1 "
+                        "capture, re-capture it)\n", rel.c_str(), bytes);
+            continue;
         }
+        const auto payload = bytes - sizeof h;
+        std::printf("  %-34s %6u %-9s %7u %9ju %016llx%s\n", rel.c_str(), h.type_id,
+                    kind_name(h.kind), h.stride,
+                    h.stride ? static_cast<std::uintmax_t>(payload / h.stride) : 0,
+                    (unsigned long long)h.schema_hash,
+                    h.schema_hash == rec::kSchemaHash ? "" : " (other schema)");
+        if (h.stride && payload % h.stride)
+            std::printf("  %-34s   ^ truncated: %ju trailing bytes are not a whole record\n",
+                        "", static_cast<std::uintmax_t>(payload % h.stride));
     }
     return 0;
 }

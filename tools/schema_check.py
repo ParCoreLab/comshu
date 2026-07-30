@@ -35,6 +35,7 @@ SCALARS = {
     "DeviceId": "uint16",
     "DomainId": "uint16",
     "GpuId": "uint16",
+    "RecordTypeId": "uint16",
     "Ticks": "uint64",
     "std::uint8_t": "uint8",
     "std::uint16_t": "uint16",
@@ -48,9 +49,17 @@ SCALARS = {
     "double": "double",
 }
 
-# C++ headers holding the shared vocabulary (structs and enums records refer to).
+# C++ headers holding the shared vocabulary (structs and enums records refer to)
+# and the file framing. StreamHeader is checked exactly like a record: it is on
+# disk in every capture, so it is part of the format whether or not it is a
+# PCOMM_RECORD.
 VOCAB_HEADERS = ["libpcomm/include/pcomm/core/vocab.hpp",
-                 "libpcomm/include/pcomm/core/time.hpp"]
+                 "libpcomm/include/pcomm/core/time.hpp",
+                 "libpcomm/include/pcomm/core/ids.hpp",
+                 "libpcomm/include/pcomm/rec/stream_header.hpp"]
+
+# Where the schema hash constant lives, and what it hashes.
+STREAM_HEADER_HPP = "libpcomm/include/pcomm/rec/stream_header.hpp"
 
 SKIP_DIRS = {"build", "build-x", "third_party", ".tools", ".git", ".cache", "pcomm-out"}
 
@@ -196,6 +205,28 @@ def parse_fbs(path):
     return structs, enums, annotations
 
 
+# --- the schema hash --------------------------------------------------------
+
+def schema_hash(fbs_path):
+    """FNV-1a over the schema, comments stripped and whitespace collapsed.
+
+    Every `.pcs` records this, so a capture states which schema wrote it — the
+    thing that was missing when a file written before a schema change was
+    byte-indistinguishable from one written after. Normalised so that editing
+    prose does not churn the identity of the format, while any change to a
+    declaration does.
+
+    tools/read_pcs.py recomputes this the same way from Python; keep the two in
+    step if the normalisation ever changes.
+    """
+    text = strip_comments(fbs_path.read_text())
+    normalised = " ".join(text.split())
+    h = 0xCBF29CE484222325
+    for byte in normalised.encode():
+        h = ((h ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
 # --- parsing: the conformance test -----------------------------------------
 
 def parse_conformance(path):
@@ -222,8 +253,16 @@ def main():
     if not records:
         fail("no PCOMM_RECORD declarations found — the walk is broken, not the tree")
 
+    def unqualify(ctype):
+        """`core::RecordKind` and `RecordKind` are the same type to the schema."""
+        for prefix in ("pcomm::core::", "core::", "pcomm::rec::", "rec::"):
+            if ctype.startswith(prefix):
+                return ctype[len(prefix):]
+        return ctype
+
     def fbs_type_of(ctype, where):
         """The .fbs type a C++ field type must map to."""
+        ctype = unqualify(ctype)
         if ctype in SCALARS:
             return SCALARS[ctype]
         if ctype in vocab_enums or ctype in vocab_structs:
@@ -280,6 +319,7 @@ def main():
             fail(f"{where}: no expect_identical(\"{name}\", ...) case in "
                  f"schema_conformance.cpp — size alone would accept reordered fields")
 
+    checked_vocab = []
     # 2. Nothing in the schema is orphaned. Vocabulary structs are shared rather
     #    than being records of their own, so they are checked against C++ too.
     for name in sorted(fb_structs):
@@ -288,6 +328,7 @@ def main():
         if name in vocab_structs:
             check_fields(vocab_structs[name], name, False,
                          f"vocabulary struct {name}")
+            checked_vocab.append(name)
             continue
         fail(f"pcomm.fbs declares struct {name} with no PCOMM_RECORD and no C++ "
              f"vocabulary struct behind it — dead schema, or a record that was "
@@ -296,10 +337,10 @@ def main():
     # 3. Enums used by record fields exist in the schema with the same values,
     #    and every enumerator is asserted in the conformance test. Reordering an
     #    enum changes no size and no offset, so nothing else can catch it.
-    used = {ctype for rec in records.values() for _n, ctype in rec["fields"]
-            if ctype in vocab_enums}
-    used |= {ctype for fields in vocab_structs.values() for _n, ctype in fields
-             if ctype in vocab_enums}
+    used = {unqualify(ctype) for rec in records.values() for _n, ctype in rec["fields"]}
+    used |= {unqualify(ctype) for fields in vocab_structs.values()
+             for _n, ctype in fields}
+    used &= set(vocab_enums)
     for name in sorted(used):
         if name not in fb_enums:
             fail(f"C++ enum {name} is used by a record field but is not declared "
@@ -316,6 +357,23 @@ def main():
     for name in sorted(set(fb_enums) - used):
         notes.append(f"schema enum {name} is declared but no record field uses it")
 
+    # 4. The schema hash every capture is stamped with actually identifies this
+    #    schema. Left to a human to update, it would be wrong the first time
+    #    someone edited pcomm.fbs in a hurry — and a stale hash is worse than
+    #    none, since it asserts sameness that is not true.
+    want_hash = schema_hash(fbs_path)
+    header_src = (root / STREAM_HEADER_HPP).read_text()
+    m = re.search(r"kSchemaHash\s*=\s*0x([0-9A-Fa-f]+)ull", header_src)
+    if not m:
+        fail(f"{STREAM_HEADER_HPP}: no kSchemaHash constant found")
+    elif int(m.group(1), 16) != want_hash:
+        fail(f"{STREAM_HEADER_HPP}: kSchemaHash is 0x{int(m.group(1), 16):016X} but "
+             f"pcomm.fbs hashes to 0x{want_hash:016X} — the schema changed; set it to "
+             f"0x{want_hash:016X}ull")
+    else:
+        notes.append(f"schema hash 0x{want_hash:016X} matches "
+                     f"pcomm/rec/stream_header.hpp")
+
     # --- report
     print("schema check: C++ records vs libpcomm/schema/pcomm.fbs")
     for name in sorted(records):
@@ -323,6 +381,9 @@ def main():
         mark = "ok " if not any(name in e for e in errors) else "XX "
         print(f"  [{mark}] {name:<12} type {rec['type_id']:<4} {rec['kind']:<9} "
               f"{len(rec['fields'])} fields  {rec['path']}")
+    for name in sorted(checked_vocab):
+        print(f"  [ok ] struct {name:<12} {len(vocab_structs[name])} fields  "
+              f"(shared vocabulary / file framing)")
     for name in sorted(used):
         print(f"  [ok ] enum {name} ({len(vocab_enums.get(name, []))} values)")
     for note in notes:

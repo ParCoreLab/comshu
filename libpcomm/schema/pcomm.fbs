@@ -1,10 +1,12 @@
 // Canonical on-disk schema for pcomm record streams.
 //
-// A `.pcs` file is a bare, packed array of one of the structs below — no
-// framing, no vtables. These are FlatBuffers **structs**, not tables: fixed
-// layout, inline, no offsets, so they are byte-for-byte what the C++ recorder
-// writes. Measured: writing them costs 9.48 ns/record against 10.13 for the
-// hand-written POD, i.e. free, and the sizes are identical.
+// A `.pcs` file is a 32-byte StreamHeader followed by a packed array of one of
+// the record structs below — no per-record framing, no vtables. These are
+// FlatBuffers **structs**, not tables: fixed layout, inline, no offsets, so they
+// are byte-for-byte what the C++ recorder writes. Measured: writing them costs
+// 9.48 ns/record against 10.13 for the hand-written POD, i.e. free, and the
+// sizes are identical. The header is written once per file, not per record, so
+// it costs nothing on the hot path at all.
 //
 // Why a schema at all, if the layout is unchanged: it makes the layout
 // *defined* rather than a consequence of compiler padding, it lets other
@@ -30,6 +32,10 @@ namespace pcomm.fb;
 
 enum TimeKind : uint8 { None = 0, Instant = 1, Interval = 2, Window = 3, Counter = 4 }
 
+// What a record type *is*, from pcomm/core/ids.hpp. On disk since the stream
+// header carries it.
+enum RecordKind : uint8 { Event = 0, Entity = 1, Artifact = 2, Edge = 3 }
+
 enum MemOp : uint8 { Load = 0, Store = 1, Atomic = 2, Prefetch = 3 }
 
 enum MemSpace : uint8 { Global = 0, Local = 1, Shared = 2 }
@@ -52,6 +58,35 @@ struct Temporal {
 }                                                          // 48 B
 
 struct MemRange { base:uint64; size:uint64; }              // 16 B
+
+// --- file framing ----------------------------------------------------------
+
+// The first 32 bytes of every `.pcs`. Before this existed a capture was a bare
+// array: which record type it held came from the *filename*, and which schema
+// wrote it came from nowhere at all. A file written before a schema change was
+// indistinguishable from one written after, so a reader that guessed wrong
+// misparsed silently — no magic to check, no stride to disagree with, nothing.
+//
+// 32 B keeps the records that follow 8-byte aligned. Written once when the file
+// is created, so it costs nothing per record.
+//
+// `magic` is 0x0A534D4D4F435089 — the bytes 89 'P' 'C' 'O' 'M' 'M' 'S' 0A, in
+// that order on disk. Read back as a little-endian uint64 it equals the
+// constant; on a big-endian reader, or through anything that mangles a byte, it
+// does not, which is the point.
+//
+// `schema_hash` identifies *this file's* pcomm.fbs: FNV-1a over the schema with
+// comments stripped and whitespace collapsed, so prose edits do not churn it.
+// tools/schema_check.py recomputes it and fails the build if the constant in
+// pcomm/rec/stream_header.hpp has drifted.
+struct StreamHeader {
+  magic:uint64;
+  format_version:uint16;   // 1
+  type_id:uint16;          // which record struct follows
+  stride:uint32;           // bytes per record, i.e. sizeof(Stamped<R>)
+  schema_hash:uint64;
+  kind:RecordKind;
+}                                                          // 32 B
 
 // --- core records ----------------------------------------------------------
 
