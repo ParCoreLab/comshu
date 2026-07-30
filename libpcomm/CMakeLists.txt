@@ -50,9 +50,19 @@ target_include_directories(pcomm_engine INTERFACE
 )
 
 # Schema conformance: assert the C++ records still match libpcomm/schema/pcomm.fbs.
-# Needs the FlatBuffers headers; skipped when they are absent (MN5 is airgapped),
-# so this guards developer builds rather than the HPC build.
-if(PCOMM_BUILD_TESTS AND DEFINED PCOMM_FLATBUFFERS_INCLUDE)
+#
+# The FlatBuffers headers are vendored under third_party/ (520 KB, header-only,
+# pinned to the flatc that generated pcomm_generated.h) precisely so this is not
+# skipped anywhere. It used to be conditional on a path the developer supplied,
+# which meant the one check standing between a record change and unreadable
+# captures ran only when someone remembered to point at a FlatBuffers checkout —
+# and on this machine that path was a scratch directory that no longer exists.
+# Override PCOMM_FLATBUFFERS_INCLUDE to build against a different copy.
+if(NOT DEFINED PCOMM_FLATBUFFERS_INCLUDE)
+  set(PCOMM_FLATBUFFERS_INCLUDE ${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include)
+endif()
+
+if(PCOMM_BUILD_TESTS AND EXISTS ${PCOMM_FLATBUFFERS_INCLUDE})
   add_executable(pcomm_schema_conformance tests/schema_conformance.cpp)
   target_include_directories(pcomm_schema_conformance PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -61,4 +71,62 @@ if(PCOMM_BUILD_TESTS AND DEFINED PCOMM_FLATBUFFERS_INCLUDE)
     ${PCOMM_FLATBUFFERS_INCLUDE})
   target_compile_features(pcomm_schema_conformance PRIVATE cxx_std_20)
   add_test(NAME schema_conformance COMMAND pcomm_schema_conformance)
+endif()
+
+# Schema coverage: every PCOMM_RECORD in the tree is in pcomm.fbs, with the same
+# fields in the same order, the same type_id, and a case in the conformance test.
+#
+# This one is attached to the *build*, not only to ctest. schema_conformance can
+# only check records it names, so the failure it cannot see is an eleventh record
+# that nobody added to it — and a check you have to remember to run is no check
+# against a mistake made by forgetting. Text-level by necessity: no flatc on MN5.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  set(schema_check_stamp ${CMAKE_CURRENT_BINARY_DIR}/schema_check.stamp)
+  add_custom_command(
+    OUTPUT ${schema_check_stamp}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/schema_check.py ${CMAKE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E touch ${schema_check_stamp}
+    DEPENDS
+      ${CMAKE_SOURCE_DIR}/tools/schema_check.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/schema/pcomm.fbs
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/records.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/vocab.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/time.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/schema_conformance.cpp
+      ${CMAKE_SOURCE_DIR}/providers/ibverbs/ib_records.hpp
+    COMMENT "Checking C++ records against libpcomm/schema/pcomm.fbs"
+    VERBATIM)
+  add_custom_target(pcomm_schema_check ALL DEPENDS ${schema_check_stamp})
+  add_dependencies(pcomm_engine pcomm_schema_check)
+
+  if(PCOMM_BUILD_TESTS)
+    add_test(NAME schema_check
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/schema_check.py
+                     ${CMAKE_SOURCE_DIR})
+  endif()
+else()
+  message(WARNING "no Python3: skipping the record/schema coverage check "
+                  "(tools/schema_check.py) — a new record can reach a capture "
+                  "with no schema entry")
+endif()
+
+# Generated-header drift: pcomm_generated.h must be what flatc makes of
+# pcomm.fbs today. A test, not a build step — it needs flatc, which MN5 does not
+# have, and the whole reason the header is committed is that the build must work
+# without it. The script skips loudly rather than failing when flatc is absent.
+if(PCOMM_BUILD_TESTS)
+  add_test(NAME schema_generated_current
+           COMMAND ${CMAKE_SOURCE_DIR}/tools/check_generated.sh)
+endif()
+
+# Portability, demonstrated rather than asserted: read a real suite capture from
+# Python through flatc-generated bindings and recompute case 01's goldens. The
+# claim that motivated the whole schema — "other languages can read captures" —
+# was never once exercised until this ran. Needs no flatc and no network: the
+# bindings and the FlatBuffers Python runtime are both committed.
+if(PCOMM_BUILD_TESTS AND Python3_Interpreter_FOUND
+   AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-43996904)
+  add_test(NAME schema_python_reader
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/read_pcs.py)
 endif()

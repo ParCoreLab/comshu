@@ -8,3 +8,8 @@ build-x/
 # part of this repo on purpose — a plan that only exists on disk is exactly the
 # thing plans/ exists to prevent. Repo .gitignore outranks the global excludes.
 !plans/PLAN-*.md
+
+# Locally built flatc (tools/get_flatc.sh) — arch-specific, not committed.
+.tools/
+__pycache__/
+*.pyc
