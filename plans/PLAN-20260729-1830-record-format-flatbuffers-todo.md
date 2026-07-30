@@ -1,7 +1,7 @@
 # PLAN — record format: benchmark FlatBuffers against the raw-POD `.pcs`
 
 - **Created:** 2026-07-29 18:30 +03
-- **Status:** measured 2026-07-30 — see RESULTS. Decision pending team review.
+- **Status:** RECOMMEND ADOPT (FlatBuffers **structs**). Measured 2026-07-30.
 - **Why now:** part of the team is pushing for FlatBuffers. Settle it with
   numbers, not architecture opinions. My prior is "no for the hot path", and a
   prior is exactly the thing a benchmark should be allowed to overturn.
@@ -198,3 +198,79 @@ and it is ~25x larger than the entire serialization question.
 2. **Both `srun` steps wrote to `rank-0`.** Known: `RankDetector` trusts
    `SLURM_PROCID`, which is per-step (things-to-circle-back-to.md). The
    throughput numbers are perftest's own and unaffected.
+
+
+---
+
+# CORRECTION 2: I benchmarked the wrong construct
+
+The team's proposal (SigmaTrace `Events/Flatbuffers/Simple.fbs`) uses a
+FlatBuffers **`struct`**, not a `table`. Everything above measures tables. A FB
+struct is fixed-layout and inline — no vtable, no offsets — so it is genuinely
+equivalent to a C struct, exactly as they said.
+
+Re-measured with flatc-generated code from a real `GpuAccessF` schema:
+
+| path | ns/rec | size | |
+|---|---|---|---|
+| raw POD (current) | 10.13 | 244.14 MB | 1.00x |
+| **FlatBuffers struct** | **9.48** | **244.14 MB** | **0.94x** |
+
+Free, and byte-for-byte the same size. `sizeof(GpuAccessF) == 80 ==
+sizeof(Stamped<GpuAccess>)`, and every real field lands at the same offset
+(temporal@0, pc@48, object@52, address@56, size@64, thread@76).
+
+**So the performance objection is gone entirely.** The table numbers (2.3-3.3x,
+35% smaller) describe a design nobody proposed.
+
+## What FB structs do and do not buy
+
+- **yes** — a portable schema (`.fbs`), codegen for other languages, reflection
+- **yes** — a *defined* layout: FlatBuffers specifies alignment and
+  little-endian encoding, so unlike a C struct it does not depend on compiler
+  padding. This is a better fix for the silent-misparse hazard than the ad-hoc
+  header I proposed.
+- **no** — schema evolution. Structs are fixed; you cannot add a field. Tables
+  give that at ~2.3x write cost. Since record types are already versioned by
+  `type_id` (ibverbs 100-199, gpumem 700-799 ...), a new type id per schema
+  version is a workable evolution path and costs nothing at runtime.
+
+## Found while checking layout compatibility: we write uninitialised padding
+
+The two layouts are NOT bit-identical, and the reason is ours, not FlatBuffers':
+`memcmp` differs at bytes 1-5, 10-11, 26-29 — **every one of them a padding
+byte**. FlatBuffers zeroes its padding. We do not.
+
+`Temporal::instant()` returns `{TimeKind::Instant, t, {}, 0}`, an aggregate
+whose padding is never initialised; assigning it copies the object
+representation, garbage included. Verified against a real capture: **2000 of
+2000 records have nonzero padding in `Temporal` bytes 1-7**, containing stack
+residue (recognisable pointer fragments like `7f38f0b680`).
+
+Consequences:
+1. Trace files contain uninitialised process memory — minor information leak if
+   captures are shared.
+2. Raw `.pcs` bytes are non-deterministic across identical runs. This is
+   *why* the determinism gate has to compare query output rather than files —
+   previously treated as inherent, actually self-inflicted.
+3. It hurts compression, so the gzip comparison above was biased against raw
+   POD by its own garbage. 33.8 MB would shrink with zeroed padding.
+
+Adopting FB structs fixes this as a side effect, since flatc-generated
+constructors zero padding.
+
+## Implementation sketch
+
+1. Write `.fbs` for the existing record types, field-for-field (layout already
+   matches, so this is transcription, not redesign).
+2. Generate at build time with `flatc --cpp`; vendor flatc or require it.
+3. Swap `PCOMM_RECORD` payloads for the generated structs, keeping `type_id`
+   and the 100/700 ranges unchanged.
+4. Validate: the suite is the oracle. Cases 01-07 assert exact counts, so a
+   layout slip shows up as a golden diff rather than silence.
+5. Keep the file header anyway — `.fbs` describes the record, not the file, and
+   nothing yet records *which* schema version a file was written with.
+
+Note step 4 gets easier once padding is zeroed: raw `.pcs` files become
+byte-comparable across runs, which would let the determinism gate check files
+directly instead of only query output.

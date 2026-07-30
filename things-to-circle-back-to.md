@@ -280,6 +280,18 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   host-side ownership path (hook `nvshmem_malloc` / `nvshmem_ptr`).
 
 ## Recorder / fork / threading
+- **Every record we write contains uninitialised padding bytes.** Verified
+  2026-07-30 against a real capture: 2000/2000 records had nonzero garbage in
+  `Stamped<GpuAccess>` bytes 1-7 (the padding after `Temporal::kind`), holding
+  recognisable stack residue such as `7f38f0b680`. Cause:
+  `Temporal::instant()` returns an aggregate whose padding is never
+  initialised, and assigning it copies the object representation. Three
+  consequences: trace files leak process memory; raw `.pcs` bytes differ across
+  otherwise identical runs (this is *why* the determinism gate compares query
+  output, not files — self-inflicted, not inherent); and the garbage does not
+  compress. Fix by zeroing padding on construction, or as a side effect of
+  moving to flatc-generated structs, which zero it.
+
 - **Fork child handler is not async-signal-safe** (`Tracer::atfork_child`, tracer.hpp).
   It allocates (new sink/recorder, `std::start`). Safe for the common
   fork-then-record and fork-then-exec patterns; **unsafe if the process forks

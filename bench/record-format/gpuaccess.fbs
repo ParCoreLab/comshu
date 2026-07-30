@@ -1,0 +1,19 @@
+// pcomm GpuAccess as a FlatBuffers STRUCT (fixed layout, no vtable), matching
+// the approach in SigmaTrace Events/Flatbuffers/Simple.fbs.
+namespace pcomm.fb;
+
+struct TimePointF { domain:uint32; ticks:uint64; }
+struct TemporalF  { kind:uint8; a:TimePointF; b:TimePointF; value:uint64; }
+
+struct GpuAccessF {
+  temporal:TemporalF;
+  pc:uint32;
+  object:uint32;
+  address:uint64;
+  size:uint32;
+  op:uint8;
+  space:uint8;
+  run_device:uint16;
+  mem_device:uint16;
+  thread:uint32;
+}
