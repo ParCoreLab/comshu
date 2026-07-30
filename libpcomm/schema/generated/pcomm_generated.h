@@ -42,6 +42,150 @@ struct IbPostSend;
 
 struct IbPollCq;
 
+enum TimeKind : uint8_t {
+  TimeKind_None = 0,
+  TimeKind_Instant = 1,
+  TimeKind_Interval = 2,
+  TimeKind_Window = 3,
+  TimeKind_Counter = 4,
+  TimeKind_MIN = TimeKind_None,
+  TimeKind_MAX = TimeKind_Counter
+};
+
+inline const TimeKind (&EnumValuesTimeKind())[5] {
+  static const TimeKind values[] = {
+    TimeKind_None,
+    TimeKind_Instant,
+    TimeKind_Interval,
+    TimeKind_Window,
+    TimeKind_Counter
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesTimeKind() {
+  static const char * const names[6] = {
+    "None",
+    "Instant",
+    "Interval",
+    "Window",
+    "Counter",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameTimeKind(TimeKind e) {
+  if (::flatbuffers::IsOutRange(e, TimeKind_None, TimeKind_Counter)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesTimeKind()[index];
+}
+
+enum MemOp : uint8_t {
+  MemOp_Load = 0,
+  MemOp_Store = 1,
+  MemOp_Atomic = 2,
+  MemOp_Prefetch = 3,
+  MemOp_MIN = MemOp_Load,
+  MemOp_MAX = MemOp_Prefetch
+};
+
+inline const MemOp (&EnumValuesMemOp())[4] {
+  static const MemOp values[] = {
+    MemOp_Load,
+    MemOp_Store,
+    MemOp_Atomic,
+    MemOp_Prefetch
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesMemOp() {
+  static const char * const names[5] = {
+    "Load",
+    "Store",
+    "Atomic",
+    "Prefetch",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameMemOp(MemOp e) {
+  if (::flatbuffers::IsOutRange(e, MemOp_Load, MemOp_Prefetch)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesMemOp()[index];
+}
+
+enum MemSpace : uint8_t {
+  MemSpace_Global = 0,
+  MemSpace_Local = 1,
+  MemSpace_Shared = 2,
+  MemSpace_MIN = MemSpace_Global,
+  MemSpace_MAX = MemSpace_Shared
+};
+
+inline const MemSpace (&EnumValuesMemSpace())[3] {
+  static const MemSpace values[] = {
+    MemSpace_Global,
+    MemSpace_Local,
+    MemSpace_Shared
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesMemSpace() {
+  static const char * const names[4] = {
+    "Global",
+    "Local",
+    "Shared",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameMemSpace(MemSpace e) {
+  if (::flatbuffers::IsOutRange(e, MemSpace_Global, MemSpace_Shared)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesMemSpace()[index];
+}
+
+enum EdgePredicate : uint8_t {
+  EdgePredicate_TouchedObject = 0,
+  EdgePredicate_MapsToSourceLine = 1,
+  EdgePredicate_ResidesOn = 2,
+  EdgePredicate_MapsToQp = 3,
+  EdgePredicate_MIN = EdgePredicate_TouchedObject,
+  EdgePredicate_MAX = EdgePredicate_MapsToQp
+};
+
+inline const EdgePredicate (&EnumValuesEdgePredicate())[4] {
+  static const EdgePredicate values[] = {
+    EdgePredicate_TouchedObject,
+    EdgePredicate_MapsToSourceLine,
+    EdgePredicate_ResidesOn,
+    EdgePredicate_MapsToQp
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesEdgePredicate() {
+  static const char * const names[5] = {
+    "TouchedObject",
+    "MapsToSourceLine",
+    "ResidesOn",
+    "MapsToQp",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameEdgePredicate(EdgePredicate e) {
+  if (::flatbuffers::IsOutRange(e, EdgePredicate_TouchedObject, EdgePredicate_MapsToQp)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesEdgePredicate()[index];
+}
+
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) TimePoint FLATBUFFERS_FINAL_CLASS {
  private:
   uint16_t domain_;
@@ -95,8 +239,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Temporal FLATBUFFERS_FINAL_CLASS {
     (void)padding1__;
     (void)padding2__;
   }
-  Temporal(uint8_t _kind, const pcomm::fb::TimePoint &_a, const pcomm::fb::TimePoint &_b, uint64_t _value)
-      : kind_(::flatbuffers::EndianScalar(_kind)),
+  Temporal(pcomm::fb::TimeKind _kind, const pcomm::fb::TimePoint &_a, const pcomm::fb::TimePoint &_b, uint64_t _value)
+      : kind_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_kind))),
         padding0__(0),
         padding1__(0),
         padding2__(0),
@@ -107,8 +251,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Temporal FLATBUFFERS_FINAL_CLASS {
     (void)padding1__;
     (void)padding2__;
   }
-  uint8_t kind() const {
-    return ::flatbuffers::EndianScalar(kind_);
+  pcomm::fb::TimeKind kind() const {
+    return static_cast<pcomm::fb::TimeKind>(::flatbuffers::EndianScalar(kind_));
   }
   const pcomm::fb::TimePoint &a() const {
     return a_;
@@ -174,14 +318,14 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
         thread_(0) {
     (void)padding0__;
   }
-  GpuAccess(const pcomm::fb::Temporal &_temporal, uint32_t _pc, uint32_t _object, uint64_t _address, uint32_t _size, uint8_t _op, uint8_t _space, uint16_t _run_device, uint16_t _mem_device, uint32_t _thread)
+  GpuAccess(const pcomm::fb::Temporal &_temporal, uint32_t _pc, uint32_t _object, uint64_t _address, uint32_t _size, pcomm::fb::MemOp _op, pcomm::fb::MemSpace _space, uint16_t _run_device, uint16_t _mem_device, uint32_t _thread)
       : temporal_(_temporal),
         pc_(::flatbuffers::EndianScalar(_pc)),
         object_(::flatbuffers::EndianScalar(_object)),
         address_(::flatbuffers::EndianScalar(_address)),
         size_(::flatbuffers::EndianScalar(_size)),
-        op_(::flatbuffers::EndianScalar(_op)),
-        space_(::flatbuffers::EndianScalar(_space)),
+        op_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_op))),
+        space_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_space))),
         run_device_(::flatbuffers::EndianScalar(_run_device)),
         mem_device_(::flatbuffers::EndianScalar(_mem_device)),
         padding0__(0),
@@ -203,11 +347,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
   uint32_t size() const {
     return ::flatbuffers::EndianScalar(size_);
   }
-  uint8_t op() const {
-    return ::flatbuffers::EndianScalar(op_);
+  pcomm::fb::MemOp op() const {
+    return static_cast<pcomm::fb::MemOp>(::flatbuffers::EndianScalar(op_));
   }
-  uint8_t space() const {
-    return ::flatbuffers::EndianScalar(space_);
+  pcomm::fb::MemSpace space() const {
+    return static_cast<pcomm::fb::MemSpace>(::flatbuffers::EndianScalar(space_));
   }
   uint16_t run_device() const {
     return ::flatbuffers::EndianScalar(run_device_);
@@ -332,11 +476,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Attribution FLATBUFFERS_FINAL_CLASS {
     (void)padding1__;
     (void)padding2__;
   }
-  Attribution(const pcomm::fb::Temporal &_temporal, uint32_t _subject, uint32_t _object, uint8_t _pred)
+  Attribution(const pcomm::fb::Temporal &_temporal, uint32_t _subject, uint32_t _object, pcomm::fb::EdgePredicate _pred)
       : temporal_(_temporal),
         subject_(::flatbuffers::EndianScalar(_subject)),
         object_(::flatbuffers::EndianScalar(_object)),
-        pred_(::flatbuffers::EndianScalar(_pred)),
+        pred_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_pred))),
         padding0__(0),
         padding1__(0),
         padding2__(0) {
@@ -353,8 +497,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Attribution FLATBUFFERS_FINAL_CLASS {
   uint32_t object() const {
     return ::flatbuffers::EndianScalar(object_);
   }
-  uint8_t pred() const {
-    return ::flatbuffers::EndianScalar(pred_);
+  pcomm::fb::EdgePredicate pred() const {
+    return static_cast<pcomm::fb::EdgePredicate>(::flatbuffers::EndianScalar(pred_));
   }
 };
 FLATBUFFERS_STRUCT_END(Attribution, 64);

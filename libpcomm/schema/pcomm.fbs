@@ -21,11 +21,31 @@ namespace pcomm.fb;
 
 // --- shared vocabulary -----------------------------------------------------
 
+// These enums mirror pcomm/core/vocab.hpp and pcomm/core/time.hpp. They are
+// declared here rather than described in a comment on purpose: a reordered C++
+// enumerator changes no size and no field offset, so the byte-level
+// conformance test cannot see it, and prose cannot be checked at all. Declared
+// this way, tests/schema_conformance static_asserts every value against its C++
+// counterpart. Do not renumber — the values are on disk.
+
+enum TimeKind : uint8 { None = 0, Instant = 1, Interval = 2, Window = 3, Counter = 4 }
+
+enum MemOp : uint8 { Load = 0, Store = 1, Atomic = 2, Prefetch = 3 }
+
+enum MemSpace : uint8 { Global = 0, Local = 1, Shared = 2 }
+
+// Predicates for Edge records.
+enum EdgePredicate : uint8 {
+  TouchedObject = 0,     // access -> mem object
+  MapsToSourceLine = 1,  // pc -> source line
+  ResidesOn = 2,         // object -> device
+  MapsToQp = 3,          // endpoint -> queue pair
+}
+
 struct TimePoint { domain:uint16; ticks:uint64; }          // 16 B
 
-// TimeKind: 0 None, 1 Instant, 2 Interval, 3 Window, 4 Counter
 struct Temporal {
-  kind:uint8;
+  kind:TimeKind;
   a:TimePoint;      // instant / interval.start / window.lo / counter.t
   b:TimePoint;      // interval.end / window.hi
   value:uint64;     // counter value
@@ -36,16 +56,14 @@ struct MemRange { base:uint64; size:uint64; }              // 16 B
 // --- core records ----------------------------------------------------------
 
 // type 700, Event. The GPU-access firehose.
-// MemOp: 0 Load 1 Store 2 Atomic 3 Prefetch
-// MemSpace: 0 Global 1 Local 2 Shared
 struct GpuAccess {
   temporal:Temporal;
   pc:uint32;           // interned handle
   object:uint32;       // interned handle, 0 = unattributed
   address:uint64;
   size:uint32;
-  op:uint8;
-  space:uint8;
+  op:MemOp;
+  space:MemSpace;
   run_device:uint16;
   mem_device:uint16;
   thread:uint32;
@@ -69,12 +87,11 @@ struct SourceLine {
 }
 
 // type 760, Edge. Generic attribution row.
-// EdgePredicate: 0 TouchedObject 1 MapsToSourceLine 2 ResidesOn 3 MapsToQp
 struct Attribution {
   temporal:Temporal;
   subject:uint32;
   object:uint32;
-  pred:uint8;
+  pred:EdgePredicate;
 }
 
 // type 590, Artifact. Clock-domain calibration anchor.
