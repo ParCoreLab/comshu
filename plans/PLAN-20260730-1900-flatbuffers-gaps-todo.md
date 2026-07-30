@@ -1,8 +1,8 @@
 # PLAN — close the gaps in the FlatBuffers adoption
 
 - **Created:** 2026-07-30 19:00 +03
-- **Status:** gaps 1-4 **done** 2026-07-30 (see below). 5-9 open; 5 is next, and
-  the case for 8 is now weaker than when this was written.
+- **Status:** gaps 1-5 **done** 2026-07-30 (see below). 6-9 open; the case for 8
+  is now weaker than when this was written.
 - **Context commits:** `7034091` (schema + generated header), `76498db`
   (retracted a false padding claim), `449fb3b` (real padding fix), `17480f5`
   and `2e37d56` (byte-level conformance for all 10 records)
@@ -37,7 +37,7 @@ and the conformance test asserts all 16 values (also verified by mutation —
 reordering `MemOp` fires the static_assert). `tools/check_generated.sh`
 regenerates both the C++ and the new Python bindings and diffs them.
 `tools/read_pcs.py` reads the committed real capture
-`tests/data/ib_pingpong-43996904` — pulled from MN5 job 43996904, `ok:true` —
+`tests/data/ib_pingpong-43997525` — pulled from MN5 job 43997525, `ok:true` —
 through flatc-generated Python bindings and reproduces three of case 01's four
 goldens (regions, traffic, completions) with no C++ in the loop. Topology is
 not reproduced: `comm_edges` is derived by pcomm-read, not a stream on disk.
@@ -97,7 +97,7 @@ this week.
 reads a suite capture and reproduces one golden's numbers (case 01's MR/QP
 counts are the smallest target). Commit it under `tools/` as executable proof.
 
-### 5. Files do not record which schema wrote them
+### 5. Files do not record which schema wrote them — **DONE**
 `.pcs` is still a bare array with no magic, version, `type_id` or stride. The
 `.fbs` describes a *record*, not a *file*. A capture written before a schema
 change is indistinguishable from one written after, so a future reader
@@ -106,6 +106,33 @@ misparses silently — the original defect that started this work, still open.
 *Acceptance:* a small header (magic, format version, schema version, `type_id`,
 stride). Measured free earlier: 15.13 vs 15.16 ns/rec. Note this changes the
 file layout, so goldens and `pcomm-read` move together.
+
+*Done:* `pcomm/rec/stream_header.hpp` — 32 B, keeping the records that follow
+8-byte aligned, written once per file rather than per record, so the earlier
+per-record measurement does not even apply. Magic is `89 P C O M M S \n` (PNG's
+trick: the high bit and the trailing newline catch a text-mode copy). Carries
+format_version, type_id, stride, kind and a schema hash. Declared in `pcomm.fbs`
+and byte-checked by `schema_conformance` exactly like a record, so the framing
+cannot drift either.
+
+The schema hash is FNV-1a over the normalised `.fbs` — comments stripped,
+whitespace collapsed — so prose does not churn it. It is *not* maintained by
+hand: `schema_check.py` recomputes it and fails the build when the constant
+drifts, since a stale hash asserts a sameness that is not true and is worse than
+no hash at all. A capture whose hash differs but whose type_id and stride agree
+is decoded with a warning naming both; refusing it would be wrong, because an
+unrelated record changing moves the hash without making this stream unreadable.
+
+Per the decision to switch fully rather than straddle: pre-format-1 captures are
+**refused by name**, not read on a guess. `pcomm-read`'s stream inventory now
+reads each file's own header and reports type, kind, stride, record count and
+schema — the first thing in the tree that is told what a capture is by the
+capture itself rather than by its filename.
+
+`libpcomm/tests/stream_format.cpp` round-trips the format through FileSink and
+checks all four rejection paths (bad magic, wrong version, wrong type, wrong
+stride) plus the append-without-a-second-header case. It is header-only on
+purpose — see the note below about `tests/`.
 
 ### 6. Schema evolution is a plan, not a mechanism
 FB structs cannot gain fields; the intended answer is a new `type_id` per
@@ -139,14 +166,36 @@ intern tables, which no schema covers.
 ## Suggested order
 
 ~~1, 2 and 3 are cheap and remove silent-drift classes. 4 is small and converts
-the main justification from inference to evidence.~~ Done. 5 is the original
-defect. 6 before the first field is needed, not during. 7 and 8 are judgement
-calls; 9 is its own piece of work.
+the main justification from inference to evidence. 5 is the original defect.~~
+Done. 6 before the first field is needed, not during — and it is now cheaper
+than it was, since `format_version` exists to be bumped and the header gives a
+reader something to branch on. 7 and 8 are judgement calls; 9 is its own piece
+of work, and the intern-table sidecars are the obvious next thing to frame.
 
 Note for 8 (structural binding): with 1-3 closed, `schema_check.py` already
 fails the build on a reordered or renamed field, which was most of what 8 was
 for. What remains is ergonomics, at the cost of `mutate_*` accessors across both
 providers and pcomm-read. The case for it is weaker now, not stronger.
+
+## Found while doing 5: `tests/` has not compiled since the engine ABI change
+
+`tests/core_smoke.cpp` still uses `Recorder::buffer<R>()`, which stopped
+existing in `4dd6a69` when the arena moved behind the C ABI; `fork_smoke` and
+`thread_flush_smoke` link `pcomm::pcomm` (INTERFACE, header-only) but not
+`pcomm::engine`, which now owns `Tracer::instance`, `ThreadBufferRegistry::
+instance` and `pcomm_engine_arena*`. All three fail to build. Nothing noticed
+because the MN5 build passes `-DPCOMM_BUILD_TESTS=OFF` and, until this week,
+`ctest` locally reported "No tests were found" rather than a failure.
+
+**Fixed** in the gap-5 commit, because otherwise nothing here could be verified
+locally. `core_smoke` now exercises `ThreadLocalBuffer` directly for the parts
+where a locally-held `ISink` still means something, and goes through the Tracer
+for the parts that reach disk; `thread_flush_smoke` does the same. All 9 tests
+build and pass — the first green `ctest` since 2026-07-15.
+
+The cause was a missing gate, not a missed failure, so `tools/build_all.sh` and
+a `pre-commit` hook landed with it: every buildable configuration, tests ON,
+loud about what it skipped.
 
 ## Watch out for
 
