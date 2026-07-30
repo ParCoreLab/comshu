@@ -296,6 +296,19 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   mid-run while threads are live (would need per-buffer synchronization).
 
 ## ibverbs provider
+- **`post_send` is invisible for apps using the new WR API — and SigmaTrace has
+  the same gap.** Measured 2026-07-30 (job 43976008): `ib_send_bw` traced end to
+  end produced 202,000 `ib_poll_cq` records and **zero** `ib_post_send`
+  (no 110.pcs at all), while case 01's `ibv_rc_pingpong` records sends fine.
+  Both we and SigmaTrace hook it as `DEFINE_OBJECT_OPS_HOOK(ibv, post_send, ...)`
+  resolving `ctx->ops.post_send`; rdma-core's newer
+  `ibv_wr_start`/`ibv_wr_send`/`ibv_wr_complete` path (supported by mlx5, used by
+  modern perftest) never goes through that table, so the hook cannot see it.
+  Not a port regression — a shared limitation, which is why it was deprioritised
+  when found. It is also an opportunity: hooking the WR API would capture sends
+  that SigmaTrace structurally cannot. Note any measurement of "tracing overhead"
+  taken with perftest is therefore poll_cq interception only.
+
 - **Event timestamps auto-stamp at emit**, not at the hooked call. The hook
   engine already captures precise start/end `Timestamp`s (pre/post); thread
   them into the records (build a `core::Temporal` span) instead of calling
