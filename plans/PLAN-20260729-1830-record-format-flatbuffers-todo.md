@@ -148,11 +148,45 @@ Two things worth separating from the decision:
 - **Write format and interchange format need not be the same.** Raw POD on the
   hot path with an Arrow/FlatBuffers export remains a legitimate answer.
 
+## CORRECTION (job 43986473): the hook path is cheap, the RECORD path is not
+
+The paragraph above attributes the 625 ns to "the hook path — interception,
+trampolines, timestamping". That was an inference and it is wrong. Splitting it
+with PCOMM_BENCH_NO_RECORD (hooks installed, nothing emitted):
+
+```
+untraced    6.711474 Mpps = 149.0 ns/msg
+no-record   6.181506 Mpps = 161.8 ns/msg   -> hook path      12.8 ns  (2%)
+traced      1.352219 Mpps = 739.5 ns/msg   -> record path   577.7 ns  (98%)
+```
+
+Interception is nearly free. Emitting the record is the entire cost.
+
+**This also invalidates the absolute numbers in the microbenchmark above.** It
+measured 12 ns per record append; in situ the same emission costs ~578 ns, a 48x
+gap. A tight loop over a pre-built record with the arena, intern tables and sink
+hot in L1 is not the workload — the real one emits one record between IB
+operations, with everything cold and real work evicting the cache in between.
+
+The *relative* comparison likely survives (both formats pay the same cache
+penalty) but it should be re-measured in situ before anyone quotes "2.3x" as the
+cost of FlatBuffers. Treat the ratios as provisional and the absolutes as wrong.
+
+For the decision this makes FlatBuffers look *better*, not worse: +25 ns against
+a 578 ns record path is ~4%, and against 739 ns of traced cost ~3%.
+
+Untested hypothesis for where the 578 ns goes — flagged as a hypothesis because
+this bug class has punished confident mechanisms all week: `h(cq)` interns a
+handle per record and `pcomm_engine_intern_key` takes `std::lock_guard` on the
+domain mutex every time. A per-record mutex plus hash lookup is the obvious
+suspect, but it is unmeasured.
+
 ## Bigger finding, unrelated to the format
 
-Tracing costs **5.3x throughput** on small-message ibverbs (6.84 -> 1.30 Mpps).
-That is the optimization target worth having, and it is ~25x larger than the
-entire serialization question. Not investigated yet.
+Tracing costs **~5x throughput** on small-message ibverbs (6.71 -> 1.35 Mpps),
+and it is now localised: **98% of it is record emission, not interception**
+(12.8 ns hook vs 577.7 ns record). That is the optimisation target worth having,
+and it is ~25x larger than the entire serialization question.
 
 ## Two bugs surfaced by this run
 

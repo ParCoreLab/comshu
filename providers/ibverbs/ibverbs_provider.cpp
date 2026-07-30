@@ -7,6 +7,7 @@
 // open_device; the rest are LD_PRELOAD interposers at the bottom of the file.
 
 #include <cstdint>
+#include <cstdlib>
 
 #include "pcomm/core/ids.hpp"
 #include "pcomm/provider/provider.hpp"
@@ -114,6 +115,15 @@ Profiler::Profiler() {
     this->register_post<poll_cq_tag>(
         [](int ret, ibv_cq* cq, int, ibv_wc* wc, std::uint64_t t0, std::uint64_t t1) {
             if (ret <= 0 || !wc) return;
+            // PCOMM_BENCH_NO_RECORD=1 — diagnostic only. Runs the whole hook
+            // path (interception, trampoline, rdtsc pair, dispatch) but emits
+            // nothing, so a message-rate run splits the tracing cost into
+            // "hook" vs "record". Measured 2026-07-30: tracing costs 625 ns per
+            // message on ib_send_bw while a record append is 12 ns, so the
+            // split is worth knowing before optimising anything.
+            static const bool no_record =
+                std::getenv("PCOMM_BENCH_NO_RECORD") != nullptr;
+            if (no_record) return;
             const auto tspan = span(t0, t1);
             for (int i = 0; i < ret; ++i) {
                 rec().record(tspan, rr::IbPollCq{{}, {}, h(cq), wc[i].wr_id, wc[i].byte_len,
