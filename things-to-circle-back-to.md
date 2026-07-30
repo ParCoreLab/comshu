@@ -397,15 +397,31 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   LID-keyed comm graph reconstructs regardless, but per-rank streams are lost.)
 
 ## Infra / process
-- **BLOCKER (2026-07-30): `build-gpumem` will not rebuild on MN5**, failing with
-  `nvcc fatal : Value 'c++20' is not defined for option 'std'` even after
-  `rm -rf build-gpumem` and reconfiguring with the documented flag set
-  (`-DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF
-  -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90
-  -DCMAKE_CUDA_HOST_COMPILER=g++`). Suspect the nvcc on PATH is not the
-  nvidia-hpc-sdk/25.7 one when the modules are loaded outside
-  `run_on_mn5.sh`'s exact environment — the error means an nvcc older than 12.0,
-  and 25.7 ships 12.9. Check `which nvcc` against what the driver script gets.
+- **BLOCKER (2026-07-30), I caused it: `build-gpumem` cannot be reconfigured.**
+  Diagnosed, not fixed. The SDK ships **two** nvcc binaries:
+
+      $SDK/compilers/bin/nvcc  -> CUDA 11.8  (no c++20)   <- what PATH resolves
+      $SDK/cuda/bin/nvcc       -> CUDA 12.9               <- what we need
+
+  where `SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7`. Every build up to
+  today reused a `build-gpumem/CMakeCache.txt` created in an earlier session
+  that had the 12.9 compiler recorded; `run_on_mn5.sh` runs `cmake -B
+  build-gpumem` which *reuses* an existing cache, so nobody noticed PATH points
+  at 11.8. **I destroyed that cache with `rm -rf build-gpumem`**, and a fresh
+  configure now picks 11.8 and dies on `-std=c++20`.
+
+  Forcing `-DCMAKE_CUDA_COMPILER=$SDK/cuda/bin/nvcc` gets past that but then
+  fails CMake's compiler test at link (`collect2: error: ld returned 1 exit
+  status`) — the 12.9 nvcc presumably needs matching library paths that
+  `module load nvidia-hpc-sdk/25.7` does not set, since the module is oriented
+  at the `compilers/` toolchain. See
+  `build-gpumem/CMakeFiles/CMakeError.log` for the link line.
+
+  Next steps: check for a separate `cuda/12.9` module; compare `LD_LIBRARY_PATH`
+  and `LIBRARY_PATH` against what a working build had; or set
+  `CMAKE_CUDA_HOST_LINK_LAUNCHER`/library dirs explicitly. Once it builds, pin
+  the compiler in `run_on_mn5.sh` so a cache wipe can never silently downgrade
+  the toolchain again.
 - **The CUDA target does not track header dependencies.** Changing
   `libpcomm/include/**` does NOT rebuild `gpumem_trace`; make reports
   "Built target gpumem_trace" and relinks nothing. `run_on_mn5.sh` then `cp`s
