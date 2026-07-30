@@ -94,9 +94,62 @@ int main() {
                          0xCAFEBABE, 4096, 0x1EFFD, 2, 1);
         expect_identical("IbPostSend", &c, &f, sizeof(c));
     }
+    {   Stamped<cr::MemObject> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x111}, {2, 0x222});
+        c.payload.id = 0xAABB; c.payload.name = 0xCCDD;
+        c.payload.range = {0x1000, 0x2000}; c.payload.device = 0x33;
+        fb::MemObject f(fb::Temporal(2, fb::TimePoint(1,0x111), fb::TimePoint(2,0x222), 0),
+                        0xAABB, 0xCCDD, fb::MemRange(0x1000, 0x2000), 0x33);
+        expect_identical("MemObject", &c, &f, sizeof(c)); }
+    {   Stamped<cr::SourceLine> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.pc = 0x1234; c.payload.file = 0x5678; c.payload.line = 42;
+        fb::SourceLine f(fb::Temporal(0, fb::TimePoint(0,0), fb::TimePoint(0,0), 0),
+                         0x1234, 0x5678, 42);
+        expect_identical("SourceLine", &c, &f, sizeof(c)); }
+    {   Stamped<cr::Attribution> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.subject = 7; c.payload.object = 9;
+        c.payload.pred = static_cast<pcomm::core::EdgePredicate>(2);
+        fb::Attribution f(fb::Temporal(0, fb::TimePoint(0,0), fb::TimePoint(0,0), 0), 7, 9, 2);
+        expect_identical("Attribution", &c, &f, sizeof(c)); }
+    {   Stamped<cr::ClockAnchor> c{};
+        c.temporal = pcomm::core::Temporal::instant({3, 0xABC});
+        c.payload.domain = 3; c.payload.local_ticks = 0xDEAD;
+        c.payload.wall_ns = 0xBEEF; c.payload.mono_ns = 0xF00D;
+        fb::ClockAnchor f(fb::Temporal(1, fb::TimePoint(3,0xABC), fb::TimePoint(0,0), 0),
+                          3, 0xDEAD, 0xBEEF, 0xF00D);
+        expect_identical("ClockAnchor", &c, &f, sizeof(c)); }
+    {   Stamped<ir::IbMemRegion> c{};
+        c.temporal = pcomm::core::Temporal::interval({1,0x10}, {1,0x20});
+        c.payload.mr = 1; c.payload.pd = 2; c.payload.range = {0x3000, 0x4000};
+        c.payload.lkey = 5; c.payload.rkey = 6; c.payload.access = 7;
+        fb::IbMemRegion f(fb::Temporal(2, fb::TimePoint(1,0x10), fb::TimePoint(1,0x20), 0),
+                          1, 2, fb::MemRange(0x3000,0x4000), 5, 6, 7);
+        expect_identical("IbMemRegion", &c, &f, sizeof(c)); }
+    {   Stamped<ir::IbQueuePair> c{};
+        c.temporal = pcomm::core::Temporal::interval({1,0x30}, {1,0x40});
+        c.payload.qp = 11; c.payload.pd = 12; c.payload.qp_num = 0x1EFFD; c.payload.qp_type = 2;
+        fb::IbQueuePair f(fb::Temporal(2, fb::TimePoint(1,0x30), fb::TimePoint(1,0x40), 0),
+                          11, 12, 0x1EFFD, 2);
+        expect_identical("IbQueuePair", &c, &f, sizeof(c)); }
+    {   Stamped<ir::IbModifyQp> c{};
+        c.temporal = pcomm::core::Temporal::instant({1, 0x50});
+        c.payload.qp = 21; c.payload.qp_num = 0x1EFFD; c.payload.dest_qp_num = 0x1EFFC;
+        c.payload.dest_lid = 0xA93; c.payload.state = 3;
+        fb::IbModifyQp f(fb::Temporal(1, fb::TimePoint(1,0x50), fb::TimePoint(0,0), 0),
+                         21, 0x1EFFD, 0x1EFFC, 0xA93, 3);
+        expect_identical("IbModifyQp", &c, &f, sizeof(c)); }
+    {   Stamped<ir::IbPollCq> c{};
+        c.temporal = pcomm::core::Temporal::interval({1,0x60}, {1,0x70});
+        c.payload.cq = 31; c.payload.wr_id = 0xFEEDFACE; c.payload.byte_len = 4096;
+        c.payload.qp_num = 0x1EFFD; c.payload.status = 0; c.payload.opcode = 1;
+        fb::IbPollCq f(fb::Temporal(2, fb::TimePoint(1,0x60), fb::TimePoint(1,0x70), 0),
+                       31, 0xFEEDFACE, 4096, 0x1EFFD, 0, 1);
+        expect_identical("IbPollCq", &c, &f, sizeof(c)); }
     std::printf("  sizes: Stamped<GpuAccess]=%zu Stamped<IbPostSend]=%zu Temporal=%zu\n",
                 sizeof(Stamped<cr::GpuAccess>), sizeof(Stamped<ir::IbPostSend>),
                 sizeof(pcomm::core::Temporal));
-    std::printf("%s\n", g_fail ? "FAIL" : "PASS (sizes for 10 records, bytes for 2)");
+    std::printf("%s\n", g_fail ? "FAIL" : "PASS — all 10 records byte-identical to the schema");
     return g_fail;
 }
