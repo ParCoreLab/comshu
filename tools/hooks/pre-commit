@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Refuse a commit that does not build, or whose tests do not pass.
+#
+# Installed via `git config core.hooksPath tools/hooks` (tools/install_hooks.sh
+# does it). Committed to the repo rather than living in .git/hooks so it is the
+# same on every machine ~/pockt syncs to.
+#
+# Runs `build_all.sh --quick`: the core configuration with tests ON, which is
+# what a commit can actually break on a laptop. The provider configurations and
+# the goldens need libibverbs / CUDA / MareNostrum, so they stay with
+# tools/build_all.sh (no --quick) and tests/hpc/run_on_mn5.sh.
+#
+#   git commit --no-verify     # skip it, when you know what you are doing
+#
+# It is incremental — the tree in build-all/core is reused — so the usual cost
+# is a few seconds, not a full rebuild.
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+
+# Docs-only commits cannot break a build; do not make people wait for one.
+if ! git diff --cached --name-only --diff-filter=ACMR |
+     grep -qvE '\.(md|golden|sql|json)$|^plans/|^docs/'; then
+  echo "pre-commit: docs/goldens only, skipping the build gate"
+  exit 0
+fi
+
+echo "pre-commit: building core config + tests (tools/build_all.sh --quick)"
+if "$root/tools/build_all.sh" --quick > "$root/build-all/pre-commit.log" 2>&1; then
+  echo "pre-commit: ok"
+  exit 0
+fi
+
+echo
+echo "pre-commit: REFUSED — the tree does not build or its tests fail."
+echo
+tail -30 "$root/build-all/pre-commit.log"
+echo
+echo "full log: build-all/pre-commit.log"
+echo "re-run:   tools/build_all.sh --quick"
+echo "override: git commit --no-verify"
+exit 1

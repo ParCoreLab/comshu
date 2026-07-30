@@ -13,3 +13,4 @@ build-x/
 .tools/
 __pycache__/
 *.pyc
+build-all/
