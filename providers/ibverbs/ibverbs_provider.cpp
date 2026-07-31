@@ -7,6 +7,7 @@
 // open_device; the rest are LD_PRELOAD interposers at the bottom of the file.
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 
 #include "pcomm/core/ids.hpp"
@@ -17,6 +18,10 @@
 
 #include "ib_event_source.hpp"
 #include "ib_records.hpp"
+#include "wr_builder.hpp"
+
+#include <mutex>
+#include <unordered_map>
 
 namespace ibv {
 namespace rr = pcomm::providers::ibverbs::records;
@@ -40,6 +45,250 @@ static pcomm::core::Handle h(const void* p) {
 static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
     return pcomm::core::Temporal::interval({0, t0}, {0, t1});
 }
+
+// --- the new work-request API ----------------------------------------------
+//
+// ibv_post_send hands the provider a fully-formed chain, so one hooked call
+// sees everything. rdma-core's newer API does not exist as a symbol at all:
+// ibv_wr_start/ibv_wr_send/ibv_wr_complete are `static inline` wrappers in
+// verbs.h that call function pointers inside `struct ibv_qp_ex`. LD_PRELOAD has
+// nothing to bind, and ctx->ops.post_send is never touched — which is why
+// ib_send_bw traced end to end produced 202,000 ib_poll_cq records and *zero*
+// ib_post_send (MN5 job 43976008). SigmaTrace has the same blind spot.
+//
+// So the pointers are patched in place, per QP, and the batch is reassembled
+// into the same IbPostSend rows the old path emits — same record type, same
+// opcode encoding — so a capture never reveals which API the application used
+// and every existing query and golden still works.
+namespace wr {
+
+using pcomm::providers::ibverbs::WrBuilder;
+using pcomm::providers::ibverbs::WrOpcode;
+
+// The provider's own function pointers, saved before we overwrite them.
+struct Ops {
+    void (*wr_start)(ibv_qp_ex*){};
+    int  (*wr_complete)(ibv_qp_ex*){};
+    void (*wr_abort)(ibv_qp_ex*){};
+    void (*wr_send)(ibv_qp_ex*){};
+    void (*wr_rdma_write)(ibv_qp_ex*, std::uint32_t, std::uint64_t){};
+    void (*wr_rdma_read)(ibv_qp_ex*, std::uint32_t, std::uint64_t){};
+    void (*wr_set_sge)(ibv_qp_ex*, std::uint32_t, std::uint64_t, std::uint32_t){};
+    void (*wr_set_sge_list)(ibv_qp_ex*, std::size_t, const ibv_sge*){};
+    pcomm::core::Handle qp_handle{};
+    std::uint32_t qp_num{};
+};
+
+// Written once per QP at creation, read by every wr_* call. A mutex here would
+// be on the send path, so the hot path never touches this map directly — see
+// the thread-local cache below.
+static std::mutex g_ops_mutex;
+static std::unordered_map<ibv_qp_ex*, Ops> g_ops;
+
+// Per (thread, QP) batch state. The builder must be per-thread because a batch
+// is a critical section between wr_start and wr_complete on one thread; the ops
+// are copied in so the steady-state send path is a pointer compare and no lock.
+struct Slot {
+    ibv_qp_ex* qpx{nullptr};
+    Ops        ops{};
+    WrBuilder  builder{};
+    std::uint64_t t0{0};
+};
+
+// The saved originals for a QP, straight from the shared map. Only used when
+// the thread-local path cannot serve the call: the application's send must go
+// through regardless of whether we manage to record it.
+static bool global_ops(ibv_qp_ex* qpx, Ops& out) {
+    std::lock_guard lk(g_ops_mutex);
+    auto it = g_ops.find(qpx);
+    if (it == g_ops.end()) return false;
+    out = it->second;
+    return true;
+}
+
+static Slot* slot_for(ibv_qp_ex* qpx) {
+    static thread_local std::unordered_map<ibv_qp_ex*, Slot> slots;
+    static thread_local Slot* last = nullptr;      // applications post in a loop
+    if (last && last->qpx == qpx) return last;     // on one QP: this hits ~always
+
+    auto it = slots.find(qpx);
+    if (it == slots.end()) {
+        Ops ops;
+        if (!global_ops(qpx, ops)) return nullptr;  // not a QP we patched
+        it = slots.emplace(qpx, Slot{qpx, ops, {}, 0}).first;
+    }
+    last = &it->second;
+    return last;
+}
+
+// INVARIANT for every trampoline below: the application's call reaches the
+// provider exactly once, whatever happens to our bookkeeping. A missed record
+// costs a row in a capture; a missed wr_start or wr_complete corrupts the
+// application's send path. Hence the fallbacks — they cannot trigger for a QP
+// we patched, since install() populates g_ops before it swaps any pointer, but
+// "cannot happen" is not a reason to leave the failure mode as a hang.
+
+// Forward declarations: the diagnostics below compare the live function
+// pointers against ours, and the trampolines are defined in call order.
+static void w_start(ibv_qp_ex*);
+static void w_send(ibv_qp_ex*);
+static int  w_complete(ibv_qp_ex*);
+static void w_abort(ibv_qp_ex*);
+
+static void begin(ibv_qp_ex* qpx, WrOpcode op) {
+    if (auto* s = slot_for(qpx)) s->builder.begin(op, qpx->wr_id);
+}
+
+static void w_start(ibv_qp_ex* qpx) {
+    if (auto* s = slot_for(qpx)) {
+        s->builder.start();
+        s->t0 = pcomm::helpers::TscClock::now();
+        s->ops.wr_start(qpx);
+        // mlx5 re-installs its own wr_complete (and may re-install wr_abort)
+        // from inside wr_start, choosing an implementation for this batch. That
+        // silently unhooks us halfway through: measured on MN5, wr_start and
+        // wr_send were ours 1000 times each while wr_complete was the
+        // provider's every time, so every batch was built and none was ever
+        // recorded — a hook that is installed and still sees nothing.
+        //
+        // So re-take it after the provider has chosen, and remember what it
+        // chose so the batch still reaches the wire.
+        // Read each pointer once: comparing and then re-reading would let a
+        // concurrent patch of the same QP land in between and store *our own*
+        // trampoline as the "original", which recurses forever. The verbs API
+        // forbids two threads building a batch on one QP, so this cannot happen
+        // today — but the cost of not relying on that is a local variable.
+        if (auto* live = qpx->wr_complete; live != &w_complete) {
+            s->ops.wr_complete = live;
+            qpx->wr_complete = &w_complete;
+        }
+        if (auto* live = qpx->wr_abort; live != &w_abort) {
+            s->ops.wr_abort = live;
+            qpx->wr_abort = &w_abort;
+        }
+        return;
+    }
+    Ops ops;
+    if (global_ops(qpx, ops)) ops.wr_start(qpx);
+}
+
+static void w_send(ibv_qp_ex* qpx) {
+    begin(qpx, WrOpcode::Send);
+    if (auto* s = slot_for(qpx)) { s->ops.wr_send(qpx); return; }
+    Ops ops;
+    if (global_ops(qpx, ops)) ops.wr_send(qpx);
+}
+
+static void w_rdma_write(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr) {
+    begin(qpx, WrOpcode::RdmaWrite);
+    if (auto* s = slot_for(qpx)) {
+        s->builder.set_rdma(rkey, addr);
+        s->ops.wr_rdma_write(qpx, rkey, addr);
+        return;
+    }
+    Ops ops;
+    if (global_ops(qpx, ops)) ops.wr_rdma_write(qpx, rkey, addr);
+}
+
+static void w_rdma_read(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr) {
+    begin(qpx, WrOpcode::RdmaRead);
+    if (auto* s = slot_for(qpx)) {
+        s->builder.set_rdma(rkey, addr);
+        s->ops.wr_rdma_read(qpx, rkey, addr);
+        return;
+    }
+    Ops ops;
+    if (global_ops(qpx, ops)) ops.wr_rdma_read(qpx, rkey, addr);
+}
+
+static void w_set_sge(ibv_qp_ex* qpx, std::uint32_t lkey, std::uint64_t addr,
+                      std::uint32_t length) {
+    if (auto* s = slot_for(qpx)) {
+        s->builder.set_sge(length);
+        s->ops.wr_set_sge(qpx, lkey, addr, length);
+        return;
+    }
+    Ops ops;
+    if (global_ops(qpx, ops)) ops.wr_set_sge(qpx, lkey, addr, length);
+}
+
+static void w_set_sge_list(ibv_qp_ex* qpx, std::size_t num, const ibv_sge* sgl) {
+    if (auto* s = slot_for(qpx)) {
+        // Only the total and the count reach the record, so a long list needs no
+        // allocation on the send path; anything past the cap still posts in full,
+        // it is just summed up to the cap. num_sge saturates at 255 regardless,
+        // since the record field is a byte.
+        std::uint32_t lens[16];
+        const std::size_t n = num < 16 ? num : 16;
+        for (std::size_t i = 0; i < n; ++i) lens[i] = sgl[i].length;
+        s->builder.set_sge_list(n, lens);
+        s->ops.wr_set_sge_list(qpx, num, sgl);
+        return;
+    }
+    Ops ops;
+    if (global_ops(qpx, ops)) ops.wr_set_sge_list(qpx, num, sgl);
+}
+
+// Where the batch becomes records. The whole batch shares the call interval
+// [wr_start, wr_complete-returns], which is the only span that means anything:
+// the individual wr_* calls are builder writes, not transmissions.
+static int w_complete(ibv_qp_ex* qpx) {
+    auto* s = slot_for(qpx);
+    if (!s) {
+        Ops ops;
+        return global_ops(qpx, ops) ? ops.wr_complete(qpx) : 0;
+    }
+    const int ret = s->ops.wr_complete(qpx);
+    const auto t1 = pcomm::helpers::TscClock::now();
+    for (const auto& w : s->builder.complete(ret == 0))
+        rec().record(span(s->t0, t1),
+                     rr::IbPostSend{{}, {}, s->ops.qp_handle, w.wr_id, w.remote_addr,
+                                    w.rkey, w.length, s->ops.qp_num, w.opcode, w.num_sge});
+    return ret;
+}
+
+static void w_abort(ibv_qp_ex* qpx) {
+    if (auto* s = slot_for(qpx)) { s->builder.abort(); s->ops.wr_abort(qpx); return; }
+    Ops ops;
+    if (global_ops(qpx, ops)) ops.wr_abort(qpx);
+}
+
+// Patch one QP's work-request pointers. Both handles come from the hooked
+// ibv_qp_to_qp_ex call, so nothing here has to decide whether an ibv_qp is
+// really the base of an ibv_qp_ex — the application already asked for the
+// conversion, and libibverbs already did it.
+static void install(ibv_qp* qp, ibv_qp_ex* qpx) {
+    if (!qp || !qpx) return;
+
+    Ops ops;
+    ops.wr_start = qpx->wr_start;
+    ops.wr_complete = qpx->wr_complete;
+    ops.wr_abort = qpx->wr_abort;
+    ops.wr_send = qpx->wr_send;
+    ops.wr_rdma_write = qpx->wr_rdma_write;
+    ops.wr_rdma_read = qpx->wr_rdma_read;
+    ops.wr_set_sge = qpx->wr_set_sge;
+    ops.wr_set_sge_list = qpx->wr_set_sge_list;
+    ops.qp_handle = h(qp);
+    ops.qp_num = qp->qp_num;
+    if (!ops.wr_start || !ops.wr_complete) return;   // provider does not support it
+
+    {
+        std::lock_guard lk(g_ops_mutex);
+        if (!g_ops.emplace(qpx, ops).second) return;  // already patched
+    }
+
+    qpx->wr_start = &w_start;
+    qpx->wr_complete = &w_complete;
+    if (ops.wr_abort) qpx->wr_abort = &w_abort;
+    if (ops.wr_send) qpx->wr_send = &w_send;
+    if (ops.wr_rdma_write) qpx->wr_rdma_write = &w_rdma_write;
+    if (ops.wr_rdma_read) qpx->wr_rdma_read = &w_rdma_read;
+    if (ops.wr_set_sge) qpx->wr_set_sge = &w_set_sge;
+    if (ops.wr_set_sge_list) qpx->wr_set_sge_list = &w_set_sge_list;
+}
+
+}  // namespace wr
 
 Profiler::Profiler() {
     // The launcher/preload sets PCOMM_* env; bring up sink + recorder once.
@@ -76,6 +325,13 @@ Profiler::Profiler() {
         rec().record(pcomm::core::Temporal::none(),
                      rr::IbQueuePair{{}, {}, h(qp), h(pd), qp->qp_num,
                                      static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
+    });
+
+    // qp_to_qp_ex -> patch this QP's wr_* pointers. Without it the application's
+    // sends are invisible: they never reach ctx->ops.post_send, and nothing
+    // anywhere fails.
+    this->register_post<qp_to_qp_ex_tag>([](ibv_qp_ex* qpx, ibv_qp* qp, auto...) {
+        wr::install(qp, qpx);
     });
 
     // modify_qp -> state transition; ->RTR carries the remote endpoint.
@@ -139,6 +395,13 @@ extern "C" ibv_context* ibv_open_device(ibv_device* device) {
 extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
     return ibv::Profiler::invoke_preload<ibv::alloc_pd_tag>(context);
 }
+// Interposing this is what makes the new work-request API visible at all: it is
+// where a qp_ex first reaches the application, and the wr_* calls that follow
+// are static inline wrappers no interposer can reach.
+extern "C" ibv_qp_ex* ibv_qp_to_qp_ex(ibv_qp* qp) {
+    return ibv::Profiler::invoke_preload<ibv::qp_to_qp_ex_tag>(qp);
+}
+
 extern "C" ibv_qp* ibv_create_qp(ibv_pd* pd, ibv_qp_init_attr* attr) {
     return ibv::Profiler::invoke_preload<ibv::create_qp_tag>(pd, attr);
 }

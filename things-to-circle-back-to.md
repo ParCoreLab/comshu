@@ -335,18 +335,41 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   FlatBuffers' +25 ns/record is real but small, and the intern is a ~7x larger
   lever than the format choice.
 
-- **`post_send` is invisible for apps using the new WR API — and SigmaTrace has
-  the same gap.** Measured 2026-07-30 (job 43976008): `ib_send_bw` traced end to
-  end produced 202,000 `ib_poll_cq` records and **zero** `ib_post_send`
-  (no 110.pcs at all), while case 01's `ibv_rc_pingpong` records sends fine.
-  Both we and SigmaTrace hook it as `DEFINE_OBJECT_OPS_HOOK(ibv, post_send, ...)`
-  resolving `ctx->ops.post_send`; rdma-core's newer
-  `ibv_wr_start`/`ibv_wr_send`/`ibv_wr_complete` path (supported by mlx5, used by
-  modern perftest) never goes through that table, so the hook cannot see it.
-  Not a port regression — a shared limitation, which is why it was deprioritised
-  when found. It is also an opportunity: hooking the WR API would capture sends
-  that SigmaTrace structurally cannot. Note any measurement of "tracing overhead"
-  taken with perftest is therefore poll_cq interception only.
+- **~~`post_send` is invisible for apps using the new WR API~~ — FIXED
+  2026-07-31, and we now capture sends SigmaTrace structurally cannot.**
+  Was: job 43976008, `ib_send_bw` produced 202,000 `ib_poll_cq` and **zero**
+  `ib_post_send`, because `ibv_wr_start`/`ibv_wr_send`/`ibv_wr_complete` never
+  touch `ctx->ops.post_send`. Case 08 now asserts 1000 sends of 8192 B from
+  perftest (job 44032318).
+
+  Three things had to be right, and each was found by measuring rather than
+  reasoning:
+  1. **The hook point is `ibv_qp_to_qp_ex`, not QP creation.** The wr_* calls
+     are `static inline` wrappers over pointers inside `ibv_qp_ex`, so nothing
+     is interposable; the pointers must be patched. Creation has many doors —
+     `nm -D` on the binary shows perftest uses `mlx5dv_create_qp` and never
+     calls `ibv_create_qp_ex`, which is what I hooked first. Every path must
+     still come through `ibv_qp_to_qp_ex`, and it is a real exported symbol
+     (IBVERBS_1.6), not an inline.
+  2. **The interposer needs an entry in `ibverbs.map`.** Its own comment says
+     it: "Hiding one does not fail loudly — it silently stops capturing that
+     call." Mine was missing, and nothing failed.
+  3. **mlx5 re-installs its own `wr_complete` from inside `wr_start`**,
+     choosing a per-batch implementation. So the hook installs, `wr_start` and
+     `wr_send` stay ours — measured 1000 calls each — and `wr_complete` is the
+     provider's every time: every batch built, none ever recorded. It has to be
+     re-taken after the provider's `wr_start` returns. A hook that is installed
+     and still sees nothing.
+
+  Any "tracing overhead" number taken with perftest *before* this date is
+  poll_cq interception only and understates the cost.
+
+- **perftest's memory regions are still invisible.** `nm -D` shows it calls
+  `ibv_reg_mr_iova2` (and `ibv_reg_mr`, which verbs.h turns into a macro over
+  `__ibv_reg_mr`), neither of which we interpose — so case 08 captures sends and
+  completions but no MRs. Same shape as the WR-API gap and probably the same fix
+  (interpose the symbol the ABI actually exports). Case 08's goldens do not
+  assert MRs, so this is invisible there by design rather than by accident.
 
 - **Event timestamps auto-stamp at emit**, not at the hooked call. The hook
   engine already captures precise start/end `Timestamp`s (pre/post); thread

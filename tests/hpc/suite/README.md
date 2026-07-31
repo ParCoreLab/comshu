@@ -44,6 +44,7 @@ Axis = **which transport / provider**:
 | 05 | `nccl_p2p` | 1 node × 4 H100      | NVLink P2P         | `p2p` | pass (~435s) |
 | 06 | `nvshmem_coexist` | 1 node × 4 H100     | NVLink, sym. heap  | `ib`+`p2p` | **verified** |
 | 07 | `nvshmem_multinode` | 2 nodes × 4 H100 | NVLink + IB   | `ib`+`p2p` | pass |
+| 08 | `ib_send_bw`     | 2 nodes, 1 rank each | IB verbs, **new WR API** | `ib`  | **verified** |
 
 Cases 01–04 and 06 passed the determinism gate (two independent MN5 runs →
 byte-identical query output; the raw CSVs always differ, they carry ticks,
@@ -58,6 +59,15 @@ case 04's, which is the actual assurance: adding `ib` does not perturb what
 NVLink-reachable, so NVSHMEM builds its IB transport but never posts a send —
 the `ib` side contributes entities (MR/QP/modify_qp), not traffic, and
 `ib_post_send`/`ib_poll_cq` are legitimately empty.
+
+Case 08 exists because case 01 could not catch a whole class of blindness.
+`ibv_rc_pingpong` posts through the classic `ibv_post_send`, so it passes
+whether or not the newer `ibv_wr_start`/`ibv_wr_send`/`ibv_wr_complete` path is
+captured — and for a long time it was not, silently: perftest produced 202,000
+completions and zero sends. The two cases together distinguish "sends are
+captured" from "sends are captured for one API". Its goldens come from the
+`-n`/`-s` arguments rather than from a previous run, so the case cannot ratify
+whatever we happen to emit.
 
 **Case 07 is the unified NVLink+IB *traffic* capture, and it passes.** Eight PEs
 over two nodes, both providers in one process, one execution: six ring hops go

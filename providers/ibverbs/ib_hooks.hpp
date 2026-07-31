@@ -23,5 +23,17 @@ DEFINE_PRELOAD_HOOK(ibv, reg_mr, "ibv_reg_mr", ibv_mr*, ibv_pd*, void*, size_t, 
 DEFINE_PRELOAD_HOOK(ibv, dereg_mr, "ibv_dereg_mr", int, ibv_mr*);
 DEFINE_PRELOAD_HOOK(ibv, alloc_pd, "ibv_alloc_pd", ibv_pd*, ibv_context*);
 DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_init_attr*);
+// The conversion an application must call to obtain the new work-request API,
+// and therefore the one place the wr_* function pointers can be patched: the
+// ibv_wr_* callers are static inline wrappers over pointers inside qp_ex, so
+// nothing else can reach them.
+//
+// Hooked here rather than at QP creation because creation has many doors —
+// perftest reaches the WR API through mlx5dv_create_qp, and never calls
+// ibv_create_qp_ex at all (checked with nm on the binary, after hooking the
+// wrong one first). Every one of those paths still has to come through this
+// function, and it hands us the qp_ex directly, so nothing has to guess whether
+// a given ibv_qp is really the base of an ibv_qp_ex.
+DEFINE_PRELOAD_HOOK(ibv, qp_to_qp_ex, "ibv_qp_to_qp_ex", ibv_qp_ex*, ibv_qp*);
 DEFINE_PRELOAD_HOOK(ibv, destroy_qp, "ibv_destroy_qp", int, ibv_qp*);
 DEFINE_PRELOAD_HOOK(ibv, modify_qp, "ibv_modify_qp", int, ibv_qp*, ibv_qp_attr*, int);

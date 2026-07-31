@@ -27,3 +27,11 @@ add_test(NAME fork_smoke COMMAND fork_smoke)
 add_executable(intern_format intern_format.cpp)
 target_link_libraries(intern_format PRIVATE pcomm::pcomm pcomm::engine)
 add_test(NAME intern_format COMMAND intern_format)
+
+# The new-WR-API state machine. providers/ibverbs needs libibverbs to build, but
+# wr_builder.hpp deliberately holds no vendor type, so the sequencing logic is
+# testable on any machine — which is where its bugs would be.
+add_executable(wr_builder_test wr_builder_test.cpp)
+target_include_directories(wr_builder_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/ibverbs)
+target_link_libraries(wr_builder_test PRIVATE pcomm::pcomm)
+add_test(NAME wr_builder COMMAND wr_builder_test)

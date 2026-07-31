@@ -24,6 +24,7 @@
     ibv_destroy_qp;
     ibv_modify_qp;
     ibv_open_device;
+    ibv_qp_to_qp_ex;
     ibv_reg_mr;
     pcomm_create_provider;
     pcomm_abi_version;
