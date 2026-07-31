@@ -49,6 +49,41 @@ PCOMM_RECORD(Attribution, RecordKind::Edge, 760, "attribution") {
     EdgePredicate pred;
 };
 
+// ARTIFACT — one interned numeric value (a PC, a pointer). The dictionary that
+// gives every Handle in every record its meaning.
+//
+// These used to be `intern-<domain>.tsv` sidecars: bare text, no magic, no
+// version, no schema, and a reader that answered "" for a handle it could not
+// find. A truncated or mismatched dictionary produced empty cells rather than an
+// error, which is the same defect the stream header fixed one layer up — except
+// here it silently voids every record in the capture, since a record's Handles
+// are meaningless without it.
+//
+// Being a record rather than a sidecar is not a workaround; it is what these
+// always were. Artifact means "computed once, timeless", which is exactly an
+// intern entry, and it inherits the stream header, the schema entry, the
+// byte-level conformance check and the versioning rules for free.
+PCOMM_RECORD(InternKey, RecordKind::Artifact, 510, "intern_key") {
+    std::uint64_t key;         // the raw value: pc, pointer
+    Handle        handle;      // what records carry instead
+    std::uint8_t  domain;      // rec::InternDomain
+};
+
+// ARTIFACT — one interned string, as (offset, length) into the capture's blob.
+//
+// Strings are the one thing that cannot live in a record directly: a record is a
+// fixed-stride element of a packed array, which is what makes the writer a
+// memcpy and lets a reader map a stream as an array. So the *index* is a record
+// and the bytes live in `intern-blob.bin`, which carries its own header (see
+// BlobHeader in the schema) so it cannot be silently paired with the wrong
+// capture either.
+PCOMM_RECORD(InternString, RecordKind::Artifact, 512, "intern_string") {
+    std::uint64_t offset;      // byte offset into intern-blob.bin
+    std::uint32_t length;      // bytes, not NUL-terminated
+    Handle        handle;
+    std::uint8_t  domain;      // rec::InternDomain
+};
+
 // ARTIFACT — clock-domain calibration anchor (UNIFICATION §4). Emitted at
 // start/end per domain so pcomm-read can fit offset + skew.
 PCOMM_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {

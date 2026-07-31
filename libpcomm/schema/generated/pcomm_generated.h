@@ -24,6 +24,8 @@ struct MemRange;
 
 struct StreamHeader;
 
+struct BlobHeader;
+
 struct GpuAccess;
 
 struct MemObject;
@@ -31,6 +33,10 @@ struct MemObject;
 struct SourceLine;
 
 struct Attribution;
+
+struct InternKey;
+
+struct InternString;
 
 struct ClockAnchor;
 
@@ -387,6 +393,50 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) StreamHeader FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(StreamHeader, 32);
 
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) BlobHeader FLATBUFFERS_FINAL_CLASS {
+ private:
+  uint64_t magic_;
+  uint16_t format_version_;
+  int16_t padding0__;  int32_t padding1__;
+  uint64_t byte_count_;
+  uint64_t schema_hash_;
+
+ public:
+  BlobHeader()
+      : magic_(0),
+        format_version_(0),
+        padding0__(0),
+        padding1__(0),
+        byte_count_(0),
+        schema_hash_(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  BlobHeader(uint64_t _magic, uint16_t _format_version, uint64_t _byte_count, uint64_t _schema_hash)
+      : magic_(::flatbuffers::EndianScalar(_magic)),
+        format_version_(::flatbuffers::EndianScalar(_format_version)),
+        padding0__(0),
+        padding1__(0),
+        byte_count_(::flatbuffers::EndianScalar(_byte_count)),
+        schema_hash_(::flatbuffers::EndianScalar(_schema_hash)) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  uint64_t magic() const {
+    return ::flatbuffers::EndianScalar(magic_);
+  }
+  uint16_t format_version() const {
+    return ::flatbuffers::EndianScalar(format_version_);
+  }
+  uint64_t byte_count() const {
+    return ::flatbuffers::EndianScalar(byte_count_);
+  }
+  uint64_t schema_hash() const {
+    return ::flatbuffers::EndianScalar(schema_hash_);
+  }
+};
+FLATBUFFERS_STRUCT_END(BlobHeader, 32);
+
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
  private:
   pcomm::fb::Temporal temporal_;
@@ -600,6 +650,104 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Attribution FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(Attribution, 64);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) InternKey FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t key_;
+  uint32_t handle_;
+  uint8_t domain_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  InternKey()
+      : temporal_(),
+        key_(0),
+        handle_(0),
+        domain_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  InternKey(const pcomm::fb::Temporal &_temporal, uint64_t _key, uint32_t _handle, uint8_t _domain)
+      : temporal_(_temporal),
+        key_(::flatbuffers::EndianScalar(_key)),
+        handle_(::flatbuffers::EndianScalar(_handle)),
+        domain_(::flatbuffers::EndianScalar(_domain)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t key() const {
+    return ::flatbuffers::EndianScalar(key_);
+  }
+  uint32_t handle() const {
+    return ::flatbuffers::EndianScalar(handle_);
+  }
+  uint8_t domain() const {
+    return ::flatbuffers::EndianScalar(domain_);
+  }
+};
+FLATBUFFERS_STRUCT_END(InternKey, 64);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) InternString FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t offset_;
+  uint32_t length_;
+  uint32_t handle_;
+  uint8_t domain_;
+  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+
+ public:
+  InternString()
+      : temporal_(),
+        offset_(0),
+        length_(0),
+        handle_(0),
+        domain_(0),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  InternString(const pcomm::fb::Temporal &_temporal, uint64_t _offset, uint32_t _length, uint32_t _handle, uint8_t _domain)
+      : temporal_(_temporal),
+        offset_(::flatbuffers::EndianScalar(_offset)),
+        length_(::flatbuffers::EndianScalar(_length)),
+        handle_(::flatbuffers::EndianScalar(_handle)),
+        domain_(::flatbuffers::EndianScalar(_domain)),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t offset() const {
+    return ::flatbuffers::EndianScalar(offset_);
+  }
+  uint32_t length() const {
+    return ::flatbuffers::EndianScalar(length_);
+  }
+  uint32_t handle() const {
+    return ::flatbuffers::EndianScalar(handle_);
+  }
+  uint8_t domain() const {
+    return ::flatbuffers::EndianScalar(domain_);
+  }
+};
+FLATBUFFERS_STRUCT_END(InternString, 72);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) ClockAnchor FLATBUFFERS_FINAL_CLASS {
  private:

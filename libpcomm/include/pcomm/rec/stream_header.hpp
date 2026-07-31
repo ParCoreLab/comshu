@@ -38,7 +38,7 @@ inline constexpr std::uint16_t kStreamFormatVersion = 1;
 // collapsed, so prose edits do not churn it but any declaration change does.
 // tools/schema_check.py recomputes this and fails the build when it drifts —
 // keeping it correct is not left to whoever edits the schema remembering to.
-inline constexpr std::uint64_t kSchemaHash = 0x90E0B02A8133E333ull;
+inline constexpr std::uint64_t kSchemaHash = 0x6DFD9BC459452A50ull;
 
 // Layout is fixed by pcomm.fbs. The padding is explicit and zero-initialised
 // for the same reason core/time.hpp spells its padding out: an implicit hole
@@ -60,6 +60,41 @@ struct StreamHeader {
 
 static_assert(sizeof(StreamHeader) == 32);
 static_assert(alignof(StreamHeader) == 8);
+
+// The bytes 89 'P' 'C' 'B' 'L' 'O' 'B' 0A, by the same reasoning as
+// kStreamMagic. A different constant because pairing a blob with the wrong
+// capture must be detectable, and "it is a pcomm file" is not enough to know.
+inline constexpr std::uint64_t kBlobMagic = 0x0A424F4C42435089ull;
+
+// The header of `intern-blob.bin`, the byte heap interned strings point into.
+//
+// The blob is the one piece of a capture that is pure payload — offsets and
+// lengths live in InternString records, and the bytes themselves have no
+// internal structure at all. That makes a mismatched blob uniquely dangerous:
+// every string in the capture resolves to the wrong text, at plausible offsets,
+// with nothing out of place for a reader to notice. Hence a header, and hence a
+// byte_count, so truncation is arithmetic rather than a guess.
+struct BlobHeader {
+    std::uint64_t magic{kBlobMagic};
+    std::uint16_t format_version{kStreamFormatVersion};
+    std::uint8_t  _pad[6]{};        // keep: explicit, see above
+    std::uint64_t byte_count{0};    // payload bytes following this header
+    std::uint64_t schema_hash{kSchemaHash};
+};
+
+static_assert(sizeof(BlobHeader) == 32);
+static_assert(alignof(BlobHeader) == 8);
+
+inline const char* blob_header_error(const BlobHeader& h, std::uint64_t actual_bytes) {
+    if (h.magic != kBlobMagic)
+        return "not a pcomm intern blob (bad magic)";
+    if (h.format_version != kStreamFormatVersion)
+        return "unsupported intern-blob format version";
+    if (h.byte_count != actual_bytes)
+        return "intern blob is truncated or padded — byte_count disagrees with "
+               "the file size, so every string offset past the cut is wrong";
+    return nullptr;
+}
 
 // Why a header is not enough on its own, and what a reader must still do:
 // the fields say what the file claims to be, and this says whether the claim

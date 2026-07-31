@@ -1,7 +1,9 @@
 # `pcomm.fbs` — the on-disk record schema
 
-A `.pcs` file is a 32-byte `StreamHeader` followed by a packed array of one
-record type. `pcomm.fbs` declares both as FlatBuffers **structs** (fixed layout,
+A capture is a directory per rank holding `.pcs` streams — a 32-byte
+`StreamHeader` followed by a packed array of one record type — plus
+`intern-blob.bin`, the byte heap interned strings point into, behind its own
+`BlobHeader`. `pcomm.fbs` declares both as FlatBuffers **structs** (fixed layout,
 inline, no vtables), so a capture is a valid FlatBuffers struct array and can be
 read from any language flatc supports.
 
@@ -34,6 +36,7 @@ by construction, and the checks are the whole story:
 | `tools/schema_check.py` | a record with no schema entry at all, a reordered or renamed field, a wrong `type_id`/kind/version, an enum out of step, a stale `kSchemaHash`, a broken versioning rule, a record missing from the conformance test | **the build**, plus ctest `schema_check` |
 | `tests/stream_format.cpp` | the file framing: what FileSink writes, that it round-trips, and that a wrong magic / version / type / stride is refused | ctest `stream_format` |
 | `tools/check_generated.sh` | committed generated code that is no longer what flatc makes of `pcomm.fbs` | ctest `schema_generated_current` |
+| `tests/intern_format.cpp` | the dictionary every Handle depends on: written through Tracer, read back through `InternDictionary`, and four ways of breaking it (missing blob, truncated blob, foreign blob, stale index) each reported | ctest `intern_format` |
 | `tests/record_versioning.cpp` | the versioning mechanism: captures from both sides of a schema bump reading into one table, and a stream from a newer build being reported rather than dropped | ctest `record_versioning` |
 | `tools/read_pcs.py` | the portability claim itself — reads a real capture from Python and recomputes case 01's goldens | ctest `schema_python_reader` |
 
@@ -128,12 +131,50 @@ decoded, with a warning naming both hashes. An unrelated record changing moves
 the hash without making this stream unreadable; refusing it would be wrong, and
 saying nothing is the thing the header exists to end.
 
+## The intern dictionary
+
+Every high-cardinality value — a pc, a pointer, a file path, a kernel name — is
+stored in records as a dense `core::Handle`, which is what keeps records
+fixed-stride and the writer a memcpy. So the dictionary is not context: without
+it a capture is a pile of integers.
+
+It used to be `intern-<domain>.tsv`: bare text, no magic, no version, no schema,
+read by a lookup that returned `""` for anything it could not find. A missing,
+truncated or foreign dictionary produced empty cells and no error —
+indistinguishable from a capture that genuinely had no strings, while silently
+voiding every record in it.
+
+It is now two record streams and a blob:
+
+- **`InternKey`** (type 510) — `handle -> uint64` for the numeric domains (`Pc`,
+  `Pointer`). Fixed width already, so it is simply a record and inherits the
+  stream header, the schema entry, the byte-level conformance check and the
+  versioning rules with no new machinery at all.
+- **`InternString`** (type 512) — `handle -> (offset, length)` into
+  `intern-blob.bin`. Strings are the one thing that cannot sit in a record: a
+  record is a fixed-stride array element.
+- **`intern-blob.bin`** — a `BlobHeader` (magic `89 P C B L O B 0A`, format
+  version, `byte_count`, schema hash) then the bytes. `byte_count` is what makes
+  truncation arithmetic rather than a guess, and the distinct magic is what makes
+  "this blob belongs to another capture" detectable — a mismatched blob is the
+  worst case in the format, since every string resolves to the wrong text at
+  plausible offsets with nothing out of place to notice.
+
+Lookups are keyed by **(domain, handle)**, not handle alone. Handles restart at
+1 in every domain, so handle 1 in `String` and handle 1 in `KernelName` are
+different things; the old one-file-per-domain layout hid that by only ever
+loading one of the files.
+
+`rec::InternDictionary` (`pcomm/rec/intern_reader.hpp`) is the reader, shared by
+`pcomm-read` and the test so neither exercises a copy of the other's logic.
+
 ## What is still not covered
 
-Intern tables, `comm_edges` and the CSV export have no schema (gap 9), so a
-capture is still not self-describing end to end: the handles in a record are
-meaningless without the intern tables, and those are bare TSV sidecars with no
-header of their own. Record versioning is a mechanism now, but no *real* record has been through a
+`comm_edges` and the CSV export have no schema. Both are *outputs* of
+`pcomm-read` rather than parts of a capture — `comm_edges` is derived from QP
+state transitions and exists only in the export — so they are a different
+problem from the on-disk format, and the CSV header row is the closest thing
+they have to one today. Record versioning is a mechanism now, but no *real* record has been through a
 bump — the proof runs on a demo family in the test. The first production
 evolution is where the convention meets a provider that has to emit both
 versions during a transition, and that has not happened yet.

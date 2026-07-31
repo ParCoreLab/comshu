@@ -36,6 +36,8 @@ PCOMM_SCHEMA_MATCH(cr::MemObject,   fb::MemObject);
 PCOMM_SCHEMA_MATCH(cr::SourceLine,  fb::SourceLine);
 PCOMM_SCHEMA_MATCH(cr::Attribution, fb::Attribution);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
+PCOMM_SCHEMA_MATCH(cr::InternKey,    fb::InternKey);
+PCOMM_SCHEMA_MATCH(cr::InternString, fb::InternString);
 PCOMM_SCHEMA_MATCH(ir::IbMemRegion, fb::IbMemRegion);
 PCOMM_SCHEMA_MATCH(ir::IbQueuePair, fb::IbQueuePair);
 PCOMM_SCHEMA_MATCH(ir::IbModifyQp,  fb::IbModifyQp);
@@ -204,6 +206,30 @@ int main() {
         fb::IbPollCq f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1,0x60), fb::TimePoint(1,0x70), 0),
                        31, 0xFEEDFACE, 4096, 0x1EFFD, 0, 1);
         expect_identical("IbPollCq", &c, &f, sizeof(c)); }
+    {   // InternKey / InternString: the dictionary every Handle depends on.
+        Stamped<cr::InternKey> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.key = 0x7F00'1234'5678'9ABCull;
+        c.payload.handle = 0xCAFEBABE;
+        c.payload.domain = 3;
+        fb::InternKey f(fb::Temporal(fb::TimeKind_None, fb::TimePoint(0,0), fb::TimePoint(0,0), 0),
+                        0x7F00'1234'5678'9ABCull, 0xCAFEBABE, 3);
+        expect_identical("InternKey", &c, &f, sizeof(c)); }
+    {   Stamped<cr::InternString> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.offset = 0x1122334455667788ull;
+        c.payload.length = 0xDEADBEEF;
+        c.payload.handle = 0x0F0F0F0F;
+        c.payload.domain = 2;
+        fb::InternString f(fb::Temporal(fb::TimeKind_None, fb::TimePoint(0,0), fb::TimePoint(0,0), 0),
+                           0x1122334455667788ull, 0xDEADBEEF, 0x0F0F0F0F, 2);
+        expect_identical("InternString", &c, &f, sizeof(c)); }
+    {   // BlobHeader: the other file framing.
+        pcomm::rec::BlobHeader c;
+        c.byte_count = 0x0102030405060708ull;
+        fb::BlobHeader f(pcomm::rec::kBlobMagic, pcomm::rec::kStreamFormatVersion,
+                         0x0102030405060708ull, pcomm::rec::kSchemaHash);
+        expect_identical("BlobHeader", &c, &f, sizeof(c)); }
     {   // StreamHeader: not a record, but the first thing in every file.
         pcomm::rec::StreamHeader c(710, pcomm::core::RecordKind::Entity, 0xDEADBEEF);
         c.schema_hash = 0x0123456789ABCDEFull;
@@ -214,6 +240,6 @@ int main() {
     std::printf("  sizes: Stamped<GpuAccess]=%zu Stamped<IbPostSend]=%zu Temporal=%zu\n",
                 sizeof(Stamped<cr::GpuAccess>), sizeof(Stamped<ir::IbPostSend>),
                 sizeof(pcomm::core::Temporal));
-    std::printf("%s\n", g_fail ? "FAIL" : "PASS — all 10 records + the stream header byte-identical to the schema");
+    std::printf("%s\n", g_fail ? "FAIL" : "PASS — all 12 records + both file headers byte-identical to the schema");
     return g_fail;
 }

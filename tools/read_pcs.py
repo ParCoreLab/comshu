@@ -33,18 +33,26 @@ sys.path.insert(0, str(ROOT / "third_party/flatbuffers/python"))
 sys.path.insert(0, str(ROOT / "libpcomm/schema/generated-python"))
 
 from pcomm.fb.StreamHeader import StreamHeader  # noqa: E402
+from pcomm.fb.BlobHeader import BlobHeader      # noqa: E402
+from pcomm.fb.InternKey import InternKey        # noqa: E402
+from pcomm.fb.InternString import InternString  # noqa: E402
 from pcomm.fb.IbMemRegion import IbMemRegion    # noqa: E402
 from pcomm.fb.IbQueuePair import IbQueuePair    # noqa: E402
 from pcomm.fb.IbPostSend import IbPostSend      # noqa: E402
 from pcomm.fb.IbPollCq import IbPollCq          # noqa: E402
 
 STREAM_MAGIC = 0x0A534D4D4F435089
+BLOB_MAGIC = 0x0A424F4C42435089
 STREAM_FORMAT_VERSION = 1
+
+# rec::InternDomain, from pcomm/rec/intern_table.hpp.
+DOMAIN_PC, DOMAIN_POINTER, DOMAIN_STRING = 0, 1, 2
 
 # type_id -> generated struct, mirroring the PCOMM_RECORD ids. tools/
 # schema_check.py keeps the schema honest about these; here they only pick the
 # file to open.
-STREAMS = {100: IbMemRegion, 102: IbQueuePair, 110: IbPostSend, 112: IbPollCq}
+STREAMS = {100: IbMemRegion, 102: IbQueuePair, 110: IbPostSend, 112: IbPollCq,
+           510: InternKey, 512: InternString}
 
 # ibverbs enums, decoded the way pcomm-read decodes them for the CSV the golden
 # queries run against (pcomm-read/main.cpp: wr_opcode_name / wc_* ).
@@ -109,6 +117,38 @@ def read_stream(path, cls, expected_type):
     return out
 
 
+def load_intern(rank_dir):
+    """The dictionary that gives every Handle its meaning, resolved in Python.
+
+    This is the part that makes a capture self-describing end to end. Before it
+    was schematised, the dictionary was bare TSV a non-C++ reader had to guess
+    the shape of; now it is two record streams plus a blob with its own header,
+    so everything here comes from the schema.
+    """
+    keys, strings = {}, {}
+    key_file = rank_dir / "510.pcs"
+    if key_file.exists():
+        for k in read_stream(key_file, InternKey, 510):
+            keys[(k.Domain(), k.Handle())] = k.Key()
+
+    index_file = rank_dir / "512.pcs"
+    blob_file = rank_dir / "intern-blob.bin"
+    if index_file.exists() and blob_file.exists():
+        raw = bytearray(blob_file.read_bytes())
+        h = BlobHeader()
+        h.Init(raw, 0)
+        if h.Magic() != BLOB_MAGIC:
+            raise SystemExit(f"{blob_file}: not a pcomm intern blob")
+        body = raw[BlobHeader.SizeOf():]
+        if h.ByteCount() != len(body):
+            raise SystemExit(f"{blob_file}: byte_count {h.ByteCount()} but "
+                             f"{len(body)} bytes follow the header — truncated")
+        for e in read_stream(index_file, InternString, 512):
+            strings[(e.Domain(), e.Handle())] = \
+                body[e.Offset():e.Offset() + e.Length()].decode("utf-8", "replace")
+    return keys, strings
+
+
 def load(capture):
     """{rank: {type_id: [records]}} for a capture directory."""
     ranks = {}
@@ -127,7 +167,7 @@ def golden(case_dir, name):
 
 def main():
     capture = Path(sys.argv[1]) if len(sys.argv) > 1 else \
-        ROOT / "tests/data/ib_pingpong-43997525"
+        ROOT / "tests/data/ib_pingpong-44025406"
     case_dir = ROOT / "tests/hpc/cases/01_ib_pingpong"
     if not capture.exists():
         raise SystemExit(f"no capture at {capture}")
@@ -192,6 +232,21 @@ def main():
     qps = {r: len(s.get(102, [])) for r, s in sorted(ranks.items())}
     print(f"  [--- ] queue_pairs per rank: {qps} (topology is derived by "
           f"pcomm-read, not a stream)")
+
+    # The dictionary, from Python. A Handle in a record means nothing without
+    # it, so "another language can read a capture" is only true end to end if
+    # this resolves too.
+    for rank_dir in sorted(capture.glob("rank-*")):
+        rank = int(rank_dir.name.split("-")[1])
+        keys, strings = load_intern(rank_dir)
+        mrs = read_stream(rank_dir / "100.pcs", IbMemRegion, 100)
+        resolved = [keys.get((DOMAIN_POINTER, m.Mr())) for m in mrs]
+        ok = all(v is not None for v in resolved) and len(resolved) > 0
+        failures += not ok
+        print(f"  [{'ok ' if ok else 'XX '}] rank {rank}: "
+              f"{len(keys)} interned values, {len(strings)} strings; "
+              f"mr handles resolve to " +
+              ", ".join(hex(v) if v is not None else "UNRESOLVED" for v in resolved))
 
     if failures:
         print(f"FAIL — {failures} golden(s) not reproduced from Python")

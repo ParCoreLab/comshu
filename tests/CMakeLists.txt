@@ -21,3 +21,9 @@ add_test(NAME thread_flush_smoke COMMAND thread_flush_smoke)
 add_executable(fork_smoke fork_smoke.cpp)
 target_link_libraries(fork_smoke PRIVATE pcomm::pcomm pcomm::engine Threads::Threads)
 add_test(NAME fork_smoke COMMAND fork_smoke)
+
+# The intern dictionary: written through Tracer (so, the engine), read back
+# through rec::InternDictionary — the same path pcomm-read uses.
+add_executable(intern_format intern_format.cpp)
+target_link_libraries(intern_format PRIVATE pcomm::pcomm pcomm::engine)
+add_test(NAME intern_format COMMAND intern_format)

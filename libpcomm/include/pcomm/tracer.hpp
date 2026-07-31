@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <memory>
+#include <vector>
 #include <mutex>
 #include <string>
 
@@ -102,7 +103,10 @@ public:
         // flush): multi-threaded targets (e.g. a CQ-poll thread) record on
         // threads that never call stop().
         rec::ThreadBufferRegistry::instance().drain_all();
-        dump_intern_sidecars();
+        // Emitted after the application's records, then drained themselves: the
+        // dictionary describes handles that by now all exist.
+        emit_intern_records();
+        rec::ThreadBufferRegistry::instance().drain_all();
         m_sink->flush();
     }
 
@@ -158,26 +162,58 @@ private:
                                                       s.local_ticks, s.wall_ns, s.mono_ns});
     }
 
-    // Intern dictionaries resolve handles in the streams; written as TSV
-    // sidecars at stop (skeleton form of the sidecar streams in UNIFICATION
-    // §5.1). String domains: handle\tvalue. Numeric domains: handle\tkey.
-    void dump_intern_sidecars() {
-        static constexpr std::string_view names[] = {"pc", "pointer", "string",
-                                                     "kernel", "type"};
+    // Intern dictionaries, as records plus one byte heap.
+    //
+    // These were `intern-<domain>.tsv`: bare text with no magic, no version and
+    // no schema, holding the only thing that gives a Handle meaning. A reader
+    // that could not find a handle returned "" — so a truncated or mismatched
+    // dictionary produced empty cells rather than an error, silently voiding
+    // every record in the capture. Now the index is records (framed, schema'd,
+    // conformance-checked like everything else) and the string bytes are a blob
+    // with its own header.
+    //
+    // Runs at finalize, once, after the application's own records have drained.
+    // Nothing here interns, so no new handles appear while we walk the tables.
+    void emit_intern_records() {
+        auto blob_path = m_sink->dir() / "intern-blob.bin";
+        std::vector<char> blob;
+
         for (std::size_t d = 0; d < rec::kInternDomainCount; ++d) {
-            auto& table = m_recorder->table(static_cast<rec::InternDomain>(d));
+            auto  domain = static_cast<rec::InternDomain>(d);
+            auto& table  = m_recorder->table(domain);
             if (table.size() == 0) continue;
-            auto path = m_sink->dir() / ("intern-" + std::string(names[d]) + ".tsv");
-            std::FILE* f = std::fopen(path.c_str(), "w");
-            if (!f) continue;
-            core::Handle h = 0;
-            for (const auto& s : table.strings())
-                std::fprintf(f, "%u\t%s\n", ++h, s.c_str());
+
+            // Strings: bytes go to the blob, the record keeps (offset, length).
+            // The handle comes from the table rather than a counter here — see
+            // InternTable::string_handles for why recomputing it was a latent
+            // way to write a well-formed dictionary that resolves to the wrong
+            // text.
+            const auto& texts   = table.strings();
+            const auto& handles = table.string_handles();
+            for (std::size_t i = 0; i < texts.size(); ++i) {
+                const auto offset = blob.size();
+                blob.insert(blob.end(), texts[i].begin(), texts[i].end());
+                m_recorder->record(core::Temporal::none(),
+                                   core::records::InternString{
+                                       {}, {}, static_cast<std::uint64_t>(offset),
+                                       static_cast<std::uint32_t>(texts[i].size()),
+                                       handles[i], static_cast<std::uint8_t>(d)});
+            }
+            // Numeric values need no heap: they are fixed width already.
             for (const auto& [key, handle] : table.keys())
-                std::fprintf(f, "%u\t0x%llx\n", handle,
-                             static_cast<unsigned long long>(key));
-            std::fclose(f);
+                m_recorder->record(core::Temporal::none(),
+                                   core::records::InternKey{
+                                       {}, {}, key, handle, static_cast<std::uint8_t>(d)});
         }
+
+        if (blob.empty()) return;
+        std::FILE* f = std::fopen(blob_path.c_str(), "wb");
+        if (!f) return;
+        rec::BlobHeader bh;
+        bh.byte_count = blob.size();
+        std::fwrite(&bh, sizeof bh, 1, f);
+        std::fwrite(blob.data(), 1, blob.size(), f);
+        std::fclose(f);
     }
 
     Config m_config{};

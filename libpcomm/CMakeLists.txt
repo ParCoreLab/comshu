@@ -147,7 +147,7 @@ endif()
 # was never once exercised until this ran. Needs no flatc and no network: the
 # bindings and the FlatBuffers Python runtime are both committed.
 if(PCOMM_BUILD_TESTS AND Python3_Interpreter_FOUND
-   AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-43997525)
+   AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-44025406)
   add_test(NAME schema_python_reader
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/read_pcs.py)
 endif()

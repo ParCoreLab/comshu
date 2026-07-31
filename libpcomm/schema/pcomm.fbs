@@ -9,15 +9,26 @@
 // it costs nothing on the hot path at all.
 //
 // Why a schema at all, if the layout is unchanged: it makes the layout
-// *defined* rather than a consequence of compiler padding, it lets other
-// languages read captures via flatc codegen, and it enables reflection. The
-// binding between these definitions and the C++ structs is enforced by
+// *defined* rather than a consequence of compiler padding, and it lets other
+// languages read captures via flatc codegen — demonstrated, not assumed, by
+// tools/read_pcs.py, which reads a real capture from Python and reproduces
+// case 01's goldens.
+//
+// FlatBuffers also *supports* reflection. We do not use it and do not count it
+// as a benefit: see gap 7 in plans/PLAN-20260730-1900-flatbuffers-gaps-done.md
+// for why a reflection-driven dumper was rejected. Listing a benefit nothing
+// collects is how the portability claim went four weeks unexercised.
+//
+// The binding between these definitions and the C++ structs is enforced by
 // tests/schema_conformance — if a record changes and the schema does not, the
 // build fails rather than silently writing files nobody can parse.
 //
-// Structs cannot gain fields. Record types are already versioned by type_id
-// (ibverbs 100-199, internal 500-599, gpumem 700-799), so a schema change means
-// a new type_id, not an edit in place.
+// Structs cannot gain fields, so a record's layout is frozen once a capture
+// holds it. Evolving one means a new record type in the same family: same wire
+// name, next version, next free type_id in the provider's range (ibverbs
+// 100-199, internal 500-599, gpumem 700-799). See PCOMM_RECORD_V in
+// pcomm/core/record.hpp for the convention and pcomm/rec/version_map.hpp for
+// how a reader serves captures from both sides of a bump.
 
 namespace pcomm.fb;
 
@@ -88,6 +99,20 @@ struct StreamHeader {
   kind:RecordKind;
 }                                                          // 32 B
 
+// The header of `intern-blob.bin`, the byte heap the interned strings point
+// into. Same idea as StreamHeader and for the same reason: the blob is useless
+// on its own and catastrophic if paired with the wrong capture — every string
+// in every record would resolve to the wrong text, with nothing out of place to
+// notice. 32 B, written once.
+//
+// magic is 0x0A424F4C42435089 — the bytes 89 'P' 'C' 'B' 'L' 'O' 'B' 0A.
+struct BlobHeader {
+  magic:uint64;
+  format_version:uint16;   // 1
+  byte_count:uint64;       // payload bytes following this header
+  schema_hash:uint64;
+}                                                          // 32 B
+
 // --- core records ----------------------------------------------------------
 
 // type 700, Event. The GPU-access firehose.
@@ -127,6 +152,26 @@ struct Attribution {
   subject:uint32;
   object:uint32;
   pred:EdgePredicate;
+}
+
+// type 510, Artifact. One interned numeric value (pc, pointer). The dictionary
+// behind every Handle; see pcomm/core/records.hpp for why it is a record.
+struct InternKey {
+  temporal:Temporal;
+  key:uint64;
+  handle:uint32;
+  domain:uint8;
+}
+
+// type 512, Artifact. One interned string, as (offset, length) into
+// intern-blob.bin. The bytes cannot live in the record: a record is a
+// fixed-stride array element.
+struct InternString {
+  temporal:Temporal;
+  offset:uint64;
+  length:uint32;
+  handle:uint32;
+  domain:uint8;
 }
 
 // type 590, Artifact. Clock-domain calibration anchor.

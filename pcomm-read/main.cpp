@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pcomm/core/records.hpp"
+#include "pcomm/rec/intern_reader.hpp"
 #include "pcomm/rec/stream_reader.hpp"
 #include "pcomm/rec/version_map.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
@@ -104,12 +105,10 @@ std::string qp_type_name(unsigned t) {  // ibv_qp_type
 struct RankDir {
     int rank{0};
     fs::path dir;
-    std::unordered_map<core::Handle, std::string> strings;  // intern-string.tsv
+    rec::InternDictionary intern;   // pcomm/rec/intern_reader.hpp
 
-    const char* str(core::Handle h) const {
-        auto it = strings.find(h);
-        return it == strings.end() ? "" : it->second.c_str();
-    }
+    const char* str(core::Handle h) const { return intern.str(h); }
+    const char* str(rec::InternDomain d, core::Handle h) const { return intern.str(d, h); }
 };
 
 // Every record type this build can decode. Anything else in a capture is data
@@ -117,6 +116,7 @@ struct RankDir {
 // exists to prevent — so export_csv reports it rather than producing a table
 // that merely looks complete.
 const std::vector<core::RecordTypeId> kKnownTypes = {
+    core::RecordTrait<InternKey>::type_id,   core::RecordTrait<InternString>::type_id,
     core::RecordTrait<GpuAccess>::type_id,   core::RecordTrait<MemObject>::type_id,
     core::RecordTrait<SourceLine>::type_id,  core::RecordTrait<Attribution>::type_id,
     core::RecordTrait<ClockAnchor>::type_id, core::RecordTrait<ibr::IbMemRegion>::type_id,
@@ -146,14 +146,7 @@ void scan_ranks_into(const fs::path& root, std::vector<RankDir>& ranks) {
         RankDir r;
         r.rank = std::atoi(name.c_str() + 5);
         r.dir = entry.path();
-        std::ifstream in(r.dir / "intern-string.tsv");
-        std::string line;
-        while (std::getline(in, line)) {
-            auto tab = line.find('\t');
-            if (tab == std::string::npos) continue;
-            r.strings.emplace(static_cast<core::Handle>(std::stoul(line.substr(0, tab))),
-                              line.substr(tab + 1));
-        }
+        r.intern = rec::InternDictionary::load(r.dir);
         ranks.push_back(std::move(r));
     }
 }
