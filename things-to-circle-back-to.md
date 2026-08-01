@@ -364,12 +364,36 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   Any "tracing overhead" number taken with perftest *before* this date is
   poll_cq interception only and understates the cost.
 
-- **perftest's memory regions are still invisible.** `nm -D` shows it calls
-  `ibv_reg_mr_iova2` (and `ibv_reg_mr`, which verbs.h turns into a macro over
-  `__ibv_reg_mr`), neither of which we interpose — so case 08 captures sends and
-  completions but no MRs. Same shape as the WR-API gap and probably the same fix
-  (interpose the symbol the ABI actually exports). Case 08's goldens do not
-  assert MRs, so this is invisible there by design rather than by accident.
+- **`ibv_reg_mr` is invisible for any app that computes its access flags at
+  runtime.** Wider than it first looked, and confirmed against verbs.h on MN5
+  (2026-08-01) rather than inferred. `ibv_reg_mr` is a macro:
+
+      #define ibv_reg_mr(pd, addr, length, access) \
+          __ibv_reg_mr(pd, addr, length, access, \
+                       __builtin_constant_p(((int)(access) & IBV_ACCESS_OPTIONAL_RANGE) == 0))
+
+      if (is_access_const && (access & IBV_ACCESS_OPTIONAL_RANGE) == 0)
+              return ibv_reg_mr(...);        /* the exported symbol we interpose */
+      else
+              return ibv_reg_mr_iova2(...);  /* we do not interpose this */
+
+  So a caller lands on `ibv_reg_mr_iova2` in **two** cases: it uses an optional
+  access flag (relaxed ordering and friends), *or* its access argument is not a
+  compile-time constant. The second is the one that bites — an application that
+  builds its flags from options, as perftest does, misses the hook whatever
+  flags it ends up with. `ibv_rc_pingpong` passes a literal, which is the only
+  reason case 01 sees its MR and has stayed green.
+
+  Measured: case 08's capture has sends and completions and no `100.pcs` at all.
+  Fix is the same shape as the WR-API one — interpose `ibv_reg_mr_iova2`, add it
+  to `ibverbs.map` (the step that silently did nothing last time), and assert an
+  MR count in case 08 derived from what perftest allocates.
+
+  **There is no test that goes red for this**, which is the real defect: cases
+  01 and 06 assert MRs but use apps on the legacy path, and case 08 asserts none.
+  Documenting a capture gap in this file instead of failing a check is exactly
+  how the WR-API gap sat here from 2026-07-30, fully measured, until someone
+  went looking.
 
 - **Event timestamps auto-stamp at emit**, not at the hooked call. The hook
   engine already captures precise start/end `Timestamp`s (pre/post); thread
