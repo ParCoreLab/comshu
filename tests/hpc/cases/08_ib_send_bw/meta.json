@@ -2,6 +2,6 @@
   "case": "08_ib_send_bw",
   "providers": ["ib"],
   "topology": "2 nodes, perftest ib_send_bw over NDR IB",
-  "why": "perftest uses the new ibv_wr_* API, which bypasses ctx->ops.post_send; before the qp_ex patch this capture had zero ib_post_send rows",
+  "why": "perftest takes the newer entry points for both sends and registrations: ibv_wr_* (bypassing ctx->ops.post_send) and ibv_reg_mr_iova2 (bypassing the legacy ibv_reg_mr symbol). Before those hooks this capture had zero ib_post_send and zero ib_mem_region rows, and every other case stayed green",
   "golden": "derived from the -n/-s arguments, not from our own output"
 }

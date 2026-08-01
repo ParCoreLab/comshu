@@ -364,9 +364,11 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   Any "tracing overhead" number taken with perftest *before* this date is
   poll_cq interception only and understates the cost.
 
-- **`ibv_reg_mr` is invisible for any app that computes its access flags at
-  runtime.** Wider than it first looked, and confirmed against verbs.h on MN5
-  (2026-08-01) rather than inferred. `ibv_reg_mr` is a macro:
+- **~~`ibv_reg_mr` is invisible for any app that computes its access flags at
+  runtime~~ — FIXED 2026-08-01** (`ibv_reg_mr_iova2` interposed, exported in
+  `ibverbs.map`, asserted by case 08's `regions` check). Kept here because the
+  mechanism is worth knowing and the same shape will recur. Confirmed against
+  verbs.h on MN5 rather than inferred. `ibv_reg_mr` is a macro:
 
       #define ibv_reg_mr(pd, addr, length, access) \
           __ibv_reg_mr(pd, addr, length, access, \
@@ -389,11 +391,16 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   to `ibverbs.map` (the step that silently did nothing last time), and assert an
   MR count in case 08 derived from what perftest allocates.
 
-  **There is no test that goes red for this**, which is the real defect: cases
-  01 and 06 assert MRs but use apps on the legacy path, and case 08 asserts none.
-  Documenting a capture gap in this file instead of failing a check is exactly
-  how the WR-API gap sat here from 2026-07-30, fully measured, until someone
-  went looking.
+  Measured after the fix: one region per rank, 16384 B (2 x the 8192 B message —
+  perftest double-buffers its single QP), access 0x100001 =
+  LOCAL_WRITE | RELAXED_ORDERING. That relaxed-ordering bit is itself an
+  OPTIONAL_RANGE flag, so this registration took the iova2 branch by both routes
+  at once.
+
+  The check was verified to fail in the right direction, not just to pass:
+  replayed against the pre-fix capture (job 44033938) `regions` goes red while
+  `traffic` and `sends_have_payload` stay green, so it isolates this gap rather
+  than shadowing the WR-API one.
 
 - **Event timestamps auto-stamp at emit**, not at the hooked call. The hook
   engine already captures precise start/end `Timestamp`s (pre/post); thread

@@ -44,7 +44,7 @@ Axis = **which transport / provider**:
 | 05 | `nccl_p2p` | 1 node × 4 H100      | NVLink P2P         | `p2p` | pass (~435s) |
 | 06 | `nvshmem_coexist` | 1 node × 4 H100     | NVLink, sym. heap  | `ib`+`p2p` | **verified** |
 | 07 | `nvshmem_multinode` | 2 nodes × 4 H100 | NVLink + IB   | `ib`+`p2p` | pass |
-| 08 | `ib_send_bw`     | 2 nodes, 1 rank each | IB verbs, **new WR API** | `ib`  | **verified** |
+| 08 | `ib_send_bw`     | 2 nodes, 1 rank each | IB verbs, **newer entry points** | `ib`  | **verified** |
 
 Cases 01–04 and 06 passed the determinism gate (two independent MN5 runs →
 byte-identical query output; the raw CSVs always differ, they carry ticks,
@@ -62,9 +62,11 @@ the `ib` side contributes entities (MR/QP/modify_qp), not traffic, and
 
 Case 08 exists because case 01 could not catch a whole class of blindness.
 `ibv_rc_pingpong` posts through the classic `ibv_post_send`, so it passes
-whether or not the newer `ibv_wr_start`/`ibv_wr_send`/`ibv_wr_complete` path is
-captured — and for a long time it was not, silently: perftest produced 202,000
-completions and zero sends. The two cases together distinguish "sends are
+whether or not the newer entry points are captured — and for a long time they
+were not, silently. perftest produced 202,000 completions and zero sends
+(`ibv_wr_*` never touches `ctx->ops.post_send`), and no memory regions at all
+(`ibv_reg_mr` is a macro that falls through to `ibv_reg_mr_iova2` whenever the
+access flags are not a compile-time constant). The two cases together distinguish "sends are
 captured" from "sends are captured for one API". Its goldens come from the
 `-n`/`-s` arguments rather than from a previous run, so the case cannot ratify
 whatever we happen to emit.

@@ -308,9 +308,16 @@ Profiler::Profiler() {
         if (ctx) instance().install(ctx);
     });
 
-    // reg_mr -> memory-region entity.
-    this->register_post<reg_mr_tag>(
-        [](ibv_mr* mr, ibv_pd* pd, void* addr, size_t length, int access, auto...) {
+    // reg_mr_iova2 -> the same memory-region entity. `iova` is the virtual
+    // offset the remote side addresses; `addr` is where the memory actually is,
+    // and the classic path passes iova == addr, so the record keeps addr and the
+    // two paths produce identical rows. A capture cannot tell which entry point
+    // registered a region, which is the point — nothing downstream should care.
+    // (If an application ever registers with iova != addr, that offset is not in
+    // the record. Nothing needs it yet; it would be a version bump, not an edit.)
+    this->register_post<reg_mr_iova2_tag>(
+        [](ibv_mr* mr, ibv_pd* pd, void* addr, size_t length, std::uint64_t,
+           unsigned int access, auto...) {
             if (!mr) return;
             rec().record(pcomm::core::Temporal::none(),
                          rr::IbMemRegion{{}, {}, h(mr), h(pd),
@@ -415,13 +422,14 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
 
-// ibv_reg_mr is a macro in verbs.h (dispatches to iova2); interpose the plain
+// NB there is deliberately no ibv_reg_mr interposer: rdma-core implements it
+// over ibv_reg_mr_iova2, so hooking both records every registration twice.
 // symbol the ABI actually exports.
-#ifdef ibv_reg_mr
-#undef ibv_reg_mr
-#endif
-extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
-    return ibv::Profiler::invoke_preload<ibv::reg_mr_tag>(pd, addr, length, access);
+// The single registration hook: every path funnels here. See ib_hooks.hpp.
+extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length,
+                                    uint64_t iova, unsigned int access) {
+    return ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length,
+                                                                iova, access);
 }
 
 // --- provider registration + lifecycle ---------------------------------------

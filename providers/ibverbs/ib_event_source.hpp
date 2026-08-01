@@ -20,13 +20,13 @@ namespace ibv {
         : public pcomm::hook::CompositeHookManager<
               Derived, pcomm::hook::DefaultHookManagerConfig, ibv_context,
               post_send_tag, poll_cq_tag,
-              open_device_tag, reg_mr_tag, dereg_mr_tag, alloc_pd_tag,
+              open_device_tag, reg_mr_iova2_tag, dereg_mr_tag, alloc_pd_tag,
               create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag> {
 
         using Base = pcomm::hook::CompositeHookManager<
               Derived, pcomm::hook::DefaultHookManagerConfig, ibv_context,
               post_send_tag, poll_cq_tag,
-              open_device_tag, reg_mr_tag, dereg_mr_tag, alloc_pd_tag,
+              open_device_tag, reg_mr_iova2_tag, dereg_mr_tag, alloc_pd_tag,
               create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag>;
 
     public:
