@@ -35,3 +35,10 @@ add_executable(wr_builder_test wr_builder_test.cpp)
 target_include_directories(wr_builder_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/ibverbs)
 target_link_libraries(wr_builder_test PRIVATE pcomm::pcomm)
 add_test(NAME wr_builder COMMAND wr_builder_test)
+
+# InternTable itself: identity, handle numbering, storage stability, and the
+# shared string/key counter. No engine, no NIC — the paths are all reachable
+# from the header.
+add_executable(intern_table_test intern_table_test.cpp)
+target_link_libraries(intern_table_test PRIVATE pcomm::pcomm)
+add_test(NAME intern_table COMMAND intern_table_test)

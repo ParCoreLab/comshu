@@ -19,9 +19,13 @@
 #include <string>
 #include <vector>
 
+#include <atomic>
+#include <thread>
+#include <unordered_map>
 #include <unistd.h>
 
 #include "pcomm/core/records.hpp"
+#include "pcomm/engine_abi.h"
 #include "pcomm/rec/intern_reader.hpp"
 #include "pcomm/rec/stream_header.hpp"
 #include "pcomm/tracer.hpp"
@@ -63,6 +67,23 @@ int main() {
                       ("pcomm-intern-" + std::to_string(::getpid()));
     fs::remove_all(root);
 
+    // --- interning before there is anywhere to put it ------------------------
+    // Providers are loaded by LD_PRELOAD and can be called before (or after) the
+    // Tracer holds a recorder — a hooked function on a library's own init path
+    // is enough. The engine answers kNullHandle rather than touching a null
+    // recorder, and 0 is exactly the value records already use for "no value",
+    // so such a record degrades to unattributed instead of crashing the target.
+    // This must run first: once the Tracer starts there is no way back.
+    {
+        const auto h_str = pcomm_engine_intern_str(
+            static_cast<std::uint8_t>(InternDomain::String), "before-start", 12);
+        const auto h_key = pcomm_engine_intern_key(
+            static_cast<std::uint8_t>(InternDomain::Pc), 0xDEAD);
+        expect(h_str == 0 && h_key == 0,
+               "interning before the tracer has a recorder yields the null handle, "
+               "not a crash and not a plausible handle");
+    }
+
     // --- write a capture the way a run does ----------------------------------
     Config cfg;
     cfg.output_dir = root;
@@ -87,6 +108,62 @@ int main() {
     const auto ptr_h    = rec.intern(InternDomain::Pointer, std::uint64_t{0x55db'6e39'7220});
 
     expect(file_h == same_h, "interning the same string twice yields one handle");
+
+    // --- many threads, one dictionary ---------------------------------------
+    // The tables are process-wide behind a per-domain mutex (see
+    // intern_table.hpp — the lock-free per-thread design is still only intended).
+    // What must hold is that concurrent interning is *consistent*: one handle per
+    // distinct value, and no handle serving two values. A race here does not
+    // crash, it quietly gives two threads different handles for the same string,
+    // and every record from one of them then resolves to the wrong text.
+    //
+    // Uses TypeName, which nothing else in this test touches, so the assertions
+    // above and below are unaffected by what the threads add.
+    {
+        constexpr int kThreads = 8, kPerThread = 200;
+        std::vector<std::vector<core::Handle>> got(kThreads);
+        std::vector<std::thread> workers;
+        // Released only once every thread is up, so they arrive at the table
+        // together rather than staggered. Measured by deleting the engine's
+        // lock_guard and rerunning: without this barrier the check caught the
+        // unlocked build in 2 runs out of 3; with it, 6 out of 6 (three of those
+        // as outright segfaults from concurrent unordered_map insertion), while
+        // the locked build passed 6 out of 6.
+        //
+        // Still a probabilistic check — a race that does not happen cannot be
+        // observed — so a pass means "no inconsistency seen", not "locking is
+        // proven correct".
+        std::atomic<bool> go{false};
+        for (int t = 0; t < kThreads; ++t)
+            workers.emplace_back([&, t] {
+                while (!go.load(std::memory_order_acquire)) { /* spin */ }
+                for (int i = 0; i < kPerThread; ++i)
+                    // Overlapping ranges on purpose: every value is interned by
+                    // several threads, which is the contended case.
+                    got[t].push_back(rec.intern(InternDomain::TypeName,
+                                                "shared_type_" + std::to_string(i % 50)));
+            });
+        go.store(true, std::memory_order_release);
+        for (auto& w : workers) w.join();
+
+        std::unordered_map<int, core::Handle> by_value;
+        std::unordered_map<core::Handle, int> by_handle;
+        bool consistent = true;
+        for (int t = 0; t < kThreads; ++t)
+            for (int i = 0; i < kPerThread; ++i) {
+                const int value = i % 50;
+                const auto h = got[t][i];
+                consistent &= h != 0;
+                auto [vit, v_new] = by_value.emplace(value, h);
+                consistent &= vit->second == h;          // one handle per value
+                auto [hit, h_new] = by_handle.emplace(h, value);
+                consistent &= hit->second == value;      // one value per handle
+            }
+        expect(consistent, "8 threads interning overlapping values agree: one "
+                           "handle per value, one value per handle");
+        expect(by_value.size() == 50,
+               "and the 50 distinct values produced exactly 50 handles");
+    }
 
     rec.record(core::Temporal::none(),
                core::records::SourceLine{{}, {}, pc_h, file_h, 42});
