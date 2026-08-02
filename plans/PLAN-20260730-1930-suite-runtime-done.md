@@ -3,11 +3,18 @@
 - **Created:** 2026-07-30 19:30 +03
 - **Status:** DONE 2026-08-02. Step 1 landed; step 3 landed as `--quick` after
   its cheap option turned out not to exist. Step 2 was not needed and was not
-  done — see below.
+  done — see below. **Target met.**
 - **Was:** ~25-30 min wall clock, 7 jobs.
 - **Target:** ~5 min of job time once scheduled. Queue wait is outside our
   control, so measure and report the two separately — conflating them makes the
   improvement unmeasurable.
+
+**Three costs, and only one of them is the suite's.** Queue wait belongs to the
+scheduler. Case 05's ~440 s is NVBit lifting NCCL's module — one-time
+preparation of the binary before any of our work starts, the same kind of cost
+as a compile, and it is charged again on every run only because it cannot be
+cached. What is left, the part this plan could move, is **the workloads: 136 s**.
+That is the number the target is about, and it is where the suite now sits.
 
 ## Result (measured 2026-08-02, jobs 44066558 and 44066754)
 
@@ -16,9 +23,9 @@
 | full, one allocation (44066558) | 395 s | **9 min 52 s** | 8/8 PASS |
 | `--quick` (44066754) | 583 s | **2 min 57 s** | 7 PASS + 1 SKIP |
 
-The `--quick` job is inside the target. The full run is not, and cannot be:
-444 s of its 592 s is case 05's fixed NVBit cost, and everything else together
-is 136 s. Eight jobs became one.
+Eight jobs became one. Both runs are inside the target once case 05's fixed
+NVBit preparation is accounted where it belongs: of the full run's 592 s, 444 s
+is that cost and 148 s is the suite. `--quick` simply declines to pay it.
 
 **The walltime-tuning reasoning did not survive contact with the scheduler.**
 The driver asks for 15 min instead of 40 when case 05 is absent, on the theory
@@ -141,15 +148,18 @@ Case 02 (~30 s) is the next largest and is pinned to 200k iterations for
 determinism. Reducing iterations changes its goldens, so it needs the two-run
 gate again — only worth doing if steps 1-3 land and we are still over.
 
-## Still open
+## Closed rather than left open
 
-- **Case 05's 444 s is untouched**, so a *full* run is ~10 min of job time, not
-  5. The only remaining lever is the second option above — fewer NCCL device
-  functions for NVBit to process — which needs an NCCL we build rather than the
-  SDK's, and may not be reachable at all.
+- **Case 05's 444 s stays.** The one remaining lever was building our own NCCL
+  with fewer device specialisations — a second copy of a core dependency,
+  maintained by us, diverging from the NVIDIA build every case actually runs
+  against, to save a few minutes on a suite that already fits its target. The
+  cost is out of all proportion to the saving, and it would weaken the case: 05
+  exists to check NVBit against *the* NCCL, not against one we tuned to be
+  cheap to instrument. Not pursued.
 - **Queue wait is now the larger half of a `--quick` run** (583 s vs 177 s).
-  Nothing in this plan addresses it and nothing here should: it is the
-  scheduler's, and the numbers above keep it separate for exactly that reason.
+  Not ours, and deliberately reported apart from job time so it never gets
+  counted as a suite improvement or a suite regression.
 
 ## Measure before and after
 

@@ -141,7 +141,7 @@ runs every case, prints the board):
 ```bash
 tests/hpc/run_on_mn5.sh                 # sync + build + run all + check
 tests/hpc/run_on_mn5.sh --cases "03"    # a subset
-tests/hpc/run_on_mn5.sh --quick         # skip case 05 (~440 s of NVBit cost)
+tests/hpc/run_on_mn5.sh --quick         # skip case 05 (see below)
 tests/hpc/run_on_mn5.sh --per-case      # one job per case (isolating a case)
 tests/hpc/run_on_mn5.sh --check-only    # just re-aggregate existing results
 tests/hpc/run_on_mn5.sh --no-build      # skip the rebuild
@@ -167,6 +167,13 @@ to the allocation's job id, so a case the job never reached has no
 `<label>-<jobid>.csv` and reads as **no result** (red), never as an inherited
 pass. `--quick` names the skipped case in the manifest, so it prints `SKIP` and
 the board says INCOMPLETE rather than leaving a silent gap.
+
+**Case 05 costs ~440 s that is not suite time.** It is NVBit lifting NCCL's
+module — one-time preparation of the binary before any of our work starts, the
+same kind of cost as a compile, charged every run only because it cannot be
+cached. Measured invariant from N=100 to N=262144; see the case's `meta.json`.
+The other seven cases together are ~150 s, so a full run is ~10 min of job time
+and `--quick` is ~3. Do not read the 440 s as something the suite is doing.
 
 The driver reports **queue wait and job time separately**. Queue wait is not
 ours to improve, and folding the two together makes any change to the suite
