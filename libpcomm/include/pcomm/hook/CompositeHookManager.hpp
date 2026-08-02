@@ -1,11 +1,8 @@
 #pragma once
 
-#include <type_traits>
-
 #include "pcomm/helpers/timestamp.hpp"
 
 #include "pcomm/hook/CallbackManager.hpp"
-#include "pcomm/helpers/utilities.hpp"
 #include "pcomm/hook/HookTrait.hpp"
 
 #include "pcomm/hook/detail/ObjectOpsHookManager.hpp"
@@ -146,14 +143,6 @@ namespace pcomm::hook {
             (register_pre_for_tag<Tags>(std::forward<Callback>(callback)), ...);
         }
 
-        // TODO
-        template<typename Callback>
-        [[deprecated]] void register_pre_default(Callback&& callback) noexcept {
-            // Not deprecated, just not implemented yet
-            pcomm_ignore_unused(callback);
-            std::abort();
-        }
-
     private:
         template<typename Tag, typename Callback>
         void register_pre_for_tag(Callback&& callback) noexcept {
@@ -183,7 +172,6 @@ namespace pcomm::hook {
         // ================================================================
         // 1. Preload hook management
         // ================================================================
-        // using PreloadBase::real_func;
         template<typename Tag>
         void register_preload_one(auto&&... args) noexcept {
             if constexpr (is_preload_hook_v<Tag>) {
@@ -193,7 +181,6 @@ namespace pcomm::hook {
         }
 
         void register_preload_all(auto&&... args) noexcept {
-            // m_preload_impl.resolve_all(std::forward<decltype(args)>(args)...);
             (register_preload_one<Tags>(std::forward<decltype(args)>(args)...), ...);
         }
 
@@ -220,10 +207,6 @@ namespace pcomm::hook {
 
             return func_ptr;
         }
-
-        // template<typename Tag, typename... Args>
-        // static constexpr bool invoke_preload_noexcept_v =
-        //         noexcept(std::declval<CompositeHookManager &>().template real_func<Tag>()(std::declval<Args>()...));
 
         // Static wrapper for preload hooks
         // TODO: remove, possibly. We can already call these through the instance
@@ -270,7 +253,6 @@ namespace pcomm::hook {
 
             mgr.template invoke_all_pre<Tag>(args..., ts_start);
 
-            // if constexpr (std::is_void_v<typename HookTrait<Tag>::RetType>) { ... }
             auto ret = real(args...);
 
             // Skip post hooks if the predicate is false
@@ -295,14 +277,6 @@ namespace pcomm::hook {
             assert(obj && "HookManager ctx obj install called with null obj");
 
             std::lock_guard lock(m_registration_mutex);
-
-            // auto key = reinterpret_cast<uintptr_t>(obj);
-            // if (m_contexts.contains(key)) {
-            //     return m_contexts[key].get();
-            // }
-            //
-            // auto ctx = std::make_unique<Context>();
-            // ctx->set_object_ptr(obj);
 
             auto* ctx = m_object_ops_impl.get_context(obj);
 

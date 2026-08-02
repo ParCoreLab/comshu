@@ -94,20 +94,8 @@ namespace pcomm::hook::detail {
             return std::get<idx>(m_originals);
         }
 
-        // The raw object pointer (for reverse lookup)
-        // TODO: remove
-        [[nodiscard]] void* object_ptr() const noexcept {
-            return m_object_ptr;
-        }
-
-        void set_object_ptr(void* ptr) noexcept {
-            m_object_ptr = ptr;
-        }
-
     private:
         std::tuple<typename HookTrait<Tags>::FuncPtr...> m_originals{};
-        // std::tuple<Stats<Tags>...> m_stats{};
-        void* m_object_ptr{nullptr};
     };
 
     // ================================================================
@@ -135,13 +123,6 @@ namespace pcomm::hook::detail {
         // ================================================================
         // Context management
         // ================================================================
-        // Install hooks on an object
-        // TODO
-        // template<typename ObjectType>
-        // Context *install(ObjectType *obj) {
-        //
-        // }
-
         template<typename ObjectType>
         Context* get_context(ObjectType* obj) {
             assert(obj);
@@ -152,19 +133,10 @@ namespace pcomm::hook::detail {
                 return ctx_entry->second.get();
             }
 
-            // TODO: shared_ptr?
             auto ctx = std::make_unique<Context>();
-            ctx->set_object_ptr(obj);
-
             const auto& [new_ctx_entry, _] = m_contexts.emplace(key, std::move(ctx));
             return new_ctx_entry->second.get();
         }
-
-        // TODO
-        // // Uninstall hooks from an object
-        // template <typename ObjectType>
-        // void uninstall(ObjectType *obj) {
-        // }
 
         // Find context for an object
         template<typename ObjectType>
@@ -177,73 +149,6 @@ namespace pcomm::hook::detail {
             auto it = m_contexts.find(key);
             return it != m_contexts.end() ? it->second.get() : nullptr;
         }
-
-    protected:
-        // TODO
-        // ObjectOpsHookManager() = default;
-
-        // ================================================================
-        // wrapper template
-        // Called by the installed wrapper functions
-        // ================================================================
-        template<ValidCallbackTag Tag, typename ObjectType, typename... Args>
-            requires is_object_ops_hook_v<Tag>
-        [[maybe_unused]] auto wrapper(ObjectType* obj, Args...) noexcept -> HookTrait<Tag>::RetType {
-            // Get object from arguments (derived class must implement this)
-            Context* ctx = find(obj);
-
-            if (!ctx) {
-                std::cerr << "[hook] Warning: wrapper called for untracked object\n";
-                // Can't call original - we don't have it
-                if constexpr (std::is_void_v<typename HookTrait<Tag>::RetType>) {
-                    return;
-                } else {
-                    return typename HookTrait<Tag>::RetType{};
-                }
-            }
-
-            return nullptr;
-
-            // TODO
-            // // Pre-hooks (with context)
-            // mgr.template invoke_all_pre_with_context<Tag>(*ctx, args...);
-            //
-            // // Call original function
-            // auto original = ctx->template original<Tag>();
-            // auto ret = original(args...);
-            //
-            // // Post-hooks (with context)
-            // mgr.template invoke_all_post_with_context<Tag>(*ctx, ret, args...);
-
-            // return ret;
-        }
-
-        // ================================================================
-        // Hook invocation with context
-        // ================================================================
-        // TODO
-        // template<ValidCallbackTag Tag, typename... Args>
-        // void invoke_all_pre_with_context(Context &ctx, Args... args) {
-        //     // Call derived class pre hook if it exists
-        //     if constexpr (requires(Derived &d, Tag t, Context &c, Args... a) { d.pre(t, c, a...); }) {
-        //         static_cast<Derived &>(*this).pre(Tag{}, ctx, args...);
-        //     }
-        //
-        //     // Call registered callbacks (without context - they're library-agnostic)
-        //     Base::template invoke_pre_callbacks<Tag>(args...);
-        // }
-
-        // TODO
-        // template<ValidCallbackTag Tag, typename Ret, typename... Args>
-        // void invoke_all_post_with_context(Context &ctx, Ret ret, Args... args) {
-        //     // Call derived class post hook if it exists
-        //     if constexpr (requires(Derived &d, Tag t, Context &c, Ret r, Args... a) { d.post(t, c, r, a...); }) {
-        //         static_cast<Derived &>(*this).post(Tag{}, ctx, ret, args...);
-        //     }
-        //
-        //     // Call registered callbacks (without context)
-        //     Base::template invoke_post_callbacks<Tag>(ret, args...);
-        // }
 
     public:
         // TODO: hack! This is public because it wasn't
