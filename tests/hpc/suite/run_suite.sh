@@ -6,7 +6,7 @@
 #   run_suite.sh check  [case ...]       # aggregate verdicts from finished jobs
 #   run_suite.sh status                  # squeue for this suite
 #
-# Each case's job runs check_capture.py itself and drops result.json in its
+# Each case's job runs sql_check.sh itself and drops result.json in its
 # output dir; `check` gathers those into one PASS/FAIL table. Cases 03/04 need
 # the gpumem provider (NVBit) built on MN5 — see README.md.
 #

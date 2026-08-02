@@ -5,7 +5,7 @@
 # poll_cq on both endpoints. Smallest end-to-end signal that the tool works.
 #
 #   sbatch tests/hpc/cases/01_ib_pingpong/job.sbatch
-#   check_capture.py $OUT tests/hpc/cases/01_ib_pingpong/expect.json
+#   (the job itself runs sql_check.sh against checks/*.sql goldens)
 #
 #SBATCH --job-name=pcomm-01-ib-pingpong
 #SBATCH --account=etur02
