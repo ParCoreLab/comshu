@@ -10,10 +10,16 @@
 #   tests/hpc/run_on_mn5.sh --quick            # skip 05 (~440 s of NVBit cost)
 #   tests/hpc/run_on_mn5.sh --per-case         # one job per case (old behaviour)
 #   tests/hpc/run_on_mn5.sh --check-only       # just re-aggregate existing results
+#   tests/hpc/run_on_mn5.sh --rsync            # sync uncommitted work (see below)
+#
+# Sync is over git: this pushes HEAD to the bare repo on the remote and the
+# remote tree (a clone of it) resets to it, so every board is attributable to a
+# commit. A dirty working tree is refused; --rsync copies it as-is instead.
 #
 # Config via env (defaults are the ParCore MN5 account):
 #   PCOMM_REMOTE=koc296797@alogin1.bsc.es     ssh target (key auth assumed)
-#   PCOMM_REMOTE_DIR=proj/pcomm               path on the remote (rel. to $HOME)
+#   PCOMM_REMOTE_DIR=proj/pcomm               clone on the remote (rel. to $HOME)
+#   PCOMM_BARE=kefah/git/pcomm                bare repo it clones from
 #   PCOMM_OUT_ROOT=$HOME/pcomm-suite          where captures land (remote)
 #
 # Notes: the acc_debug QoS allows one submitted job at a time. By default every
@@ -32,10 +38,14 @@ set -uo pipefail
 
 REMOTE="${PCOMM_REMOTE:-koc296797@alogin1.bsc.es}"
 RDIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
+# The bare repo the remote tree clones from, and the URL this machine pushes to.
+# Both name the same repository, from the two sides of the ssh hop.
+PCOMM_BARE="${PCOMM_BARE:-kefah/git/pcomm}"
+PCOMM_REMOTE_GIT="${PCOMM_REMOTE_GIT:-$REMOTE:$PCOMM_BARE}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SSH="ssh -o BatchMode=yes"
 
-do_build=1 do_clean=0 check_only=0 combined=1 quick=0
+do_build=1 do_clean=0 check_only=0 combined=1 quick=0 use_rsync=0
 cases_filter=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,6 +55,7 @@ while [ $# -gt 0 ]; do
     --cases)      cases_filter="$2"; shift ;;
     --quick)      quick=1 ;;
     --per-case)   combined=0 ;;
+    --rsync)      use_rsync=1 ;;
     -h|--help)    sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -99,13 +110,40 @@ wait_job() {
 }
 
 # --- 1. sync ----------------------------------------------------------------
+# Over git, not rsync: the remote tree is a clone of the bare repo at
+# $PCOMM_BARE, so what the suite runs is always a named commit. That matters
+# because a verdict is evidence about a *version* — with rsync you could not
+# say afterwards which tree produced a board, and pushing without rsyncing (or
+# the reverse) silently tested the wrong thing.
+#
+# --rsync restores the old behaviour for iterating on uncommitted work; it is
+# deliberately not the default, since a board from a tree nobody can name again
+# is not a gate.
 if [ "$check_only" -eq 0 ]; then
-  say "sync $REPO_ROOT → $REMOTE:$RDIR"
-  $SSH "$REMOTE" "mkdir -p '$RDIR'"
-  rsync -az --delete \
-    --exclude '.git' --exclude 'build' --exclude 'build-*' \
-    --exclude '.cache' --exclude '*.o' --exclude '*.pcs' \
-    "$REPO_ROOT"/ "$REMOTE:$RDIR"/
+  if [ "$use_rsync" -eq 1 ]; then
+    say "sync (rsync, working tree as-is) $REPO_ROOT → $REMOTE:$RDIR"
+    $SSH "$REMOTE" "mkdir -p '$RDIR'"
+    rsync -az --delete \
+      --exclude '.git' --exclude 'build' --exclude 'build-*' \
+      --exclude '.cache' --exclude '*.o' --exclude '*.pcs' \
+      "$REPO_ROOT"/ "$REMOTE:$RDIR"/
+  else
+    if ! git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null; then
+      echo "run_on_mn5: working tree has uncommitted changes." >&2
+      echo "  commit them (the pre-commit hook builds + tests), or pass --rsync" >&2
+      echo "  to sync the tree as-is without a commit." >&2
+      exit 2
+    fi
+    branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
+    head=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
+    say "sync (git) $branch@$head → $REMOTE:$RDIR"
+    git -C "$REPO_ROOT" push --quiet "$PCOMM_REMOTE_GIT" "$branch" \
+      || { echo "push to $PCOMM_REMOTE_GIT failed" >&2; exit 1; }
+    # Hard reset, not merge: the remote tree is a deploy target, never edited
+    # there. Untracked build dirs survive (they are gitignored).
+    rsh "cd $RDIR && git fetch --quiet origin && git reset --quiet --hard origin/$branch && git rev-parse --short HEAD" \
+      || { echo "remote pull failed — is $RDIR a clone of $PCOMM_BARE?" >&2; exit 1; }
+  fi
 fi
 
 # --- 2. build ---------------------------------------------------------------

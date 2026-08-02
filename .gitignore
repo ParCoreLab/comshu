@@ -1,8 +1,12 @@
+# Every build tree. There are several by necessity, not by accident: gpumem must
+# be configured against the NVHPC toolchain in its own dir (build-gpumem), and
+# tools/build_all.sh drives per-configuration trees under build-all/. Matches
+# the --exclude 'build-*' that tests/hpc/run_on_mn5.sh has always used.
 build/
+build-*/
 .cache/
 compile_commands.json
 pcomm-out/
-build-x/
 
 # Your global ignore (~/.config/git/ignore) has PLAN-*.md; plans/ is a tracked
 # part of this repo on purpose — a plan that only exists on disk is exactly the
@@ -13,4 +17,3 @@ build-x/
 .tools/
 __pycache__/
 *.pyc
-build-all/
