@@ -127,7 +127,10 @@ so the gates are local and named:
 - **Anything touching capture semantics** (hook engine, records, providers,
   stream format): `tests/hpc/run_on_mn5.sh` — sync, build both providers on
   MareNostrum 5, run the 8-case suite, compare SQL goldens. This is the merge
-  gate; a change is not done until this board is green.
+  gate; a change is not done until this board is green. It syncs by pushing
+  `HEAD` to a bare repo on MN5 which the remote build tree clones, so every
+  board is attributable to a commit; a dirty tree is refused (`--rsync` to
+  override while iterating).
 
 ## Adding a record type
 
