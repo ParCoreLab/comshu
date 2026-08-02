@@ -41,19 +41,16 @@ namespace pcomm::hook::detail {
             return slot;
         }
 
-        static void deallocate(size_t slot) {
-            slots[slot] = nullptr;
-        }
     };
 
     // ================================================================
     // Helper to generate a table of function pointers for each slot
     // This allows picking the right invoke function instantiation at runtime
+    // (one specialization per FuncPtr noexcept-ness, mirroring HookTrait)
     // ================================================================
     template<size_t MaxSlots, typename Derived, typename Tag, typename FuncPtr>
     struct InvokeObjectOpsTable;
 
-    // TODO: noexcept...
     template<size_t MaxSlots, typename Derived, typename Tag, typename Ret, typename... Args>
     struct InvokeObjectOpsTable<MaxSlots, Derived, Tag, Ret (*)(Args...) noexcept> {
         template<size_t... Is>
@@ -99,22 +96,12 @@ namespace pcomm::hook::detail {
     };
 
     // ================================================================
-    // ObjectOpsHookManager - Base for object->ops style hooks
-    //
-    // This is a partial implementation - derived classes must provide:
-    //   - get_op<Tag>(object): returns reference to function pointer in object
-    //   - get_object_from_args<Tag>(args...): extracts object from call args
-    //
-    // Usage:
-    //   struct MyHooks : ObjectOpsHookManager<MyHooks, MyContext, my_tag, other_tag> {
-    //       template<typename Tag>
-    //       auto& get_op(my_object* obj) { return obj->ops.XXX; }
-    //
-    //       template<typename Tag, typename... Args>
-    //       my_object* get_object_from_args(Args... args) { ... }
-    //   };
+    // ObjectOpsHookManager — per-object context storage for object-ops hooks.
+    // CompositeHookManager::install() asks it for the object's Context (saved
+    // original pointers), then swaps the object's ops for slot trampolines.
+    // The get_op<Tag>(object) half of the contract lives on the Derived
+    // manager; see CompositeHookManager's usage comment.
     // ================================================================
-    // TODO: This depends on ObjectType
     template<typename... Tags>
     class ObjectOpsHookManager {
     public:
@@ -138,21 +125,7 @@ namespace pcomm::hook::detail {
             return new_ctx_entry->second.get();
         }
 
-        // Find context for an object
-        template<typename ObjectType>
-        Context* find(ObjectType* obj) noexcept {
-            if (!obj) {
-                return nullptr;
-            }
-
-            auto key = reinterpret_cast<uintptr_t>(obj);
-            auto it = m_contexts.find(key);
-            return it != m_contexts.end() ? it->second.get() : nullptr;
-        }
-
-    public:
-        // TODO: hack! This is public because it wasn't
-        // possible/easy to implement some of the functionality here
+    private:
         std::unordered_map<uintptr_t, std::unique_ptr<Context>> m_contexts;
     };
 

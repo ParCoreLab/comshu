@@ -2,7 +2,6 @@
 
 #include <mutex>
 #include <tuple>
-#include <variant>
 #include <vector>
 
 #include "pcomm/hook/HookTrait.hpp"
@@ -28,7 +27,7 @@ namespace pcomm::hook {
     // ================================================================
     template<typename... Tags>
     class CallbackStorage {
-        static_assert((ValidHookTag<Tags> && ...), "All tags must have valid HookTrait specializations");
+        static_assert((ValidCallbackTag<Tags> && ...), "All tags must have valid HookTrait specializations");
 
     public:
         template<typename Tag>
@@ -55,16 +54,6 @@ namespace pcomm::hook {
         template<typename Tag>
         const PostCallbackList<Tag>& post_callbacks() const {
             return std::get<TaggedPostCallbacks<Tag>>(m_post_callbacks).list;
-        }
-
-        template<typename Tag>
-        void clear() noexcept {
-            std::get<TaggedPreCallbacks<Tag>>(m_pre_callbacks).list.clear();
-            std::get<TaggedPostCallbacks<Tag>>(m_post_callbacks).list.clear();
-        }
-
-        void clear_all() noexcept {
-            (clear<Tags>(), ...);
         }
 
     private:
@@ -105,17 +94,6 @@ namespace pcomm::hook {
         void register_post(HookTrait<Tag>::PostCallback callback) noexcept {
             std::lock_guard lock(m_mutex);
             m_callbacks.template post_callbacks<Tag>().push_back(std::move(callback));
-        }
-
-        template<ValidCallbackTag Tag>
-        void clear_callbacks() noexcept {
-            std::lock_guard lock(m_mutex);
-            m_callbacks.template clear<Tag>();
-        }
-
-        void clear_all_callbacks() noexcept {
-            std::lock_guard lock(m_mutex);
-            m_callbacks.clear_all();
         }
 
     protected:

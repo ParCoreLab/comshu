@@ -1,14 +1,13 @@
 #pragma once
 
-// TODO: remove
-#include <dlfcn.h>
-#include <link.h>
+#include <dlfcn.h>   // dladdr
+#include <link.h>    // dl_iterate_phdr
 
 #include <cassert>
+#include <iostream>
 
 #include "pcomm/hook/dlsym/Dlsym.hpp"
 
-#include "pcomm/hook/CallbackManager.hpp"
 #include "pcomm/hook/HookTrait.hpp"
 
 #include "pcomm/hook/detail/TagIndex.hpp"
@@ -67,20 +66,12 @@ namespace pcomm::hook::detail {
 
     // ================================================================
     // Real function pointer storage for preload-style hooks
-    // TODO: Should this be here?
     // ================================================================
     template<typename... Tags>
     class RealFunctionStorage {
     public:
         template<typename Tag>
         HookTrait<Tag>::FuncPtr& get() {
-            constexpr size_t idx = TagIndex<Tag, Tags...>::value;
-            return std::get<idx>(m_funcs);
-        }
-
-        // TODO: remove
-        template<typename Tag>
-        HookTrait<Tag>::FuncPtr get() const {
             constexpr size_t idx = TagIndex<Tag, Tags...>::value;
             return std::get<idx>(m_funcs);
         }
@@ -104,12 +95,12 @@ namespace pcomm::hook::detail {
     //   };
     //
     //   extern "C" int my_func(int arg) {
-    //       return MyHooks::invoke<my_func_tag>(arg);
+    //       return MyHooks::invoke_preload<my_func_tag>(arg);
     //   }
     //
-    // TODO: We should probably check for ValidHookTag
-    // but instead we accept all tags here to avoid having to
-    // partition template args...
+    // Accepts the manager's full tag pack (object-ops tags included) and
+    // ignores the ones that are not preload hooks — see the note on tag
+    // partitioning in CompositeHookManager.
     // ================================================================
     template<typename... Tags>
     class PreloadHookManager {
@@ -234,37 +225,15 @@ namespace pcomm::hook::detail {
                 hook_fn = reinterpret_cast<void*>(default_func);
             }
 
-            // Replace the function if downstream calls dlvsym. This ensures we has
+            // Register with the dlsym interposer: when the target application
+            // resolves this symbol at runtime, it receives our hook and we
+            // learn the real pointer it would have gotten.
             pcomm::smart_dlsym::register_symbol(Trait::symbol_name, [real_fn_ptr, hook_fn](void* real_func, auto&&...) {
                 // Update real function pointer (may be first resolution when using RTLD_NEXT)
                 *real_fn_ptr = reinterpret_cast<Trait::FuncPtr>(real_func);
 
                 return hook_fn;
             });
-        }
-
-        template<typename Tag>
-        void resolve_hook_one(auto&&... args) noexcept {
-            if constexpr (is_preload_hook_v<Tag>) {
-                register_hook<Tag>(std::forward<decltype(args)>(args)...);
-            }
-        }
-
-        // Resolve all preload hooks
-        void resolve_hook_all(auto&&... args) noexcept {
-            (resolve_hook_one<Tags>(std::forward<decltype(args)>(args)...), ...);
-        }
-
-        // ================================================================
-        // Static wrapper - called from LD_PRELOAD hook functions
-        // ================================================================
-        template<ValidCallbackTag Tag, typename... Args>
-            requires is_preload_hook_v<Tag>
-        auto invoke(Args... args) noexcept -> HookTrait<Tag>::RetType {
-            auto real = this->real_func<Tag>();
-            assert(real && "Real function not resolved - call resolve_real<Tag>() first");
-            auto ret = real(args...);
-            return ret;
         }
 
     protected:

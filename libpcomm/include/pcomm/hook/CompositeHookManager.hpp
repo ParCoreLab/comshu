@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iostream>
+
 #include "pcomm/helpers/timestamp.hpp"
 
 #include "pcomm/hook/CallbackManager.hpp"
@@ -45,36 +47,34 @@ namespace pcomm::hook {
     // ===============================================================
 
     // ================================================================
-    // CompositeHookManager - Combines preload and object-ops hooks
+    // CompositeHookManager — one manager for a provider's whole tag set,
+    // covering both interception mechanisms:
     //
-    // This provides a unified interface for registering callbacks
-    // regardless of the underlying hook mechanism.
+    //   - preload tags: LD_PRELOAD/dlsym interposers call invoke_preload<Tag>,
+    //     which lazily resolves the real symbol, fires the registered pre/post
+    //     callbacks around it, and stamps the call interval.
+    //   - object-ops tags: install(obj) swaps function pointers inside a
+    //     vendor object (ibv_context->ops.X) for per-slot trampolines that do
+    //     the same around the saved original.
+    //
+    // Both mechanisms receive every tag and each ignores the other kind (the
+    // is_preload_hook_v / is_object_ops_hook_v guards); partitioning the packs
+    // per kind was tried (detail/PartitionTag.hpp, removed — see git history)
+    // and never paid for its metaprogramming.
     //
     // Usage:
-    //   struct MyHooks : CompositeHookManager<MyHooks, MyObjectType,
-    //       preload_tag1, preload_tag2,  // Preload hooks
-    //       objops_tag1, objops_tag2     // Object-ops hooks
-    //   > {
-    //       // Must implement for object-ops:
+    //   struct MyHooks : CompositeHookManager<MyHooks, DefaultHookManagerConfig,
+    //                                         tags...> {
+    //       // Required iff any tag is an object-ops hook: which function
+    //       // pointer inside the object backs the tag.
     //       template<typename Tag>
     //       auto& get_op(MyObjectType* obj) { ... }
-    //
-    //       template<typename Tag, typename... Args>
-    //       MyObjectType* get_object_from_args(Args... args) { ... }
     //   };
     // ================================================================
-    // TODO: Get rid of ObjectType
-    template<typename Derived, HookManagerConfig Config, typename ObjectType, typename... Tags>
+    template<typename Derived, HookManagerConfig Config, typename... Tags>
     class CompositeHookManager : public CallbackManager<Derived, Tags...> {
-        static_assert(!ValidHookTag<ObjectType>,
-                      "Missing ObjectType. Did you mistakenly define as <Derived, ...Tags>?");
-
         using Base = CallbackManager<Derived, Tags...>;
 
-        // Both implementations receive every tag; each ignores the tags that are
-        // not its kind (see is_preload_hook_v / is_object_ops_hook_v guards).
-        // Splitting the packs per kind was tried (detail/PartitionTag.hpp, removed
-        // — see git history) and never paid for its metaprogramming.
         using PreloadBase = detail::PreloadHookManager<Tags...>;
         using ObjectOpsBase = detail::ObjectOpsHookManager<Tags...>;
 
@@ -84,7 +84,7 @@ namespace pcomm::hook {
         using TimestampSource = Config::TimestampSourceType;
         TimestampSource m_timestamp{};
 
-        // Slot-based context storage ot avoid map find() in every op
+        // Slot-based context storage to avoid map find() in every op
         using ContextSlots = detail::ContextSlots<Context>;
 
         // Singleton
@@ -92,13 +92,6 @@ namespace pcomm::hook {
             static Derived mgr;
             return mgr;
         }
-
-        // ================================================================
-        // Unified callback registration
-        // These just forward to the base CallbackManager
-        // ================================================================
-        using Base::clear_all_callbacks;
-        using Base::clear_callbacks;
 
         template<ValidCallbackTag Tag>
         void internal_register() noexcept {
@@ -135,41 +128,6 @@ namespace pcomm::hook {
         }
 
         // ================================================================
-        // Helper to register pre-callbacks for all tags automatically
-        // Callback signature: void(const char* symbol_name, Args...)
-        // ================================================================
-        template<typename Callback>
-        void register_all_pre(Callback&& callback) noexcept {
-            (register_pre_for_tag<Tags>(std::forward<Callback>(callback)), ...);
-        }
-
-    private:
-        template<typename Tag, typename Callback>
-        void register_pre_for_tag(Callback&& callback) noexcept {
-            this->template register_pre<Tag>([callback](auto&&... args) {
-                callback.template operator()<Tag>(std::forward<decltype(args)>(args)...);
-            });
-        }
-
-    public:
-        // ================================================================
-        // 1. Custom event hooks
-        // ================================================================
-        template<ValidEventTag Tag, typename... Args>
-            requires is_custom_hook_v<Tag>
-        void invoke_custom(Args&&... args) noexcept {
-            // TODO: pre only
-            auto ts_start = m_timestamp.now();
-            this->template invoke_all_pre<Tag>(std::forward<Args>(args)..., ts_start);
-        }
-
-        template<ValidEventTag Tag, typename... Args>
-            requires is_custom_hook_v<Tag>
-        void invoke_custom_ts(Timestamp ts_start, Args&&... args) noexcept {
-            this->template invoke_all_pre<Tag>(std::forward<Args>(args)..., ts_start);
-        }
-
-        // ================================================================
         // 1. Preload hook management
         // ================================================================
         template<typename Tag>
@@ -180,73 +138,35 @@ namespace pcomm::hook {
             }
         }
 
-        void register_preload_all(auto&&... args) noexcept {
-            (register_preload_one<Tags>(std::forward<decltype(args)>(args)...), ...);
-        }
-
         template<ValidCallbackTag Tag>
             requires is_preload_hook_v<Tag>
         [[nodiscard]] HookTrait<Tag>::FuncPtr& real_func() {
             return m_preload_impl.template real_func<Tag>();
         }
 
-        // TODO: this function is really odd but we need to somehow
-        // resolve to the correct real_func<Tag> with a runtime parameter...
-        [[nodiscard]] void** real_func_by_name(std::string_view name) noexcept {
-            void** func_ptr = nullptr;
-
-            ([&]() -> bool {
-                if constexpr (is_preload_hook_v<Tags>) {
-                    if (HookTrait<Tags>::symbol_name == name) {
-                        func_ptr = reinterpret_cast<void**>(&real_func<Tags>());
-                        return true;
-                    }
-                }
-                return false;
-            }() || ...);
-
-            return func_ptr;
-        }
-
-        // Static wrapper for preload hooks
-        // TODO: remove, possibly. We can already call these through the instance
+        // Static wrapper the extern "C" interposers forward to.
         template<ValidCallbackTag Tag, typename... Args>
             requires is_preload_hook_v<Tag>
         static auto invoke_preload(Args&&... args) noexcept -> HookTrait<Tag>::RetType {
             auto& mgr = instance();
 
-            // No hooks registered, don't do all the stuff below
-            if (!std::get<TaggedBool<Tag>>(mgr.m_registered_tags).value) {
-                auto& real = mgr.template real_func<Tag>();
-
-                // If we're here, the injected function is called but no hooks are registered
-                // Late load the real function and call it
-                if (!real) {
-                    mgr.m_preload_impl.template register_real<Tag>();
-
-                    // Lazy resolution fallback for RTLD_NEXT handles
-                    if (!real) {
-                        std::cerr << "ERROR: Real function for Tag " << HookTrait<Tag>::name << " is empty!"
-                                  << std::endl;
-                        std::abort();
-                    }
-                }
-
-                return real(std::forward<Args>(args)...);
-            }
-
-            // First time here will always be null
-            // or will it?
+            // Lazy resolution: the real library may not have been loaded at
+            // registration time. If we are here at all, the target application
+            // just called the symbol, so it is resolvable now — or never.
             auto& real = mgr.template real_func<Tag>();
-
-            // Lazy resolution: the real library may not have been loaded at registration time
-            // If we're at this stage, the real function has been loaded by the target application
             if (!real) {
                 mgr.m_preload_impl.template register_real<Tag>();
                 if (!real) {
-                    std::cerr << "ERROR: Real function for Tag " << HookTrait<Tag>::name << " is empty!" << std::endl;
+                    std::cerr << "ERROR: Real function for Tag " << HookTrait<Tag>::name << " is empty!"
+                              << std::endl;
                     std::abort();
                 }
+            }
+
+            // No hooks registered for this tag: pure passthrough, no
+            // timestamps taken and no callback dispatch.
+            if (!std::get<TaggedBool<Tag>>(mgr.m_registered_tags).value) {
+                return real(std::forward<Args>(args)...);
             }
 
             auto ts_start = mgr.m_timestamp.now();
@@ -273,6 +193,11 @@ namespace pcomm::hook {
         // ================================================================
         // 2. Object-ops hook management
         // ================================================================
+        // Swap the object's function pointers for our trampolines. Only tags
+        // somebody registered a callback for are patched (install_if_object_ops
+        // checks m_registered_tags), so a patched pointer implies a listener —
+        // the trampoline never pays for hooks that do not exist.
+        template<typename ObjectType>
         Context* install(ObjectType* obj) noexcept {
             assert(obj && "HookManager ctx obj install called with null obj");
 
@@ -280,35 +205,13 @@ namespace pcomm::hook {
 
             auto* ctx = m_object_ops_impl.get_context(obj);
 
-            // Install object-ops hooks only
             install_object_ops_hooks(obj, ctx, std::make_index_sequence<sizeof...(Tags)>{});
 
             return ctx;
         }
 
-        void uninstall(ObjectType* obj) noexcept {
-            // TODO: maybe it's fine if it's null
-            assert(obj && "HookManager ctx obj uninstalled called with null obj");
-
-            std::lock_guard lock(m_registration_mutex);
-
-            auto& contexts = m_object_ops_impl.m_contexts;
-
-            auto key = reinterpret_cast<uintptr_t>(obj);
-            auto it = contexts.find(key);
-            if (it == contexts.end()) {
-                return;
-            }
-
-            auto* ctx = m_object_ops_impl.get_context(obj);
-            uninstall_object_ops_hooks(obj, ctx, std::make_index_sequence<sizeof...(Tags)>{});
-
-            contexts.erase(it);
-        }
-
-        // Static wrapper for object-ops hooks
-        // Note: this takes Args... instead of Args&&... because FuncPtr args need to match exactly...
-        // See the note in install_if_object_ops
+        // Static trampoline installed into the object's ops table.
+        // Note: this takes Args... instead of Args&&... because FuncPtr args need to match exactly.
         // Most of these are small value types or pointers. Should be fine.
         // SlotIndex is a compile-time constant that indexes into ContextSlots::slots
         template<ValidCallbackTag Tag, size_t CtxSlotIndex, typename... Args>
@@ -317,7 +220,6 @@ namespace pcomm::hook {
             auto& mgr = instance();
 
             // Start timestamp as soon as the function hook is invoked
-            // TODO: don't get timestamp if no hooks registered
             auto ts_start = mgr.m_timestamp.now();
 
             // Get context from pre-allocated slot
@@ -341,12 +243,6 @@ namespace pcomm::hook {
             auto ts_end = mgr.m_timestamp.now();
 
             // Post-hooks with context
-            /* TODO: don't call if no hooks
-             * For some reason just calling this function is expensive
-             * even if no hooks are registered. Maybe because of arg copies?
-             * Need more optimizations.
-             * Pack args into a reference-able tuple and don't call if no hooks
-             */
             mgr.template invoke_post_with_context<Tag>(ctx, ret, args..., ts_start, ts_end);
 
             return ret;
@@ -381,9 +277,7 @@ namespace pcomm::hook {
         }
 
     private:
-        // TODO: this is ugly and should be in ObjectOpsHookManager
-        // but since we really need Derived, it's here for now
-        template<size_t... Is>
+        template<typename ObjectType, size_t... Is>
         void install_object_ops_hooks(ObjectType* obj, Context* ctx, std::index_sequence<Is...>) noexcept {
             (install_if_object_ops<std::tuple_element_t<Is, std::tuple<Tags...>>>(obj, ctx), ...);
         }
@@ -392,7 +286,7 @@ namespace pcomm::hook {
         template<typename Tag, typename FuncPtr>
         using InvokeObjectOpsTable = detail::InvokeObjectOpsTable<detail::MAX_OBJECT_OPS_SLOTS, Derived, Tag, FuncPtr>;
 
-        template<ValidCallbackTag Tag>
+        template<ValidCallbackTag Tag, typename ObjectType>
         void install_if_object_ops(ObjectType* obj, Context* ctx) noexcept {
             if constexpr (is_object_ops_hook_v<Tag>) {
                 static_assert(has_get_op_for<Derived, Tag, ObjectType>,
@@ -417,22 +311,8 @@ namespace pcomm::hook {
             }
         }
 
-        template<size_t... Is>
-        void uninstall_object_ops_hooks(ObjectType* obj, Context* ctx, std::index_sequence<Is...>) noexcept {
-            (uninstall_if_object_ops<std::tuple_element_t<Is, std::tuple<Tags...>>>(obj, ctx), ...);
-        }
-
-        template<ValidCallbackTag Tag>
-        void uninstall_if_object_ops(ObjectType* obj, Context* ctx) noexcept {
-            if constexpr (is_object_ops_hook_v<Tag>) {
-                auto& op = static_cast<Derived&>(*this).template get_op<Tag>(obj);
-                op = ctx->template original<Tag>();
-            }
-        }
-
-        // Helper to create a function pointer matching HookTrait<Tag>::FuncPtr that calls invoke_preload
-        // We're basically specializing the template away so we can use it like a function pointer
-        // TODO: should be more generic and moved to a helper module
+        // Adapts invoke_preload<Tag> to the exact function-pointer type the
+        // trait declares, so it can be handed around like a plain C pointer.
         template<typename Tag, typename FuncPtr>
         struct InvokePreloadPtr;
 
