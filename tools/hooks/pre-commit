@@ -19,7 +19,9 @@ set -uo pipefail
 root="$(git rev-parse --show-toplevel)"
 
 # Docs-only commits cannot break a build; do not make people wait for one.
-if ! git diff --cached --name-only --diff-filter=ACMR |
+# No --diff-filter: a commit that only DELETES a source file must still build
+# (a removed header breaks every includer, and D was once excluded here).
+if ! git diff --cached --name-only |
      grep -qvE '\.(md|golden|sql|json)$|^plans/|^docs/'; then
   echo "pre-commit: docs/goldens only, skipping the build gate"
   exit 0
