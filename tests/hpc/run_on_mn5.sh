@@ -43,7 +43,12 @@ RDIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
 PCOMM_BARE="${PCOMM_BARE:-kefah/git/pcomm}"
 PCOMM_REMOTE_GIT="${PCOMM_REMOTE_GIT:-$REMOTE:$PCOMM_BARE}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SSH="ssh -o BatchMode=yes"
+# ConnectTimeout because alogin1 refuses connections often enough that this has
+# cost two runs: without it the very first ssh (step 0, resolving $HOME) blocks
+# forever on a dead login node, which looks exactly like a slow sync rather than
+# an unreachable host. Fail in 20s and say so; PCOMM_REMOTE=...@alogin2.bsc.es
+# is the fallback (same home directory).
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=20"
 
 do_build=1 do_clean=0 check_only=0 combined=1 quick=0 use_rsync=0
 cases_filter=""
@@ -69,7 +74,9 @@ rsh() { $SSH "$REMOTE" "bash -lc '$*'"; }   # login shell → `module` is availa
 # These must be concrete here, not left as remote-side defaults: the job needs
 # them exported through sbatch, and `check` needs to look in the same place.
 RHOME=$($SSH "$REMOTE" 'echo $HOME' | tr -d '\r') \
-  || { echo "cannot reach $REMOTE" >&2; exit 1; }
+  || { echo "cannot reach $REMOTE" >&2
+       echo "  if that is alogin1, try: PCOMM_REMOTE=${REMOTE%%@*}@alogin2.bsc.es $0 $*" >&2
+       exit 1; }
 case "$RDIR" in /*) PROOT="$RDIR" ;; *) PROOT="$RHOME/$RDIR" ;; esac
 OUT_ROOT="${PCOMM_OUT_ROOT:-$RHOME/pcomm-suite}"
 MANIFEST_REMOTE="$OUT_ROOT/.last-run.manifest"
