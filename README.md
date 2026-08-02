@@ -77,3 +77,42 @@ ctest --test-dir build
 Core + tests build with no CUDA/verbs installed; providers are enabled
 individually (`-DPCOMM_PROVIDER_GPUMEM=ON`, `-DPCOMM_PROVIDER_IBVERBS=ON`) and
 require their vendor SDKs.
+
+## Gates
+
+There is no hosted CI (the repo is mirrored between machines, not on a forge),
+so the gates are local and named:
+
+- **Every commit**: `tools/hooks/pre-commit` (install once with
+  `tools/install_hooks.sh`) builds the core configuration and runs its tests,
+  including `tools/schema_check.py`. Skippable with `--no-verify`; the MN5 gate
+  is what catches you.
+- **Anything touching capture semantics** (hook engine, records, providers,
+  stream format): `tests/hpc/run_on_mn5.sh` — sync, build both providers on
+  MareNostrum 5, run the 8-case suite, compare SQL goldens. This is the merge
+  gate; a change is not done until this board is green.
+
+## Adding a record type
+
+One entry per layer; the build refuses a missing one:
+
+1. `PCOMM_RECORD` in `core/records.hpp` (or the provider's `*_records.hpp`),
+   type_id inside the provider's range from `core/ids.hpp`.
+2. A struct in `libpcomm/schema/pcomm.fbs` with the `// type N, kind` comment,
+   and `kSchemaHash` in `rec/stream_header.hpp` updated (`schema_check.py`
+   prints the new value).
+3. A case in `libpcomm/tests/schema_conformance.cpp`.
+4. A `Table<>` specialization + `TableRecords` entry in `pcomm-read/main.cpp`
+   (the compiler demands both or neither).
+
+`tools/schema_check.py` runs at build time and cross-checks 1-3; it also holds
+`tools/read_pcs.py`'s enum-name tables equal to pcomm-read's.
+
+## Adding a provider
+
+`providers/<name>/` building one `.so`: implement `provider::IProvider`,
+`PCOMM_EXPORT_PROVIDER`, claim a record-id range in `core/ids.hpp`, declare it
+at startup via `pcomm_engine_declare_provider` (the engine refuses overlapping
+ranges), and add a registry row in `pcomm/main.cpp`. Hook definitions follow
+`providers/ibverbs/ib_hooks.hpp`; the manager contract is documented in
+`pcomm/hook/CompositeHookManager.hpp`.
