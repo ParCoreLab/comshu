@@ -1,6 +1,9 @@
 # NVBit backend (phase-1 default)
 
-`pcomm::gpu::IGpuBackend` implementation over NVBit — the port target is
+GPU capture engine over NVBit, feeding `pcomm::gpumem::Engine` directly
+through its callbacks (no abstraction layer sits between them — a shared
+backend interface gets introduced when a second backend exists to share
+it; see `../sanitizer/README.md`). The port target is
 `../../../snoopie/src/mem_multigpu` (NVBit 1.7.7.1 vendored in
 `../../../snoopie/core`), **confirmed working on du04** (4x A100, CUDA 13.0,
 driver 580.95; diim test 64/64 with source-line + object attribution,
@@ -27,7 +30,7 @@ Not yet ported (follow-ups): NVSHMEM heap ownership (2.x range + 3.x cuMemMap
 regions), sampling (SAMPLE_SIZE), estimated line carry-forward for instructions
 without line info (snoopie's prev-valid fallback + nvdisasm path), python/NCCL
 attribution, data-object callstack attribution (adm), cuMemcpyDtoD synthesis,
-`IGpuBackend` facade over this tool (currently callback-driven directly).
+a vendor-neutral backend interface once the Sanitizer port makes it real.
 
 Build on du04 (no spack needed): `PATH=$HOME/.local/bin:/usr/local/cuda/bin:$PATH`
 (pip-installed cmake ≥3.26; node cmake 3.23 lacks CUDA20), `CUDACXX=/usr/local/cuda/bin/nvcc`,
