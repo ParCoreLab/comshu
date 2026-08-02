@@ -30,6 +30,33 @@ set(PCOMM_INSTALL_LIBDIR "lib/pcomm" CACHE STRING
 set(PCOMM_INSTALL_RPATH_EXTRA "" CACHE STRING
     "Extra absolute RUNPATH entries for installed binaries (semicolon-separated)")
 
+# Whether this build tree installs the core (engine, launcher, reader, headers)
+# or only its provider.
+#
+# It defaults OFF for a gpumem-only tree, and that default is a safety belt with
+# a scar behind it. gpumem must be configured in its own tree against the NVHPC
+# toolchain (tests/hpc/run_on_mn5.sh), where CMAKE_CXX_COMPILER is nvc++ — and
+# nvc++ compiles libpcomm_engine.so into something that does not work: it emits
+# an *undefined reference* to __builtin_ia32_rdtsc (a GCC/Clang builtin) instead
+# of inlining it, so every hooked call dies with
+#   symbol lookup error: libpcomm_engine.so: undefined symbol: __builtin_ia32_rdtsc
+# The build tree never exposed this because run_on_mn5.sh copies only
+# libgpumem_trace.so out of build-gpumem, and its $ORIGIN/../../libpcomm rpath
+# then finds the *gcc-built* engine. `cmake --install build-gpumem` had no such
+# luck: it dropped the nvc++ engine over the good one and broke every capture.
+#
+# The root cause (the engine's rdtsc should be written so any compiler can build
+# it) is worth fixing on its own; until then, a gpumem tree installs its
+# provider and nothing else.
+if(PCOMM_PROVIDER_GPUMEM AND NOT PCOMM_PROVIDER_IBVERBS)
+  set(_pcomm_install_core_default OFF)
+else()
+  set(_pcomm_install_core_default ON)
+endif()
+option(PCOMM_INSTALL_CORE
+       "Install the engine, launcher, reader and headers from this build tree"
+       ${_pcomm_install_core_default})
+
 # enable_testing() must come before any add_subdirectory that calls add_test:
 # CTest silently drops tests registered in a directory that was added first.
 # libpcomm/ registers the schema tests, and while enable_testing() sat at the

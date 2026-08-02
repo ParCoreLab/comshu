@@ -56,8 +56,11 @@ target_include_directories(pcomm_engine INTERFACE
 set_target_properties(pcomm_engine PROPERTIES
   INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
 target_link_options(pcomm_engine PRIVATE -Wl,--enable-new-dtags)
-install(TARGETS pcomm_engine LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR})
-install(DIRECTORY include/pcomm DESTINATION include)
+if(PCOMM_INSTALL_CORE)
+  install(TARGETS pcomm_engine LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
+          COMPONENT core)
+  install(DIRECTORY include/pcomm DESTINATION include COMPONENT core)
+endif()
 
 # Schema conformance: assert the C++ records still match libpcomm/schema/pcomm.fbs.
 #

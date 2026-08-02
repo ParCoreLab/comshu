@@ -11,4 +11,6 @@ target_link_libraries(pcomm_read PRIVATE pcomm::pcomm)
 set_target_properties(pcomm_read PROPERTIES
   INSTALL_RPATH "${PCOMM_INSTALL_RPATH_EXTRA}")
 target_link_options(pcomm_read PRIVATE -Wl,--enable-new-dtags)
-install(TARGETS pcomm_read RUNTIME DESTINATION bin)
+if(PCOMM_INSTALL_CORE)
+  install(TARGETS pcomm_read RUNTIME DESTINATION bin COMPONENT core)
+endif()

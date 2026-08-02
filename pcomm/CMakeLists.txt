@@ -11,4 +11,6 @@ target_link_libraries(pcomm_launcher PRIVATE pcomm::pcomm pcomm::engine)
 set_target_properties(pcomm_launcher PROPERTIES
   INSTALL_RPATH "$ORIGIN/../${PCOMM_INSTALL_LIBDIR};${PCOMM_INSTALL_RPATH_EXTRA}")
 target_link_options(pcomm_launcher PRIVATE -Wl,--enable-new-dtags)
-install(TARGETS pcomm_launcher RUNTIME DESTINATION bin)
+if(PCOMM_INSTALL_CORE)
+  install(TARGETS pcomm_launcher RUNTIME DESTINATION bin COMPONENT core)
+endif()
