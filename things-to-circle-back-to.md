@@ -2,6 +2,35 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN: nvc++ cannot correctly compile libpcomm_engine.so (rdtsc)
+
+Built with NVHPC's `nvc++` — which is what `CMAKE_CXX_COMPILER` resolves to in
+the `build-gpumem` tree, since that configure runs under
+`module load nvidia-hpc-sdk` — the engine comes out with an **undefined
+reference** to `__builtin_ia32_rdtsc` instead of inlining it:
+
+```
+symbol lookup error: libpcomm_engine.so: undefined symbol: __builtin_ia32_rdtsc
+```
+
+Every hooked call dies there, so a capture is empty. `nm -D --undefined-only`
+on the two engines is the whole diagnosis: gcc-13.2's has 0 such symbols,
+nvc++'s has 1.
+
+**Not currently live.** `run_on_mn5.sh` copies only `libgpumem_trace.so` out of
+`build-gpumem`, and its `$ORIGIN/../../libpcomm` rpath resolves to the
+*gcc-built* engine in `build/libpcomm`, so the suite has always run the right
+one. It surfaced only when `cmake --install build-gpumem` dropped the nvc++
+engine over the good one (fixed by `PCOMM_INSTALL_CORE`, which now defaults OFF
+for a gpumem-only tree — but that is a guard, not a fix).
+
+**The fix** is to write the TSC read so any compiler can build it —
+`__rdtsc()` from `<x86intrin.h>`, or inline asm on `rdtsc`/`rdtscp` — in
+`pcomm/helpers/timestamp.hpp` / `helpers/clock.hpp`. It is on the hot path of
+every hook, so it wants its own MN5 suite run to confirm the timestamps and the
+goldens are unchanged. Until then, one toolchain builds the engine and the
+build system enforces it.
+
 ## OPEN (upstream): why instrumenting a LOCAL-memory access wedges NVSHMEM
 
 **This is the one to file a bug report about.** The case 07 hang is fixed on our
