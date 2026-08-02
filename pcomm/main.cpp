@@ -91,8 +91,10 @@ void init_exe_dir(const char* argv0) {
     g_exe_dir = ec ? fs::path(argv0).parent_path() : self.parent_path();
 }
 
-// Provider .so files are searched next to the launcher binary, then in
-// PCOMM_PROVIDER_PATH.
+// Provider .so files are searched in PCOMM_PROVIDER_PATH, then next to the
+// launcher binary (the build tree), then in ../lib/pcomm relative to it (an
+// installed tree). The last root is what lets an installed `pcomm` find its
+// providers with no environment at all: bin/pcomm -> lib/pcomm/*.so.
 std::string find_so(const Provider& p) {
     std::vector<fs::path> roots;
     // PCOMM_PROVIDER_PATH is a colon-list (providers may build into separate
@@ -107,7 +109,10 @@ std::string find_so(const Provider& p) {
             s = c + 1;
         }
     }
-    if (!g_exe_dir.empty()) roots.emplace_back(g_exe_dir);
+    if (!g_exe_dir.empty()) {
+        roots.emplace_back(g_exe_dir);
+        roots.emplace_back(g_exe_dir.parent_path() / "lib" / "pcomm");
+    }
     for (const auto& root : roots)
         if (fs::exists(root / p.so)) return (root / p.so).string();
     std::fprintf(stderr, "pcomm: %s provider library not found (%s)\n",

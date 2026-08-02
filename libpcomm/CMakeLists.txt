@@ -49,6 +49,16 @@ target_include_directories(pcomm_engine INTERFACE
   $<INSTALL_INTERFACE:include>
 )
 
+# Installed beside the providers in <prefix>/lib/pcomm, so they resolve their
+# DT_NEEDED on it through $ORIGIN. pcomm_engine_so_path() then reports that
+# installed path via dladdr, which is what the launcher puts first in
+# LD_PRELOAD — the whole chain works with no environment set.
+set_target_properties(pcomm_engine PROPERTIES
+  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
+target_link_options(pcomm_engine PRIVATE -Wl,--enable-new-dtags)
+install(TARGETS pcomm_engine LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR})
+install(DIRECTORY include/pcomm DESTINATION include)
+
 # Schema conformance: assert the C++ records still match libpcomm/schema/pcomm.fbs.
 #
 # The FlatBuffers headers are vendored under third_party/ (520 KB, header-only,

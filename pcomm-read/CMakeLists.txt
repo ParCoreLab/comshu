@@ -4,3 +4,11 @@ set_target_properties(pcomm_read PROPERTIES OUTPUT_NAME "pcomm-read")
 # vendor-neutral (no verbs.h), so this include adds no ibverbs dependency.
 target_include_directories(pcomm_read PRIVATE ${CMAKE_SOURCE_DIR}/providers/ibverbs)
 target_link_libraries(pcomm_read PRIVATE pcomm::pcomm)
+
+# Header-only against libpcomm, so it carries no pcomm .so dependency — but it
+# is still C++ and needs the toolchain libstdc++ it was built with, which is
+# what PCOMM_INSTALL_RPATH_EXTRA supplies to an installed copy.
+set_target_properties(pcomm_read PROPERTIES
+  INSTALL_RPATH "${PCOMM_INSTALL_RPATH_EXTRA}")
+target_link_options(pcomm_read PRIVATE -Wl,--enable-new-dtags)
+install(TARGETS pcomm_read RUNTIME DESTINATION bin)

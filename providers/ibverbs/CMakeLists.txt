@@ -15,10 +15,13 @@ target_link_libraries(ibverbs_trace PRIVATE pcomm::pcomm pcomm::hook ${IBVERBS_L
 # findable at runtime. $ORIGIN/../../libpcomm resolves correctly for both build
 # layouts: build/providers/<p>/ (ibverbs, and gpumem after run_on_mn5.sh copies
 # it there from build-gpumem/). New dtags so LD_LIBRARY_PATH can still override.
+# In an *installed* tree the engine is a sibling in <prefix>/lib/pcomm, so
+# INSTALL_RPATH is $ORIGIN rather than the build tree's ../../libpcomm.
 set_target_properties(ibverbs_trace PROPERTIES
   BUILD_RPATH "$ORIGIN/../../libpcomm"
-  INSTALL_RPATH "$ORIGIN/../../libpcomm")
+  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
 target_link_options(ibverbs_trace PRIVATE -Wl,--enable-new-dtags)
+install(TARGETS ibverbs_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR})
 
 # Export only what must be exported (see ibverbs.map). Cuts the dynamic symbol
 # table from 2536 to 9 and removes the weak-duplicate surface that made

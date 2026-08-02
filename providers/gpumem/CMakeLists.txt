@@ -76,9 +76,12 @@ target_link_options(gpumem_trace PRIVATE $<HOST_LINK:-Xlinker --enable-new-dtags
 # findable at runtime. $ORIGIN/../../libpcomm resolves correctly for both build
 # layouts: build/providers/<p>/ (ibverbs, and gpumem after run_on_mn5.sh copies
 # it there from build-gpumem/). New dtags so LD_LIBRARY_PATH can still override.
+# In an *installed* tree the engine is a sibling in <prefix>/lib/pcomm, so
+# INSTALL_RPATH is $ORIGIN rather than the build tree's ../../libpcomm.
 set_target_properties(gpumem_trace PROPERTIES
   BUILD_RPATH "$ORIGIN/../../libpcomm"
-  INSTALL_RPATH "$ORIGIN/../../libpcomm")
+  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
+install(TARGETS gpumem_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR})
 
 # Export only what must be exported (see gpumem.map): 3438 -> 9. HOST_LINK so
 # the flag goes to the host linker, not to nvcc's device link step.
