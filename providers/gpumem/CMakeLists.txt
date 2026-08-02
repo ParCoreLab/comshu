@@ -81,7 +81,13 @@ target_link_options(gpumem_trace PRIVATE $<HOST_LINK:-Xlinker --enable-new-dtags
 set_target_properties(gpumem_trace PROPERTIES
   BUILD_RPATH "$ORIGIN/../../libpcomm"
   INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
-install(TARGETS gpumem_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR})
+# COMPONENT so this provider can be installed on its own. gpumem is configured
+# in a second build tree (build-gpumem: nvcc + the gcc-11.4 host compiler, see
+# tests/hpc/run_on_mn5.sh) where the launcher is not built at all, so a plain
+# `cmake --install build-gpumem` fails looking for bin/pcomm. The documented
+# command is `cmake --install build-gpumem --component gpumem`.
+install(TARGETS gpumem_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
+        COMPONENT gpumem)
 
 # Export only what must be exported (see gpumem.map): 3438 -> 9. HOST_LINK so
 # the flag goes to the host linker, not to nvcc's device link step.

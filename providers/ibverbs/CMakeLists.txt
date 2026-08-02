@@ -21,7 +21,8 @@ set_target_properties(ibverbs_trace PROPERTIES
   BUILD_RPATH "$ORIGIN/../../libpcomm"
   INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
 target_link_options(ibverbs_trace PRIVATE -Wl,--enable-new-dtags)
-install(TARGETS ibverbs_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR})
+install(TARGETS ibverbs_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
+        COMPONENT ibverbs)
 
 # Export only what must be exported (see ibverbs.map). Cuts the dynamic symbol
 # table from 2536 to 9 and removes the weak-duplicate surface that made
