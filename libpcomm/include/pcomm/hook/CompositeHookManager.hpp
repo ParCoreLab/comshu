@@ -71,10 +71,10 @@ namespace pcomm::hook {
 
         using Base = CallbackManager<Derived, Tags...>;
 
-        /*
-         *TODO: Right now both implementations get all the tags.
-         *This is OK for now, but should use detail/PartitionTag.hpp in the future
-         */
+        // Both implementations receive every tag; each ignores the tags that are
+        // not its kind (see is_preload_hook_v / is_object_ops_hook_v guards).
+        // Splitting the packs per kind was tried (detail/PartitionTag.hpp, removed
+        // — see git history) and never paid for its metaprogramming.
         using PreloadBase = detail::PreloadHookManager<Tags...>;
         using ObjectOpsBase = detail::ObjectOpsHookManager<Tags...>;
 
