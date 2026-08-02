@@ -78,6 +78,43 @@ Core + tests build with no CUDA/verbs installed; providers are enabled
 individually (`-DPCOMM_PROVIDER_GPUMEM=ON`, `-DPCOMM_PROVIDER_IBVERBS=ON`) and
 require their vendor SDKs.
 
+## Install
+
+`cmake --install` lays down a self-locating tree — the launcher finds the
+engine through `$ORIGIN/../lib/pcomm` and its providers through the matching
+search root, so an installed `pcomm` needs **no** `PCOMM_PROVIDER_PATH`,
+`PCOMM_ENGINE_PATH` or `LD_LIBRARY_PATH`:
+
+```
+<prefix>/bin/{pcomm,pcomm-read}
+<prefix>/lib/pcomm/{libpcomm_engine,libibverbs_trace,libgpumem_trace}.so
+<prefix>/include/pcomm/...
+```
+
+`PCOMM_INSTALL_RPATH_EXTRA` bakes absolute directories into the installed
+RUNPATH, which is what lets the result run in a bare login shell with no
+`module load`. On MareNostrum 5 (installed at `~/.local`, already on PATH):
+
+```bash
+# core + ibverbs, from the gcc-13.2 tree
+cmake -B build -DPCOMM_PROVIDER_IBVERBS=ON \
+      -DCMAKE_INSTALL_PREFIX=$HOME/.local \
+      -DPCOMM_INSTALL_RPATH_EXTRA=/apps/ACC/GCC/13.2.0/lib64
+cmake --build build -j && cmake --install build
+
+# the CUDA provider, from its own NVHPC tree (see run_on_mn5.sh for the flags)
+cmake --install build-gpumem              # installs gpumem only, by design
+```
+
+That second command installs *only* the provider: `PCOMM_INSTALL_CORE` defaults
+OFF for a gpumem-only tree, because nvc++ miscompiles the engine (see
+`things-to-circle-back-to.md`). Don't override it.
+
+New dtags are used throughout, so the baked RUNPATH is searched *after*
+`LD_LIBRARY_PATH` — module-loading a different toolchain still wins. The one
+runtime dependency an install cannot supply is `nvdisasm` on `PATH`, which NVBit
+needs when `-p p2p` actually runs on a GPU node.
+
 ## Gates
 
 There is no hosted CI (the repo is mirrored between machines, not on a forge),
