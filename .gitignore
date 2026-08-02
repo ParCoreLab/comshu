@@ -17,3 +17,8 @@ pcomm-out/
 .tools/
 __pycache__/
 *.pyc
+
+# Per-machine tool settings. Ignored here rather than only in a developer's
+# ~/.config/git/ignore, because the MN5 clone has no such global file and would
+# otherwise report it as untracked on every suite sync.
+.claude/
