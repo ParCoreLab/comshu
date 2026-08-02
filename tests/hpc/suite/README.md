@@ -141,15 +141,37 @@ runs every case, prints the board):
 ```bash
 tests/hpc/run_on_mn5.sh                 # sync + build + run all + check
 tests/hpc/run_on_mn5.sh --cases "03"    # a subset
+tests/hpc/run_on_mn5.sh --quick         # skip case 05 (~440 s of NVBit cost)
+tests/hpc/run_on_mn5.sh --per-case      # one job per case (isolating a case)
 tests/hpc/run_on_mn5.sh --check-only    # just re-aggregate existing results
 tests/hpc/run_on_mn5.sh --no-build      # skip the rebuild
 ```
 
 Config via env (defaults = the ParCore MN5 account): `PCOMM_REMOTE`,
-`PCOMM_REMOTE_DIR`. Cases run serially (acc_debug allows one submitted job at a
-time); a full run is ~15 min incl. the case-05 deadlock timeout. Exit code is the
-board's: 0 when all PASS/XFAIL, non-zero on any real FAIL. It builds the gpumem
-provider with the gcc-11.4 host + CUDA C++20 recipe automatically.
+`PCOMM_REMOTE_DIR`. Exit code is the board's: 0 when all PASS/XFAIL, non-zero on
+any real FAIL. It builds the gpumem provider with the gcc-11.4 host + CUDA C++20
+recipe automatically.
+
+**All cases run inside one allocation** (`suite/all_in_one.sbatch`). `acc_debug`
+permits one *submitted* job at a time, so a job per case meant a queue wait per
+case — that scheduling overhead, not the workloads, was most of the old
+~25-30 min. The allocation is the union of what the cases ask for (2 nodes x
+4 tasks x 4 GPUs) and each case's `job.sbatch` runs unmodified inside it: the
+`#SBATCH` lines are comments, so it is the same program with the same
+srun/mpirun shapes as a standalone `sbatch`. Nothing is forked into a suite-only
+variant that could drift.
+
+A combined job can die partway, which would leave later cases unreported — the
+exact shape of the stale-PASS bug the manifest exists for. Every case is pinned
+to the allocation's job id, so a case the job never reached has no
+`<label>-<jobid>.csv` and reads as **no result** (red), never as an inherited
+pass. `--quick` names the skipped case in the manifest, so it prints `SKIP` and
+the board says INCOMPLETE rather than leaving a silent gap.
+
+The driver reports **queue wait and job time separately**. Queue wait is not
+ours to improve, and folding the two together makes any change to the suite
+itself unmeasurable. Per-case seconds land in `$PCOMM_OUT_ROOT/timings-<jid>.txt`
+and each case's stdout in `$PCOMM_OUT_ROOT/<case>-<jid>.log`.
 
 ### Lower-level (on MN5 directly)
 

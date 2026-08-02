@@ -7,6 +7,8 @@
 #   tests/hpc/run_on_mn5.sh --no-build         # skip the rebuild
 #   tests/hpc/run_on_mn5.sh --clean            # wipe remote build dirs first
 #   tests/hpc/run_on_mn5.sh --cases "01 03"    # a subset (by NN_ prefix or name)
+#   tests/hpc/run_on_mn5.sh --quick            # skip 05 (~440 s of NVBit cost)
+#   tests/hpc/run_on_mn5.sh --per-case         # one job per case (old behaviour)
 #   tests/hpc/run_on_mn5.sh --check-only       # just re-aggregate existing results
 #
 # Config via env (defaults are the ParCore MN5 account):
@@ -14,10 +16,13 @@
 #   PCOMM_REMOTE_DIR=proj/pcomm               path on the remote (rel. to $HOME)
 #   PCOMM_OUT_ROOT=$HOME/pcomm-suite          where captures land (remote)
 #
-# Notes: the acc_debug QoS allows one submitted job at a time, so cases run
-# serially (submit → wait → next); a full run is ~15 min incl. the case 05
-# deadlock timeout. Exit code is run_suite's: 0 when all PASS/XFAIL, non-zero on
-# any real FAIL or missing result. XFAIL (case 05) does not fail the run.
+# Notes: the acc_debug QoS allows one submitted job at a time. By default every
+# case now runs inside ONE allocation (suite/all_in_one.sbatch), so the run pays
+# one queue wait instead of one per case — that scheduling overhead, not the
+# workloads, was most of the old ~25-30 min. `--per-case` restores the old
+# job-per-case loop, which is what you want when isolating a single case.
+# Exit code is run_suite's: 0 when all PASS/XFAIL, non-zero on any real FAIL or
+# missing result. XFAIL does not fail the run.
 #
 # Every verdict is pinned to the job id submitted by THIS run, via a manifest at
 # $PCOMM_OUT_ROOT/.last-run.manifest — so a case whose job never produced output
@@ -30,7 +35,7 @@ RDIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SSH="ssh -o BatchMode=yes"
 
-do_build=1 do_clean=0 check_only=0
+do_build=1 do_clean=0 check_only=0 combined=1 quick=0
 cases_filter=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,7 +43,9 @@ while [ $# -gt 0 ]; do
     --clean)      do_clean=1 ;;
     --check-only) check_only=1; do_build=0 ;;
     --cases)      cases_filter="$2"; shift ;;
-    -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
+    --quick)      quick=1 ;;
+    --per-case)   combined=0 ;;
+    -h|--help)    sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -136,7 +143,9 @@ if [ "$do_build" -eq 1 ]; then
     || { echo 'gpumem build FAILED' >&2; exit 1; }
 fi
 
-# --- 3. run the cases (serial: acc_debug = 1 submitted job at a time) --------
+# --- 3. run the cases --------------------------------------------------------
+# Default: one allocation, all cases inside it. acc_debug allows one *submitted*
+# job at a time, which is why a job per case cost a queue wait per case.
 all_cases() { rsh "cd $RDIR && for d in tests/hpc/cases/*/; do basename \$d; done"; }
 CASES=$(all_cases)
 if [ -n "$cases_filter" ]; then
@@ -149,6 +158,20 @@ if [ -n "$cases_filter" ]; then
   CASES="$sel"
 fi
 
+# --quick drops case 05, whose ~440 s is fixed NVBit module-processing cost and
+# is most of a full run. It is opt-in and reported as SKIP, never as a pass:
+# dropping it stops checking the NCCL-under-NVBit path, which is a real loss.
+SKIPPED_CASES=""
+if [ "$quick" -eq 1 ]; then
+  keep=""
+  for c in $CASES; do
+    case "$c" in 05_*) SKIPPED_CASES="$SKIPPED_CASES $c" ;; *) keep="$keep $c" ;; esac
+  done
+  CASES="$keep"
+  [ -n "$SKIPPED_CASES" ] && echo "  --quick: skipping$SKIPPED_CASES"
+fi
+CASES=$(echo $CASES)   # normalise whitespace; it is passed through sbatch --export
+
 run_rc=0
 # Pushed after every submit rather than once at the end, so interrupting a run
 # still leaves --check-only reading the right jobs.
@@ -156,8 +179,41 @@ push_manifest() {
   $SSH "$REMOTE" "mkdir -p '$OUT_ROOT' && cat > '$MANIFEST_REMOTE'" < "$MANIFEST_LOCAL" \
     || { echo "could not write run manifest" >&2; exit 1; }
 }
-if [ "$check_only" -eq 0 ]; then
-  : > "$MANIFEST_LOCAL"; push_manifest
+
+# Every skipped case is named in the manifest, so `check` reports SKIP rather
+# than falling back to newest-wins and inheriting an older run's PASS.
+record_skips() { for c in $SKIPPED_CASES; do printf '%s SKIPPED\n' "$c" >> "$MANIFEST_LOCAL"; done; }
+
+wall_t0=$(date +%s)
+if [ "$check_only" -eq 0 ] && [ "$combined" -eq 1 ]; then
+  : > "$MANIFEST_LOCAL"; record_skips; push_manifest
+  # The case list goes over as a FILE, not as an --export value. Both separators
+  # available there are taken: --export splits on commas, and a space would be
+  # word-split by the `bash -lc '...'` wrapper rsh uses — which would silently
+  # hand sbatch a stray argument instead of failing.
+  printf '%s\n' $CASES | $SSH "$REMOTE" "mkdir -p '$OUT_ROOT' && cat > '$OUT_ROOT/.run-cases'" \
+    || { echo "could not write the case list" >&2; exit 1; }
+  # Ask for only as much walltime as the case set needs: a shorter request is
+  # scheduled sooner on a debug QoS, and queue wait is the thing this is all
+  # about. Case 05 alone is ~7.5 min; everything else together is under two.
+  case " $CASES " in *" 05_"*) tlimit="00:40:00" ;; *) tlimit="00:15:00" ;; esac
+  say "submit + wait: one allocation for [$CASES]"
+  JID=$(rsh "cd $RDIR && sbatch --parsable --time=$tlimit --export=ALL,PCOMM_ROOT=$PROOT,PCOMM_OUT_ROOT=$OUT_ROOT,PCOMM_CASES_FILE=$OUT_ROOT/.run-cases tests/hpc/suite/all_in_one.sbatch" \
+        | tr -d '[:space:]') && JID="${JID%%;*}" && [ -n "$JID" ] \
+    || { echo "  !! submit FAILED" >&2
+         for c in $CASES; do printf '%s %s\n' "$c" SUBMIT_FAILED >> "$MANIFEST_LOCAL"; done
+         push_manifest; run_rc=1; JID=""; }
+  if [ -n "$JID" ]; then
+    echo "  job $JID  (walltime requested: $tlimit)"
+    # Same job id for every case: each case still writes its own
+    # <label>-<jobid>.csv, so a case the allocation never reached leaves no
+    # result dir and reads as red rather than as a pass.
+    for c in $CASES; do printf '%s %s\n' "$c" "$JID" >> "$MANIFEST_LOCAL"; done
+    push_manifest
+    wait_job "$JID" || run_rc=1
+  fi
+elif [ "$check_only" -eq 0 ]; then
+  : > "$MANIFEST_LOCAL"; record_skips; push_manifest
   for c in $CASES; do
     say "submit + wait: $c"
     # PCOMM_ROOT/PCOMM_OUT_ROOT go through --export so the job honours the same
@@ -180,7 +236,25 @@ if [ "$check_only" -eq 0 ]; then
   done
 fi
 
-# --- 4. board ---------------------------------------------------------------
+# --- 4. timing --------------------------------------------------------------
+# Queue wait and job time are reported separately on purpose: queue wait is not
+# ours to improve, so folding the two together makes any change to the suite
+# itself unmeasurable. Submit→Start is the wait, Start→End is the run.
+if [ "$check_only" -eq 0 ] && [ -n "${JID:-}" ]; then
+  say "timing"
+  wall=$(( $(date +%s) - wall_t0 ))
+  t=$(rsh "sacct -j $JID -X -n -P -o Submit,Start,End,Elapsed 2>/dev/null" | head -1 | tr -d '\r')
+  IFS='|' read -r t_sub t_start t_end t_elapsed <<< "$t"
+  if [ -n "${t_start:-}" ] && [ "$t_start" != "Unknown" ]; then
+    qs=$(( $(date -d "$t_start" +%s) - $(date -d "$t_sub" +%s) ))
+    printf '  queue wait : %s s\n  job time   : %s (%s → %s)\n' "$qs" "$t_elapsed" "$t_start" "$t_end"
+  fi
+  printf '  wall clock : %s s (sync + build + queue + run)\n' "$wall"
+  echo "  per-case breakdown: $OUT_ROOT/timings-$JID.txt"
+  rsh "cat $OUT_ROOT/timings-$JID.txt 2>/dev/null" | sed 's/^/    /'
+fi
+
+# --- 5. board ---------------------------------------------------------------
 say "suite board"
 echo "  results: $OUT_ROOT   manifest: $MANIFEST_REMOTE"
 rsh "cd $RDIR && PCOMM_ROOT=$PROOT PCOMM_OUT_ROOT=$OUT_ROOT PCOMM_RUN_MANIFEST=$MANIFEST_REMOTE bash tests/hpc/suite/run_suite.sh check"

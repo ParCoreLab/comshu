@@ -55,13 +55,21 @@ case "$cmd" in
     done ;;
 
   check)
-    fail=0
+    fail=0 skipped=0
     printf '%-20s %-6s %s\n' CASE VERDICT DETAIL
     for c in $(resolve "$@"); do
       # captures are named by the short label (case dir minus the NN_ prefix),
       # e.g. 02_nccl_internode -> nccl_internode-<jobid>.csv/result.json
       label="${c#*_}"
       jid=$(manifest_jid "$c")
+      # SKIPPED is written by run_on_mn5.sh --quick. It is not a pass and not a
+      # failure: the case was deliberately not run, so the run is GREEN but
+      # INCOMPLETE, and the board has to say so rather than leaving a blank that
+      # reads like coverage.
+      if [ "$jid" = "SKIPPED" ]; then
+        printf '%-20s %-6s %s\n' "$c" SKIP "not run (--quick) — this path went unchecked"
+        skipped=$((skipped+1)); continue
+      fi
       if [ -n "$jid" ]; then
         # pinned: only this job's capture counts (jid may be a sentinel like
         # SUBMIT_FAILED, which simply never matches a directory → no result)
@@ -93,6 +101,7 @@ case "$cmd" in
       if [ "$ok" = "True" ]; then printf '%-20s %-6s %s\n' "$c" PASS "$n checks · $(basename "$d")"
       else printf '%-20s %-6s %s\n' "$c" FAIL "see job .out · $(basename "$d")"; fail=1; fi
     done
+    [ "$skipped" -gt 0 ] && echo "  !! INCOMPLETE: $skipped case(s) skipped — a green board here covers less than a full run"
     exit $fail ;;
 
   status) squeue -u "$USER" | tail -n +2 ;;
