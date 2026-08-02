@@ -55,11 +55,22 @@ STREAMS = {100: IbMemRegion, 102: IbQueuePair, 110: IbPostSend, 112: IbPollCq,
            510: InternKey, 512: InternString}
 
 # ibverbs enums, decoded the way pcomm-read decodes them for the CSV the golden
-# queries run against (pcomm-read/main.cpp: wr_opcode_name / wc_* ).
+# queries run against (pcomm-read/main.cpp: wr_opcode_name / wc_opcode_name).
+# tools/schema_check.py holds these tables equal to the C++ ones at build time:
+# they drifted once ("cmp_swp" where the CSV says "atomic_cmp_swp"), invisibly,
+# because case 01 never posts an atomic.
 WR_OPCODE = {0: "rdma_write", 1: "rdma_write_imm", 2: "send", 3: "send_imm",
-             4: "rdma_read", 5: "cmp_swp", 6: "fetch_add"}
-WC_OPCODE = {0: "send", 1: "rdma_write", 2: "rdma_read", 3: "cmp_swp",
+             4: "rdma_read", 5: "atomic_cmp_swp", 6: "atomic_fetch_add"}
+WC_OPCODE = {0: "send", 1: "rdma_write", 2: "rdma_read", 3: "comp_swap",
              4: "fetch_add", 128: "recv", 129: "recv_rdma_imm"}
+
+
+def wr_opcode_name(op):
+    return WR_OPCODE.get(op, f"op{op}")     # same fallback as pcomm-read
+
+
+def wc_opcode_name(op):
+    return WC_OPCODE.get(op, f"wc{op}")     # same fallback as pcomm-read
 
 
 def schema_hash(fbs_path):
@@ -209,8 +220,8 @@ def main():
     for rank, streams in sorted(ranks.items()):
         by_op = {}
         for s in streams.get(110, []):
-            n, b = by_op.get(WR_OPCODE.get(s.Opcode(), s.Opcode()), (0, 0))
-            by_op[WR_OPCODE.get(s.Opcode(), s.Opcode())] = (n + 1, b + s.Length())
+            n, b = by_op.get(wr_opcode_name(s.Opcode()), (0, 0))
+            by_op[wr_opcode_name(s.Opcode())] = (n + 1, b + s.Length())
         for op in sorted(by_op):
             traffic.append((str(rank), op, str(by_op[op][0]), str(by_op[op][1])))
     check("traffic", traffic)
@@ -221,7 +232,7 @@ def main():
         counts = {}
         for c in streams.get(112, []):
             key = ("success" if c.Status() == 0 else f"err{c.Status()}",
-                   WC_OPCODE.get(c.Opcode(), c.Opcode()))
+                   wc_opcode_name(c.Opcode()))
             counts[key] = counts.get(key, 0) + 1
         for (status, op) in sorted(counts):
             completions.append((str(rank), status, op, str(counts[(status, op)])))

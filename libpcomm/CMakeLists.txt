@@ -116,6 +116,9 @@ if(Python3_Interpreter_FOUND)
       ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/rec/stream_header.hpp
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/schema_conformance.cpp
       ${CMAKE_SOURCE_DIR}/providers/ibverbs/ib_records.hpp
+      # check 6 (ibverbs name tables) reads both readers' sources
+      ${CMAKE_SOURCE_DIR}/pcomm-read/main.cpp
+      ${CMAKE_SOURCE_DIR}/tools/read_pcs.py
     COMMENT "Checking C++ records against libpcomm/schema/pcomm.fbs"
     VERBATIM)
   add_custom_target(pcomm_schema_check ALL DEPENDS ${schema_check_stamp})

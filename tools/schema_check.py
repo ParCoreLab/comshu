@@ -23,6 +23,7 @@ files are enough.
 Usage: tools/schema_check.py [repo_root]
 """
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -439,6 +440,53 @@ def main():
     else:
         notes.append(f"schema hash 0x{want_hash:016X} matches "
                      f"pcomm/rec/stream_header.hpp")
+
+    # 6. The two readers name ibverbs enum values from two hand-written tables:
+    #    the switch statements in pcomm-read/main.cpp and the dicts in
+    #    tools/read_pcs.py. The Python reader's entire claim is that it
+    #    reproduces goldens computed from the C++ CSVs, so the tables must be
+    #    equal — and they drifted once ("cmp_swp" where the CSV says
+    #    "atomic_cmp_swp"), invisibly, because case 01 never posts an atomic.
+    #    Held equal here rather than generated from pcomm.fbs on purpose: the
+    #    schema hash seals every capture, and a naming table is not worth a
+    #    capture-format event.
+    cpp_reader = (root / "pcomm-read/main.cpp").read_text()
+    py_reader_path = root / "tools/read_pcs.py"
+
+    def cpp_name_table(fn_name):
+        m = re.search(rf'std::string\s+{fn_name}\s*\(unsigned\s+\w+\)\s*\{{(.*?)\n\}}',
+                      cpp_reader, re.S)
+        if not m:
+            fail(f"pcomm-read/main.cpp: cannot find {fn_name}() — the reader "
+                 f"moved; update tools/schema_check.py")
+            return None
+        return {int(n): s for n, s in
+                re.findall(r'case\s+(\d+)\s*:\s*return\s+"([^"]+)"', m.group(1))}
+
+    def py_name_table(var_name):
+        for node in ast.walk(ast.parse(py_reader_path.read_text())):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == var_name):
+                return ast.literal_eval(node.value)
+        fail(f"tools/read_pcs.py: no {var_name} dict found — the reader moved; "
+             f"update tools/schema_check.py")
+        return None
+
+    for cpp_fn, py_var in [("wr_opcode_name", "WR_OPCODE"),
+                           ("wc_opcode_name", "WC_OPCODE")]:
+        cpp_tab, py_tab = cpp_name_table(cpp_fn), py_name_table(py_var)
+        if cpp_tab is None or py_tab is None:
+            continue
+        if cpp_tab != py_tab:
+            for k in sorted(set(cpp_tab) | set(py_tab)):
+                if cpp_tab.get(k) != py_tab.get(k):
+                    fail(f"ibverbs name tables disagree on {py_var}[{k}]: "
+                         f"pcomm-read says {cpp_tab.get(k)!r}, read_pcs.py says "
+                         f"{py_tab.get(k)!r} — the Python reader must name "
+                         f"values exactly as the CSVs the goldens query")
+        else:
+            notes.append(f"{py_var}: {len(py_tab)} names match pcomm-read's {cpp_fn}()")
 
     # --- report
     print("schema check: C++ records vs libpcomm/schema/pcomm.fbs")
