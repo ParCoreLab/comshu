@@ -499,3 +499,63 @@ already running NVBit, and passive.
 - Stage 1 (`providers/mlx5dv/`) is unaffected and still the right first
   deliverable — with finding (1) fixing which symbol to hook, and (2) and (3)
   fixing how.
+
+## The routing question, answered: NVSHMEM hides CUDA behind `dlsym`
+
+Hooking `cuMemGetHandleForAddressRange` gave zero hits, so the next step was a
+**log-only** interposer on `cuGetProcAddress_v2` and `cuGetExportTable` —
+observing which entry points get requested, deliberately not replacing any
+pointer, because replacing driver entry points is the change that had already
+broken the transport once.
+
+Both came back **zero**, which is too strange to be a finding and had to be a
+probe fault. It was, and the object files say why:
+
+```
+nvshmem_transport_ibgda.so : cu* symbols imported = 0   (links no CUDA at all)
+libnvshmem_host.so.3       : cu* symbols imported = 0
+                             dl* imports          = dlopen, dlsym, dlclose
+                             strings              = libcuda.so.1,
+                                                    cuGetProcAddress,
+                                                    cuGetProcAddress_v2
+```
+
+NVSHMEM `dlopen`s `libcuda.so.1` and pulls `cuGetProcAddress` out of it with
+`dlsym(handle, …)`, then resolves everything else through that. **A
+handle-scoped `dlsym` searches that library directly and never consults the
+global scope, so `LD_PRELOAD` cannot intercept any of it.** No additional
+preloaded symbol would have helped; the interposition point has to be `dlsym`
+itself.
+
+Which is exactly why SigmaTrace carries a `SmartDlsym` module, and — the good
+news — **pcomm already has one**: `libpcomm/src/hook/Dlsym.cpp:107` interposes
+`dlsym`, and `:136` `dlvsym`, with `PreloadHookManager` already resolving
+through `real_dlsym`. The probe could not see any of this only because it is a
+standalone shim that links nothing from libpcomm, on purpose.
+
+### Consequences
+
+1. **The export-table patcher may not be needed at all.** It was scoped as
+   option A's cost and then, a section ago, as a cost both options share. The
+   actual route here is `dlsym → cuGetProcAddress`, and pcomm can already
+   intercept the first hop. SigmaTrace patches `cuGetExportTable` *as well*, but
+   nothing observed on du04 requires it. That should be established, not
+   assumed — but it moves the most invasive component in the reference design
+   from "required" to "unproven necessity".
+2. **Stage 1 is unaffected and confirmed working.** Every mlx5dv hook fired
+   under plain `LD_PRELOAD` — `umem_ex`, `uar`, and `devx` lines all captured on
+   a live IBGDA run. The DEVX control plane needs no driver interception at all.
+3. **The dmabuf finding is confirmed, not an artefact.** `comp_mask=0x1` is
+   `MLX5DV_UMEM_MASK_DMABUF`, so `dmabuf=85/86` are genuine descriptors and the
+   `addr=0x0` registrations are real. SigmaTrace's address-based GPU-residency
+   test still cannot work here.
+
+### Revised next steps
+
+- Build Stage 1 (`providers/mlx5dv/`) using pcomm's existing preload machinery.
+  It is unblocked, needs nothing new, and is now demonstrated against real IBGDA
+  traffic rather than argued for.
+- For the send-queue addresses, register `cuMemGetHandleForAddressRange` with
+  `smart_dlsym` rather than exporting a symbol — that is the interception point
+  the evidence actually points at.
+- Only if that proves insufficient, revisit `cuGetExportTable`.

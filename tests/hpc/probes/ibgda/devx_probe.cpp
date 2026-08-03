@@ -153,6 +153,46 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg(ibv_context* ctx, void* addr, 
 // region per rank to two identical rows). The tag lets this run MEASURE whether
 // the chaining happens on this rdma-core rather than assume it either way; the
 // provider can then hook only the funnel, with evidence.
+// ---------------------------------------------------------------------------
+// Driver-API entry points. LOG ONLY — nothing here replaces a function pointer.
+//
+// Hooking cuMemGetHandleForAddressRange by LD_PRELOAD produced zero hits, which
+// means NVSHMEM does not call it as a dynamic symbol. CUDA hands out entry
+// points through cuGetProcAddress and cuGetExportTable, and SigmaTrace patches
+// both (ExportTablePreload.cpp:90-147: walk the table to a 0xffff…ffff
+// sentinel, mprotect, overwrite in place). That is the most invasive code in
+// the reference implementation and it is not what this probe is for.
+//
+// So this only *observes* the requests. If cuMemGetHandleForAddressRange shows
+// up here, the route is confirmed and the export-table subsystem is justified
+// on evidence. If it does not, patching cuGetProcAddress would not have helped
+// either, and the next suspect is the export table proper.
+//
+// Deliberately not chained into the returned pfn: replacing a driver entry
+// point is exactly the class of change that broke the transport an hour ago,
+// and there is no reason to risk it to answer a question about routing.
+extern "C" CUresult cuGetProcAddress_v2(const char* symbol, void** pfn, int cudaVersion,
+                                        cuuint64_t flags,
+                                        CUdriverProcAddressQueryResult* symbolStatus) {
+    static auto real = next<CUresult (*)(const char*, void**, int, cuuint64_t,
+                                         CUdriverProcAddressQueryResult*)>("cuGetProcAddress_v2");
+    CUresult rc = real(symbol, pfn, cudaVersion, flags, symbolStatus);
+    if (symbol) {
+        std::fprintf(log_file(), "cuproc %s rc=%d\n", symbol, static_cast<int>(rc));
+        std::fflush(log_file());
+    }
+    return rc;
+}
+
+extern "C" CUresult cuGetExportTable(const void** ppExportTable, const CUuuid* pExportTableId) {
+    static auto real =
+        next<CUresult (*)(const void**, const CUuuid*)>("cuGetExportTable");
+    CUresult rc = real(ppExportTable, pExportTableId);
+    std::fprintf(log_file(), "cuexport rc=%d\n", static_cast<int>(rc));
+    std::fflush(log_file());
+    return rc;
+}
+
 // The missing link. IBGDA registers its NIC buffers by dmabuf fd, not by
 // address: every umem_ex on du04 came back `addr=0x0 dmabuf=85`, so there is no
 // pointer for cuPointerGetAttribute to classify and the GPU-residency test
@@ -190,9 +230,17 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg_ex(ibv_context* ctx,
     if (out && umem_in) {
         int mem_type = -1, ordinal = -1, err = 0;
         classify(umem_in->addr, &mem_type, &ordinal, &err);
-        std::fprintf(log_file(), "umem_ex 0x%llx %zu %d %d %u cuerr=%d dmabuf=%d\n",
+        // dmabuf_fd is only meaningful when comp_mask advertises it. Reading it
+        // unconditionally is how the first du04 run reported "dmabuf=85" — which
+        // may have been an uninitialised field, and a conclusion was drawn from
+        // it. comp_mask is logged so that claim can be checked rather than
+        // trusted.
+        std::fprintf(log_file(),
+                     "umem_ex 0x%llx %zu %d %d %u cuerr=%d comp_mask=0x%llx dmabuf=%d acc=0x%x\n",
                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(umem_in->addr)),
-                     umem_in->size, mem_type, ordinal, out->umem_id, err, umem_in->dmabuf_fd);
+                     umem_in->size, mem_type, ordinal, out->umem_id, err,
+                     static_cast<unsigned long long>(umem_in->comp_mask), umem_in->dmabuf_fd,
+                     umem_in->access);
         std::fflush(log_file());
     }
     return out;
