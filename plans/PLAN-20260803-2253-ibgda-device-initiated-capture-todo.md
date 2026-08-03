@@ -622,3 +622,84 @@ Stage 1 next rather than extending the probe further.
   `umem_reg_ex` is called, and decides GPU residency by an address that is now
   always `0x0` under dmabuf registration. A verbatim port captures nothing, and
   fails silently while doing so.
+
+## SigmaTrace was built and run on du04. It crashes the application.
+
+Enough theorising — it was built from source on du04 and pointed at the same
+IBGDA workload. Every build blocker was environmental, none in SigmaTrace:
+cmake 3.31.6 via pip (not 4.x, which drops the `<3.5` minimums Boost and
+protobuf still declare), abseil and protobuf shallow-cloned at their pinned
+tags, system `libboost-program-options-dev` instead of Boost's superproject
+(only `program_options` is needed, no minimum version), and
+`cuda-cupti-dev-13-0`. Built on `/DATA` (177 GB free), never `/` (98% full, and
+other people's jobs live there). **Zero compile errors**, and the configure
+found what matters:
+
+```
+RDMA-core: ON  (ibverbs + mlx5)      target/providers/libmlx5dv_trace.so
+                                     target/providers/libibverbs_trace.so
+                                     target/lib/libsmart_dlsym.so
+```
+
+### Observed
+
+| run | result |
+|---|---|
+| `putget`, 2 PEs, no profiler | `put-ring OK`, exit 0 |
+| `Profiler --enable-doorbell-hijack`, **1 PE** | `Exited Normally!`, 0 doorbells |
+| `Profiler --enable-doorbell-hijack`, **2 PEs** | **abort, exit 6**, 0 doorbells |
+
+```
+[Profiler] loaded mlx5dv Trace
+[Profiler] Loaded Doorbell Hijack Trace
+terminate called after throwing an instance of 'std::out_of_range'
+  what():  absl::container_internal::raw_hash_map<>::at
+[Profiler] num_nic_doorbell_accesses: 0
+[Profiler] doorbell_submitted: 0
+```
+
+The same workload runs clean without the profiler, so SigmaTrace causes the
+failure. One PE does no remote communication and survives; two PEs generate real
+device-initiated traffic and abort. The crash is on the traffic path.
+
+### Diagnosis — high confidence, but NOT backtrace-confirmed
+
+The throwing `.at()` is almost certainly `m_mlx5_qp_info.at(dbr_qpn)` in
+`on_doorbell_ring` (`CUDAHijack.cpp:394`), whose own comment reads
+*"// Should be guaranteed to exist"*. Two independent legs support it:
+
+- **Symptom shape.** It fires only when doorbells ring (2 PEs), never without
+  (1 PE).
+- **The map cannot be populated on this stack**, measured independently by our
+  own probe before SigmaTrace was ever built: NVSHMEM 3.4.5 calls only
+  `mlx5dv_devx_umem_reg_ex` (`reg=0 reg_ex=10`) while SigmaTrace hooks
+  `mlx5dv_devx_umem_reg`; and its GPU-residency test reads the umem address,
+  which is `0x0` under dmabuf registration (`comp_mask=0x1`). `Mlx5dv.cpp:82-87`
+  then returns early and no `QpInfo` is ever inserted. So the *first* doorbell
+  throws.
+
+Not confirmed by a stack frame: gdb on the launcher misses the crash (Profiler
+forks and execs the app), and gdb on the app breaks MPI's init handshake. Worth
+one more attempt before this is treated as settled.
+
+### What this actually tells us
+
+1. **The interception infrastructure works.** A doorbell reached
+   `on_doorbell_ring` at all, which means the UAR substitution engaged — so the
+   export-table/`cuGetProcAddress` patching does its job on current CUDA, and
+   `cuMemHostGetDevicePointer` *is* reached that way (invisible to `LD_DEBUG`,
+   exactly as flagged). The mechanism is sound and validated.
+2. **The NVSHMEM bindings are stale**, and predicted to be so from reading the
+   code before running it — same two defects, now demonstrated.
+3. **It fails destructively, not silently.** The earlier prediction was "captures
+   nothing"; the truth is worse. An unregistered QP is met with `.at()` rather
+   than a lookup-and-skip, so the profiler aborts the application on its first
+   device-initiated send. For pcomm this is the sharpest possible restatement of
+   the rule already adopted for the probe: **a hook that meets something it does
+   not recognise must degrade, never terminate.**
+
+### Bearing on the plan
+
+Port the *mechanism*, not the code. `providers/mlx5dv/` must hook `umem_reg_ex`,
+identify GPU buffers by dmabuf handle rather than address, and treat an unknown
+QP as a record to drop rather than a precondition to assert.
