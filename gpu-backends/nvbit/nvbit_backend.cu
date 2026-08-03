@@ -36,6 +36,14 @@
 #include "dev_common.h"
 #include "engine.hpp"
 
+// Same clock as the recorder and the ClockAnchors, so an access's window is
+// comparable with ibverbs call intervals without any conversion. Safe here:
+// this .cu is compiled by nvcc with a *gcc* host compiler, and these are host
+// functions. Do not move the call into providers/gpumem/gpumem_provider.cpp —
+// that TU is compiled by nvc++, which emits an undefined reference to
+// __builtin_ia32_rdtsc instead of inlining it (see things-to-circle-back-to.md).
+#include "pcomm/helpers/clock.hpp"
+
 using pcomm::attr::RawAccess;
 using pcomm::core::MemOp;
 
@@ -111,6 +119,44 @@ bool g_skip_callback = false;
 bool g_shutdown_done = false;
 uint32_t g_next_instr_index = 0;
 uint64_t g_grid_launch_id = 0;
+
+// --- launch times: the lower bound of every access's window ------------------
+//
+// The device has no clock we share, so an access is bounded rather than dated:
+// it cannot have happened before its kernel was launched (here), and it must
+// have happened before the drain thread dequeued it (the recv loop). See
+// plans/PLAN-20260803-1021-gpumem-window-timestamps-*.md.
+//
+// A ring, not a map: ids come from g_grid_launch_id++ so they are dense and
+// monotonic, and a long run issues millions of them — an unbounded map would be
+// a leak that grows with runtime. Old entries age out and their accesses fall
+// back to an open lower bound, which is honest; inventing one would not be.
+constexpr std::size_t kLaunchRing = 1u << 16;   // 64Ki launches, 512 KB
+std::uint64_t* g_launch_ticks = nullptr;        // indexed by launch_id % kLaunchRing
+std::uint64_t* g_launch_owner = nullptr;        // which id that slot holds
+unsigned long long g_launch_unknown = 0;        // accesses with no launch time
+
+// Records the launch time for `id`. Called under g_mutex from the CUDA callback.
+inline void note_launch_time(std::uint64_t id) {
+    if (!g_launch_ticks) {
+        g_launch_ticks = new std::uint64_t[kLaunchRing]();
+        g_launch_owner = new std::uint64_t[kLaunchRing];
+        std::fill(g_launch_owner, g_launch_owner + kLaunchRing, ~0ull);
+    }
+    const std::size_t slot = id % kLaunchRing;
+    g_launch_owner[slot] = id;
+    g_launch_ticks[slot] = pcomm::helpers::TscClock::now();
+}
+
+// The launch time for `id`, or 0 if that launch has aged out of the ring or was
+// never seen (e.g. a CUDA-graph node launch — nvbit_at_graph_node_launch is
+// still a stub). 0 means "unknown", and the pipeline leaves the window open
+// below rather than fabricating a bound.
+inline std::uint64_t launch_time(std::uint64_t id) {
+    if (!g_launch_ticks) return 0;
+    const std::size_t slot = id % kLaunchRing;
+    return g_launch_owner[slot] == id ? g_launch_ticks[slot] : 0;
+}
 
 struct MutexLock {
     explicit MutexLock(pthread_mutex_t& m) : m_m(&m) { pthread_mutex_lock(m_m); }
@@ -321,6 +367,12 @@ void handle_launch(CUcontext ctx, CUfunction func) {
         // move existing goldens.
         const uint64_t launch_id = g_grid_launch_id++;
 
+        // Stamp before the launch is enqueued: this is the earliest moment any
+        // access from it could occur, which is what makes it a sound lower
+        // bound. It is the *enqueue* time, not when the SM actually starts — a
+        // deep stream queue makes the window wider than necessary, never wrong.
+        note_launch_time(launch_id);
+
         // NB: these run for every related function, not just instrumented ones.
         // Skipping them for unfiltered functions was measured (job 43971039)
         // and changes nothing — 436s vs 436s, 438s vs 438s — so the knob was
@@ -417,6 +469,14 @@ void* recv_thread_fun(void* args) {
                 break;
             }
 
+            // The access happened somewhere in [launch, now]: after the kernel
+            // that issued it was launched, and before we just dequeued it.
+            // Read once per packet, not per lane — one push is one warp, all 32
+            // lanes of it from the same launch and the same drain.
+            const std::uint64_t t_lo = launch_time(ma->launch_id);
+            const std::uint64_t t_hi = pcomm::helpers::TscClock::now();
+            if (t_lo == 0) ++g_launch_unknown;
+
             for (int lane = 0; lane < 32; lane++) {
                 if (ma->addrs[lane] == 0) continue;
                 RawAccess a;
@@ -427,6 +487,8 @@ void* recv_thread_fun(void* args) {
                 a.op = G().id_to_memop[ma->opcode_id];
                 a.space = pcomm::core::MemSpace::Global;
                 a.run_device = static_cast<pcomm::core::DeviceId>(ma->dev_id);
+                a.ticks_lo = t_lo;
+                a.ticks_hi = t_hi;
 
                 // NVSHMEM symmetric-heap ownership (3.x regions, then 2.x
                 // fixed layout); anything else stays unresolved and the
@@ -462,6 +524,17 @@ void* recv_thread_fun(void* args) {
                 "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
                 d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
     }
+
+    // Windows with no lower bound are a real loss of information, so say so
+    // rather than letting them look like ordinary records. Non-zero means
+    // launches aged out of the ring (raise kLaunchRing) or a launch path we do
+    // not intercept — CUDA-graph node launches are the known one,
+    // nvbit_at_graph_node_launch is still a stub.
+    if (g_launch_unknown)
+        std::fprintf(stderr,
+            "[pcomm] %llu warp-packets had no launch time — their accesses are "
+            "recorded with an open lower bound (window [0, drain])\n",
+            g_launch_unknown);
     g_engine->drain_thread();  // buffers never auto-drain (leaked TLS)
     free(recv_buffer);
     return nullptr;

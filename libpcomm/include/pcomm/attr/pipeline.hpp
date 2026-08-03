@@ -26,7 +26,17 @@ inline void AttributionPipeline::process(std::span<const RawAccess> accesses) {
 
         for (auto& attributor : m_chain) attributor->attribute(a, rec, *m_rec);
 
-        m_rec->record(rec);
+        // A window, not an instant. The producer knows only that the access
+        // happened somewhere in [ticks_lo, ticks_hi] — see RawAccess. Emitting
+        // an Instant here (which this did, via the one-argument record(), with
+        // the drain-thread's own clock) claimed a precision nothing had, and
+        // put a batch's worth of accesses at the same tick in flush order.
+        //
+        // A producer that supplies no bound gets Temporal::none(): timeless is
+        // true, an invented timestamp is not.
+        m_rec->record(a.ticks_hi ? core::Temporal::window({0, a.ticks_lo}, {0, a.ticks_hi})
+                                 : core::Temporal::none(),
+                      rec);
     }
 }
 

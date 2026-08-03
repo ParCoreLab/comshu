@@ -1,7 +1,10 @@
 # PLAN — gpumem records must say when they *might* have happened, not lie about when they did
 
 - **Created:** 2026-08-03 10:21 +03
-- **Status:** TODO
+- **Status:** IN-PROGRESS 2026-08-03. All six steps implemented; local suite
+  13/13 and the regression is caught in both directions. **The MN5 gate is
+  what remains** — the gpumem path cannot be built or run on this host, so
+  nothing here has executed against real NVBit yet.
 - **Finding:** `things-to-circle-back-to.md` — "gpumem stamps drain time as an
   Instant". This plan is the fix; the finding is the evidence.
 

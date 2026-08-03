@@ -122,7 +122,14 @@ int main() {
             accesses[i].pc = 0xabc;
             accesses[i].run_device = 0;
             accesses[i].mem_device = (i % 2) ? 1 : 0;  // half remote, half local
+            accesses[i].ticks_lo = 1000 + i;           // as a producer bounds it
+            accesses[i].ticks_hi = 2000 + i;
         }
+        // One kept access (odd index => remote) with no bound at all, standing
+        // in for a producer that cannot supply one — an NVBit launch that aged
+        // out of the ring, or a CUDA-graph node launch we do not intercept.
+        accesses[1].ticks_lo = 0;
+        accesses[1].ticks_hi = 0;
         pipe.process(accesses);          // filter keeps the 50 remote ones
 
         // (b) the same stream, written directly through the Recorder.
@@ -139,6 +146,39 @@ int main() {
         assert(fs::file_size(stream) ==
                sizeof(rec::StreamHeader) + 150 * sizeof(rec::Stamped<GpuAccess>) &&
                "filter should drop the 50 local accesses, and both writers land here");
+
+        // (c) what time do those records claim? The two writers must differ, and
+        //     the difference is the point:
+        //       - the pipeline carries the *producer's* bound  -> Window
+        //         (or None when the producer had none — never a made-up instant)
+        //       - Recorder::record(r) with no Temporal          -> Instant
+        //     A GPU access dated with the drain thread's own clock is a false
+        //     precision claim; that is what this pins. Nothing else in the tree
+        //     does — no suite golden queries time, so a regression here turns no
+        //     board red. See plans/PLAN-20260803-1021-gpumem-window-*.md.
+        {
+            std::ifstream in(stream, std::ios::binary);
+            in.seekg(sizeof(rec::StreamHeader));
+            std::size_t windows = 0, timeless = 0, instants = 0;
+            rec::Stamped<GpuAccess> s{};
+            while (in.read(reinterpret_cast<char*>(&s), sizeof s)) {
+                switch (s.temporal.kind) {
+                    case core::TimeKind::Window:
+                        ++windows;
+                        assert(s.temporal.a.ticks >= 1000 && s.temporal.a.ticks < 1100 &&
+                               "lower bound must be the producer's, not a host clock");
+                        assert(s.temporal.b.ticks > s.temporal.a.ticks &&
+                               "a window must not close before it opens");
+                        break;
+                    case core::TimeKind::None:     ++timeless; break;
+                    case core::TimeKind::Instant:  ++instants; break;
+                    default: assert(false && "unexpected TimeKind in a gpu_access stream");
+                }
+            }
+            assert(windows == 49 && "the 49 bounded accesses the filter kept");
+            assert(timeless == 1 && "the unbounded one: timeless, not invented");
+            assert(instants == 100 && "the direct Recorder::record path is unchanged");
+        }
 
         // The file says what it is. Check it says the right thing, in the right
         // place — the header is the first 32 bytes of every capture we ship.
