@@ -25,6 +25,32 @@ Two things the fix turned up that the plan did not predict:
   too, and case 05's peer traffic existed only because the NVSHMEM positional
   guess was being applied to NCCL's regions — `mem_dev` up to 8 on a 4-GPU node.
   Every mapped region now gets CUDA's answer for which GPU it lives on.
+- **Ownership resolves at kernel launch, not on the drain path**, which is where
+  the plan put it. The ring never fills at the default 1 GiB, so the whole
+  capture arrives in the single flush at teardown, together with the terminate
+  token — the one batch needing the map is the one batch that cannot build it.
+  Launch time has both properties: NVSHMEM alive, and every region the kernel
+  can touch already mapped.
+
+## OPEN: case 05's `ops` golden asserts peer loads that were never real
+
+`05_nccl_p2p` was passing on fabricated attribution — `find_nvshmem_heap_owner`
+applied to NCCL's `cuMemMap` regions, which is where `peer_traffic.sql`'s own
+note about "(3,0) vs (2,8)" comes from; there is no device 8 on a 4-GPU node.
+With attribution fixed its peer traffic is real again (`peer_traffic` passes,
+1,179,948 accesses where the run before had 0), and one check still differs:
+
+```
+ops:  golden {load, store} per rank;  measured {store} per rank
+```
+
+`ops.sql` claims the invariant is that "every rank performs both peer loads and
+peer stores". That was recorded from the fabricated owners, and case 03 — NCCL
+too, on the alloc-registry path the bug never touched — has asserted peer
+**stores only** all along. Deliberately not changed: unlike cases 04 and 06,
+whose answer is derivable from a three-line kernel, deciding this would mean
+reading it off the run. Needs someone to say whether NCCL's ring allreduce does
+direct peer reads at all, and the answer belongs in `ops.sql`'s comment.
 
 The original entry:
 

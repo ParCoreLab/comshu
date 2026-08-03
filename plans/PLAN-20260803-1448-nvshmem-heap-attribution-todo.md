@@ -1,9 +1,10 @@
 # PLAN — ask NVSHMEM who owns an address, instead of guessing from the VA layout
 
 - **Created:** 2026-08-03 14:48 +03
-- **Status:** DONE — implemented in `21f3b74`. Step 1's premise held (evidence
-  below); Design A was taken. Two deliberate departures from the plan, both
-  recorded under "What actually happened".
+- **Status:** DONE — `21f3b74`, `ebaaf3c`, `f64a3fb`. Step 1's premise held
+  (evidence below); Design A was taken. Four departures from the plan as
+  written, all recorded under "What actually happened"; one open decision on
+  case 05 that is not the implementer's to make.
 - **Blocks:** `PLAN-20260803-1021-gpumem-window-timestamps-todo.md` (the window
   change is parked because it perturbs the race this plan removes).
 - **Findings:** `things-to-circle-back-to.md` — "NVSHMEM heap attribution
@@ -277,9 +278,7 @@ like with like. On one node it is numerically identical to the PE, so no golden
 moves; at 8 PEs over 2 nodes it is the difference between a device id and a
 rank id that merely looked like one.
 
-### Departure 3: two things the first MN5 run (44136544) forced
-
-Both were found by running, not by reasoning, and both are now in `ebaaf3c`.
+### Departure 3: three things only running could find (`ebaaf3c`, `f64a3fb`)
 
 **`nvshmem_ptr` is only safe inside NVSHMEM's init window.** It dereferences the
 heap state, and outside `nvshmem_init` .. `nvshmem_finalize` that state does not
@@ -306,6 +305,24 @@ fix is not NVSHMEM-shaped: every mapped region now gets the device
 05 was measuring, and it is what the plan's "adds entries to a registry that
 already exists" was always going to have to cover.
 
+**Ownership must be resolved at kernel launch, not on the drain path.** The plan
+placed the work on the recv thread ("build the PE map on first eligible
+access"), and that cannot work — for a reason that only shows up in a real
+capture. The channel ring never fills at the default 1 GiB, so the *entire*
+capture arrives in the single flush at context teardown, in the same buffer as
+the terminate token. The one batch that needs the map is therefore the one batch
+that cannot build it: NVSHMEM is already finalized, and the guard above
+correctly refuses. Job 44137162: no crash, and every access filtered out, in
+cases 04, 05, 06 and 07 at once.
+
+Kernel launch has both properties the drain path lacks: NVSHMEM is initialised,
+and every region the kernel can touch is already mapped — you cannot launch
+against memory that is not. It is also the CUDA-callback thread, which already
+holds `g_mutex`, so the region list stops being shared between threads at all.
+That deleted the atomically published snapshot and the second mutex the
+drain-path version needed. The drain path now contains nothing but a registry
+lookup, which is what step 4 was after.
+
 ### Consequence: three goldens changed, and why that is not regeneration
 
 Predicted from the workload *before* the run, not read off it. `put_to_next`
@@ -326,6 +343,51 @@ stores only.
 Case 07's golden needing no change is the strongest single check here: it was
 captured from a run that happened to land on the right side of the race, and
 the new scheme reproduces it by construction.
+
+Every prediction above held exactly. Case 04's `peer_topology` came back
+`0,1,196608 / 1,2,196608 / 2,3,196608 / 3,0,196608` — the ring, to the access.
+
+### The board
+
+Before (`44113361`, at `main`) and after (`44138023` + `44138108`, at `f64a3fb`):
+
+| case | before | after | |
+|---|---|---|---|
+| 01 ib_pingpong | FAIL | PASS | pre-existing `qp_num` collision, flaky either way |
+| 02 nccl_internode | FAIL | FAIL | pre-existing — `degree` 2 vs 1, same collision |
+| 03 p2p_kernel | PASS | **PASS** | the regression guard, unchanged |
+| 04 nvshmem | PASS | **PASS** | on an exact ring now, not on `peers = 2` |
+| 05 nccl_p2p | PASS | FAIL | see below |
+| 06 nvshmem_coexist | FAIL | FAIL | `traffic` went green; the two pre-existing IB checks (`ib_entities` 456/460, `regions_per_rank` 114/115) still fail, as they do at `5a28119` |
+| 07 nvshmem_multinode | PASS | **PASS** | golden untouched |
+| 08 ib_send_bw | PASS | PASS | |
+
+### Case 05 needs a decision, and it is not mine to make
+
+Case 05 is NCCL — no NVSHMEM anywhere — and it was passing on fabricated data:
+`find_nvshmem_heap_owner` was being applied to NCCL's `cuMemMap` regions, which
+is where `peer_traffic.sql`'s own note about "(3,0) vs (2,8)" comes from. On a
+4-GPU node there is no device 8.
+
+After the fix its peer traffic is real again — `peer_traffic` passes, 1,179,948
+accesses where the previous run had 0 — and one check still differs:
+
+```
+ops:  golden has  {load, store} per rank;  measured  {store} per rank
+```
+
+`ops.sql` says the invariant is "every rank performs both peer loads and peer
+stores". That claim was recorded from the fabricated attribution, and the `load`
+rows are the same phantom-local-load artifact that cases 04 and 06 shed. Case 03
+— NCCL, and on the alloc-registry path the bug never touched — has asserted
+peer **stores only** all along, which corroborates it.
+
+**Not changed here, deliberately.** For cases 04 and 06 the answer is derivable
+from a three-line kernel anyone can read, so the goldens could be written before
+the run. NCCL's access pattern is not: deciding that it performs no peer loads
+would mean reading the answer off the run, which is the one thing this plan
+rejects. It needs someone to say whether NCCL's ring allreduce does direct peer
+reads at all, and the answer belongs in `ops.sql`'s comment either way.
 
 ## Still open
 
