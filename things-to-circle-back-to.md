@@ -2,6 +2,31 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN: gpumem stamps *drain* time, as an Instant — plan written
+
+Every `GpuAccess` carries `TimeKind::Instant` at a host TSC read taken when the
+NVBit drain thread dequeued it, not when the SM issued the access. The device
+captures no clock at all (`dev_common.h` and `inject_funcs.cu` have no time
+field), `RawAccess` has no timestamp, and `attr/pipeline.hpp:29` calls the
+one-argument `record(rec)`, which is `append(now_instant(), r)`.
+
+So the stamp is wrong three ways: wrong moment (drain, with a 1 GiB ring *and* a
+device-side buffer in front of it, so the lag is unbounded); wrong precision
+claim (`Instant` asserts exactness nothing knows); and wrong order (a batch is
+stamped in flush order, so accesses far apart on the device collapse together).
+
+`Temporal::window` exists for precisely this and has **zero call sites**.
+
+Invisible to the suite because no gpumem golden queries time — 03/04/05/06/07
+assert counts, sizes and `run_dev`/`mem_dev` pairs only.
+
+**Fix planned:** `plans/PLAN-20260803-1021-gpumem-window-timestamps-todo.md`.
+Short version: the upper bound is free (the current drain timestamp is a valid
+*upper* bound), and the lower bound is the kernel launch — already plumbed to
+the device (`nvbit_set_at_launch`) and already a parameter of
+`pcomm_instrument_mem`, just never stored. Changes no on-disk layout: `Temporal`
+is already in every record, only its field *values* change.
+
 ## OPEN: nvc++ cannot correctly compile libpcomm_engine.so (rdtsc)
 
 Built with NVHPC's `nvc++` — which is what `CMAKE_CXX_COMPILER` resolves to in
