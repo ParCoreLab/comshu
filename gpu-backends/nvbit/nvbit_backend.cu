@@ -142,7 +142,8 @@ struct MutexLock {
 //   - non-NULL exactly for the P2P-reachable PEs: 0-3 within a node, NULL for
 //     the four PEs across the IB link (which is why those ranks legitimately
 //     record no NVLink traffic), and self only under NVSHMEM_DISABLE_P2P;
-//   - callable from a non-main thread, which the recv thread is.
+//   - callable from a thread other than the one that initialised NVSHMEM, which
+//     the CUDA-callback thread this runs on may well be.
 struct NvshmemApi {
     void* (*ptr)(const void*, int){nullptr};
     int (*my_pe)(){nullptr};
