@@ -37,10 +37,13 @@ OUT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/probe-ibgda-$SLURM_JOB_ID"
 rm -rf "$OUT"; mkdir -p "$OUT/logs"
 
 # ---- build the probe shim -------------------------------------------------
+# common.sh exports NCCL_HOME/NVSHMEM_HOME but no CUDA_HOME; the SDK root it
+# derives them from is the one thing that is guaranteed set.
+CUDA_DIR="${CUDA_HOME:-$PCOMM_SDK/cuda}"
 pcomm_load_build
 g++ -shared -fPIC -O2 -o "$OUT/devx_probe.so" "$PROBE_DIR/devx_probe.cpp" \
-    -I"$CUDA_HOME/include" -L"$CUDA_HOME/lib64/stubs" -lcuda -ldl || {
-  echo "PROBE ABORT: shim did not build"; exit 1; }
+    -I"$CUDA_DIR/include" -L"$CUDA_DIR/lib64/stubs" -lcuda -ldl || {
+  echo "PROBE ABORT: shim did not build (CUDA_DIR=$CUDA_DIR)"; exit 1; }
 
 APP="$HOME/nvshmem_putget"
 if [ ! -x "$APP" ]; then
