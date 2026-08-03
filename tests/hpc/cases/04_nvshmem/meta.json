@@ -2,5 +2,16 @@
   "case": "04_nvshmem",
   "providers": ["p2p"],
   "topology": "1 node x4 H100, NVSHMEM put-ring (kernel-filtered to put_to_next)",
-  "golden": "committed (verified); NVSHMEM 3.7 device attribution unreliable, see peer_fanout"
+  "golden": "committed (verified); NVSHMEM 3.7 device attribution unreliable, see peer_fanout",
+  "workload": {
+    "ranks": 4, "nodes": 1, "gpus": 4,
+    "iters": 3, "elems": 65536, "elem_bytes": 4
+  },
+  "workload_note": "`mpirun -np 4 ... putget 65536 3`. put_to_next issues one peer store per element per iteration, so elems*iters = 196608 stores of 4 B per rank, and — because the ring gives each PE exactly one neighbour — to exactly one peer device. The volume oracle holds; the attribution one does not.",
+  "expect_tables": ["gpu_access", "mem_object"],
+  "expect_fail_asserts": {
+    "peer_fanout": "NVSHMEM 3.7 heap attribution — one real edge is split across two adjacent phantom devices, so fan-out reads 2 for a one-neighbour ring. Blocked on PLAN-20260803-1448-nvshmem-heap-attribution. This assertion is that plan's acceptance test; do not edit it to match.",
+    "no_local_loads": "Same bug: the PE's local read of src[i] is attributed to a phantom device, so it survives the peer-only RemoteFilter and doubles the access count. 07_nvshmem_multinode runs the identical binary with correct attribution and records zero loads.",
+    "owner_in_range": "Same bug: mem_dev comes back as 65..69 (job 44113361) and 238..242 (44111484) for a 4-GPU node. The out-of-range value is the most direct evidence of the fault and the earliest thing a fix should make go away."
+  }
 }

@@ -2,5 +2,12 @@
   "case": "02_nccl_internode",
   "providers": ["ib"],
   "topology": "2 nodes x4 H100, ncclAllReduce, P2P off (pure IB)",
-  "golden": "pending pinned run"
+  "golden": "pending pinned run",
+  "workload": {
+    "ranks": 8, "nodes": 2, "gpus": 4,
+    "iters": 20, "elems": 8388608, "elem_bytes": 4
+  },
+  "workload_note": "`mpirun -np 8 --map-by ppr:4:node ... nccl_allreduce 8388608 20`. elems/iters are recorded for completeness, but no assertion derives a byte count from them: NCCL picks channels, protocol and chunking, so the wire volume is its decision and not the command line's — pinning Ring/Simple/1-channel moved sends from 57280 to 26880, which is the size of the gap between what we ask for and what goes out. Volume stays a golden; the assertions cover symmetry and completion health.",
+  "expect_tables": ["ib_mem_region", "ib_queue_pair", "ib_modify_qp",
+                    "ib_post_send", "ib_poll_cq", "comm_edges"]
 }

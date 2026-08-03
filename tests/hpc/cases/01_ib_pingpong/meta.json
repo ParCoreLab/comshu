@@ -2,5 +2,13 @@
   "case": "01_ib_pingpong",
   "providers": ["ib"],
   "topology": "2 nodes, ibv_rc_pingpong over NDR IB",
-  "golden": "committed (verified)"
+  "golden": "committed (verified)",
+  "workload": {
+    "ranks": 2, "nodes": 2,
+    "iters": 20, "msg_bytes": 4096,
+    "regions_per_rank": 1
+  },
+  "workload_note": "job.sbatch runs `ibv_rc_pingpong -d $DEV -n 20` on each of two nodes; 4096 is pingpong's default message size and regions_per_rank=1 is its single registered buffer (pp_init_ctx). Every number here comes from the program and its command line, which is what lets asserts/ state a derivation instead of a remembered result.",
+  "expect_tables": ["ib_mem_region", "ib_queue_pair", "ib_modify_qp",
+                    "ib_post_send", "ib_poll_cq", "comm_edges"]
 }

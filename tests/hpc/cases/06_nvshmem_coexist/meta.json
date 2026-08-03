@@ -4,5 +4,16 @@
   "topology": "1 node x4 H100, NVSHMEM put-ring, BOTH providers in one process",
   "golden": "committed (verified, 2-run determinism gate)",
   "why": "regression test for provider coexistence (7a5b55a): ib + gpumem loaded into ONE process, both writing into ONE capture. Same workload/topology as 04, the only variable is the second provider — so a coexistence regression shows up here and nowhere else.",
-  "scope_note": "single-node, so NVSHMEM never posts an IB send (every peer is NVLink-reachable): the ib side contributes entities (MR/QP/modify_qp), not traffic. Cross-transport TRAFFIC correlation needs 2 nodes — see 07_nvshmem_multinode."
+  "scope_note": "single-node, so NVSHMEM never posts an IB send (every peer is NVLink-reachable): the ib side contributes entities (MR/QP/modify_qp), not traffic. Cross-transport TRAFFIC correlation needs 2 nodes — see 07_nvshmem_multinode.",
+  "workload": {
+    "ranks": 4, "nodes": 1, "gpus": 4,
+    "iters": 3, "elems": 65536, "elem_bytes": 4
+  },
+  "workload_note": "identical to case 04 by construction — `putget 65536 3` on 4 PEs — because the only variable this case changes is the second provider. Both cases assert the same derivation against the same oracle, which is what makes the comparison between them evidence rather than coincidence.",
+  "expect_tables": ["gpu_access", "mem_object",
+                    "ib_mem_region", "ib_queue_pair", "ib_modify_qp"],
+  "expect_fail_asserts": {
+    "no_local_loads": "inherited from case 04's NVSHMEM 3.7 heap attribution bug, byte-identically (196608 phantom loads per rank in both). Asserted here separately so that a fix landing on one case and not the other would name coexistence as the difference. Blocked on PLAN-20260803-1448-nvshmem-heap-attribution.",
+    "owner_in_range": "same bug, same numbers as case 04: mem_dev 65..69 in job 44113361, 238..242 in 44111484, on a 4-GPU node."
+  }
 }

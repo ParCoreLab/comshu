@@ -3,5 +3,16 @@
   "providers": ["ib"],
   "topology": "2 nodes, perftest ib_send_bw over NDR IB",
   "why": "perftest takes the newer entry points for both sends and registrations: ibv_wr_* (bypassing ctx->ops.post_send) and ibv_reg_mr_iova2 (bypassing the legacy ibv_reg_mr symbol). Before those hooks this capture had zero ib_post_send and zero ib_mem_region rows, and every other case stayed green",
-  "golden": "derived from the -n/-s arguments, not from our own output"
+  "golden": "derived from the -n/-s arguments, not from our own output",
+  "workload": {
+    "ranks": 2, "nodes": 2,
+    "iters": 1000, "msg_bytes": 8192,
+    "regions_per_rank": 1
+  },
+  "workload_note": "ITERS and SIZE are shell variables in job.sbatch, passed as `ib_send_bw -n $ITERS -s $SIZE`; the workload block is the same two numbers in the one place the checks can read them. Not derived, and deliberately left to the golden: the 16384 B per region, which is 2*size only because perftest double-buffers send and receive for its single QP — a guess at an implementation detail, not a derivation from the command line.",
+  "expect_tables": ["ib_mem_region", "ib_queue_pair", "ib_modify_qp",
+                    "ib_post_send", "ib_poll_cq"],
+  "expect_fail_asserts": {
+    "tables_present": "ib_queue_pair is EMPTY for perftest and always has been — found 2026-08-03 by this assertion, on captures 44111484 and 44113361, with three green goldens sitting next to it. perftest creates its QP through mlx5dv_create_qp and the provider hooks only ibv_create_qp (ib_hooks.hpp:44 and the comment above ibv_qp_to_qp_ex, which records the mlx5dv path for the WR API but not for the entity). So the QP's 3 modify_qp transitions are captured against a queue pair that no record ever created. Exactly the class of blindness this case exists for — sends and registrations were the two known doors, and this is a third — which is why the table list stays as it is and the marker comes off when the hook lands, rather than the expectation being edited down to what we emit."
+  }
 }

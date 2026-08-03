@@ -2,6 +2,26 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN: perftest's queue pair is never created, only modified
+
+`case 08`'s `ib_queue_pair` table is **empty**, on every capture we have
+(44111484, 44113361), while `ib_modify_qp` holds the QP's three state
+transitions. So the modify records refer to an entity no record ever created.
+
+Cause is the same shape as the two gaps case 08 was built to catch. We hook
+`ibv_create_qp` (`ib_hooks.hpp:44`); perftest reaches the WR API through
+`mlx5dv_create_qp` and, as the comment above `ibv_qp_to_qp_ex` already records,
+never calls `ibv_create_qp_ex` either. The *sends* were fixed by hooking
+`ibv_qp_to_qp_ex` — the one door every WR-API path must come through — but the
+QP **entity** still has only the one narrow door hooked.
+
+Found 2026-08-03 by `expect_tables`, the cheapest assertion in the suite: three
+goldens sat green beside an empty table for as long as the case has existed,
+because a query over an empty table returns an empty result and a golden
+recorded from the same empty table matches it. Marked `expect_fail_asserts` on
+case 08 with the table list left as it should be, not edited down to what we
+emit.
+
 ## OPEN: NVSHMEM heap attribution depends on when a record is drained
 
 `find_nvshmem_heap_owner` (`nvbit_backend.cu`) resolves which PE owns an address
@@ -57,6 +77,32 @@ reachable by `dlsym` at runtime — no link-time dependency, and
 "needs vendor internals" into "bounded, uses the public API", and it is a net
 deletion: both the 3.x positional scheme and the 2.x hardcoded-VA path go.
 
+**Now asserted, on three cases, as of 2026-08-03.** `owner_in_range`
+(`suite/asserts/`) checks `mem_dev < gpus` wherever `gpu_access` exists, and it
+is the direct test of this entry's claim. Results against the stored captures:
+
+| case | run | `mem_dev` | verdict |
+|---|---|---|---|
+| 03 p2p_kernel | 44111484, 44113361 | `(run_dev+1) % 4` | pass — the control |
+| 04 nvshmem | 44113361 / 44111484 | 65..69 / 238..242 | **fails, always** |
+| 06 coexist | both | identical to 04 | **fails, always** |
+| 07 multinode | 44113361, 44116827 | `run_dev+1` | pass |
+| 07 multinode | 44111484 | 64..67 | **fails** |
+| 05 nccl_p2p | 44113361 | up to 8 | **fails** — see below |
+
+04 and 06 are marked `expect_fail`; **07 deliberately is not**, because there it
+is intermittent, and a red board on the runs where the corruption happens is the
+correct signal. Note that 04 and 06 fail *constantly* — this is not only a
+timing race on multinode, it is the steady state on a single node.
+
+**A second, unrelated instance: `05_nccl_p2p`.** `mem_dev` reaches 8 on a
+four-GPU node (pairs `(0,5)`, `(0,7)`, `(1,8)`, `(2,7)`, `(3,8)` in job
+44113361). Not NVSHMEM's symmetric heap — NCCL is not using one — so it has a
+different provenance and is not covered by `PLAN-20260803-1448`. The case's
+`oracle_note` had already recorded odd pairs like `(2,8)` as "unstable"; they are
+not unstable, they are out of range. Undiagnosed; marked `expect_fail` so it
+stops being invisible.
+
 **Already worked around, in a passing test.** `case 04`'s `peer_fanout.sql` says
 "the ring put has each PE store to one neighbor" and its golden asserts
 `peers = 2`, with a comment that mem_device ids are "unreliable and
@@ -92,6 +138,30 @@ replaced once for the same reason. This is a recurring class, not three
 accidents. The fix direction is the one that already worked for 02: assert
 shapes that cannot encode a wire id (per-rank totals, counts, invariants like
 "every owner is in `[0, npes)`") rather than specific peer identities.
+
+**Taken, 2026-08-03** (`PLAN-20260803-1520-correctness-checks-not-goldens-done.md`).
+Each of these cases now has an `asserts/` claim beside the golden, and every one
+of them passes on the captures the goldens fail:
+
+- **01** `topology` asserts fan-out 1 carrying `iters` sends of `msg_bytes`, in
+  rank space, and does **not** assert who the peer is. Passes on 44111484 and
+  44113361, both of which collide (`449`, `461`) and both of which report
+  `0 -> 0`. The self-edge is left unasserted on purpose and the reason is in the
+  file: `dst_rank` becomes honest when the local LID is captured, not before.
+- **02** `symmetric_participation` asserts that all `ranks` post, and post
+  equally. Which is a stronger statement than it sounds: **the `degree` golden's
+  flat `peers = 2` no longer reproduces at all.** Job 44113361's `comm_edges`
+  name only `dst_rank` 0 and 3, giving degrees alternating 1 and 2, while the
+  per-rank send totals are 3360 for all eight. The degree form was already the
+  *replacement* for a broken one; at 8 ranks over 2 nodes the `qp_num -> rank`
+  map has degraded past the point where any peer-identity claim survives.
+- **07** `cross_transport_shape` asserts that exactly `nodes` ranks record zero
+  NVLink accesses and the rest record `elems*iters`, and
+  `ib_carries_the_crossing` asserts that the zero-NVLink ranks are the ones with
+  the bulk IB volume — without naming PE 3 or PE 7, which are an artefact of
+  `--map-by ppr:4:node`. On the corrupted 44111484 capture these two plus
+  `owner_in_range` and `no_local_loads` fire with four specific diagnoses, where
+  the golden produced a sixteen-number diff.
 
 ## FIXED: fork-aware capture — the child recorded nothing
 
