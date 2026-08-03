@@ -1,7 +1,11 @@
 # PLAN — capture device-initiated IB (IBGDA), which pcomm currently records as silence
 
 - **Created:** 2026-08-03 22:53 +03
-- **Status:** TODO
+- **Status:** BLOCKED on hardware. Stage 2 ran (jobs 44156334, 44156479,
+  44156594) and returned a verdict about MareNostrum 5 rather than about the
+  design: **IBGDA cannot run on the ACC partition at all**, so neither option A
+  nor option B can be built or validated here. See "Stage 2 — what actually
+  happened" at the end.
 - **Prior art:** `../SigmaTrace` — `Mlx5dvTrace/`, `Profiler/Handlers/IBV/Mlx5dv.cpp`,
   `Profiler/Handlers/CUDAHijack.cpp`, `Profiler/Modules/MemoryHijack/`,
   `Profiler/Modules/CudaExportTableOverwrite/`, `Profiler/Modules/GPUMemoryHijack/`.
@@ -321,3 +325,84 @@ Consistent with `PLAN-20260803-1520-correctness-checks-not-goldens`. New case
   its own kill switch.
 - **Scope.** Stage 1 alone is a real deliverable and closes a genuine hole
   (including case 08). Stages 2-4 should not hold it up.
+
+## Stage 2 — what actually happened
+
+Three jobs. The question the probe was built to answer was never reached,
+because a prior question answered itself first.
+
+**44156334** — aborted in 15 s, shim did not compile. `common.sh` exports
+`NCCL_HOME` and `NVSHMEM_HOME` but never `CUDA_HOME`, so the build ran with
+`-I/include`. Fixed to key off `PCOMM_SDK`; every later job test-compiled the
+shim on the login node before submitting.
+
+**44156479** — IBGDA failed to initialise:
+
+```
+ibgda.cpp:nvshmemt_init:3577: neither nv_peer_mem, or nvidia_peermem detected.
+                              Skipping transport.
+init failed for transport: IBGDA
+```
+
+Self-inflicted. `NVSHMEM_IB_DISABLE_DMABUF=1` was copied from SigmaTrace without
+checking what it disables: IBGDA reaches GPU memory by DMABUF *or* by the peermem
+kernel module, SigmaTrace sets that flag because their system lacks the first and
+needs the second, and on MN5 it is the second that is missing. The flag left
+IBGDA with no route at all.
+
+The run also broke the probe's own guard. It logged **159 DEVX `CREATE_QP`
+calls on a run where IBGDA never initialised** — HPC-X/UCX drives DEVX for
+ordinary MPI — and the guard reported that as "IBGDA engaged". The guard existed
+to stop exactly this inference and committed it anyway. Now keyed on
+GPU-resident WQ umems (SigmaTrace's discriminator, `Mlx5dv.cpp:82-87`), with the
+QP count printed and labelled *"NOT evidence on its own"*. Three further defects
+the failure exposed — eight ranks shredding one shared log file, `classify()`
+flattening "could not ask CUDA" and "CUDA says host memory" into the same `-1`,
+and the analysis being skipped on a failed run when the failure *was* the
+finding — are fixed in `8f452c1`.
+
+**44156594** — DMABUF re-enabled. The failure moved deeper and became
+conclusive:
+
+```
+ibgda.cpp 3837 no active IB device that supports GPU-initiated communication
+               is found, exiting...
+```
+
+NVSHMEM enumerated the HCAs and none of them qualifies. That is a device/firmware
+capability verdict, not a configuration mistake, and no environment variable
+reaches it. Node `as06r3b28`: `nvidia_peermem` NOT LOADED,
+`/sys/kernel/mm/memory_peers` absent.
+
+Probe tooling confirmed sound on the way past: all 2496 umem registrations
+classified `cuerr=1` (`CUDA_ERROR_INVALID_VALUE`) rather than `3`
+(`NOT_INITIALIZED`) — CUDA was answering "host pointer", which is correct for
+MPI's buffers, so the classifier works and would have recognised a GPU-resident
+send queue had one existed. Per-rank logs came back clean for all 8 ranks.
+
+### What this changes
+
+The blocker is symmetric, and that is the load-bearing point. **Option A is no
+more testable here than option B.** No IBGDA means no device-initiated doorbells
+to hijack, so SigmaTrace's approach cannot be developed, validated, or regression-
+tested on MN5 either. The cost argument that favours A is still correct and still
+does not help: neither route can be exercised.
+
+So the decision is no longer "A or B". It is:
+
+1. **Find hardware that supports IBGDA.** SigmaTrace's doorbell hijack presumably
+   ran somewhere — where? That cluster is the prerequisite for any of Stages 3-4,
+   whichever option wins.
+2. **Ask BSC** whether GPU-initiated communication is disabled by firmware/driver
+   configuration on the ACC partition rather than absent from the hardware. The
+   HCAs may be capable with `nvidia_peermem` loaded or a firmware setting changed.
+3. **Ship Stage 1 regardless.** The mlx5dv/DEVX provider needs none of this. It is
+   passive, it closes case 08's `mlx5dv_create_qp` gap, and this probe already
+   proves there is a real DEVX control plane on MN5 to capture — 2880
+   `devx_obj_create` calls, 1272 of them `CREATE_QP`, 816 UAR allocations, all
+   currently invisible to pcomm. That traffic is MPI's rather than NVSHMEM's,
+   which makes it *less* interesting than IBGDA but not uninteresting: it is
+   real communication the tool cannot presently see.
+4. **Do not build A or B blind.** Writing an untestable doorbell hijack — the one
+   component that can corrupt the application rather than merely the trace — is
+   the worst possible thing to develop without a machine to run it on.
