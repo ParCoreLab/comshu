@@ -1,11 +1,12 @@
 # PLAN — capture device-initiated IB (IBGDA), which pcomm currently records as silence
 
 - **Created:** 2026-08-03 22:53 +03
-- **Status:** BLOCKED on hardware. Stage 2 ran (jobs 44156334, 44156479,
-  44156594) and returned a verdict about MareNostrum 5 rather than about the
-  design: **IBGDA cannot run on the ACC partition at all**, so neither option A
-  nor option B can be built or validated here. See "Stage 2 — what actually
-  happened" at the end.
+- **Status:** UNBLOCKED — wrong machine, not wrong plan. MN5's ACC partition
+  cannot run IBGDA (jobs 44156334/44156479/44156594), but **`a100` / `du04`
+  can**, and a real IBGDA workload has now completed under the probe there. One
+  architectural finding changes the design for both options: **CUDA driver-API
+  interception is required even for passive observation** — see "Stage 2 — what
+  actually happened".
 - **Prior art:** `../SigmaTrace` — `Mlx5dvTrace/`, `Profiler/Handlers/IBV/Mlx5dv.cpp`,
   `Profiler/Handlers/CUDAHijack.cpp`, `Profiler/Modules/MemoryHijack/`,
   `Profiler/Modules/CudaExportTableOverwrite/`, `Profiler/Modules/GPUMemoryHijack/`.
@@ -406,3 +407,95 @@ So the decision is no longer "A or B". It is:
 4. **Do not build A or B blind.** Writing an untestable doorbell hijack — the one
    component that can corrupt the application rather than merely the trace — is
    the worst possible thing to develop without a machine to run it on.
+
+## Stage 2 on `a100` (du04) — IBGDA works, and the design changes
+
+MN5 was the wrong machine. `a100` (`du04`, reachable via `university-base`) has
+4× A100-SXM4-40GB and one ConnectX-5 (fw 16.35.8002, port ACTIVE, InfiniBand),
+and — unlike MN5 — it is **configured** for GPU-initiated RDMA:
+
+| | MN5 ACC | du04 |
+|---|---|---|
+| `nvidia_peermem` | NOT LOADED | loaded |
+| `PeerMappingOverride` | absent | `=1` |
+| NVSHMEM device check | *"no active IB device that supports GPU-initiated communication"* | `mlx5_0` accepted |
+
+Those two driver settings are IBGDA's documented requirements, which makes MN5's
+failure look like **configuration rather than incapable hardware** — worth a BSC
+ticket rather than writing the cluster off.
+
+**IBGDA runs here**, confirmed end to end: `nvshmem put-ring OK: 2 PEs, 1024
+ints, 2 iters`, exit 0, with `NVSHMEM_REMOTE_TRANSPORT=ibgda` pinned so a
+fallback would have failed the run outright. Single node is not an obstacle:
+`NVSHMEM_DISABLE_P2P=1` forces the remote IB transport between two local PEs, so
+the NIC is exercised in loopback. That is enough to observe doorbells and WQEs.
+It is *not* enough for any bandwidth claim — CX-5 on 40 Gb FDR10.
+
+### Four findings, in increasing order of consequence
+
+1. **NVSHMEM 3.4.5's IBGDA calls `mlx5dv_devx_umem_reg_ex` exclusively.**
+   Measured `reg=0 reg_ex=10`. The legacy `mlx5dv_devx_umem_reg` is never
+   called, so the double-counting that `ibv_reg_mr`/`ibv_reg_mr_iova2` caused in
+   case 01 does not arise here — but only the `_ex` hook sees anything at all.
+   The first run on du04 logged **zero** umem lines while creating six DEVX queue
+   pairs, purely because the probe hooked the older symbol.
+
+2. **The probe broke the application before it observed it.** `mlx5dv_*` is
+   exported by `libmlx5.so.1`, which rdma-core `dlopen`s as a provider plugin —
+   and `dlopen`'d objects are not in the `RTLD_NEXT` chain. Every lookup returned
+   null, the interposers dutifully returned `nullptr`, and NVSHMEM read that as a
+   failed UAR allocation and disabled the whole transport:
+
+   ```
+   ibgda.cpp:1830: NULL value cannot allocate mlx5dv_devx_uar
+   WARN: GPU cannot map UAR of device mlx5_0. Skipping...
+   ```
+
+   The same workload without the shim runs fine. This is the failure mode the
+   plan warns about for option A, arriving early and from the *passive* layer.
+   Two rules follow for `providers/mlx5dv/`: resolution must fall back to the
+   provider libraries by name (`smart_dlsym` needs to handle `dlopen`'d plugins),
+   and a hook that cannot find its real function must **abort loudly**, never
+   synthesise a failure the application did not cause.
+
+3. **IBGDA registers NIC buffers by dmabuf fd, not by address.** Every
+   registration is `addr=0x0 dmabuf=85`. So SigmaTrace's discriminator —
+   `cudaPointerGetAttributes` on the umem address to decide GPU residency
+   (`Mlx5dv.cpp:82-95`) — **cannot work on this NVSHMEM/rdma-core combination**.
+   There is no pointer to classify. Any port of that code would silently decide
+   "not a GPU buffer" and skip every IBGDA queue pair, which is precisely the
+   quiet-wrong-answer failure this whole line of work exists to prevent.
+
+4. **`cuMemGetHandleForAddressRange` is invisible to `LD_PRELOAD`.** That call
+   mints the dmabuf fd *from a GPU virtual address range*, so it is the one place
+   the `fd → [base, base+size)` mapping exists — and hooking it produced **zero**
+   hits, meaning NVSHMEM reaches it through `cuGetProcAddress`.
+
+### What (4) changes
+
+The CUDA export-table interception subsystem
+(`Profiler/Modules/CudaExportTableOverwrite/`) was scoped in this plan as
+option A's cost — the price of the UAR hijack, and a reason to prefer B. That is
+now wrong. **Both options need it**, because the GPU-memory↔NIC binding itself
+travels through the driver API:
+
+- Option B needs it to learn where the send queues *are* before NVBit's addresses
+  can be joined against anything.
+- Option A needs it for that and for the UAR substitution.
+
+So "B avoids the scary driver patching" is not a real advantage, and the cost
+comparison collapses back to the one the user made at the outset: the hijack is
+cheaper at runtime than instrumenting every global memory instruction. What
+survives of B's case is only the marginal-cost argument — free-ish on a capture
+already running NVBit, and passive.
+
+### Next
+
+- Recover `fd → GPU VA` despite `cuGetProcAddress`. Cheapest first step is a
+  `cuGetProcAddress` interposer that only *logs* which symbols are requested,
+  to confirm the route before building anything that patches a table.
+- Then Stage 2's actual question is answerable: join NVBit's addresses against
+  the send-queue ranges.
+- Stage 1 (`providers/mlx5dv/`) is unaffected and still the right first
+  deliverable — with finding (1) fixing which symbol to hook, and (2) and (3)
+  fixing how.

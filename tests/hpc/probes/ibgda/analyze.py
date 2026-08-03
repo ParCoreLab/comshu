@@ -32,6 +32,7 @@ def read_probe(log_dir):
     turned that into a confident wrong answer.
     """
     umems, uars, devx = [], [], collections.Counter()
+    entry = collections.Counter()
     bad, ranks = 0, []
     names = sorted(n for n in os.listdir(log_dir) if n.startswith("probe.txt."))
     for name in names:
@@ -42,11 +43,12 @@ def read_probe(log_dir):
                 if not parts:
                     continue
                 try:
-                    if parts[0] == "umem" and len(parts) >= 6:
+                    if parts[0] in ("umem", "umem_ex") and len(parts) >= 6:
                         addr, size, mem_type, ordinal, umem_id = parts[1:6]
                         umems.append(
                             (int(addr, 16), int(size), int(mem_type), int(ordinal), umem_id)
                         )
+                        entry[parts[0]] += 1
                     elif parts[0] == "uar" and len(parts) >= 3:
                         uars.append((int(parts[1], 16), parts[2]))
                     elif parts[0] == "devx" and len(parts) >= 2:
@@ -56,6 +58,9 @@ def read_probe(log_dir):
                 except ValueError:
                     bad += 1
     print(f"  probe logs read              : {len(names)} ({', '.join(ranks) or 'none'})")
+    print(f"  umem entry points            : "
+          f"reg={entry['umem']} reg_ex={entry['umem_ex']}"
+          f"{'   <- equal counts suggest reg chains into reg_ex (double-count risk)' if entry['umem'] and entry['umem'] == entry['umem_ex'] else ''}")
     if bad:
         print(f"  MALFORMED LINES              : {bad}  <- log corruption, treat with care")
     return umems, uars, devx

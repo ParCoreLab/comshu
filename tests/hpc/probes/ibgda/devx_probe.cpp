@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 
 #include <cuda.h>
 #include <infiniband/mlx5dv.h>
@@ -82,9 +83,43 @@ void classify(const void* addr, int* mem_type, int* ordinal, int* err) {
     }
 }
 
+// RTLD_NEXT alone is not enough, and getting this wrong does not produce a bad
+// trace — it breaks the application. On du04 every mlx5dv_* lookup failed, the
+// interposers dutifully returned nullptr, and NVSHMEM read that as "UAR
+// allocation failed" and disabled the entire IBGDA transport:
+//
+//   ibgda.cpp:1830: NULL value cannot allocate mlx5dv_devx_uar
+//   WARN: GPU cannot map UAR of device mlx5_0. Skipping...
+//
+// The same workload without the shim runs fine, so the probe was the defect.
+// Cause: mlx5dv_* is exported by libmlx5.so.1, which rdma-core dlopens as a
+// provider plugin, and dlopen'd objects are not in the RTLD_NEXT chain.
+//
+// So: fall back to the provider libraries by name, and if the real function
+// still cannot be found, ABORT. Never hand the application a failure it did not
+// cause — a profiler that silently degrades what it observes is worse than one
+// that refuses to start.
 template <typename Fn>
 Fn next(const char* name) {
-    return reinterpret_cast<Fn>(dlsym(RTLD_NEXT, name));
+    void* p = dlsym(RTLD_NEXT, name);
+    if (!p) {
+        for (const char* so : {"libmlx5.so.1", "libibverbs.so.1"}) {
+            if (void* h = dlopen(so, RTLD_LAZY | RTLD_NOLOAD)) {
+                p = dlsym(h, name);
+                if (p)
+                    break;
+            }
+        }
+    }
+    if (!p) {
+        std::fprintf(stderr,
+                     "devx_probe: FATAL cannot resolve real %s (RTLD_NEXT and "
+                     "libmlx5/libibverbs both failed). Aborting rather than returning a "
+                     "failure the application did not cause.\n",
+                     name);
+        std::abort();
+    }
+    return reinterpret_cast<Fn>(p);
 }
 
 }  // namespace
@@ -93,7 +128,7 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg(ibv_context* ctx, void* addr, 
                                                   uint32_t access) {
     static auto real = next<mlx5dv_devx_umem* (*)(ibv_context*, void*, size_t, uint32_t)>(
         "mlx5dv_devx_umem_reg");
-    mlx5dv_devx_umem* out = real ? real(ctx, addr, size, access) : nullptr;
+    mlx5dv_devx_umem* out = real(ctx, addr, size, access);
     if (out) {
         int mem_type = -1, ordinal = -1, err = 0;
         classify(addr, &mem_type, &ordinal, &err);
@@ -105,10 +140,68 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg(ibv_context* ctx, void* addr, 
     return out;
 }
 
+// The one NVSHMEM's IBGDA actually calls. `nm -D --undefined-only` on
+// nvshmem_transport_ibgda.so.3.0.0 lists BOTH umem_reg and umem_reg_ex, and the
+// first run here logged zero umem lines while creating six DEVX queue pairs —
+// every IBGDA registration goes through the _ex variant, which the legacy hook
+// cannot see.
+//
+// Both are hooked, and each tags which entry point fired, deliberately. In
+// rdma-core the legacy mlx5dv_devx_umem_reg is implemented on top of _ex, so
+// hooking both may double-count — that is exactly what happened with
+// ibv_reg_mr over ibv_reg_mr_iova2 (ib_hooks.hpp:26-42, case 01 went from one
+// region per rank to two identical rows). The tag lets this run MEASURE whether
+// the chaining happens on this rdma-core rather than assume it either way; the
+// provider can then hook only the funnel, with evidence.
+// The missing link. IBGDA registers its NIC buffers by dmabuf fd, not by
+// address: every umem_ex on du04 came back `addr=0x0 dmabuf=85`, so there is no
+// pointer for cuPointerGetAttribute to classify and the GPU-residency test
+// cannot work on the umem alone.
+//
+// The fd is minted here, from a GPU virtual address range, so this is where the
+// range → fd mapping exists. Recording it turns `dmabuf=85` back into a
+// [base, base+size) in GPU memory, which is what the gpu_access join needs.
+//
+// If NVSHMEM reaches this through cuGetProcAddress rather than the dynamic
+// symbol, LD_PRELOAD will not see it and nothing is logged — that is the
+// SigmaTrace export-table problem, and the absence of `dmabuf_range` lines is
+// how this run reports it rather than guessing.
+extern "C" CUresult cuMemGetHandleForAddressRange(void* handle, CUdeviceptr dptr, size_t size,
+                                                  CUmemRangeHandleType handleType,
+                                                  unsigned long long flags) {
+    static auto real =
+        next<CUresult (*)(void*, CUdeviceptr, size_t, CUmemRangeHandleType, unsigned long long)>(
+            "cuMemGetHandleForAddressRange");
+    CUresult rc = real(handle, dptr, size, handleType, flags);
+    if (rc == CUDA_SUCCESS && handle) {
+        std::fprintf(log_file(), "dmabuf_range 0x%llx %zu fd=%d type=%d\n",
+                     static_cast<unsigned long long>(dptr), size,
+                     *static_cast<const int*>(handle), static_cast<int>(handleType));
+        std::fflush(log_file());
+    }
+    return rc;
+}
+
+extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg_ex(ibv_context* ctx,
+                                                     mlx5dv_devx_umem_in* umem_in) {
+    static auto real =
+        next<mlx5dv_devx_umem* (*)(ibv_context*, mlx5dv_devx_umem_in*)>("mlx5dv_devx_umem_reg_ex");
+    mlx5dv_devx_umem* out = real(ctx, umem_in);
+    if (out && umem_in) {
+        int mem_type = -1, ordinal = -1, err = 0;
+        classify(umem_in->addr, &mem_type, &ordinal, &err);
+        std::fprintf(log_file(), "umem_ex 0x%llx %zu %d %d %u cuerr=%d dmabuf=%d\n",
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(umem_in->addr)),
+                     umem_in->size, mem_type, ordinal, out->umem_id, err, umem_in->dmabuf_fd);
+        std::fflush(log_file());
+    }
+    return out;
+}
+
 extern "C" mlx5dv_devx_uar* mlx5dv_devx_alloc_uar(ibv_context* ctx, uint32_t flags) {
     static auto real =
         next<mlx5dv_devx_uar* (*)(ibv_context*, uint32_t)>("mlx5dv_devx_alloc_uar");
-    mlx5dv_devx_uar* out = real ? real(ctx, flags) : nullptr;
+    mlx5dv_devx_uar* out = real(ctx, flags);
     if (out) {
         std::fprintf(log_file(), "uar 0x%llx %u\n",
                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(out->reg_addr)),
@@ -127,7 +220,7 @@ extern "C" mlx5dv_devx_obj* mlx5dv_devx_obj_create(ibv_context* ctx, const void*
     static auto real =
         next<mlx5dv_devx_obj* (*)(ibv_context*, const void*, size_t, void*, size_t)>(
             "mlx5dv_devx_obj_create");
-    mlx5dv_devx_obj* obj = real ? real(ctx, in, inlen, out, outlen) : nullptr;
+    mlx5dv_devx_obj* obj = real(ctx, in, inlen, out, outlen);
     if (obj && inlen >= 4) {
         // First 16 bits of a DEVX command buffer are the opcode, big-endian.
         const auto* bytes = static_cast<const unsigned char*>(in);
