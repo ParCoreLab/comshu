@@ -62,8 +62,13 @@ VOCAB_HEADERS = ["libpcomm/include/pcomm/core/vocab.hpp",
 # Where the schema hash constant lives, and what it hashes.
 STREAM_HEADER_HPP = "libpcomm/include/pcomm/rec/stream_header.hpp"
 
+# This walk is over the *filesystem*, not `git ls-files`, and that is deliberate
+# (see parse_records) — so it also descends into anything else living under the
+# root. `.claude` holds agent worktrees, which are complete checkouts of this
+# same repo: without skipping it, every record is "declared twice" and the check
+# fails with 24 problems that are all one directory.
 SKIP_DIRS = {"build", "build-all", "build-x", "third_party", ".tools", ".git",
-             ".cache", "pcomm-out"}
+             ".cache", "pcomm-out", ".claude"}
 # Records declared here are fixtures, not format. See parse_records.
 TEST_DIRS = {"tests"}
 

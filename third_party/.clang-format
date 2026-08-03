@@ -1,0 +1,4 @@
+# Vendored / generated — never reformat. clang-format walks up from each
+# file, so this stops both the hook and any editor-on-save from touching it.
+DisableFormat: true
+SortIncludes: false

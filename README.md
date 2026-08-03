@@ -115,6 +115,30 @@ New dtags are used throughout, so the baked RUNPATH is searched *after*
 runtime dependency an install cannot supply is `nvdisasm` on `PATH`, which NVBit
 needs when `-p p2p` actually runs on a GPU node.
 
+## Formatting
+
+`.clang-format` is the house style, derived from the tree rather than picked:
+4-space indent, `char* p`, unindented namespaces, 100 columns. Two settings are
+load-bearing and shouldn't be relaxed without reading the comments on them —
+`ReflowComments: false` (the comments here carry tables and aligned prose that
+reflowing destroys) and `SortIncludes: false` (includes are grouped on purpose,
+several with explanatory trailing comments).
+
+```bash
+tools/format.sh              # format the staged files
+tools/format.sh --all        # format every tracked first-party source
+tools/format.sh --check --all
+```
+
+`third_party/`, the vendored NVBit, and `libpcomm/schema/generated/` each carry
+a `DisableFormat: true` marker, so neither the hook nor an editor-on-save will
+touch them.
+
+The pre-commit hook enforces formatting **only once the whole tree is already
+formatted** — until then it stays inert, so a one-file commit never drags a
+repo-wide reformat behind it. Run `tools/format.sh --all` once, commit that on
+its own, and enforcement switches on by itself.
+
 ## Gates
 
 There is no hosted CI (the repo is mirrored between machines, not on a forge),

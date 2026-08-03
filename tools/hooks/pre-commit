@@ -27,6 +27,20 @@ if ! git diff --cached --name-only |
   exit 0
 fi
 
+# ── Formatting ─────────────────────────────────────────────────────────────
+# Self-enabling, on purpose. While any first-party file is still unformatted,
+# this does nothing: formatting whole files on the way past would bury real
+# changes under thousands of reformatted lines, and would collide with any work
+# in progress on another branch or worktree.
+#
+# Run `tools/format.sh --all` once, commit that normalization on its own, and
+# from then on this branch is clean and the hook starts holding it that way —
+# no flag to set and nothing to remember. Costs ~0.8 s.
+if "$root/tools/format.sh" --check --all >/dev/null 2>&1; then
+  "$root/tools/format.sh" >/dev/null || {
+    echo "pre-commit: REFUSED — clang-format failed" >&2; exit 1; }
+fi
+
 echo "pre-commit: building core config + tests (tools/build_all.sh --quick)"
 if "$root/tools/build_all.sh" --quick > "$root/build-all/pre-commit.log" 2>&1; then
   echo "pre-commit: ok"

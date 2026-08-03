@@ -1,0 +1,53 @@
+# pcomm house style, derived from the tree rather than picked.
+#
+# Measured over tracked C++ (excluding third_party/ and the vendored NVBit):
+#   indent      4 spaces  (leading-space histogram is a clean 4/8/12)
+#   pointers    `char* p` 149 : 10 `char *p`
+#   width       p50 40, p95 83 — the core headers hold to 80 almost exactly
+#               (core/records.hpp 2 lines over, rec/sink.hpp 1)
+#   namespaces  unindented in core/; the indented ones are the SigmaTrace port
+#
+# Two settings below are load-bearing for THIS repo and should not be relaxed
+# without reading why — see the comments on each.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+PointerAlignment: Left
+DerivePointerAlignment: false
+NamespaceIndentation: None
+
+# DO NOT set to true. The comments in this codebase are the documentation:
+# ASCII tables, aligned columns, measurement records, worked examples. Reflowing
+# rewraps them into mush and the information is genuinely hard to reconstruct.
+# Long comment lines stay long; that is a deliberate trade.
+ReflowComments: false
+
+# DO NOT set to true. Includes are grouped on purpose and several carry
+# trailing comments explaining the grouping (e.g. pcomm-read's
+# `#include "ib_records.hpp"  // provider record schemas (reader knows all
+# types)`). Sorting reorders across those boundaries and strands the comments.
+SortIncludes: false
+
+# Matches the aligned member blocks in core/records.hpp:
+#     Handle        pc;          // interned program counter
+#     std::uint64_t address;
+AlignConsecutiveDeclarations: Consecutive
+AlignTrailingComments: true
+SpacesBeforeTrailingComments: 2
+
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBraces: Attach
+IndentCaseLabels: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+SpaceAfterTemplateKeyword: false
+Standard: c++20
