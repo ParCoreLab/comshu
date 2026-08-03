@@ -13,7 +13,7 @@ be predicted from the workload's arguments before you run it — that is the
 whole trick of reading a capture.
 
 This is a bsh session: point at a `% cell` and press `<CR>` to run it; the
-```out fences below cells are owned by bsh and refresh on re-run. The fences in
+out fences below cells are owned by bsh and refresh on re-run. The fences in
 this file are **sample output from a prior session** (counts match the suite's
 committed goldens, scaled to this demo's sizes) — re-run to make them yours.
 
@@ -22,13 +22,13 @@ committed goldens, scaled to this demo's sizes) — re-run to make them yours.
 Run once from a login node (alogin2 if alogin1 refuses ssh), then open this
 file inside it. Two accelerated nodes, 4× H100 each, NDR InfiniBand between:
 
-% salloc --account=etur02 --qos=acc_debug --nodes=2 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:30:00
+koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=2 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:30:00
 
 Environment for every cell below (persistent `%%` session — the suite's
 common.sh sets $PCOMM, $PCOMM_READ, provider paths, and the gcc-13.2 runtime):
 
-%% export PCOMM_ROOT=$HOME/proj/pcomm
-%% source $PCOMM_ROOT/tests/hpc/suite/common.sh && pcomm_load_runtime && $PCOMM --list
+koc296797@alogin2.bsc.es%% export PCOMM_ROOT=$HOME/proj/pcomm
+koc296797@alogin2.bsc.es%% source $PCOMM_ROOT/tests/hpc/suite/common.sh && pcomm_load_runtime && $PCOMM --list
 
 ```out
 pcomm providers — pick with -p <name>[,<name>...]
@@ -53,7 +53,7 @@ NVLink and loads its own. Deterministic by construction: N GPUs × ELEMS threads
 
 Build it once (nvcc wants the gcc-11.4 host compiler; run time wants 13.2):
 
-%% pcomm_load_build && nvcc -O2 -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets $PCOMM_ROOT/tests/hpc/cases/03_p2p_kernel/p2p_kernel.cu -o ~/p2p_kernel -lcudart && pcomm_load_runtime
+koc296797@alogin2.bsc.es%% pcomm_load_build && nvcc -O2 -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets $PCOMM_ROOT/tests/hpc/cases/03_p2p_kernel/p2p_kernel.cu -o ~/p2p_kernel -lcudart && pcomm_load_runtime
 
 ### 1.1 Run it under pcomm
 
@@ -61,7 +61,7 @@ Build it once (nvcc wants the gcc-11.4 host compiler; run time wants 13.2):
 4 GPUs × 2 iters × 1024 threads = **8192 stores of 4 B** — 2048 per ring edge.
 (`PCOMM_RANK=0` pins the rank; no MPI here, so it would fall back to the pid.)
 
-%% rm -rf /tmp/demo-p2p && srun --nodes=1 --ntasks=1 --gres=gpu:4 --overlap env PCOMM_RANK=0 $PCOMM -p p2p -o /tmp/demo-p2p -- ~/p2p_kernel 1024 2
+koc296797@alogin2.bsc.es%% rm -rf /tmp/demo-p2p && srun --nodes=1 --ntasks=1 --gres=gpu:4 --overlap env PCOMM_RANK=0 $PCOMM -p p2p -o /tmp/demo-p2p -- ~/p2p_kernel 1024 2
 
 ```out
 pcomm: 1 provider → 1 pass
@@ -77,7 +77,7 @@ startup cost, not the workload; it is why the payload being small matters.)
 The inventory reads each stream's own header — the capture tells you what it
 is, you never infer from filenames:
 
-%% $PCOMM_READ /tmp/demo-p2p
+koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-p2p
 
 ```out
 streams in /tmp/demo-p2p:
@@ -91,7 +91,7 @@ streams in /tmp/demo-p2p:
 
 Export to relational CSVs (one table per record type, intern handles resolved):
 
-%% $PCOMM_READ /tmp/demo-p2p --csv /tmp/demo-p2p.csv
+koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-p2p --csv /tmp/demo-p2p.csv
 
 ```out
 pcomm-read: 1 ranks, 8192 gpu-accesses, 0 ib-sends -> /tmp/demo-p2p.csv/{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv
@@ -103,7 +103,7 @@ pcomm-read: 1 ranks, 8192 gpu-accesses, 0 ib-sends -> /tmp/demo-p2p.csv/{gpu_acc
 `run_dev` is where the SM ran, `mem_dev` is where the memory lives, and rows
 with `run_dev != mem_dev` are exactly the traffic that crossed NVLink:
 
-%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-p2p.csv/gpu_access.csv gpu_access' -cmd '.mode column' -cmd '.headers on' "SELECT run_dev, mem_dev, count(*) AS stores, sum(CAST(size AS INTEGER)) AS bytes FROM gpu_access WHERE op='store' AND run_dev != mem_dev GROUP BY 1,2 ORDER BY 1"
+koc296797@alogin2.bsc.es%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-p2p.csv/gpu_access.csv gpu_access' -cmd '.mode column' -cmd '.headers on' "SELECT run_dev, mem_dev, count(*) AS stores, sum(CAST(size AS INTEGER)) AS bytes FROM gpu_access WHERE op='store' AND run_dev != mem_dev GROUP BY 1,2 ORDER BY 1"
 
 ```out
 run_dev  mem_dev  stores  bytes
@@ -120,7 +120,7 @@ counts match the paper prediction (2 iters × 1024 threads per edge, 4 B each).
 **Total instrumented traffic by op** (local loads stay `run_dev == mem_dev`;
 the RemoteFilter drops local loads from the capture, so stores dominate):
 
-%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-p2p.csv/gpu_access.csv gpu_access' -cmd '.mode column' -cmd '.headers on' "SELECT op, count(*) AS n, sum(CAST(size AS INTEGER)) AS bytes FROM gpu_access GROUP BY op"
+koc296797@alogin2.bsc.es%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-p2p.csv/gpu_access.csv gpu_access' -cmd '.mode column' -cmd '.headers on' "SELECT op, count(*) AS n, sum(CAST(size AS INTEGER)) AS bytes FROM gpu_access GROUP BY op"
 
 ```out
 op     n     bytes
@@ -131,7 +131,7 @@ store  8192  32768
 **Which allocations were hit?** The provider tracked every cudaMalloc as an
 entity; accesses attribute to them by id:
 
-%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-p2p.csv/mem_object.csv mem_object' -cmd '.mode column' -cmd '.headers on' "SELECT id, base, size, device FROM mem_object ORDER BY device"
+koc296797@alogin2.bsc.es%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-p2p.csv/mem_object.csv mem_object' -cmd '.mode column' -cmd '.headers on' "SELECT id, base, size, device FROM mem_object ORDER BY device"
 
 ```out
 id  base            size  device
@@ -150,7 +150,7 @@ The workload: stock `ibv_rc_pingpong` — server on node 0, client on node 1,
 **10 iterations of 1024 B**. So the oracle is: 1 MR per side, 10 sends of
 1024 B per side, 10 send + 10 recv completions per side, all `success`.
 
-%% nodes=($(scontrol show hostnames $SLURM_JOB_NODELIST)); echo "server=${nodes[0]} client=${nodes[1]}"
+koc296797@alogin2.bsc.es%% nodes=($(scontrol show hostnames $SLURM_JOB_NODELIST)); echo "server=${nodes[0]} client=${nodes[1]}"
 
 ```out
 server=as04r1b02 client=as04r1b09
@@ -161,9 +161,9 @@ server=as04r1b02 client=as04r1b09
 Both endpoints run under `pcomm -p ib` into one shared output dir, with
 explicit ranks (server backgrounded; the client connects to it out-of-band):
 
-%% rm -rf /tmp/demo-ib && DEVCMD='DEV=$(ibv_devinfo | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print d; exit}")'
-%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[0]} --overlap bash -c "$DEVCMD; PCOMM_RANK=0 $PCOMM -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024" & sleep 6
-%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[1]} --overlap bash -c "$DEVCMD; PCOMM_RANK=1 $PCOMM -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024 ${nodes[0]}"; wait
+koc296797@alogin2.bsc.es%% rm -rf /tmp/demo-ib && DEVCMD='DEV=$(ibv_devinfo | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print d; exit}")'
+koc296797@alogin2.bsc.es%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[0]} --overlap bash -c "$DEVCMD; PCOMM_RANK=0 $PCOMM -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024" & sleep 6
+koc296797@alogin2.bsc.es%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[1]} --overlap bash -c "$DEVCMD; PCOMM_RANK=1 $PCOMM -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024 ${nodes[0]}"; wait
 
 ```out
 pcomm: 1 provider → 1 pass
@@ -176,7 +176,7 @@ pcomm: 1 provider → 1 pass
 
 ### 2.2 Parse the capture
 
-%% $PCOMM_READ /tmp/demo-ib
+koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-ib
 
 ```out
 streams in /tmp/demo-ib:
@@ -193,7 +193,7 @@ Read that as physics before touching SQL: 1 memory region, 1 queue pair,
 3 QP state transitions (INIT→RTR→RTS), 10 posted sends, 20 completions —
 per rank. The oracle, straight from the stream headers.
 
-%% $PCOMM_READ /tmp/demo-ib --csv /tmp/demo-ib.csv
+koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-ib --csv /tmp/demo-ib.csv
 
 ```out
 pcomm-read: 2 ranks, 0 gpu-accesses, 20 ib-sends -> /tmp/demo-ib.csv/{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv
@@ -204,7 +204,7 @@ pcomm-read: 2 ranks, 0 gpu-accesses, 20 ib-sends -> /tmp/demo-ib.csv/{gpu_access
 **Traffic** — every posted send by rank and opcode (enums decode to stable
 names, never raw ABI integers):
 
-%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/ib_post_send.csv ib_post_send' -cmd '.mode column' -cmd '.headers on' "SELECT rank, opcode, count(*) AS n, sum(CAST(length AS INTEGER)) AS bytes FROM ib_post_send GROUP BY rank, opcode"
+koc296797@alogin2.bsc.es%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/ib_post_send.csv ib_post_send' -cmd '.mode column' -cmd '.headers on' "SELECT rank, opcode, count(*) AS n, sum(CAST(length AS INTEGER)) AS bytes FROM ib_post_send GROUP BY rank, opcode"
 
 ```out
 rank  opcode  n   bytes
@@ -217,7 +217,7 @@ rank  opcode  n   bytes
 RTR destination to the rank that owns it, collapsing run-varying wire ids
 (QPNs, LIDs) into a stable src→dst graph:
 
-%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/comm_edges.csv comm_edges' -cmd '.mode column' -cmd '.headers on' "SELECT * FROM comm_edges ORDER BY src_rank"
+koc296797@alogin2.bsc.es%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/comm_edges.csv comm_edges' -cmd '.mode column' -cmd '.headers on' "SELECT * FROM comm_edges ORDER BY src_rank"
 
 ```out
 src_rank  dst_rank  sends  bytes
@@ -229,7 +229,7 @@ src_rank  dst_rank  sends  bytes
 **Completion health** — one `err*` row here would mean a dropped or failed
 transfer; a healthy run is all `success`:
 
-%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/ib_poll_cq.csv ib_poll_cq' -cmd '.mode column' -cmd '.headers on' "SELECT rank, status, opcode, count(*) AS n FROM ib_poll_cq GROUP BY 1,2,3 ORDER BY 1,2,3"
+koc296797@alogin2.bsc.es%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/ib_poll_cq.csv ib_poll_cq' -cmd '.mode column' -cmd '.headers on' "SELECT rank, status, opcode, count(*) AS n FROM ib_poll_cq GROUP BY 1,2,3 ORDER BY 1,2,3"
 
 ```out
 rank  status   opcode  n
@@ -243,7 +243,7 @@ rank  status   opcode  n
 **How the connection was wired** — the RTR transition carries the remote
 endpoint, which is how the graph above was possible at all:
 
-%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/ib_modify_qp.csv ib_modify_qp' -cmd '.mode column' -cmd '.headers on' "SELECT rank, qp_num, dest_qp_num, dest_lid, state FROM ib_modify_qp WHERE state='rtr'"
+koc296797@alogin2.bsc.es%% sqlite3 :memory: -cmd '.mode csv' -cmd '.import /tmp/demo-ib.csv/ib_modify_qp.csv ib_modify_qp' -cmd '.mode column' -cmd '.headers on' "SELECT rank, qp_num, dest_qp_num, dest_lid, state FROM ib_modify_qp WHERE state='rtr'"
 
 ```out
 rank  qp_num  dest_qp_num  dest_lid  state
@@ -256,7 +256,7 @@ rank  qp_num  dest_qp_num  dest_lid  state
 completions as slices with real durations, cross-node clocks aligned via each
 rank's ClockAnchors) and load it at https://ui.perfetto.dev:
 
-%% $PCOMM_READ /tmp/demo-ib --pftrace /tmp/demo-ib.pftrace
+koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-ib --pftrace /tmp/demo-ib.pftrace
 
 ```out
 pcomm-read: 2 ranks, 60 events -> /tmp/demo-ib.pftrace (4821 bytes; load in ui.perfetto.dev)
@@ -271,6 +271,9 @@ moves data over NVLink *and* IB in the same run, and the providers co-run in
 one process, one recorder, one timeline:
 
 % echo 'pcomm -p ib,p2p -o out -- <your-app>   # one pass, both transports, one merged capture'
+```out
+pcomm -p ib,p2p -o out -- <your-app>   # one pass, both transports, one merged capture
+```
 
 The suite's case 06 (`nvshmem_coexist`) is exactly that, asserted with goldens;
 `pcomm-read out --csv` merges both providers' tables by rank, and the same SQL

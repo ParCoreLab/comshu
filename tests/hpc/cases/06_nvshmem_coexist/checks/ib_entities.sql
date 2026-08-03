@@ -15,7 +15,12 @@
 -- 44056659), with zero byte-identical rows, so nothing is double-counted. The
 -- 31 repeated mr handles carry different lkeys — freed pointers reused for new
 -- registrations, both visible because dereg emits no close record yet.
-SELECT 'mem_region' AS entity, count(*) AS n FROM ib_mem_region
-UNION ALL SELECT 'queue_pair', count(*) FROM ib_queue_pair
-UNION ALL SELECT 'modify_qp',  count(*) FROM ib_modify_qp
+-- mem_region is deliberately absent. It counts reg_mr *calls* — freed pointers
+-- get re-registered and both are recorded, since dereg emits no close record —
+-- so it tracks allocator churn, not the transport setup. Measured 115 per rank
+-- on rack as07r3b (job 44073877) and 114 on as04r5b (44113361) at the SAME
+-- commit, while the two below were identical on both. Its real invariant is
+-- symmetry across ranks, asserted in asserts/ib_setup_symmetric.sql.
+SELECT 'queue_pair' AS entity, count(*) AS n FROM ib_queue_pair
+UNION ALL SELECT 'modify_qp', count(*) FROM ib_modify_qp
 ORDER BY entity;

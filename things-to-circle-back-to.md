@@ -156,10 +156,24 @@ local `src` loads wearing someone else's device id. That check is now
 196608 phantom `load` rows per rank that the misattribution had been
 manufacturing.
 
-Related: case 06's `regions_per_rank` (115 -> 114) and `ib_entities`
-(mem_region 460 -> 456) fail *independently of any of this* — they fail at
-`5a28119` too. Probably the same family (allocation-dependent goldens), not yet
-diagnosed.
+Related, and now diagnosed: case 06's `regions_per_rank` (115 -> 114) and
+`ib_entities` (mem_region 460 -> 456) were the same family — goldens pinning an
+allocation-dependent number. Proof: at the *same commit* (`5a28119`), job
+44073877 on rack `as07r3b` recorded 115 regions per rank and job 44113361 on
+`as04r5b` recorded 114, while `queue_pair` (108) and `modify_qp` (132) per rank
+were identical on both, and six later runs on `as04r5b` all give 114.
+
+The reason regions in particular drift is in `ib_entities.sql`'s own comment:
+it counts `reg_mr` *calls*, not live regions — freed pointers are re-registered
+and both are recorded, because dereg emits no close record yet. So the number
+tracks NVSHMEM's allocator churn.
+
+Fixed by asserting what the workload actually implies. `regions_per_rank`'s
+comment already said it ("per-rank evenness is the structure of the workload")
+while its golden pinned an absolute number; that check is now
+`asserts/ib_setup_symmetric.sql`, which requires every rank to register, create
+and transition the same counts, and `mem_region` is out of the `ib_entities`
+golden. Verified stable across both racks and across the attribution fix.
 
 ## OPEN: goldens that encode run-specific identifiers
 
