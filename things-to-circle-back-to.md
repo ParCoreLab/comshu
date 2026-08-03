@@ -42,13 +42,27 @@ interleaving and still be wrong. Ownership has to stop depending on discovery
 order — see the unblocking steps in
 `plans/PLAN-20260803-1021-gpumem-window-timestamps-todo.md`.
 
-**Deferred 2026-08-03 (user decision).** It is worse than a race: the model
-assumes one heap region per PE, which is where `npes = snap->size()` comes
-from, and this workload maps ~76 regions for 8 PEs — so the PE count is wrong
-and everything derived from it is too. A correct fix needs the real region→PE
-mapping, which an NVBit tool cannot get from NVSHMEM (it is not linked against
-it). Treated as a design item for when NVSHMEM support is picked up again, not
-as a bug to patch now. Case 07 stays green in the meantime *because the change
+**Deferred 2026-08-03 (user decision), but no longer open-ended — see
+`plans/PLAN-20260803-1448-nvshmem-heap-attribution-todo.md`.** It is worse than
+a race: the model assumes one heap region per PE, which is where
+`npes = snap->size()` comes from, and this workload maps ~76 regions for 8 PEs,
+so the PE count is wrong and everything derived from it is too.
+
+The fix is **not** to get NVSHMEM internals — it is to stop guessing.
+`nvshmem_ptr(ptr, pe)` returns the local address of PE `pe`'s copy of a
+symmetric object, and `nvshmem_my_pe` / `nvshmem_n_pes` give the real PE count.
+All are exported from `libnvshmem_host.so` (verified on MN5, 3.2.5) and
+reachable by `dlsym` at runtime — no link-time dependency, and
+`pcomm::smart_dlsym` already does this for ibverbs. That turns the item from
+"needs vendor internals" into "bounded, uses the public API", and it is a net
+deletion: both the 3.x positional scheme and the 2.x hardcoded-VA path go.
+
+**Already worked around, in a passing test.** `case 04`'s `peer_fanout.sql` says
+"the ring put has each PE store to one neighbor" and its golden asserts
+`peers = 2`, with a comment that mem_device ids are "unreliable and
+run-varying". A one-neighbour ring reporting fan-out 2 *is* this bug, visible in
+a green check. Fixing attribution should let that golden become an exact peer
+assertion like case 03's. Case 07 stays green in the meantime *because the change
 that exposed this is parked*, not because the attribution is sound — any future
 change to recv-thread timing will surface it again.
 
