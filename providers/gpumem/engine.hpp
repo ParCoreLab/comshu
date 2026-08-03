@@ -41,6 +41,16 @@ public:
         return object;
     }
 
+    // A range that resolves a device but names no MemObject — the backend's
+    // view of another PE's NVSHMEM symmetric heap, mapped into this process.
+    // Deliberately not add(): that would mint an object handle for an entity
+    // nobody recorded, leaving GpuAccess.object pointing at a MemObject row
+    // that does not exist. Ownership is the only thing we know here.
+    void add_range(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
+        std::lock_guard lock(m_mutex);
+        m_allocs.push_back({base, size, dev, core::kNullHandle});
+    }
+
     // Returns {found, alloc}; linear scan like snoopie's find_dev_of_ptr
     // (allocation counts are small; interval tree later if needed).
     const Alloc* find(std::uint64_t addr) const {
@@ -132,9 +142,11 @@ public:
     }
 
     // Drain path: the backend hands raw accesses with run_device set and
-    // mem_device either already resolved (NVSHMEM heap ownership) or
-    // kUnresolvedDevice; the engine resolves the rest via the alloc registry
-    // (still-unknown -> run_device, so RemoteFilter drops it).
+    // mem_device unresolved; the engine resolves every one of them the same
+    // way, via the alloc registry (still-unknown -> run_device, so RemoteFilter
+    // drops it). NVSHMEM symmetric-heap ranges are registry entries like any
+    // other allocation — the backend used to resolve those itself, from a guess
+    // at NVSHMEM's VA layout, which is what this pipeline no longer contains.
     void process(std::span<attr::RawAccess> batch) {
         for (auto& a : batch) {
             if (a.mem_device != attr::kUnresolvedDevice) continue;

@@ -2,5 +2,5 @@
   "case": "04_nvshmem",
   "providers": ["p2p"],
   "topology": "1 node x4 H100, NVSHMEM put-ring (kernel-filtered to put_to_next)",
-  "golden": "committed (verified); NVSHMEM 3.7 device attribution unreliable, see peer_fanout"
+  "golden": "committed (verified); exact peer ring — see peer_topology"
 }

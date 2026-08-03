@@ -24,9 +24,10 @@ namespace pcomm::attr {
 // dense instruction indices pass index+1; producers with raw PCs intern them
 // (InternDomain::Pc) before filling RawAccess. The pipeline copies it as-is,
 // so it joins directly against SourceLine/Artifact rows using the same scheme.
-// mem_device: producers that can resolve ownership themselves (e.g. NVSHMEM
-// symmetric-heap layout) set it; others leave kUnresolvedDevice and the
-// consumer resolves via its allocation registry.
+// mem_device: producers that can resolve ownership themselves set it; others
+// leave kUnresolvedDevice and the consumer resolves via its allocation
+// registry. The gpumem backend takes the second route for everything,
+// including NVSHMEM's symmetric heap — one lookup, one place to be wrong.
 inline constexpr core::DeviceId kUnresolvedDevice = 0xFFFF;
 
 struct RawAccess {

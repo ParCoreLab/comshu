@@ -5,10 +5,10 @@
 # the symmetric-heap allocations as MemObjects. Validates the PGAS path — the
 # workload family Snoopie was built for.
 #
-# Needs the gpumem provider built on MN5 (NVBit). NB: on NVSHMEM 3.7 the heap
-# fragments into many cuMemMap regions, so peer *attribution* may be off (see
-# things-to-circle-back-to.md); this case asserts capture happened, not owner
-# correctness.
+# Needs the gpumem provider built on MN5 (NVBit). Peer attribution is exact
+# again as of 2026-08-03: heap ownership comes from nvshmem_ptr rather than from
+# the number and order of the cuMemMap regions the heap happens to fragment
+# into, so this case asserts the ring, not just that capture happened.
 #
 #   sbatch tests/hpc/cases/04_nvshmem/job.sbatch
 #

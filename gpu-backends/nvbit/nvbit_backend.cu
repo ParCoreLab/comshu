@@ -6,16 +6,15 @@
 //   alloc callbacks      -> Engine::on_alloc (MemObject entities + registry)
 //   recv thread          -> pcomm_gpu_access_t -> RawAccess -> Engine::process
 //
-// Not yet ported from snoopie (phase-1 follow-ups): NVSHMEM heap ownership
-// (2.x range + 3.x cuMemMap regions), sampling, python/NCCL attribution,
-// data-object callstack attribution (adm), cuMemcpyDtoD synthesis.
+// Not yet ported from snoopie (phase-1 follow-ups): sampling, python/NCCL
+// attribution, data-object callstack attribution (adm), cuMemcpyDtoD synthesis.
 //
 // Vendor types (CUcontext, Instr, ...) are allowed HERE and nowhere above the
 // gpu-backends/ boundary.
 
-#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -69,13 +68,13 @@ struct CtxState {
 // destructible) so no exit-ordering can leave a callback with a dead object.
 pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;  // serializes callbacks
 
-// NVSHMEM 3.x symmetric-heap region (cuMemMap-based). All devices map all
-// regions, so ownership is positional: sorted by base, region 0 is the local
-// PE and region i belongs to PE (mype + i) % npes (per-process mapping).
-struct NvshmemHeapRegion {
+// A region some library mapped with cuMemMap, as observed — base and size, no
+// interpretation. NVSHMEM's symmetric heap arrives this way; so do other
+// things, and telling them apart is nvshmem_ptr's job, not ours (see
+// refresh_nvshmem_heap_map).
+struct MappedRegion {
     uint64_t base;
     uint64_t size;
-    int region_index;
 };
 
 struct Globals {
@@ -86,20 +85,18 @@ struct Globals {
     std::vector<MemOp> id_to_memop;
     std::string kernel_filter = "all";
     // Written only by the CUDA-callback thread under g_mutex.
-    std::vector<NvshmemHeapRegion> heap_regions;
-    std::unordered_set<uint64_t> heap_bases_seen;
-    // What the recv thread actually reads: an immutable, already-sorted
-    // snapshot, published atomically. The reader used to sort `heap_regions` in
-    // place on first use while the callback thread could be push_back()ing into
-    // it — a reallocation mid-sort is a use-after-free, and it sits in the
-    // multinode NVSHMEM path. Readers never mutate now, so there is nothing to
-    // race with. Old snapshots are leaked on purpose: they are a few dozen bytes
-    // and republishing happens only when a new symmetric-heap region appears, so
-    // reclaiming them would need hazard pointers to be safe against a reader
-    // that is mid-iteration.
-    std::atomic<const std::vector<NvshmemHeapRegion>*> heap_snapshot{nullptr};
-    std::string nvshmem_version = "2.8";  // legacy-path layout selector
-    int nvshmem_ngpus = 10;
+    std::vector<MappedRegion> mapped_regions;
+    std::unordered_set<uint64_t> mapped_bases_seen;
+    // What the recv thread actually reads: an immutable snapshot, published
+    // atomically. The reader used to sort `mapped_regions` in place on first
+    // use while the callback thread could be push_back()ing into it — a
+    // reallocation mid-sort is a use-after-free, and it sits in the multinode
+    // NVSHMEM path. Readers never mutate now, so there is nothing to race with.
+    // Old snapshots are leaked on purpose: they are a few dozen bytes and
+    // republishing happens only when a new mapping appears, so reclaiming them
+    // would need hazard pointers to be safe against a reader that is
+    // mid-iteration.
+    std::atomic<const std::vector<MappedRegion>*> mapped_snapshot{nullptr};
 };
 Globals& G() {
     static Globals* g = new Globals();
@@ -118,59 +115,142 @@ struct MutexLock {
     pthread_mutex_t* m_m;
 };
 
-// Publish a fresh sorted snapshot for readers. Caller must hold g_mutex.
-void publish_heap_snapshot() {
+// Publish a fresh snapshot for readers. Caller must hold g_mutex.
+void publish_mapped_snapshot() {
     auto& g = G();
-    auto* snap = new std::vector<NvshmemHeapRegion>(g.heap_regions);
-    std::sort(snap->begin(), snap->end(),
-              [](const NvshmemHeapRegion& a, const NvshmemHeapRegion& b) {
-                  return a.base < b.base;
-              });
-    for (int i = 0; i < (int)snap->size(); i++) (*snap)[i].region_index = i;
-    g.heap_snapshot.store(snap, std::memory_order_release);
+    g.mapped_snapshot.store(new std::vector<MappedRegion>(g.mapped_regions),
+                            std::memory_order_release);
 }
 
-// NVSHMEM 3.x path: region index -> PE (mype + i) % npes. -1 = not heap.
-// Read-only and lock-free: called per access from the recv thread, so taking
-// g_mutex here would serialize the drain path against every CUDA callback.
-int find_nvshmem_heap_owner(uint64_t addr, int mype) {
-    const auto* snap = G().heap_snapshot.load(std::memory_order_acquire);
-    if (!snap || snap->empty()) return -1;
-    const int npes = (int)snap->size();
-    for (const auto& r : *snap) {
-        if (addr >= r.base && addr < r.base + r.size)
-            return (mype + r.region_index) % npes;
+// --- NVSHMEM symmetric-heap ownership ---------------------------------------
+//
+// This used to be derived from NVSHMEM's *private* VA layout: sort the cuMemMap
+// regions, and region i belongs to PE (mype + i) % npes with npes taken from
+// how many regions had been seen. Every part of that was wrong. NVSHMEM maps
+// ~76 regions for 8 PEs, so npes was wrong; the index was positional, so the
+// answer depended on how many regions existed at the moment a record happened
+// to be drained; and ownership is not obliged to be contiguous or rotational.
+// Measured mem_dev = 64,65,66,67 where the truth is 1,2,3 (job 44111484 vs
+// 44113361), which RemoteFilter (run_device != mem_device) then turned into
+// phantom remote traffic — case 07 doubled, 196608 -> 393216 accesses per rank.
+// A 2.x sibling path hardcoded a base VA and a stride outright.
+//
+// So we ask NVSHMEM instead. nvshmem_ptr(a, pe) returns the local address of PE
+// pe's copy of symmetric object a, or NULL when pe is not P2P-reachable — which
+// is precisely the map the old code reconstructed. Resolved with dlsym at
+// runtime, so the provider keeps no build or link dependency on NVSHMEM: no
+// symbols means the application is not using it and the path is skipped.
+//
+// Validated on MN5 (NVSHMEM 3.2.5, jobs 44135828/44136107) *before* being built
+// on, in four configurations — 4 PEs on one node, 8 PEs over two nodes with
+// IBRC and with IBGDA, and NVSHMEM_DISABLE_P2P:
+//   - nvshmem_ptr(a, my_pe) == a for every local symmetric address probed:
+//     allocation bases, interiors, and a 64 MiB object's last byte;
+//   - NULL for everything that is *not* local symmetric memory — cudaMalloc
+//     pointers, host addresses, junk VAs, and peers' mappings of the heap — so
+//     "non-NULL for my_pe" is a sound test for "this region is my heap", with
+//     no false positives to mis-expand;
+//   - non-NULL exactly for the P2P-reachable PEs: 0-3 within a node, NULL for
+//     the four PEs across the IB link (which is why those ranks legitimately
+//     record no NVLink traffic), and self only under NVSHMEM_DISABLE_P2P;
+//   - callable from a non-main thread, which the recv thread is.
+struct NvshmemApi {
+    void* (*ptr)(const void*, int){nullptr};
+    int (*my_pe)(){nullptr};
+    int (*n_pes)(){nullptr};
+    bool ok() const { return ptr && my_pe && n_pes; }
+};
+
+// Lazy on purpose: NVSHMEM is not loaded when the tool's nvbit_at_init runs, so
+// resolving there would fail permanently. Called only under g_heap_mutex.
+const NvshmemApi& nvshmem_api() {
+    static NvshmemApi* api = new NvshmemApi();  // leaked: exit-order safe
+    if (!api->ok()) {
+        api->ptr = (void* (*)(const void*, int))dlsym(RTLD_DEFAULT, "nvshmem_ptr");
+        api->my_pe = (int (*)())dlsym(RTLD_DEFAULT, "nvshmem_my_pe");
+        api->n_pes = (int (*)())dlsym(RTLD_DEFAULT, "nvshmem_n_pes");
     }
-    return -1;
+    return *api;
 }
 
-// NVSHMEM 2.x legacy path: fixed VA layout, peers mapped at 0x12020000000 with
-// constant stride (snoopie's find_nvshmem_dev_of_ptr, verbatim logic).
-int64_t find_nvshmem_dev_of_ptr_legacy(int mype, uint64_t mem_addr) {
-    const int size = 15;
-    const uint64_t start = 0x000012020000000;
-    const uint64_t incr = start - (uint64_t)0x000010020000000;
+// NOT g_mutex: nvbit_at_ctx_term holds that across the pthread_join of the recv
+// thread, so anything the recv thread locks must be a different mutex or
+// teardown deadlocks. Guards nvshmem_api()'s resolution and g_heap_resolved.
+std::mutex g_heap_mutex;
+std::unordered_set<uint64_t>* g_heap_resolved = new std::unordered_set<uint64_t>();
 
-    int region = -1;
-    for (int i = 1; i <= size; i++) {
-        uint64_t bottom = start + (uint64_t)(i - 1) * incr;
-        uint64_t top = start + (uint64_t)i * incr;
-        if (bottom <= mem_addr && mem_addr < top) {
-            region = i - 1;
-            break;
+// Turn newly observed symmetric-heap regions into (range -> device) entries in
+// the alloc registry the drain path already consults. Nothing NVSHMEM-shaped
+// survives on the hot path: attribution is one range lookup, as it is for
+// cudaMalloc'd memory. Called from the recv thread when a new snapshot appears.
+void refresh_nvshmem_heap_map(const std::vector<MappedRegion>* snap) {
+    if (!snap || snap->empty() || !g_engine) return;
+    std::lock_guard<std::mutex> lock(g_heap_mutex);
+
+    const NvshmemApi& api = nvshmem_api();
+    if (!api.ok()) {
+        // Not an error: most workloads are not NVSHMEM, and cuMemMap has other
+        // users (NCCL registers buffers with it). Say it once under
+        // PCOMM_VERBOSE rather than either staying silent or spamming runs that
+        // were never going to have a symmetric heap.
+        static bool said = false;
+        if (!said && std::getenv("PCOMM_VERBOSE")) {
+            said = true;
+            std::fprintf(stderr, "[pcomm-gpumem] no NVSHMEM symbols (nvshmem_ptr/"
+                         "my_pe/n_pes); mapped regions left to the alloc registry\n");
+        }
+        return;  // retried on the next snapshot — NVSHMEM may load later
+    }
+
+    const int npes = api.n_pes();
+    const int mype = api.my_pe();
+    if (npes <= 0 || mype < 0 || mype >= npes) return;  // not initialised yet
+
+    // CUDA calls are safe from here despite g_mutex: nvbit_at_ctx_init registers
+    // the recv thread with nvbit_set_tool_pthread, so NVBit does not deliver
+    // callbacks for the tool's own driver calls and there is no re-entry into
+    // nvbit_at_cuda_event to block on.
+    int ndev = 0;
+    cudaGetDeviceCount(&ndev);
+
+    for (const auto& r : *snap) {
+        if (g_heap_resolved->count(r.base)) continue;
+        // Is this region *my* symmetric heap? Only then do we know what its
+        // peers' copies are. A region that is not (yet) mine is left for a
+        // later refresh: NVSHMEM maps the heap progressively, and unlike the
+        // positional scheme, being early costs nothing here — the answer for a
+        // region never depends on how many others have been seen.
+        if (!api.ptr((const void*)r.base, mype)) continue;
+        g_heap_resolved->insert(r.base);
+
+        for (int pe = 0; pe < npes; pe++) {
+            void* q = api.ptr((const void*)r.base, pe);
+            if (!q) continue;  // not P2P-reachable: that PE's traffic crosses
+                               // the IB link and belongs to the ib provider.
+            // PE is not a device. The old code cast one straight to the other,
+            // which is only accidentally right when PEs and GPUs are numbered
+            // alike on one node. CUDA knows where the memory nvshmem_ptr just
+            // named actually lives, so ask it rather than inherit the
+            // conflation: measured, this returns the owning GPU's ordinal for a
+            // peer mapping (job 44136107), i.e. the same space run_device is in.
+            int dev = -1;
+            if (cuPointerGetAttribute(&dev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                                      (CUdeviceptr)q) != CUDA_SUCCESS)
+                continue;
+            // The guard the old scheme could not have had: an owner must name a
+            // GPU that exists. mem_dev = 64 on a 4-GPU node would have stopped
+            // here, loudly, instead of quietly inflating the capture.
+            if (dev < 0 || dev >= ndev) {
+                std::fprintf(stderr,
+                    "[pcomm-gpumem] NVSHMEM heap owner out of range: pe=%d dev=%d "
+                    "(%d GPUs); region 0x%llx dropped\n",
+                    pe, dev, ndev, (unsigned long long)r.base);
+                continue;
+            }
+            g_engine->allocs().add_range((uint64_t)q, r.size,
+                                         static_cast<pcomm::core::DeviceId>(dev));
         }
     }
-    if (region == -1) return -1;
-
-    auto& g = G();
-    if (g.nvshmem_version == "2.9" || g.nvshmem_version == "2.8") region += mype;
-    if (mype == region) return (mype + 1) % g.nvshmem_ngpus;
-    for (int i = 0; i < size; i++) {
-        if (mype == i) continue;
-        if (region == 0) return i % g.nvshmem_ngpus;
-        region--;
-    }
-    return -1;
 }
 
 MemOp opcode_to_memop(const std::string& opcode) {
@@ -359,6 +439,7 @@ void* recv_thread_fun(void* args) {
     const long chan_sz = channel_size();
     char* recv_buffer = (char*)malloc(chan_sz);
     std::vector<RawAccess> batch;
+    const std::vector<MappedRegion>* heap_snap_seen = nullptr;
 
     // PCOMM_CHANNEL_DEBUG=1 — diagnostic for the NVBit deadlock (cases 05/07,
     // plans/PLAN-20260727-1022-nvbit-channel-deadlock-backlog.md). The decisive
@@ -427,19 +508,19 @@ void* recv_thread_fun(void* args) {
                 a.op = G().id_to_memop[ma->opcode_id];
                 a.space = pcomm::core::MemSpace::Global;
                 a.run_device = static_cast<pcomm::core::DeviceId>(ma->dev_id);
-
-                // NVSHMEM symmetric-heap ownership (3.x regions, then 2.x
-                // fixed layout); anything else stays unresolved and the
-                // engine consults the alloc registry.
-                int owner = find_nvshmem_heap_owner(a.address, ma->dev_id);
-                if (owner < 0 && a.address >= 0x0000010020000000ull) {
-                    owner = (int)find_nvshmem_dev_of_ptr_legacy(ma->dev_id, a.address);
-                }
-                if (owner >= 0)
-                    a.mem_device = static_cast<pcomm::core::DeviceId>(owner);
-
+                // mem_device is left unresolved: symmetric-heap ranges are in
+                // the alloc registry like any other allocation, so the engine
+                // resolves every address the same way.
                 batch.push_back(a);
             }
+        }
+
+        // Pick up symmetric-heap regions mapped since the last batch. One
+        // atomic load unless a new mapping actually appeared.
+        const auto* snap = G().mapped_snapshot.load(std::memory_order_acquire);
+        if (snap != heap_snap_seen) {
+            heap_snap_seen = snap;
+            refresh_nvshmem_heap_map(snap);
         }
 
         g_engine->process(batch);
@@ -482,8 +563,6 @@ __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
 void nvbit_at_init() {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
     if (const char* k = std::getenv("PCOMM_KERNEL_NAME")) G().kernel_filter = k;
-    if (const char* v = std::getenv("PCOMM_NVSHMEM_VERSION")) G().nvshmem_version = v;
-    if (const char* v = std::getenv("PCOMM_NVSHMEM_NGPUS")) G().nvshmem_ngpus = std::atoi(v);
     g_engine = new pcomm::gpumem::Engine();
 }
 
@@ -517,14 +596,14 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
         auto* p = (cuMemAllocManaged_params*)params;
         handle_alloc(*p->dptr, p->bytesize);
     } else if (is_exit && cbid == API_CUDA_cuMemMap) {
-        // NVSHMEM 3.x symmetric heap: record each distinct mapped base as a
-        // region (ownership resolved positionally on the drain path).
+        // Record the extent, nothing more. Which of these are NVSHMEM's
+        // symmetric heap, and whose, is decided later by asking NVSHMEM — see
+        // refresh_nvshmem_heap_map. cuMemMap is only the source of exact sizes.
         auto* p = (cuMemMap_params*)params;
         auto& g = G();
-        if (g.heap_bases_seen.insert((uint64_t)p->ptr).second) {
-            g.heap_regions.push_back(
-                {(uint64_t)p->ptr, (uint64_t)p->size, (int)g.heap_regions.size()});
-            publish_heap_snapshot();  // sorted under g_mutex, read lock-free
+        if (g.mapped_bases_seen.insert((uint64_t)p->ptr).second) {
+            g.mapped_regions.push_back({(uint64_t)p->ptr, (uint64_t)p->size});
+            publish_mapped_snapshot();  // built under g_mutex, read lock-free
         }
     }
 
