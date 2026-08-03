@@ -114,22 +114,13 @@ std::string qp_type_name(unsigned t) {  // ibv_qp_type
 template <core::Record R>
 struct Table;  // no primary definition: an unspecialized use is a missing entry
 
-// ticks_lo/ticks_hi, not `ticks`: a GPU access is a Window, not an Instant. The
-// device has no clock we share, so what is known is that the access happened
-// after its kernel was launched and before the host drained it from the NVBit
-// channel — see RawAccess in pcomm/attr/interfaces.hpp. Two named columns
-// because one called `ticks` was printed identically to ib_post_send's `ticks`,
-// which is a *measured* call-entry time; joining the two silently correlated
-// drain time against wire time. ticks_lo == 0 means the lower bound is open.
 template <>
 struct Table<GpuAccess> {
     static constexpr const char* name = "gpu_access";
-    static constexpr const char* cols =
-        "ticks_lo,ticks_hi,pc,object,addr,size,op,run_dev,mem_dev,thread";
+    static constexpr const char* cols = "ticks,pc,object,addr,size,op,run_dev,mem_dev,thread";
     static void row(std::FILE* f, const Stamped<GpuAccess>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u",
-                     (unsigned long long)s.temporal.a.ticks,
-                     (unsigned long long)s.temporal.b.ticks, s.payload.pc,
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.pc,
                      s.payload.object, (unsigned long long)s.payload.address,
                      s.payload.size, memop_name(s.payload.op),
                      s.payload.run_device, s.payload.mem_device, s.payload.thread);
@@ -444,13 +435,6 @@ struct RankClock {
     }
     // An Interval's duration in ns; 0 for instants (and for backwards intervals,
     // which a broken capture could contain).
-    //
-    // Deliberately Interval *only*. A Window also has both endpoints populated,
-    // but they bound uncertainty rather than measuring a duration — drawing one
-    // as a slice would assert the event took that long, which is exactly the
-    // false claim this distinction exists to prevent. Nothing exports Windows
-    // to a timeline today (gpu accesses go to CSV, not Perfetto); when
-    // something does, it needs its own rendering, not this.
     double dur_ns(const core::Temporal& t) const {
         return (t.kind == core::TimeKind::Interval && t.b.ticks > t.a.ticks)
                    ? (t.b.ticks - t.a.ticks) * ns_per_tick

@@ -1,10 +1,65 @@
 # PLAN — gpumem records must say when they *might* have happened, not lie about when they did
 
 - **Created:** 2026-08-03 10:21 +03
-- **Status:** IN-PROGRESS 2026-08-03. All six steps implemented; local suite
-  13/13 and the regression is caught in both directions. **The MN5 gate is
-  what remains** — the gpumem path cannot be built or run on this host, so
-  nothing here has executed against real NVBit yet.
+- **Status:** TODO — **implemented once (2bfb376) and reverted (see below).**
+  Blocked on the NVSHMEM heap-attribution race, which this change exposes.
+
+## BLOCKER (2026-08-03): it perturbs a pre-existing attribution race
+
+The implementation was correct on its own terms and passed everything that
+tests it directly — cases 03, 04, 05 green on real NVBit, `mem_object` output
+byte-identical, all ib exports byte-identical. **Case 07 failed**, and bisecting
+put it squarely on this commit:
+
+| commit | contents | case 07 |
+|---|---|---|
+| `5a28119` | none of it | PASS |
+| `ab9e260` | `-UNDEBUG` + the fork fix | PASS |
+| `2bfb376` | + this change | **FAIL** |
+
+The symptom is not temporal at all: `gpu_access.mem_dev` came out **64,65,66,67**
+where it should be **1,2,3** (the NVLink ring neighbours). With device
+attribution wrong, `RemoteFilter`'s `run_device != mem_device` stops dropping
+local loads, so counts doubled and the two node-crossing ranks (3, 7) went from
+0 NVLink accesses to 196608.
+
+**Mechanism** (`nvbit_backend.cu:find_nvshmem_heap_owner`):
+
+```cpp
+return (mype + r.region_index) % npes;   // npes = snap->size()
+```
+
+`region_index` is *positional* — `publish_heap_snapshot()` sorts by base and
+re-indexes 0..n-1 every time a new region appears. NVSHMEM registers regions
+progressively from `cuMemMap` callbacks on the CUDA-callback thread while the
+recv thread attributes accesses. So **which PE an address is attributed to
+depends on how many regions had been discovered when that access happened to be
+drained**: `(0+1)%8 = 1` in a run that drained early, `(0+64)%~76 = 64` in one
+that drained later.
+
+This change adds a `TscClock::now()` and a `launch_time()` lookup per warp
+packet and 8 bytes to `pcomm_gpu_access_t` — enough to move the drain relative
+to region discovery. It did not introduce the bug; it moved the interleaving
+that case 07's golden happened to encode.
+
+**Therefore: do not regenerate the golden.** The attribution is genuinely
+unsound — the same address can resolve to different owners in one run depending
+on drain timing — and a regenerated golden would freeze a second arbitrary
+interleaving while hiding that.
+
+**Unblocking work, in order:**
+1. Make heap-region ownership independent of discovery order. The index must be
+   a property of the region (its PE), not of its position in a snapshot that
+   grows. Candidates: derive the PE from NVSHMEM's own mapping rather than from
+   sort position, or defer attribution until the heap is complete and resolve
+   addresses retroactively.
+2. Add a case-07 check that *would* have caught this without depending on
+   timing — e.g. assert `mem_dev` is always in `[0, npes)` and that every
+   access's owner is stable, rather than asserting exact counts.
+3. Only then re-land this change unmodified; the code below is known to work
+   and is preserved in `2bfb376`.
+
+## Original plan follows
 - **Finding:** `things-to-circle-back-to.md` — "gpumem stamps drain time as an
   Instant". This plan is the fix; the finding is the evidence.
 

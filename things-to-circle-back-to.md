@@ -2,6 +2,73 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN: NVSHMEM heap attribution depends on when a record is drained
+
+`find_nvshmem_heap_owner` (`nvbit_backend.cu`) resolves which PE owns an address
+as:
+
+```cpp
+return (mype + r.region_index) % npes;   // npes = snap->size()
+```
+
+`region_index` is **positional**: `publish_heap_snapshot()` sorts the regions by
+base and re-indexes them 0..n-1 *every time a new one appears*. NVSHMEM maps its
+symmetric heap progressively, from `cuMemMap` callbacks on the CUDA-callback
+thread, while the recv thread is already attributing accesses.
+
+So the owner an access resolves to is a function of **how many regions had been
+discovered at the moment it was drained**, not of the address. Measured, same
+workload, same 8-PE shape, two runs:
+
+| run | `mem_dev` for `run_dev=0` | implies |
+|---|---|---|
+| 44113361 | 1 | `(0+1) % 8` — 8 regions |
+| 44111484 | 64 | `(0+64) % ~76` — ~76 regions |
+
+Only the second is wrong, and nothing detects it: `run_device != mem_device` is
+what `RemoteFilter` keeps, so a garbage owner turns local loads into "remote"
+traffic. Case 07 doubled (196608 -> 393216 per rank) and the two node-crossing
+ranks went from 0 NVLink accesses to 196608.
+
+**Not caused by the change that revealed it.** The gpumem window work
+(`2bfb376`, since reverted) added a clock read and 8 bytes per warp packet —
+enough to shift the drain relative to region discovery. Bisect:
+07 PASS at `5a28119` and at `ab9e260`, FAIL at `2bfb376`. Any future change to
+recv-thread timing will do the same thing.
+
+**Do not fix this by regenerating case 07's golden.** The golden encodes one
+arbitrary interleaving; a new one would encode a different arbitrary
+interleaving and still be wrong. Ownership has to stop depending on discovery
+order — see the unblocking steps in
+`plans/PLAN-20260803-1021-gpumem-window-timestamps-todo.md`.
+
+Related: case 06's `regions_per_rank` (115 -> 114) and `ib_entities`
+(mem_region 460 -> 456) fail *independently of any of this* — they fail at
+`5a28119` too. Probably the same family (allocation-dependent goldens), not yet
+diagnosed.
+
+## OPEN: goldens that encode run-specific identifiers
+
+Three cases have now failed on identifiers the run happens to hand out, not on
+anything the tool did wrong:
+
+- **01 / 02** — `comm_edges` maps `qp_num -> rank` in one global map. On
+  2026-08-03 both ranks were allocated **`qp_num = 449`** on their separate
+  HCAs, so the owner became whichever rank `scan_ranks` visited last
+  (`fs::directory_iterator`, unordered — the inventory listed rank-1 first).
+  Case 01 reported `0->0` instead of `0->1`. The reader's own comment claims
+  this is "exact for a single HCA / few ranks... **Deterministic either way ->
+  golden-safe**", which is false: it is deterministic only while the two QP
+  numbers differ.
+- **07** — see the entry above.
+
+Earlier instances are already recorded: case 07's `comm_edges` moved
+(`3,4 -> 3,0`) on a different allocation, and case 02's `degree` form was
+replaced once for the same reason. This is a recurring class, not three
+accidents. The fix direction is the one that already worked for 02: assert
+shapes that cannot encode a wire id (per-rank totals, counts, invariants like
+"every owner is in `[0, npes)`") rather than specific peer identities.
+
 ## FIXED: fork-aware capture — the child recorded nothing
 
 Fixed 2026-08-03 (`pcomm_engine_reset_arenas_for_fork`, plan

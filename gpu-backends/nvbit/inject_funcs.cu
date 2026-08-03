@@ -28,7 +28,6 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(
     ma.opcode_id = opcode_id;
     ma.instr_index = static_cast<uint32_t>(instr_index);
     ma.access_size = static_cast<uint32_t>(access_size);
-    ma.launch_id = grid_launch_id;   // the host turns this into a time bound
 
     uint64_t block_id = blockIdx.x + blockIdx.y * gridDim.x +
                         gridDim.x * gridDim.y * blockIdx.z;

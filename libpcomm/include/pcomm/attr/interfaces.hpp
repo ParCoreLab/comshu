@@ -38,28 +38,6 @@ struct RawAccess {
     core::MemSpace space{core::MemSpace::Global};
     core::DeviceId run_device{0};
     core::DeviceId mem_device{kUnresolvedDevice};
-
-    // When this access *might* have happened, as host ticks — the pipeline
-    // emits it as a Temporal::window, not an Instant.
-    //
-    // A device-side collector has no clock the host shares: reading the GPU's
-    // globaltimer on every instrumented instruction would sit on the hot path
-    // of the very thing being measured. So a producer bounds the access
-    // instead, and the bound is the honest claim:
-    //
-    //   ticks_lo — the earliest it could have happened. For NVBit, when the
-    //              kernel that issued it was launched. 0 = unknown (open
-    //              below); the pipeline still emits a window, never invents a
-    //              lower bound.
-    //   ticks_hi — the latest. For NVBit, when the host drained it from the
-    //              channel: the access provably preceded its own dequeue.
-    //
-    // Producers that leave both 0 get a timeless record rather than a
-    // fabricated instant. See
-    // plans/PLAN-20260803-1021-gpumem-window-timestamps-*.md for why the
-    // alternatives (previous-drain time; per-access globaltimer) were rejected.
-    core::Ticks ticks_lo{0};
-    core::Ticks ticks_hi{0};
 };
 
 // Host-side runtime happenings the pipeline reacts to (kernel launch/exit,
