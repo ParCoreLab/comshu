@@ -559,3 +559,66 @@ standalone shim that links nothing from libpcomm, on purpose.
   `smart_dlsym` rather than exporting a symbol — that is the interception point
   the evidence actually points at.
 - Only if that proves insufficient, revisit `cuGetExportTable`.
+
+## Correction: `cuGetExportTable` IS used — walking back the previous section
+
+The section above concluded that the export-table patcher was an "unproven
+necessity" because a log-only interposer saw zero calls. That reasoning was
+sound as far as it went — `LD_PRELOAD` cannot see dlsym-on-handle — but the
+conclusion drawn from it was too strong. `LD_DEBUG=symbols` on du04 shows what
+NVSHMEM actually resolves:
+
+```
+cuGetProcAddress               : 2
+cuGetProcAddress_v2            : 8
+cuGetExportTable               : 2
+cuMemHostRegister_v2           : 2
+cuMemHostGetDevicePointer_v2   : 0
+cuMemGetHandleForAddressRange  : 0
+```
+
+Both of SigmaTrace's interception points are live. Its infrastructure choice —
+patch `cuGetProcAddress` *and* `cuGetExportTable`, because CUDA hands out entry
+points through both doors — is **validated by this evidence**, not made
+redundant by it. Treat the previous section's "unproven necessity" as retracted.
+
+(The first measurement of this printed zeros for every symbol including
+`cuMemHostRegister`, because the grep matched `lookup symbol.*NAME` while
+`LD_DEBUG` writes `symbol=NAME`. The sanity line in the same output contradicted
+the table, which is the only reason it was caught. Counted patterns that return
+zero need a positive control every time.)
+
+### What remains genuinely open
+
+`cuMemHostGetDevicePointer_v2` shows **0 lookups**, and it is the linchpin of the
+UAR hijack: SigmaTrace substitutes the fake page by returning a device pointer
+for it (`CUDAHijack.cpp:467-519`). Two readings, and this data cannot separate
+them:
+
+1. It is never called — plausible, since under unified addressing a
+   `CU_MEMHOSTREGISTER_DEVICEMAP` registration makes the host VA usable on the
+   device directly, so there is nothing to ask for. If so, **the substitution
+   point does not exist on this stack** and the hijack needs a different hook.
+2. It *is* called, via `cuGetProcAddress("cuMemHostGetDevicePointer")` — which
+   takes a **string**, not a dynamic symbol lookup, and is therefore invisible to
+   `LD_DEBUG` by construction. The 8 `cuGetProcAddress_v2` lookups say that route
+   is in use for something.
+
+Settling it requires intercepting `cuGetProcAddress` itself and logging the
+strings — which requires interposing `dlsym`, which the standalone probe does not
+do and `libpcomm` already does (`Dlsym.cpp:107`). So this question is now blocked
+on doing it inside pcomm rather than beside it, which is an argument for building
+Stage 1 next rather than extending the probe further.
+
+### Standing assessment of SigmaTrace
+
+- **Mechanism**: sound, and its interception infrastructure is confirmed
+  relevant on current hardware.
+- **Host repeater path**: complete, coherent code. Never executed here — "it
+  works" remains code-reading, not evidence.
+- **GPU-resident repeater**: definitely not working code (unreachable parse,
+  debug `printf`).
+- **NVSHMEM bindings**: measurably stale for 3.4.5 — hooks `umem_reg` where only
+  `umem_reg_ex` is called, and decides GPU residency by an address that is now
+  always `0x0` under dmabuf registration. A verbatim port captures nothing, and
+  fails silently while doing so.
