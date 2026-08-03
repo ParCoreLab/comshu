@@ -178,6 +178,16 @@ void pcomm_engine_drain_thread(void) {
     for (auto& [id, a] : pcomm::arenas_for_this_thread()) a->drain();
 }
 
+void pcomm_engine_reset_arenas_for_fork(void) {
+    // Only the forking thread exists in the child, so its map is the only one
+    // that can still be reached — and it is the one holding the parent's
+    // buffered records.
+    for (auto& [id, a] : pcomm::arenas_for_this_thread()) {
+        a->pub.count = 0;   // drop the parent's records; the child starts empty
+        pcomm::rec::ThreadBufferRegistry::instance().register_buffer(a.get());
+    }
+}
+
 std::uint32_t pcomm_engine_intern_str(std::uint8_t domain, const char* s, std::size_t n) {
     auto& tracer = pcomm::Tracer::instance();
     if (!tracer.has_recorder()) return 0;

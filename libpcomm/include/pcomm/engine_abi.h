@@ -84,6 +84,21 @@ void pcomm_engine_arena_flush(pcomm_arena* arena);
  * TLS before atexit handlers, and GPU backends flush from those). */
 void pcomm_engine_drain_thread(void);
 
+/* Child side of a fork: discard whatever the parent had buffered in this
+ * thread's arenas, and re-register them so the child's own records are found at
+ * finalize().
+ *
+ * Both halves matter. ThreadBufferRegistry::reset_for_fork() clears the
+ * registry so the parent's buffers are never flushed through COW-shared FILE*s
+ * — correct — but the *records* live in the arenas, not in the registry, and an
+ * unregistered arena is one that finalize() will never drain. That is how the
+ * child came to write 0 records while the parent wrote all of its own.
+ *
+ * Nothing needs to rebind: Arena::drain() resolves the sink from the Tracer at
+ * drain time, so once atfork_child has re-started into the child's directory
+ * these arenas already point at the right place. Call this AFTER that start(). */
+void pcomm_engine_reset_arenas_for_fork(void);
+
 /* Intern dictionaries. `domain` is rec::InternDomain. Returns a handle; 0 is
  * the null handle. */
 uint32_t pcomm_engine_intern_str(uint8_t domain, const char* s, size_t n);

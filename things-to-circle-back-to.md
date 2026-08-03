@@ -2,34 +2,39 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
-## OPEN: fork-aware capture is broken — the child records nothing
+## FIXED: fork-aware capture — the child recorded nothing
 
-`fork_smoke` (XFAIL as of this note): parent 130/130, **child 0 of 50**. The
+Fixed 2026-08-03 (`pcomm_engine_reset_arenas_for_fork`, plan
+`PLAN-20260803-1050-fork-child-records-lost-done.md`). Was: parent 130/130,
+**child 0 of 50**. The
 feature was validated at exactly those numbers when it landed (ec32ab2), so it
 regressed since, invisibly — the assertion that would have caught it was
 compiled out by `NDEBUG` (see the next entry).
 
-**Cause.** `Recorder::append` caches the engine arena in a
-`static thread_local`, initialised once per thread per record type:
+**Cause — not the obvious one.** The tempting diagnosis is that
+`Recorder::append` caches the arena in a `static thread_local`, so after `fork()`
+the child points at the parent's arena. True, and harmless: `Arena::drain()`
+holds no sink pointer, it asks `Tracer::instance().recorder().sink()` at drain
+time, and by then `atfork_child` has re-started into the child's directory. A
+cached arena pointer drains to the right place.
 
-```cpp
-static thread_local pcomm_arena* arena = pcomm_engine_arena(...);
-```
+The break was one line in `ThreadBufferRegistry::reset_for_fork()`:
+`m_buffers.clear()`. The child forgot its arenas existed, so `finalize()`'s
+`drain_all()` iterated an empty list and the child's records were never written.
+The intent — don't flush the parent's buffered records through COW-shared
+`FILE*`s — was right, but it discarded the *registration* when what needed
+discarding was the *content*.
 
-After `fork()`, the child's cache still points at the **parent's** arena — the
-one `atfork_child` deliberately leaked (`m_sink.release()` /
-`m_recorder.release()`) and which `reset_for_fork()` dropped from the registry.
-The child's records go into an arena nothing will ever drain.
-
-`atfork_child`'s comment still says *"The fresh Recorder has a new address, so
-the per-thread buffer_store rebuilds against the child's sink"* — true of the
+`atfork_child`'s comment claimed *"The fresh Recorder has a new address, so the
+per-thread buffer_store rebuilds against the child's sink"* — true of the
 map-keyed `{recorder, type_id}` design, false since the shared-engine C ABI
-(4dd6a69) replaced it with an unkeyed thread-local. The comment outlived the
-mechanism it described.
+(4dd6a69) made arenas `type_id`-keyed in a thread-local map. The comment
+outlived its mechanism and pointed the diagnosis the wrong way.
 
-**Fix shape:** a generation counter — bump on fork, have `append` re-resolve
-when the cached generation differs. Small, but it sits on the hot path of every
-single record, so it wants its own plan and an MN5 gate rather than a drive-by.
+**Fix:** `pcomm_engine_reset_arenas_for_fork()` — clear each arena's count and
+re-register it, called from `atfork_child` after `start()`. No hot-path change,
+no generation counter (the first design, dropped once the dynamic sink lookup
+was understood).
 
 ## OPEN (minor): Tracer cannot restart after finalize()
 

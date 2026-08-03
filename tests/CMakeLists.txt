@@ -42,23 +42,6 @@ add_executable(fork_smoke fork_smoke.cpp)
 target_link_libraries(fork_smoke PRIVATE pcomm::pcomm pcomm::engine Threads::Threads)
 pcomm_add_test(fork_smoke)
 add_test(NAME fork_smoke COMMAND fork_smoke)
-# XFAIL — fork-aware capture is broken: the child writes 0 of its records
-# (parent 130/130, child 0/50). Regressed since ec32ab2, where it was validated
-# at exactly those numbers; the assertion that would have caught it was compiled
-# out by NDEBUG until this commit.
-#
-# Cause: Recorder::append caches the engine arena in a `static thread_local`
-# initialised once per thread per record type. After fork() the child's cache
-# still points at the *parent's* arena — which atfork_child deliberately leaked
-# and which is not in the child's registry — so the child's records go somewhere
-# never drained. atfork_child's comment still claims "the fresh Recorder has a
-# new address, so the per-thread buffer_store rebuilds", which was true of the
-# map-keyed design the shared-engine C ABI replaced.
-#
-# Kept failing-and-marked rather than deleted or weakened: the fix is on the
-# hot path of every record and wants its own plan and MN5 gate. WILL_FAIL means
-# a *pass* here is the alert to remove this marker.
-set_tests_properties(fork_smoke PROPERTIES WILL_FAIL TRUE)
 
 # The intern dictionary: written through Tracer (so, the engine), read back
 # through rec::InternDictionary — the same path pcomm-read uses.

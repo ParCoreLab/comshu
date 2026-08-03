@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <sys/wait.h>
@@ -34,6 +35,23 @@ static std::size_t stream_count(const fs::path& dir) {
     // Past the 32-byte StreamHeader every stream file opens with.
     return (fs::file_size(path) - sizeof(rec::StreamHeader)) /
            sizeof(rec::Stamped<MemObject>);
+}
+
+// How many records in this stream carry `dev`. Counts alone cannot tell whose
+// records these are: parent and child write the same *number* of MemObjects in
+// some failure modes, and a fix that re-registered the parent's arena without
+// clearing it would put the parent's 100 into the child's file and still count
+// right. Parent records use device 0, child records device 1.
+static std::size_t stream_count_with_device(const fs::path& dir, std::uint16_t dev) {
+    auto path = dir / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
+    if (!fs::exists(path)) return 0;
+    std::ifstream in(path, std::ios::binary);
+    in.seekg(sizeof(rec::StreamHeader));
+    std::size_t n = 0;
+    rec::Stamped<MemObject> s{};
+    while (in.read(reinterpret_cast<char*>(&s), sizeof s))
+        if (s.payload.device == dev) ++n;
+    return n;
 }
 
 int main() {
@@ -68,12 +86,10 @@ int main() {
                 WIFEXITED(status) ? WEXITSTATUS(status) : -1, parent_n,
                 kParentPre + kParentPost, (int)pid, child_n, kChild);
 
-    // Reported, not asserted: these three are the substance of the test, and it
-    // is currently a known failure (see the XFAIL note in tests/CMakeLists.txt —
-    // the child records 0 of its 50). A failing exit code lets ctest express
-    // that with WILL_FAIL; abort() from assert() is a signal, which ctest counts
-    // as an error whatever WILL_FAIL says. Printing all three also means one run
-    // shows the whole picture rather than stopping at the first bad number.
+    // Reported rather than asserted, and all of them before exiting: one run
+    // then shows the whole picture instead of stopping at the first bad number,
+    // and a non-zero exit is something ctest's WILL_FAIL can express while the
+    // SIGABRT from assert() is not.
     int bad = 0;
     auto check = [&bad](bool ok, const char* what) {
         if (!ok) { std::printf("  FAIL: %s\n", what); ++bad; }
@@ -83,6 +99,19 @@ int main() {
           "child records lost/misrouted");
     check(parent_n == static_cast<std::size_t>(kParentPre + kParentPost),
           "parent stream corrupted or truncated by the fork child");
+
+    // Whose records are they? Counts alone would accept a child stream full of
+    // the parent's pre-fork buffer — which is exactly what re-registering the
+    // arenas *without* clearing them would produce.
+    auto child_own = stream_count_with_device(out / ("rank-" + std::to_string(pid)), 1);
+    auto parent_own = stream_count_with_device(out / "rank-0", 0);
+    std::printf("  child rank-%d holds %zu child-tagged records (expect %d); "
+                "parent rank-0 holds %zu parent-tagged (expect %d)\n",
+                (int)pid, child_own, kChild, parent_own, kParentPre + kParentPost);
+    check(child_own == static_cast<std::size_t>(kChild),
+          "child stream does not hold the child's own records");
+    check(parent_own == static_cast<std::size_t>(kParentPre + kParentPost),
+          "parent stream does not hold the parent's own records");
 
     if (bad) {
         std::printf("fork_smoke: %d check(s) failed\n", bad);

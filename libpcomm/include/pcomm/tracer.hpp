@@ -135,6 +135,14 @@ private:
     // handler only). Not async-signal-safe (allocates) — matches SigmaTrace;
     // safe for the common fork-then-record / fork-then-exec patterns, not for
     // forking while another thread holds malloc/intern locks.
+    //
+    // NB the arenas the child records into are the same objects the parent was
+    // using — they are keyed by type_id in a thread-local map, and a cached
+    // pcomm_arena* in Recorder::append survives the fork. That is fine and
+    // deliberate: Arena::drain() resolves the sink from the Tracer at drain
+    // time, so after the start() below they already write to the child's
+    // directory. What they need is their *content* cleared and their
+    // *registration* restored — see pcomm_engine_reset_arenas_for_fork.
     static void atfork_child() {
         Tracer& t = instance();
         if (!t.m_recorder) return;  // wasn't tracing
@@ -153,6 +161,11 @@ private:
         const int attached = t.m_active;
         t.start(cfg);
         t.m_active = attached;
+        // After start(), so the arenas resolve to the child's sink and the
+        // registry mutex reset_for_fork() placement-reset is usable again.
+        // Without this the child's records land in arenas nobody drains: the
+        // parent wrote 130/130 and the child 0 of 50 (fork_smoke).
+        pcomm_engine_reset_arenas_for_fork();
     }
 
     void emit_anchor() {
