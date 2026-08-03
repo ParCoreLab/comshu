@@ -51,7 +51,38 @@ Two things the fix turned up that the plan did not predict:
   Launch time has both properties: NVSHMEM alive, and every region the kernel
   can touch already mapped.
 
-## OPEN: case 05's `ops` golden asserts peer loads that were never real
+## RESOLVED: case 05's `ops` asserted peer loads that were never real
+
+Answered 2026-08-03 by the user, and scoped rather than taken wholesale. NCCL
+moves data over NVLink P2P by **pushing**: the sender stores into the peer's
+mapped buffer and stores again to a ready flag. Writes are posted, so the sender
+never stalls and the link saturates; a remote read is non-posted and costs a
+round trip. Data plane and synchronisation are therefore both stores, and the
+consumer polls a flag in memory it owns — a *local* load, filtered out by
+`RemoteFilter`.
+
+**Deliberately scoped to the pinning, not asserted of NCCL in general.** The P2P
+transport also has a direct-read mode, chosen by topology and configuration, so
+the claim rests on `job.sbatch` pinning `NCCL_ALGO=Ring`, `NCCL_PROTO=Simple`,
+`MIN/MAX_NCHANNELS=1`, intra-node NVLink. Change the pinning and the check
+should go red; the answer is then to re-derive it, not relax it.
+
+Two details the old comments had backwards, both worth keeping in view:
+
+- They blamed **"NCCL's LL protocol"** for unrepeatable counts. The case pins
+  **Simple**, not LL.
+- They cited loads varying 295,044 / 550,064 / 493,031 "against a perfectly flat
+  294,990 stores". The *stable* half was the real half: the loads were local
+  reads wearing a phantom device id, and the unrepeatability was the bug rather
+  than a property of NCCL. Measured after the fix: 0 loads, 294,987 stores per
+  rank, uniform across all four (job 44139911).
+
+`ops.golden` was rewritten by derivation (four ranks, `store` only) rather than
+regenerated from the run, and the assertion now requires peer stores present and
+peer loads absent.
+
+The original entry:
+
 
 `05_nccl_p2p` was passing on fabricated attribution — `find_nvshmem_heap_owner`
 applied to NCCL's `cuMemMap` regions, which is where `peer_traffic.sql`'s own

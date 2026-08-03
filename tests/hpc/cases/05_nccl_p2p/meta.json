@@ -21,8 +21,5 @@
     "gpu_access",
     "mem_object"
   ],
-  "expect_fail_asserts": {
-    "ops": "Asserts every rank does peer loads AND stores. That was recorded from fabricated attribution (find_nvshmem_heap_owner applied to NCCL's cuMemMap regions). With attribution fixed (21f3b74) the measurement is 0 loads / 294987 stores per rank, uniform across all four — consistent with a push-model ring. NOT flipped to match: unlike cases 04 and 06, whose answer follows from a three-line kernel, deciding this means knowing whether NCCL's ring allreduce does direct peer reads. See things-to-circle-back-to.md."
-  },
   "history": "was xfail, filed as 'NCCL's persistent kernel starves NVBit's bounded channel -> producer/consumer deadlock'. Refuted by measurement: the channel is empty during the slow phase, and the run completes given time. The launched kernel is ncclDevKernel_AllReduce_Sum_f32_RING_LL — RING_LL despite the job pinning NCCL_PROTO=Simple, since NCCL selects protocol by message size (found with PCOMM_LAUNCH_DUMP, cb7fce7)."
 }
