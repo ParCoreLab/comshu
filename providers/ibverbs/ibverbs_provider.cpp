@@ -342,13 +342,25 @@ Profiler::Profiler() {
     });
 
     // modify_qp -> state transition; ->RTR carries the remote endpoint.
+    //
+    // Read each field only when its mask bit says the caller set it. `mask` is
+    // the whole contract of ibv_modify_qp: every field NOT named in it is
+    // untouched caller memory, so reading one is reading whatever happened to
+    // be on their stack. Keying off the state instead — "we are going to RTR,
+    // so the destination must be there" — is wrong for UD, whose RTR needs only
+    // IBV_QP_STATE (plus pkey/qkey) and never sets dest_qp_num or ah_attr.
+    //
+    // Measured on case 02 (NCCL, job 44139911), and the split is total: of 264
+    // RTR transitions, the 24 on RC QPs all carried a destination and the 240
+    // on UD QPs carried none. We were reading uninitialised bytes 240 times per
+    // run and recording whatever came back — here zeroes, which merely looked
+    // like "no destination"; there is nothing that makes them zeroes.
     this->register_post<modify_qp_tag>([](int ret, ibv_qp* qp, ibv_qp_attr* attr, int mask, auto...) {
         if (ret != 0 || !qp || !attr) return;
-        const bool to_rtr = (mask & IBV_QP_STATE) && attr->qp_state == IBV_QPS_RTR;
         rec().record(rr::IbModifyQp{
             {}, {}, h(qp), qp->qp_num,
-            to_rtr ? attr->dest_qp_num : 0u,
-            to_rtr ? static_cast<std::uint32_t>(attr->ah_attr.dlid) : 0u,
+            (mask & IBV_QP_DEST_QPN) ? attr->dest_qp_num : 0u,
+            (mask & IBV_QP_AV) ? static_cast<std::uint32_t>(attr->ah_attr.dlid) : 0u,
             static_cast<std::uint8_t>((mask & IBV_QP_STATE) ? attr->qp_state : 0xFF)});
     });
 
