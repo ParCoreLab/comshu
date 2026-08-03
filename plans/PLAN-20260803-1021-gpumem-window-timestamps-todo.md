@@ -47,6 +47,31 @@ unsound — the same address can resolve to different owners in one run dependin
 on drain timing — and a regenerated golden would freeze a second arbitrary
 interleaving while hiding that.
 
+**Decision 2026-08-03: NVSHMEM heap attribution is deferred, and this stays
+parked rather than landing behind an xfail.**
+
+The attribution is not a small race to patch. The model itself is wrong:
+
+> All devices map all regions, so ownership is positional: sorted by base,
+> region 0 is the local PE and region i belongs to PE `(mype + i) % npes`
+
+That assumes **one region per PE**, which is where `npes = snap->size()` comes
+from. This workload maps ~76 regions for 8 PEs, so the PE count is wrong and
+every index derived from it is wrong. Fixing it needs the true PE count and a
+real region→PE mapping, which an NVBit tool cannot ask NVSHMEM for — it is not
+linked against it. That is a design item, not a bug fix.
+
+Landing this change behind `expect_fail` on case 07 was considered and
+**rejected**. Case 07's own meta.json calls `cross_transport` "the point of the
+case… the capture that makes cross-transport causality recoverable", and it is
+the only test of the unified NVLink+IB timeline. This change's benefit is real
+but currently *latent*: no golden queries time, and no exporter renders a GPU
+window. Trading the flagship cross-transport assertion for a benefit nothing
+consumes yet is a bad trade.
+
+So: the code stays in `2bfb376`, one `git revert` away, and re-lands when
+attribution stops depending on discovery order. Nothing about it needs redoing.
+
 **Unblocking work, in order:**
 1. Make heap-region ownership independent of discovery order. The index must be
    a property of the region (its PE), not of its position in a snapshot that

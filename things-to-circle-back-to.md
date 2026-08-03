@@ -42,6 +42,16 @@ interleaving and still be wrong. Ownership has to stop depending on discovery
 order — see the unblocking steps in
 `plans/PLAN-20260803-1021-gpumem-window-timestamps-todo.md`.
 
+**Deferred 2026-08-03 (user decision).** It is worse than a race: the model
+assumes one heap region per PE, which is where `npes = snap->size()` comes
+from, and this workload maps ~76 regions for 8 PEs — so the PE count is wrong
+and everything derived from it is too. A correct fix needs the real region→PE
+mapping, which an NVBit tool cannot get from NVSHMEM (it is not linked against
+it). Treated as a design item for when NVSHMEM support is picked up again, not
+as a bug to patch now. Case 07 stays green in the meantime *because the change
+that exposed this is parked*, not because the attribution is sound — any future
+change to recv-thread timing will surface it again.
+
 Related: case 06's `regions_per_rank` (115 -> 114) and `ib_entities`
 (mem_region 460 -> 456) fail *independently of any of this* — they fail at
 `5a28119` too. Probably the same family (allocation-dependent goldens), not yet
