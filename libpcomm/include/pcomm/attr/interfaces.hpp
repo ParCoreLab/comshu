@@ -31,10 +31,10 @@ namespace pcomm::attr {
 inline constexpr core::DeviceId kUnresolvedDevice = 0xFFFF;
 
 struct RawAccess {
-    std::uint64_t address{0};
-    std::uint64_t pc{0};
-    std::uint32_t size{0};
-    std::uint32_t thread{0};
+    std::uint64_t  address{0};
+    std::uint64_t  pc{0};
+    std::uint32_t  size{0};
+    std::uint32_t  thread{0};
     core::MemOp    op{core::MemOp::Load};
     core::MemSpace space{core::MemSpace::Global};
     core::DeviceId run_device{0};
@@ -45,11 +45,15 @@ struct RawAccess {
 // allocation, process events). Grows as the Snoopie port needs it.
 struct RuntimeEvent {
     enum class Kind : std::uint8_t {
-        KernelLaunch, KernelExit, Alloc, Free, ProcessExit,
+        KernelLaunch,
+        KernelExit,
+        Alloc,
+        Free,
+        ProcessExit,
     } kind{Kind::KernelLaunch};
     core::DeviceId device{0};
-    core::MemRange range{};       // Alloc/Free
-    core::Handle   name{0};       // interned kernel/symbol name
+    core::MemRange range{};  // Alloc/Free
+    core::Handle   name{0};  // interned kernel/symbol name
 };
 
 class IEventObserver {
@@ -88,7 +92,7 @@ public:
     // Fills the inline links on the GpuAccess record and/or emits side records.
     virtual void attribute(const RawAccess&, core::records::GpuAccess& out,
                            rec::Recorder<>& rec) = 0;
-    void on_event(const RuntimeEvent&) override {}
+    void         on_event(const RuntimeEvent&) override {}
 };
 
 // filter -> attributor chain -> recorder. Each attributor is independent and
@@ -101,14 +105,15 @@ public:
     void add_attributor(std::unique_ptr<IAttributor> a) { m_chain.push_back(std::move(a)); }
 
     void on_event(const RuntimeEvent& ev) override {
-        for (auto& a : m_chain) a->on_event(ev);
+        for (auto& a : m_chain)
+            a->on_event(ev);
     }
 
     void process(std::span<const RawAccess> accesses);
 
 private:
-    rec::Recorder<>* m_rec;
-    std::vector<std::unique_ptr<IFilter>> m_filters;
+    rec::Recorder<>*                          m_rec;
+    std::vector<std::unique_ptr<IFilter>>     m_filters;
     std::vector<std::unique_ptr<IAttributor>> m_chain;
 };
 

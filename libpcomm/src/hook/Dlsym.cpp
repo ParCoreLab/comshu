@@ -11,45 +11,45 @@
 #include "pcomm/hook/dlsym/Dlsym.hpp"
 
 namespace pcomm::smart_dlsym {
-    static constexpr bool LogDebug{false};
+static constexpr bool LogDebug{false};
 
-    void* DL_RTLD_DEFAULT = RTLD_DEFAULT;
+void* DL_RTLD_DEFAULT = RTLD_DEFAULT;
 
-    void* DL_RTLD_NEXT = RTLD_NEXT;
-    const int DL_RTLD_NOW = RTLD_NOW;
-    const int DL_RTLD_GLOBAL = RTLD_GLOBAL;
-    const int DL_RTLD_NOLOAD = RTLD_NOLOAD;
+void*     DL_RTLD_NEXT = RTLD_NEXT;
+const int DL_RTLD_NOW = RTLD_NOW;
+const int DL_RTLD_GLOBAL = RTLD_GLOBAL;
+const int DL_RTLD_NOLOAD = RTLD_NOLOAD;
 
-    void* (*real_dlopen)(const char*, int) = nullptr;
-    void* (*real_dlsym)(void*, const char*) = nullptr;
-    void* (*real_dlvsym)(void*, const char*, const char*) = nullptr;
-    void* (*real_dlclose)(void*) = nullptr;
+void* (*real_dlopen)(const char*, int) = nullptr;
+void* (*real_dlsym)(void*, const char*) = nullptr;
+void* (*real_dlvsym)(void*, const char*, const char*) = nullptr;
+void* (*real_dlclose)(void*) = nullptr;
 
-    // If you see an undebuggable floating point exception it's this
-    std::unordered_map<std::string, CallbackType>* RegisteredSymbols{nullptr};
+// If you see an undebuggable floating point exception it's this
+std::unordered_map<std::string, CallbackType>* RegisteredSymbols{nullptr};
 
-    inline void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
-        if (!real_symbol) {
-            return real_symbol;
-        }
-
-        if (!RegisteredSymbols) {
-            return real_symbol;
-        }
-
-        const auto& registered_handler = RegisteredSymbols->find(symbol_name);
-        if (registered_handler == RegisteredSymbols->end()) {
-            return real_symbol;
-        }
-
-        const auto& registered_callback = registered_handler->second;
-
-        // Callback does some work and returns an overridden fun
-        auto* new_fn = registered_callback(real_symbol, handle, symbol_name);
-
-        return new_fn;
+inline void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
+    if (!real_symbol) {
+        return real_symbol;
     }
-} // namespace pcomm::smart_dlsym
+
+    if (!RegisteredSymbols) {
+        return real_symbol;
+    }
+
+    const auto& registered_handler = RegisteredSymbols->find(symbol_name);
+    if (registered_handler == RegisteredSymbols->end()) {
+        return real_symbol;
+    }
+
+    const auto& registered_callback = registered_handler->second;
+
+    // Callback does some work and returns an overridden fun
+    auto* new_fn = registered_callback(real_symbol, handle, symbol_name);
+
+    return new_fn;
+}
+}  // namespace pcomm::smart_dlsym
 
 // On glibc < 2.34, dl* functions live in libdl.so; on >= 2.34 they're in libc.so
 static void* find_dl_symbol(const char* name) {
@@ -64,20 +64,25 @@ static void* find_dl_symbol(const char* name) {
 #pragma GCC diagnostic ignored "-Wprio-ctor-dtor"
 // If you see an undebuggable double free, however, it's this. Don't load this module more than once !!!!!
 static void __attribute__((constructor(0))) init() {
-    pcomm::smart_dlsym::real_dlopen = reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlopen)>(find_dl_symbol("dlopen"));
+    pcomm::smart_dlsym::real_dlopen =
+        reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlopen)>(find_dl_symbol("dlopen"));
 
-    pcomm::smart_dlsym::real_dlsym = reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlsym)>(find_dl_symbol("dlsym"));
-    pcomm::smart_dlsym::real_dlvsym = reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlvsym)>(find_dl_symbol("dlvsym"));
+    pcomm::smart_dlsym::real_dlsym =
+        reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlsym)>(find_dl_symbol("dlsym"));
+    pcomm::smart_dlsym::real_dlvsym =
+        reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlvsym)>(find_dl_symbol("dlvsym"));
 
-    pcomm::smart_dlsym::real_dlclose = reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlclose)>(find_dl_symbol("dlclose"));
+    pcomm::smart_dlsym::real_dlclose =
+        reinterpret_cast<decltype(pcomm::smart_dlsym::real_dlclose)>(find_dl_symbol("dlclose"));
 
-    if (!pcomm::smart_dlsym::real_dlopen || !pcomm::smart_dlsym::real_dlsym || !pcomm::smart_dlsym::real_dlvsym ||
-        !pcomm::smart_dlsym::real_dlclose) {
+    if (!pcomm::smart_dlsym::real_dlopen || !pcomm::smart_dlsym::real_dlsym ||
+        !pcomm::smart_dlsym::real_dlvsym || !pcomm::smart_dlsym::real_dlclose) {
         fprintf(stderr, "Failed to load real real dl functions\n");
         std::abort();
     }
 
-    pcomm::smart_dlsym::RegisteredSymbols = new std::unordered_map<std::string, pcomm::smart_dlsym::CallbackType>();
+    pcomm::smart_dlsym::RegisteredSymbols =
+        new std::unordered_map<std::string, pcomm::smart_dlsym::CallbackType>();
 }
 #pragma GCC diagnostic pop
 

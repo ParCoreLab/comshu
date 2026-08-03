@@ -25,8 +25,8 @@ namespace pcomm {
 
 struct Config {
     std::filesystem::path output_dir{"pcomm-out"};
-    int  rank{0};
-    bool verbose{false};
+    int                   rank{0};
+    bool                  verbose{false};
 
     // Builder: env (PCOMM_*) -> immutable run config. Set by the launcher.
     static Config from_env();
@@ -62,8 +62,8 @@ public:
                 std::fprintf(stderr,
                              "[pcomm] provider requested %s/rank-%d but capture is "
                              "already running as %s/rank-%d; joining the latter\n",
-                             cfg.output_dir.c_str(), cfg.rank,
-                             m_config.output_dir.c_str(), m_config.rank);
+                             cfg.output_dir.c_str(), cfg.rank, m_config.output_dir.c_str(),
+                             m_config.rank);
             return;
         }
         m_config = cfg;
@@ -84,8 +84,10 @@ public:
     void stop() {
         {
             std::lock_guard<std::mutex> lk(m_lifecycle);
-            if (!m_recorder) return;
-            if (m_active > 0 && --m_active > 0) return;
+            if (!m_recorder)
+                return;
+            if (m_active > 0 && --m_active > 0)
+                return;
         }
         finalize();
     }
@@ -95,7 +97,8 @@ public:
     void finalize() {
         {
             std::lock_guard<std::mutex> lk(m_lifecycle);
-            if (!m_recorder || m_finalized) return;
+            if (!m_recorder || m_finalized)
+                return;
             m_finalized = true;
         }
         emit_anchor();  // end-of-run anchor: reader fits offset + skew
@@ -113,7 +116,7 @@ public:
     rec::Recorder<>& recorder() { return *m_recorder; }
     // Deliberately lock-free: the arena drain path calls this, and drain can be
     // reached from inside start() (emit_anchor) which already holds m_lifecycle.
-    bool has_recorder() const { return m_recorder != nullptr; }
+    bool          has_recorder() const { return m_recorder != nullptr; }
     const Config& config() const { return m_config; }
 
 private:
@@ -145,7 +148,8 @@ private:
     // *registration* restored — see pcomm_engine_reset_arenas_for_fork.
     static void atfork_child() {
         Tracer& t = instance();
-        if (!t.m_recorder) return;  // wasn't tracing
+        if (!t.m_recorder)
+            return;                    // wasn't tracing
         (void)t.m_sink.release();      // leak parent's sink: do NOT flush/fclose
         (void)t.m_recorder.release();  // leak parent's recorder: do NOT drain
         rec::ThreadBufferRegistry::instance().reset_for_fork();
@@ -170,9 +174,9 @@ private:
 
     void emit_anchor() {
         auto s = helpers::sample_anchor();
-        m_recorder->record(core::Temporal::none(),
-                           core::records::ClockAnchor{{}, {}, /*domain=*/0,
-                                                      s.local_ticks, s.wall_ns, s.mono_ns});
+        m_recorder->record(
+            core::Temporal::none(),
+            core::records::ClockAnchor{{}, {}, /*domain=*/0, s.local_ticks, s.wall_ns, s.mono_ns});
     }
 
     // Intern dictionaries, as records plus one byte heap.
@@ -188,40 +192,46 @@ private:
     // Runs at finalize, once, after the application's own records have drained.
     // Nothing here interns, so no new handles appear while we walk the tables.
     void emit_intern_records() {
-        auto blob_path = m_sink->dir() / "intern-blob.bin";
+        auto              blob_path = m_sink->dir() / "intern-blob.bin";
         std::vector<char> blob;
 
         for (std::size_t d = 0; d < rec::kInternDomainCount; ++d) {
             auto  domain = static_cast<rec::InternDomain>(d);
-            auto& table  = m_recorder->table(domain);
-            if (table.size() == 0) continue;
+            auto& table = m_recorder->table(domain);
+            if (table.size() == 0)
+                continue;
 
             // Strings: bytes go to the blob, the record keeps (offset, length).
             // The handle comes from the table rather than a counter here — see
             // InternTable::string_handles for why recomputing it was a latent
             // way to write a well-formed dictionary that resolves to the wrong
             // text.
-            const auto& texts   = table.strings();
+            const auto& texts = table.strings();
             const auto& handles = table.string_handles();
             for (std::size_t i = 0; i < texts.size(); ++i) {
                 const auto offset = blob.size();
                 blob.insert(blob.end(), texts[i].begin(), texts[i].end());
-                m_recorder->record(core::Temporal::none(),
-                                   core::records::InternString{
-                                       {}, {}, static_cast<std::uint64_t>(offset),
-                                       static_cast<std::uint32_t>(texts[i].size()),
-                                       handles[i], static_cast<std::uint8_t>(d)});
+                m_recorder->record(
+                    core::Temporal::none(),
+                    core::records::InternString{{},
+                                                {},
+                                                static_cast<std::uint64_t>(offset),
+                                                static_cast<std::uint32_t>(texts[i].size()),
+                                                handles[i],
+                                                static_cast<std::uint8_t>(d)});
             }
             // Numeric values need no heap: they are fixed width already.
             for (const auto& [key, handle] : table.keys())
-                m_recorder->record(core::Temporal::none(),
-                                   core::records::InternKey{
-                                       {}, {}, key, handle, static_cast<std::uint8_t>(d)});
+                m_recorder->record(
+                    core::Temporal::none(),
+                    core::records::InternKey{{}, {}, key, handle, static_cast<std::uint8_t>(d)});
         }
 
-        if (blob.empty()) return;
+        if (blob.empty())
+            return;
         std::FILE* f = std::fopen(blob_path.c_str(), "wb");
-        if (!f) return;
+        if (!f)
+            return;
         rec::BlobHeader bh;
         bh.byte_count = blob.size();
         std::fwrite(&bh, sizeof bh, 1, f);
@@ -229,33 +239,36 @@ private:
         std::fclose(f);
     }
 
-    Config m_config{};
-    std::unique_ptr<rec::FileSink> m_sink;
+    Config                           m_config{};
+    std::unique_ptr<rec::FileSink>   m_sink;
     std::unique_ptr<rec::Recorder<>> m_recorder;
     // How many providers have start()ed and not yet stop()ped. Guards the
     // attach/finalize decisions above; ctors normally run single-threaded under
     // _dl_init, but stop() can arrive from a vendor exit callback on any thread.
-    int m_active{0};
-    bool m_finalized{false};
+    int        m_active{0};
+    bool       m_finalized{false};
     std::mutex m_lifecycle;
 };
 
 inline Config Config::from_env() {
     Config cfg;
-    if (const char* v = std::getenv("PCOMM_OUTPUT_DIR")) cfg.output_dir = v;
-    if (const char* v = std::getenv("PCOMM_VERBOSE")) cfg.verbose = *v == '1';
+    if (const char* v = std::getenv("PCOMM_OUTPUT_DIR"))
+        cfg.output_dir = v;
+    if (const char* v = std::getenv("PCOMM_VERBOSE"))
+        cfg.verbose = *v == '1';
     // Rank guess (SigmaTrace's RankDetector, minimal port): explicit override,
     // then launcher-provided env, then pid so concurrent unranked processes
     // never clobber each other's streams.
     cfg.rank = -1;
-    for (const char* var : {"PCOMM_RANK", "OMPI_COMM_WORLD_RANK", "PMIX_RANK",
-                            "PMI_RANK", "SLURM_PROCID", "NVSHMEM_MY_PE"}) {
+    for (const char* var : {"PCOMM_RANK", "OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK",
+                            "SLURM_PROCID", "NVSHMEM_MY_PE"}) {
         if (const char* v = std::getenv(var)) {
             cfg.rank = std::atoi(v);
             break;
         }
     }
-    if (cfg.rank < 0) cfg.rank = static_cast<int>(getpid());
+    if (cfg.rank < 0)
+        cfg.rank = static_cast<int>(getpid());
     return cfg;
 }
 

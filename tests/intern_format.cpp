@@ -36,12 +36,13 @@ using rec::InternDomain;
 
 namespace {
 
-int g_fail = 0;
+int                      g_fail = 0;
 std::vector<std::string> g_diags;
 
 void expect(bool ok, const char* what) {
     std::printf("  [%s] %s\n", ok ? "ok " : "XX ", what);
-    if (!ok) g_fail = 1;
+    if (!ok)
+        g_fail = 1;
 }
 
 void collect(const fs::path& p, const std::string& msg) {
@@ -50,12 +51,14 @@ void collect(const fs::path& p, const std::string& msg) {
 
 bool diag_mentions(const char* needle) {
     for (const auto& d : g_diags)
-        if (d.find(needle) != std::string::npos) return true;
+        if (d.find(needle) != std::string::npos)
+            return true;
     return false;
 }
 
 void dump_diags() {
-    for (const auto& d : g_diags) std::printf("         -> %s\n", d.c_str());
+    for (const auto& d : g_diags)
+        std::printf("         -> %s\n", d.c_str());
 }
 
 }  // namespace
@@ -63,8 +66,7 @@ void dump_diags() {
 int main() {
     std::printf("intern dictionary: real capture path, real reader\n");
 
-    const auto root = fs::temp_directory_path() /
-                      ("pcomm-intern-" + std::to_string(::getpid()));
+    const auto root = fs::temp_directory_path() / ("pcomm-intern-" + std::to_string(::getpid()));
     fs::remove_all(root);
 
     // --- interning before there is anywhere to put it ------------------------
@@ -75,10 +77,10 @@ int main() {
     // so such a record degrades to unattributed instead of crashing the target.
     // This must run first: once the Tracer starts there is no way back.
     {
-        const auto h_str = pcomm_engine_intern_str(
-            static_cast<std::uint8_t>(InternDomain::String), "before-start", 12);
-        const auto h_key = pcomm_engine_intern_key(
-            static_cast<std::uint8_t>(InternDomain::Pc), 0xDEAD);
+        const auto h_str = pcomm_engine_intern_str(static_cast<std::uint8_t>(InternDomain::String),
+                                                   "before-start", 12);
+        const auto h_key =
+            pcomm_engine_intern_key(static_cast<std::uint8_t>(InternDomain::Pc), 0xDEAD);
         expect(h_str == 0 && h_key == 0,
                "interning before the tracer has a recorder yields the null handle, "
                "not a crash and not a plausible handle");
@@ -91,9 +93,9 @@ int main() {
     Tracer::instance().start(cfg);
     auto& rec = Tracer::instance().recorder();
 
-    const auto file_h   = rec.intern(InternDomain::String, "stencil.cu");
-    const auto file2_h  = rec.intern(InternDomain::String, "reduce.cu");
-    const auto same_h   = rec.intern(InternDomain::String, "stencil.cu");
+    const auto file_h = rec.intern(InternDomain::String, "stencil.cu");
+    const auto file2_h = rec.intern(InternDomain::String, "reduce.cu");
+    const auto same_h = rec.intern(InternDomain::String, "stencil.cu");
     const auto kernel_h = rec.intern(InternDomain::KernelName,
                                      "_Z6kernelPfS_i_with_a_deliberately_long_mangled_name");
     // Deliberately mixed into one domain: InternTable shares its handle counter
@@ -104,8 +106,8 @@ int main() {
     const auto mixed_key_h = rec.intern(InternDomain::String, std::uint64_t{0xABCDEF});
     const auto after_mix_h = rec.intern(InternDomain::String, "after_the_key.cu");
 
-    const auto pc_h     = rec.intern(InternDomain::Pc, std::uint64_t{0x7fff'1234'5678});
-    const auto ptr_h    = rec.intern(InternDomain::Pointer, std::uint64_t{0x55db'6e39'7220});
+    const auto pc_h = rec.intern(InternDomain::Pc, std::uint64_t{0x7fff'1234'5678});
+    const auto ptr_h = rec.intern(InternDomain::Pointer, std::uint64_t{0x55db'6e39'7220});
 
     expect(file_h == same_h, "interning the same string twice yields one handle");
 
@@ -120,9 +122,9 @@ int main() {
     // Uses TypeName, which nothing else in this test touches, so the assertions
     // above and below are unaffected by what the threads add.
     {
-        constexpr int kThreads = 8, kPerThread = 200;
+        constexpr int                          kThreads = 8, kPerThread = 200;
         std::vector<std::vector<core::Handle>> got(kThreads);
-        std::vector<std::thread> workers;
+        std::vector<std::thread>               workers;
         // Released only once every thread is up, so they arrive at the table
         // together rather than staggered. Measured by deleting the engine's
         // lock_guard and rerunning: without this barrier the check caught the
@@ -136,7 +138,8 @@ int main() {
         std::atomic<bool> go{false};
         for (int t = 0; t < kThreads; ++t)
             workers.emplace_back([&, t] {
-                while (!go.load(std::memory_order_acquire)) { /* spin */ }
+                while (!go.load(std::memory_order_acquire)) { /* spin */
+                }
                 for (int i = 0; i < kPerThread; ++i)
                     // Overlapping ranges on purpose: every value is interned by
                     // several threads, which is the contended case.
@@ -144,29 +147,28 @@ int main() {
                                                 "shared_type_" + std::to_string(i % 50)));
             });
         go.store(true, std::memory_order_release);
-        for (auto& w : workers) w.join();
+        for (auto& w : workers)
+            w.join();
 
         std::unordered_map<int, core::Handle> by_value;
         std::unordered_map<core::Handle, int> by_handle;
-        bool consistent = true;
+        bool                                  consistent = true;
         for (int t = 0; t < kThreads; ++t)
             for (int i = 0; i < kPerThread; ++i) {
-                const int value = i % 50;
+                const int  value = i % 50;
                 const auto h = got[t][i];
                 consistent &= h != 0;
                 auto [vit, v_new] = by_value.emplace(value, h);
-                consistent &= vit->second == h;          // one handle per value
+                consistent &= vit->second == h;  // one handle per value
                 auto [hit, h_new] = by_handle.emplace(h, value);
-                consistent &= hit->second == value;      // one value per handle
+                consistent &= hit->second == value;  // one value per handle
             }
         expect(consistent, "8 threads interning overlapping values agree: one "
                            "handle per value, one value per handle");
-        expect(by_value.size() == 50,
-               "and the 50 distinct values produced exactly 50 handles");
+        expect(by_value.size() == 50, "and the 50 distinct values produced exactly 50 handles");
     }
 
-    rec.record(core::Temporal::none(),
-               core::records::SourceLine{{}, {}, pc_h, file_h, 42});
+    rec.record(core::Temporal::none(), core::records::SourceLine{{}, {}, pc_h, file_h, 42});
     Tracer::instance().finalize();
 
     const auto rank_dir = root / "rank-0";
@@ -179,7 +181,8 @@ int main() {
     {
         g_diags.clear();
         auto dict = rec::InternDictionary::load(rank_dir, collect);
-        if (!g_diags.empty()) dump_diags();
+        if (!g_diags.empty())
+            dump_diags();
         expect(g_diags.empty(), "a well-formed dictionary loads without complaint");
         expect(std::string(dict.str(InternDomain::String, file_h)) == "stencil.cu" &&
                    std::string(dict.str(InternDomain::String, file2_h)) == "reduce.cu",
@@ -190,15 +193,13 @@ int main() {
 
         // The bug the (domain, handle) key exists to prevent: handles restart at
         // 1 in every domain, so a single-keyed map would have these collide.
-        expect(kernel_h == file_h,
-               "handles do collide across domains — both domains start at 1");
+        expect(kernel_h == file_h, "handles do collide across domains — both domains start at 1");
         expect(std::string(dict.str(InternDomain::String, file_h)) !=
                    std::string(dict.str(InternDomain::KernelName, kernel_h)),
                "but they resolve to different strings, because the key is "
                "(domain, handle)");
 
-        expect(std::string(dict.str(InternDomain::String, after_mix_h)) ==
-                   "after_the_key.cu",
+        expect(std::string(dict.str(InternDomain::String, after_mix_h)) == "after_the_key.cu",
                "a string interned after a key in the same domain still resolves "
                "— handles come from the table, not from counting");
 
@@ -214,54 +215,53 @@ int main() {
     }
 
     // --- now break it, four ways ---------------------------------------------
-    auto corrupt = [&](const char* label, auto&& mutate, const char* needle,
-                       const char* what) {
+    auto corrupt = [&](const char* label, auto&& mutate, const char* needle, const char* what) {
         const auto broken = root / label;
         fs::remove_all(broken);
         fs::copy(rank_dir, broken, fs::copy_options::recursive);
         mutate(broken);
         g_diags.clear();
-        auto dict = rec::InternDictionary::load(broken, collect);
+        auto       dict = rec::InternDictionary::load(broken, collect);
         const bool reported = diag_mentions(needle);
         expect(reported, what);
-        if (!reported) dump_diags();
+        if (!reported)
+            dump_diags();
         return dict;
     };
 
-    corrupt("missing-blob",
-            [](const fs::path& d) { fs::remove(d / "intern-blob.bin"); },
-            "missing",
-            "a dictionary whose blob is gone is reported, not silently empty");
+    corrupt(
+        "missing-blob", [](const fs::path& d) { fs::remove(d / "intern-blob.bin"); }, "missing",
+        "a dictionary whose blob is gone is reported, not silently empty");
 
-    corrupt("truncated-blob",
-            [](const fs::path& d) {
-                fs::resize_file(d / "intern-blob.bin",
-                                fs::file_size(d / "intern-blob.bin") - 8);
-            },
-            "truncated",
-            "a truncated blob is caught by byte_count, not by luck");
+    corrupt(
+        "truncated-blob",
+        [](const fs::path& d) {
+            fs::resize_file(d / "intern-blob.bin", fs::file_size(d / "intern-blob.bin") - 8);
+        },
+        "truncated", "a truncated blob is caught by byte_count, not by luck");
 
-    corrupt("foreign-blob",
-            [](const fs::path& d) {
-                std::FILE* f = std::fopen((d / "intern-blob.bin").c_str(), "r+b");
-                rec::BlobHeader h{};
-                std::fread(&h, sizeof h, 1, f);
-                h.magic = 0;                       // some other file entirely
-                std::fseek(f, 0, SEEK_SET);
-                std::fwrite(&h, sizeof h, 1, f);
-                std::fclose(f);
-            },
-            "magic",
-            "a blob that is not a pcomm blob is refused by magic");
+    corrupt(
+        "foreign-blob",
+        [](const fs::path& d) {
+            std::FILE*      f = std::fopen((d / "intern-blob.bin").c_str(), "r+b");
+            rec::BlobHeader h{};
+            std::fread(&h, sizeof h, 1, f);
+            h.magic = 0;  // some other file entirely
+            std::fseek(f, 0, SEEK_SET);
+            std::fwrite(&h, sizeof h, 1, f);
+            std::fclose(f);
+        },
+        "magic", "a blob that is not a pcomm blob is refused by magic");
 
-    {   // An index from a different (longer) run against this blob: offsets are
+    {  // An index from a different (longer) run against this blob: offsets are
         // plausible integers, and nothing but a bounds check notices.
-        auto dict = corrupt("stale-index",
+        auto dict = corrupt(
+            "stale-index",
             [](const fs::path& d) {
-                std::FILE* f = std::fopen((d / "intern-blob.bin").c_str(), "r+b");
+                std::FILE*      f = std::fopen((d / "intern-blob.bin").c_str(), "r+b");
                 rec::BlobHeader h{};
                 std::fread(&h, sizeof h, 1, f);
-                h.byte_count = 4;                  // blob shrank; index did not
+                h.byte_count = 4;  // blob shrank; index did not
                 std::fseek(f, 0, SEEK_SET);
                 std::fwrite(&h, sizeof h, 1, f);
                 std::fclose(f);
@@ -275,8 +275,9 @@ int main() {
     }
 
     fs::remove_all(root);
-    std::printf("%s\n", g_fail
-        ? "FAIL"
-        : "PASS — the dictionary round-trips, and every way of breaking it is reported");
+    std::printf(
+        "%s\n",
+        g_fail ? "FAIL"
+               : "PASS — the dictionary round-trips, and every way of breaking it is reported");
     return g_fail;
 }

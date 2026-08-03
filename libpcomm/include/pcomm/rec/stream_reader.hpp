@@ -35,19 +35,19 @@ inline void warn_to_stderr(const std::filesystem::path& p, const std::string& ms
 }
 
 // The conventional path of one record type's stream inside a rank directory.
-template <core::Record R>
-std::filesystem::path stream_path(const std::filesystem::path& rank_dir) {
+template<core::Record R> std::filesystem::path stream_path(const std::filesystem::path& rank_dir) {
     return rank_dir / (std::to_string(core::RecordTrait<R>::type_id) + ".pcs");
 }
 
 // Reads every record in one stream. A missing file is not an error — a run that
 // never emitted a record type simply has no file for it.
-template <core::Record R>
+template<core::Record R>
 std::vector<Stamped<R>> load_stream(const std::filesystem::path& file,
-                                    StreamDiagnostic diag = warn_to_stderr) {
+                                    StreamDiagnostic             diag = warn_to_stderr) {
     namespace fs = std::filesystem;
     std::vector<Stamped<R>> out;
-    if (!fs::exists(file)) return out;
+    if (!fs::exists(file))
+        return out;
 
     std::ifstream in(file, std::ios::binary);
     if (!in) {
@@ -63,8 +63,8 @@ std::vector<Stamped<R>> load_stream(const std::filesystem::path& file,
 
     StreamHeader h{};
     in.read(reinterpret_cast<char*>(&h), sizeof h);
-    if (const char* err = stream_header_error(h, core::RecordTrait<R>::type_id,
-                                              sizeof(Stamped<R>))) {
+    if (const char* err =
+            stream_header_error(h, core::RecordTrait<R>::type_id, sizeof(Stamped<R>))) {
         diag(file, err);
         return out;
     }

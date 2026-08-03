@@ -46,7 +46,8 @@ int main() {
     for (int t = 0; t < kThreads; ++t) {
         workers.emplace_back([&recorder, t] {
             for (int i = 0; i < kPerThread; ++i) {
-                recorder.record(MemObject{{}, {},
+                recorder.record(MemObject{{},
+                                          {},
                                           static_cast<core::Handle>(t * kPerThread + i + 1),
                                           core::kNullHandle,
                                           {static_cast<std::uint64_t>(i), 64},
@@ -56,7 +57,8 @@ int main() {
             // thread-local store, tracked only by the global registry.
         });
     }
-    for (auto& w : workers) w.join();
+    for (auto& w : workers)
+        w.join();
 
     // Central flush from the main thread (which never recorded).
     std::printf("registry buffers before drain = %zu\n",
@@ -66,14 +68,17 @@ int main() {
 
     // Tracer::start writes into <output_dir>/rank-<N>/.
     auto path = dir / "rank-0" / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
-    if (!fs::exists(path)) { std::printf("MISSING stream %s\n", path.c_str()); return 2; }
+    if (!fs::exists(path)) {
+        std::printf("MISSING stream %s\n", path.c_str());
+        return 2;
+    }
     // Every stream opens with a 32-byte StreamHeader; the records follow it.
     auto bytes = fs::file_size(path) - sizeof(rec::StreamHeader);
     auto rec_size = sizeof(rec::Stamped<MemObject>);
     auto count = bytes / rec_size;
 
-    std::printf("threads=%d per_thread=%d expected=%d got=%zu\n",
-                kThreads, kPerThread, kThreads * kPerThread, static_cast<std::size_t>(count));
+    std::printf("threads=%d per_thread=%d expected=%d got=%zu\n", kThreads, kPerThread,
+                kThreads * kPerThread, static_cast<std::size_t>(count));
     assert(bytes % rec_size == 0 && "stream not a whole number of records");
     assert(count == static_cast<std::size_t>(kThreads) * kPerThread &&
            "cross-thread flush dropped records");

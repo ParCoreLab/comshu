@@ -33,7 +33,8 @@ int g_fail = 0;
 
 void expect(bool ok, const char* what) {
     std::printf("  [%s] %s\n", ok ? "ok " : "XX ", what);
-    if (!ok) g_fail = 1;
+    if (!ok)
+        g_fail = 1;
 }
 
 // Submit `n` records of one type through the sink's actual interface.
@@ -45,16 +46,14 @@ void write_records(rec::ISink& sink, std::size_t n) {
         recs[i].payload.range = {i * 4096, 4096};
         recs[i].payload.device = 2;
     }
-    rec::BufferView view{core::RecordTrait<MemObject>::type_id,
-                         core::RecordTrait<MemObject>::kind,
+    rec::BufferView view{core::RecordTrait<MemObject>::type_id, core::RecordTrait<MemObject>::kind,
                          reinterpret_cast<const std::byte*>(recs.data()),
-                         recs.size() * sizeof(Stamped<MemObject>),
-                         recs.size()};
+                         recs.size() * sizeof(Stamped<MemObject>), recs.size()};
     sink.submit(view);
 }
 
 StreamHeader read_header(const fs::path& p) {
-    StreamHeader h{};
+    StreamHeader  h{};
     std::ifstream in(p, std::ios::binary);
     in.read(reinterpret_cast<char*>(&h), sizeof h);
     return h;
@@ -65,8 +64,8 @@ StreamHeader read_header(const fs::path& p) {
 int main() {
     std::printf("stream format round-trip\n");
 
-    const auto dir = fs::temp_directory_path() /
-                     ("pcomm-stream-format-" + std::to_string(::getpid()));
+    const auto dir =
+        fs::temp_directory_path() / ("pcomm-stream-format-" + std::to_string(::getpid()));
     fs::remove_all(dir);
     const auto stream = dir / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
     constexpr std::size_t kFirst = 50, kSecond = 25;
@@ -77,8 +76,7 @@ int main() {
     }
 
     expect(fs::exists(stream), "stream file created");
-    expect(fs::file_size(stream) ==
-               sizeof(StreamHeader) + kFirst * sizeof(Stamped<MemObject>),
+    expect(fs::file_size(stream) == sizeof(StreamHeader) + kFirst * sizeof(Stamped<MemObject>),
            "file is header + records, exactly");
 
     const auto h = read_header(stream);
@@ -121,8 +119,7 @@ int main() {
         in.read(reinterpret_cast<char*>(back.data()),
                 static_cast<std::streamsize>(back.size() * h.stride));
         bool ok = back[0].payload.id == 1 && back[kFirst - 1].payload.id == kFirst &&
-                  back[kFirst].payload.id == 1 &&
-                  back[kFirst].payload.range.base == 0 &&
+                  back[kFirst].payload.id == 1 && back[kFirst].payload.range.base == 0 &&
                   back[kFirst + kSecond - 1].payload.id == kSecond;
         expect(ok, "records read back at the declared stride");
     }
@@ -136,17 +133,20 @@ int main() {
                                         sizeof(Stamped<MemObject>)) != nullptr,
                "refuses a headerless (pre-format-1) capture");
 
-        bad = h; bad.format_version = 99;
+        bad = h;
+        bad.format_version = 99;
         expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
                                         sizeof(Stamped<MemObject>)) != nullptr,
                "refuses a future format version");
 
-        bad = h; bad.type_id = 999;
+        bad = h;
+        bad.type_id = 999;
         expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
                                         sizeof(Stamped<MemObject>)) != nullptr,
                "refuses a stream whose type is not what was asked for");
 
-        bad = h; bad.stride = h.stride + 8;
+        bad = h;
+        bad.stride = h.stride + 8;
         expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
                                         sizeof(Stamped<MemObject>)) != nullptr,
                "refuses a capture whose record layout differs from this build");
@@ -154,8 +154,8 @@ int main() {
 
     // An empty view must not leave a file framed with a stride of zero.
     {
-        const auto empty_dir = dir / "empty";
-        rec::FileSink sink(empty_dir);
+        const auto      empty_dir = dir / "empty";
+        rec::FileSink   sink(empty_dir);
         rec::BufferView view{core::RecordTrait<MemObject>::type_id,
                              core::RecordTrait<MemObject>::kind, nullptr, 0, 0};
         sink.submit(view);
@@ -164,6 +164,7 @@ int main() {
     }
 
     fs::remove_all(dir);
-    std::printf("%s\n", g_fail ? "FAIL" : "PASS — .pcs format round-trips and rejects what it should");
+    std::printf("%s\n",
+                g_fail ? "FAIL" : "PASS — .pcs format round-trips and rejects what it should");
     return g_fail;
 }

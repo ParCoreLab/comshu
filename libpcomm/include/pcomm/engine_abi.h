@@ -38,7 +38,7 @@ typedef struct pcomm_arena {
     uint32_t capacity; /* max slots before a flush is required */
     uint32_t stride;   /* sizeof(Stamped<R>) */
     uint32_t _pad;
-    void*    _owner;   /* engine-private; do not touch */
+    void*    _owner; /* engine-private; do not touch */
 } pcomm_arena;
 
 uint32_t pcomm_engine_abi_version(void);
@@ -52,8 +52,8 @@ uint32_t pcomm_engine_abi_version(void);
  *   - later, that records actually land inside the declared range.
  * Returns 0 on success, non-zero on rejection (and reports why on stderr).
  * Safe to call more than once with identical arguments. */
-int pcomm_engine_declare_provider(const char* name, uint16_t id_lo,
-                                  uint16_t id_hi, uint32_t abi_version);
+int pcomm_engine_declare_provider(const char* name, uint16_t id_lo, uint16_t id_hi,
+                                  uint32_t abi_version);
 
 /* Is our `dlsym` the one an external caller resolves?
  *
@@ -73,8 +73,7 @@ void pcomm_engine_release(void);
 /* Get this thread's arena for a record type, creating it on first use. The
  * returned pointer is stable for the life of the thread, so callers should
  * cache it in a thread_local. `kind` is core::RecordKind. */
-pcomm_arena* pcomm_engine_arena(uint16_t type_id, uint8_t kind,
-                                uint32_t stride, uint32_t capacity);
+pcomm_arena* pcomm_engine_arena(uint16_t type_id, uint8_t kind, uint32_t stride, uint32_t capacity);
 
 /* Hand the filled region to the sink and reset count to 0. */
 void pcomm_engine_arena_flush(pcomm_arena* arena);
@@ -110,7 +109,7 @@ uint32_t pcomm_engine_intern_key(uint8_t domain, uint64_t key);
 const char* pcomm_engine_so_path(void);
 
 #ifdef __cplusplus
-}  /* extern "C" */
+} /* extern "C" */
 #endif
 
 #endif /* PCOMM_ENGINE_ABI_H */

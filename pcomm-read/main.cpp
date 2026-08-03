@@ -48,20 +48,28 @@ using rec::load_stream;
 
 const char* kind_name(core::RecordKind k) {
     switch (k) {
-        case core::RecordKind::Event: return "event";
-        case core::RecordKind::Entity: return "entity";
-        case core::RecordKind::Artifact: return "artifact";
-        case core::RecordKind::Edge: return "edge";
+        case core::RecordKind::Event:
+            return "event";
+        case core::RecordKind::Entity:
+            return "entity";
+        case core::RecordKind::Artifact:
+            return "artifact";
+        case core::RecordKind::Edge:
+            return "edge";
     }
     return "?";
 }
 
 const char* memop_name(core::MemOp op) {
     switch (op) {
-        case core::MemOp::Load: return "load";
-        case core::MemOp::Store: return "store";
-        case core::MemOp::Atomic: return "atomic";
-        case core::MemOp::Prefetch: return "prefetch";
+        case core::MemOp::Load:
+            return "load";
+        case core::MemOp::Store:
+            return "store";
+        case core::MemOp::Atomic:
+            return "atomic";
+        case core::MemOp::Prefetch:
+            return "prefetch";
     }
     return "?";
 }
@@ -72,19 +80,39 @@ const char* memop_name(core::MemOp op) {
 // values round-trip losslessly as "op<n>" so nothing silently collapses.
 std::string wr_opcode_name(unsigned op) {  // ibv_wr_opcode
     switch (op) {
-        case 0: return "rdma_write";  case 1: return "rdma_write_imm";
-        case 2: return "send";        case 3: return "send_imm";
-        case 4: return "rdma_read";   case 5: return "atomic_cmp_swp";
-        case 6: return "atomic_fetch_add";
+        case 0:
+            return "rdma_write";
+        case 1:
+            return "rdma_write_imm";
+        case 2:
+            return "send";
+        case 3:
+            return "send_imm";
+        case 4:
+            return "rdma_read";
+        case 5:
+            return "atomic_cmp_swp";
+        case 6:
+            return "atomic_fetch_add";
     }
     return "op" + std::to_string(op);
 }
 std::string wc_opcode_name(unsigned op) {  // ibv_wc_opcode
     switch (op) {
-        case 0: return "send";     case 1: return "rdma_write";
-        case 2: return "rdma_read"; case 3: return "comp_swap";
-        case 4: return "fetch_add"; case 128: return "recv";
-        case 129: return "recv_rdma_imm";
+        case 0:
+            return "send";
+        case 1:
+            return "rdma_write";
+        case 2:
+            return "rdma_read";
+        case 3:
+            return "comp_swap";
+        case 4:
+            return "fetch_add";
+        case 128:
+            return "recv";
+        case 129:
+            return "recv_rdma_imm";
     }
     return "wc" + std::to_string(op);
 }
@@ -93,16 +121,33 @@ std::string wc_status_name(unsigned s) {  // ibv_wc_status (0 = success)
 }
 std::string qp_state_name(unsigned st) {  // ibv_qp_state
     switch (st) {
-        case 0: return "reset"; case 1: return "init"; case 2: return "rtr";
-        case 3: return "rts";   case 4: return "sqd";  case 5: return "sqe";
-        case 6: return "err";
+        case 0:
+            return "reset";
+        case 1:
+            return "init";
+        case 2:
+            return "rtr";
+        case 3:
+            return "rts";
+        case 4:
+            return "sqd";
+        case 5:
+            return "sqe";
+        case 6:
+            return "err";
     }
     return "st" + std::to_string(st);
 }
 std::string qp_type_name(unsigned t) {  // ibv_qp_type
     switch (t) {
-        case 2: return "rc"; case 3: return "uc"; case 4: return "ud";
-        case 8: return "raw_packet";
+        case 2:
+            return "rc";
+        case 3:
+            return "uc";
+        case 4:
+            return "ud";
+        case 8:
+            return "raw_packet";
     }
     return "qpt" + std::to_string(t);
 }
@@ -111,37 +156,31 @@ std::string qp_type_name(unsigned t) {  // ibv_qp_type
 // One specialization per exportable record type: table name, column header, and
 // THE row printer. `--csv` prefixes each row with the rank; `--dump` prints it
 // bare; both call the same row(), so a field's format exists in one place.
-template <core::Record R>
+template<core::Record R>
 struct Table;  // no primary definition: an unspecialized use is a missing entry
 
-template <>
-struct Table<GpuAccess> {
+template<> struct Table<GpuAccess> {
     static constexpr const char* name = "gpu_access";
     static constexpr const char* cols = "ticks,pc,object,addr,size,op,run_dev,mem_dev,thread";
     static void row(std::FILE* f, const Stamped<GpuAccess>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.pc,
-                     s.payload.object, (unsigned long long)s.payload.address,
-                     s.payload.size, memop_name(s.payload.op),
-                     s.payload.run_device, s.payload.mem_device, s.payload.thread);
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.pc, s.payload.object, (unsigned long long)s.payload.address,
+                     s.payload.size, memop_name(s.payload.op), s.payload.run_device,
+                     s.payload.mem_device, s.payload.thread);
     }
 };
 
-template <>
-struct Table<MemObject> {
+template<> struct Table<MemObject> {
     static constexpr const char* name = "mem_object";
     static constexpr const char* cols = "ticks,id,name,base,size,device";
     static void row(std::FILE* f, const Stamped<MemObject>& s, const rec::InternDictionary& in) {
-        std::fprintf(f, "%llu,%u,%s,0x%llx,%llu,%u",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.id,
-                     in.str(s.payload.name),
-                     (unsigned long long)s.payload.range.base,
+        std::fprintf(f, "%llu,%u,%s,0x%llx,%llu,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.id, in.str(s.payload.name), (unsigned long long)s.payload.range.base,
                      (unsigned long long)s.payload.range.size, s.payload.device);
     }
 };
 
-template <>
-struct Table<SourceLine> {
+template<> struct Table<SourceLine> {
     static constexpr const char* name = "source_line";
     static constexpr const char* cols = "pc,file,line";
     static void row(std::FILE* f, const Stamped<SourceLine>& s, const rec::InternDictionary& in) {
@@ -149,90 +188,78 @@ struct Table<SourceLine> {
     }
 };
 
-template <>
-struct Table<ClockAnchor> {
+template<> struct Table<ClockAnchor> {
     static constexpr const char* name = "clock_anchor";
     static constexpr const char* cols = "domain,local_ticks,wall_ns,mono_ns";
     static void row(std::FILE* f, const Stamped<ClockAnchor>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%u,%llu,%llu,%llu", s.payload.domain,
                      (unsigned long long)s.payload.local_ticks,
-                     (unsigned long long)s.payload.wall_ns,
-                     (unsigned long long)s.payload.mono_ns);
+                     (unsigned long long)s.payload.wall_ns, (unsigned long long)s.payload.mono_ns);
     }
 };
 
-template <>
-struct Table<Attribution> {
+template<> struct Table<Attribution> {
     static constexpr const char* name = "attribution";
     static constexpr const char* cols = "ticks,subject,object,pred";
     static void row(std::FILE* f, const Stamped<Attribution>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.subject, s.payload.object,
-                     static_cast<unsigned>(s.payload.pred));
+        std::fprintf(f, "%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.subject,
+                     s.payload.object, static_cast<unsigned>(s.payload.pred));
     }
 };
 
-template <>
-struct Table<ibr::IbMemRegion> {
+template<> struct Table<ibr::IbMemRegion> {
     static constexpr const char* name = "ib_mem_region";
     static constexpr const char* cols = "ticks,mr,pd,base,size,lkey,rkey,access";
-    static void row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.mr,
-                     s.payload.pd, (unsigned long long)s.payload.range.base,
-                     (unsigned long long)s.payload.range.size, s.payload.lkey,
-                     s.payload.rkey, s.payload.access);
+    static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                                      s.payload.mr, s.payload.pd, (unsigned long long)s.payload.range.base,
+                                      (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
+                                      s.payload.access);
     }
 };
 
 // qp/mr/cq/pd are interned pointer handles (stable within a rank); qp_num /
 // dest_qp_num / lid are the wire ids used to stitch the cross-rank comm graph.
-template <>
-struct Table<ibr::IbQueuePair> {
+template<> struct Table<ibr::IbQueuePair> {
     static constexpr const char* name = "ib_queue_pair";
     static constexpr const char* cols = "ticks,qp,pd,qp_num,qp_type";
-    static void row(std::FILE* f, const Stamped<ibr::IbQueuePair>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.qp, s.payload.pd, s.payload.qp_num,
-                     qp_type_name(s.payload.qp_type).c_str());
+    static void                  row(std::FILE* f, const Stamped<ibr::IbQueuePair>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks, s.payload.qp,
+                                      s.payload.pd, s.payload.qp_num, qp_type_name(s.payload.qp_type).c_str());
     }
 };
 
-template <>
-struct Table<ibr::IbModifyQp> {
+template<> struct Table<ibr::IbModifyQp> {
     static constexpr const char* name = "ib_modify_qp";
-    static constexpr const char* cols =
-        "ticks,qp,qp_num,dest_qp_num,dest_lid,src_lid,state";
+    static constexpr const char* cols = "ticks,qp,qp_num,dest_qp_num,dest_lid,src_lid,state";
     static void row(std::FILE* f, const Stamped<ibr::IbModifyQp>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.qp, s.payload.qp_num, s.payload.dest_qp_num,
-                     s.payload.dest_lid, s.payload.src_lid,
-                     qp_state_name(s.payload.state).c_str());
+                     s.payload.qp, s.payload.qp_num, s.payload.dest_qp_num, s.payload.dest_lid,
+                     s.payload.src_lid, qp_state_name(s.payload.state).c_str());
     }
 };
 
-template <>
-struct Table<ibr::IbPostSend> {
+template<> struct Table<ibr::IbPostSend> {
     static constexpr const char* name = "ib_post_send";
-    static constexpr const char* cols = "ticks,qp,wr_id,remote_addr,rkey,length,qp_num,opcode,num_sge";
+    static constexpr const char* cols =
+        "ticks,qp,wr_id,remote_addr,rkey,length,qp_num,opcode,num_sge";
     static void row(std::FILE* f, const Stamped<ibr::IbPostSend>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%llu,0x%llx,%u,%u,%u,%s,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.qp,
-                     (unsigned long long)s.payload.wr_id,
-                     (unsigned long long)s.payload.remote_addr, s.payload.rkey,
-                     s.payload.length, s.payload.qp_num,
+                     (unsigned long long)s.payload.wr_id, (unsigned long long)s.payload.remote_addr,
+                     s.payload.rkey, s.payload.length, s.payload.qp_num,
                      wr_opcode_name(s.payload.opcode).c_str(), s.payload.num_sge);
     }
 };
 
-template <>
-struct Table<ibr::IbPollCq> {
+template<> struct Table<ibr::IbPollCq> {
     static constexpr const char* name = "ib_poll_cq";
     static constexpr const char* cols = "ticks,cq,wr_id,byte_len,qp_num,status,opcode";
     static void row(std::FILE* f, const Stamped<ibr::IbPollCq>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%llu,%u,%u,%s,%s",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.cq,
-                     (unsigned long long)s.payload.wr_id, s.payload.byte_len,
+        std::fprintf(f, "%llu,%u,%llu,%u,%u,%s,%s", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.cq, (unsigned long long)s.payload.wr_id, s.payload.byte_len,
                      s.payload.qp_num, wc_status_name(s.payload.status).c_str(),
                      wc_opcode_name(s.payload.opcode).c_str());
     }
@@ -241,16 +268,15 @@ struct Table<ibr::IbPollCq> {
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
-using TableRecords = std::tuple<GpuAccess, MemObject, SourceLine, ClockAnchor,
-                                Attribution, ibr::IbQueuePair, ibr::IbModifyQp,
-                                ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion>;
+using TableRecords =
+    std::tuple<GpuAccess, MemObject, SourceLine, ClockAnchor, Attribution, ibr::IbQueuePair,
+               ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion>;
 
-template <typename Tuple, typename F, std::size_t... Is>
+template<typename Tuple, typename F, std::size_t... Is>
 void for_each_type_impl(F&& f, std::index_sequence<Is...>) {
     (f.template operator()<std::tuple_element_t<Is, Tuple>>(), ...);
 }
-template <typename Tuple, typename F>
-void for_each_type(F&& f) {
+template<typename Tuple, typename F> void for_each_type(F&& f) {
     for_each_type_impl<Tuple>(std::forward<F>(f),
                               std::make_index_sequence<std::tuple_size_v<Tuple>>{});
 }
@@ -263,24 +289,24 @@ void for_each_type(F&& f) {
 std::vector<core::RecordTypeId> known_types() {
     std::vector<core::RecordTypeId> v = {core::RecordTrait<InternKey>::type_id,
                                          core::RecordTrait<InternString>::type_id};
-    for_each_type<TableRecords>(
-        [&]<typename R>() { v.push_back(core::RecordTrait<R>::type_id); });
+    for_each_type<TableRecords>([&]<typename R>() { v.push_back(core::RecordTrait<R>::type_id); });
     return v;
 }
 
 // One rank's capture: streams + intern dictionaries.
 struct RankDir {
-    int rank{0};
-    fs::path dir;
-    rec::InternDictionary intern;   // pcomm/rec/intern_reader.hpp
+    int                   rank{0};
+    fs::path              dir;
+    rec::InternDictionary intern;  // pcomm/rec/intern_reader.hpp
 
     const char* str(core::Handle h) const { return intern.str(h); }
     const char* str(rec::InternDomain d, core::Handle h) const { return intern.str(d, h); }
 };
 
 // A rank's stream file for record type R.
-template <core::Record R>
-fs::path stream_path(const RankDir& r) { return rec::stream_path<R>(r.dir); }
+template<core::Record R> fs::path stream_path(const RankDir& r) {
+    return rec::stream_path<R>(r.dir);
+}
 
 // Find every rank-* directory under `root`. A single run lays them out flat
 // (root/rank-*); a replayed run nests one level per pass (root/<pass>/rank-*),
@@ -291,7 +317,8 @@ fs::path stream_path(const RankDir& r) { return rec::stream_path<R>(r.dir); }
 void scan_ranks_into(const fs::path& root, std::vector<RankDir>& ranks) {
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(root, ec)) {
-        if (!entry.is_directory()) continue;
+        if (!entry.is_directory())
+            continue;
         auto name = entry.path().filename().string();
         if (name.rfind("rank-", 0) != 0) {
             scan_ranks_into(entry.path(), ranks);  // descend into a pass subdir
@@ -327,16 +354,17 @@ struct CsvAgg {
     // the LID makes the key exact rather than merely better.
     std::map<std::pair<std::uint32_t, std::uint32_t>, int> qp_owner;
     // (rank, qp_num) -> (dest_lid, dest_qp_num) from the RTR transition.
-    std::map<std::pair<int, std::uint32_t>,
-             std::pair<std::uint32_t, std::uint32_t>> rtr_dest;
-    std::map<std::pair<int, std::uint32_t>, std::pair<long, long>> send_by_qp;  // (rank,qp_num)->(sends,bytes)
+    std::map<std::pair<int, std::uint32_t>, std::pair<std::uint32_t, std::uint32_t>> rtr_dest;
+    std::map<std::pair<int, std::uint32_t>, std::pair<long, long>>
+                send_by_qp;  // (rank,qp_num)->(sends,bytes)
     std::size_t n_access = 0, n_send = 0;
 };
 
-template <core::Record R>
-void aggregate(CsvAgg&, const RankDir&, const Stamped<R>&) {}
+template<core::Record R> void aggregate(CsvAgg&, const RankDir&, const Stamped<R>&) {}
 
-void aggregate(CsvAgg& a, const RankDir&, const Stamped<GpuAccess>&) { a.n_access++; }
+void aggregate(CsvAgg& a, const RankDir&, const Stamped<GpuAccess>&) {
+    a.n_access++;
+}
 
 // NB IbQueuePair deliberately does NOT feed the owner map any more. It is
 // emitted at create_qp, and a QP is not bound to a port until the INIT
@@ -350,8 +378,7 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbModifyQp>& s) {
     if (s.payload.src_lid)
         a.qp_owner[{s.payload.src_lid, s.payload.qp_num}] = r.rank;
     if (s.payload.state == 2 /*RTR*/ && s.payload.dest_qp_num)
-        a.rtr_dest[{r.rank, s.payload.qp_num}] = {s.payload.dest_lid,
-                                                  s.payload.dest_qp_num};
+        a.rtr_dest[{r.rank, s.payload.qp_num}] = {s.payload.dest_lid, s.payload.dest_qp_num};
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
@@ -364,8 +391,7 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
 int export_csv(const fs::path& root, const fs::path& outdir) {
     auto ranks = scan_ranks(root);
     if (ranks.empty()) {
-        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n",
-                     root.c_str());
+        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
         return 1;
     }
     fs::create_directories(outdir);
@@ -431,7 +457,8 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
         std::fprintf(edges, "%d,%d,%ld,%ld\n", rk.first, rk.second, e.first, e.second);
     std::fclose(edges);
 
-    for (const auto& [_, f] : files) std::fclose(f);
+    for (const auto& [_, f] : files)
+        std::fclose(f);
 
     std::printf("pcomm-read: %zu ranks, %zu gpu-accesses, %zu ib-sends -> %s/"
                 "{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv\n",
@@ -446,8 +473,8 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
 // one axis. Used identically by both Perfetto exporters (it was copy-pasted
 // between them once, byte for byte).
 struct RankClock {
-    long double t0{0}, w0{0};   // anchor tick / wall_ns
-    double ns_per_tick{1.0};
+    long double   t0{0}, w0{0};  // anchor tick / wall_ns
+    double        ns_per_tick{1.0};
     std::uint64_t wall_at(std::uint64_t tick) const {
         return static_cast<std::uint64_t>(w0 + (static_cast<long double>(tick) - t0) * ns_per_tick);
     }
@@ -462,15 +489,15 @@ struct RankClock {
 
 // Fits one RankClock per rank and picks the earliest anchored wall-ns as the
 // shared origin (0 if no rank has anchors).
-std::pair<std::vector<RankClock>, std::uint64_t>
-build_clocks(const std::vector<RankDir>& ranks) {
+std::pair<std::vector<RankClock>, std::uint64_t> build_clocks(const std::vector<RankDir>& ranks) {
     std::vector<RankClock> clk(ranks.size());
-    std::uint64_t origin = ~0ull;
+    std::uint64_t          origin = ~0ull;
     for (std::size_t i = 0; i < ranks.size(); ++i) {
         auto anchors = load_stream<ClockAnchor>(stream_path<ClockAnchor>(ranks[i]));
         if (!anchors.empty()) {
             const auto& a = anchors.front().payload;
-            clk[i].t0 = a.local_ticks; clk[i].w0 = a.wall_ns;
+            clk[i].t0 = a.local_ticks;
+            clk[i].w0 = a.wall_ns;
             if (anchors.size() >= 2) {
                 const auto& b = anchors.back().payload;
                 long double dt = static_cast<long double>(b.local_ticks) - a.local_ticks;
@@ -481,7 +508,8 @@ build_clocks(const std::vector<RankDir>& ranks) {
             origin = std::min(origin, static_cast<std::uint64_t>(a.wall_ns));
         }
     }
-    if (origin == ~0ull) origin = 0;
+    if (origin == ~0ull)
+        origin = 0;
     return {std::move(clk), origin};
 }
 
@@ -497,10 +525,17 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
     auto [clk, origin] = build_clocks(ranks);
 
     std::FILE* f = std::fopen(outfile.c_str(), "w");
-    if (!f) { std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str()); return 1; }
+    if (!f) {
+        std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str());
+        return 1;
+    }
     std::fputs("{\"displayTimeUnit\":\"ns\",\"traceEvents\":[\n", f);
     bool first = true;
-    auto sep = [&] { if (!first) std::fputs(",\n", f); first = false; };
+    auto sep = [&] {
+        if (!first)
+            std::fputs(",\n", f);
+        first = false;
+    };
     auto us = [&](const RankClock& c, std::uint64_t tick) {
         return static_cast<double>(c.wall_at(tick) - origin) / 1000.0;  // ns -> µs
     };
@@ -510,52 +545,63 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
         const auto& r = ranks[i];
         const auto& c = clk[i];
         sep();
-        std::fprintf(f, "{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":%d,"
-                        "\"args\":{\"name\":\"rank %d\"}}", r.rank, r.rank);
+        std::fprintf(f,
+                     "{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":%d,"
+                     "\"args\":{\"name\":\"rank %d\"}}",
+                     r.rank, r.rank);
         std::unordered_map<std::uint32_t, bool> seen;
         for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
             if (seen.emplace(s.payload.qp_num, true).second) {
                 sep();
-                std::fprintf(f, "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":%d,\"tid\":%u,"
-                                "\"args\":{\"name\":\"QP 0x%x\"}}", r.rank, s.payload.qp_num,
-                             s.payload.qp_num);
+                std::fprintf(f,
+                             "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":%d,\"tid\":%u,"
+                             "\"args\":{\"name\":\"QP 0x%x\"}}",
+                             r.rank, s.payload.qp_num, s.payload.qp_num);
             }
         }
         for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
             sep();
             double ts = us(c, s.temporal.a.ticks), d = c.dur_ns(s.temporal) / 1000.0;
             if (d > 0)
-                std::fprintf(f, "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
-                                "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
-                             r.rank, s.payload.qp_num, ts, d, s.payload.length, s.payload.opcode,
-                             s.payload.length, (unsigned long long)s.payload.wr_id);
+                std::fprintf(
+                    f,
+                    "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
+                    "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
+                    r.rank, s.payload.qp_num, ts, d, s.payload.length, s.payload.opcode,
+                    s.payload.length, (unsigned long long)s.payload.wr_id);
             else
-                std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
-                                "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
-                             r.rank, s.payload.qp_num, ts, s.payload.length, s.payload.opcode,
-                             s.payload.length, (unsigned long long)s.payload.wr_id);
+                std::fprintf(
+                    f,
+                    "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
+                    "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
+                    r.rank, s.payload.qp_num, ts, s.payload.length, s.payload.opcode,
+                    s.payload.length, (unsigned long long)s.payload.wr_id);
             n_ev++;
         }
         for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
             sep();
             double ts = us(c, s.temporal.a.ticks), d = c.dur_ns(s.temporal) / 1000.0;
             if (d > 0)
-                std::fprintf(f, "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
-                                "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
-                             r.rank, s.payload.qp_num, ts, d, s.payload.status, s.payload.opcode,
-                             s.payload.byte_len);
+                std::fprintf(
+                    f,
+                    "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
+                    "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
+                    r.rank, s.payload.qp_num, ts, d, s.payload.status, s.payload.opcode,
+                    s.payload.byte_len);
             else
-                std::fprintf(f, "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
-                                "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
-                             r.rank, s.payload.qp_num, ts, s.payload.status, s.payload.opcode,
-                             s.payload.byte_len);
+                std::fprintf(
+                    f,
+                    "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
+                    "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
+                    r.rank, s.payload.qp_num, ts, s.payload.status, s.payload.opcode,
+                    s.payload.byte_len);
             n_ev++;
         }
     }
     std::fputs("\n]}\n", f);
     std::fclose(f);
-    std::printf("pcomm-read: %zu ranks, %zu events -> %s (load in ui.perfetto.dev)\n",
-                ranks.size(), n_ev, outfile.c_str());
+    std::printf("pcomm-read: %zu ranks, %zu events -> %s (load in ui.perfetto.dev)\n", ranks.size(),
+                n_ev, outfile.c_str());
     return 0;
 }
 
@@ -567,14 +613,28 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
 // `protoc --decode_raw < out.pftrace`.
 struct PB {
     std::string b;
-    void varint(std::uint64_t v) {
-        while (v >= 0x80) { b.push_back(static_cast<char>(v | 0x80)); v >>= 7; }
+    void        varint(std::uint64_t v) {
+        while (v >= 0x80) {
+            b.push_back(static_cast<char>(v | 0x80));
+            v >>= 7;
+        }
         b.push_back(static_cast<char>(v));
     }
     void tag(int field, int wire) { varint((static_cast<std::uint64_t>(field) << 3) | wire); }
-    void u64(int field, std::uint64_t v) { tag(field, 0); varint(v); }
-    void str(int field, const std::string& s) { tag(field, 2); varint(s.size()); b += s; }
-    void msg(int field, const PB& m) { tag(field, 2); varint(m.b.size()); b += m.b; }
+    void u64(int field, std::uint64_t v) {
+        tag(field, 0);
+        varint(v);
+    }
+    void str(int field, const std::string& s) {
+        tag(field, 2);
+        varint(s.size());
+        b += s;
+    }
+    void msg(int field, const PB& m) {
+        tag(field, 2);
+        varint(m.b.size());
+        b += m.b;
+    }
 };
 
 int export_pftrace(const fs::path& root, const fs::path& outfile) {
@@ -590,24 +650,40 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
     auto qp_uuid = [](int rank, std::uint32_t qp) {
         return (static_cast<std::uint64_t>(rank) + 1) * 0x100000000ull + qp;
     };
-    auto ns = [&](const RankClock& c, std::uint64_t tick) {
-        return c.wall_at(tick) - origin;
-    };
+    auto ns = [&](const RankClock& c, std::uint64_t tick) { return c.wall_at(tick) - origin; };
 
-    PB trace;
+    PB   trace;
     auto track = [&](std::uint64_t uuid, const std::string& name, std::uint64_t parent) {
-        PB td; td.u64(1, uuid); td.str(2, name);
-        if (parent) td.u64(5, parent);
-        PB pkt; pkt.msg(60, td); pkt.u64(10, SEQ);
+        PB td;
+        td.u64(1, uuid);
+        td.str(2, name);
+        if (parent)
+            td.u64(5, parent);
+        PB pkt;
+        pkt.msg(60, td);
+        pkt.u64(10, SEQ);
         trace.msg(1, pkt);
     };
     auto slice = [&](std::uint64_t track_uuid, std::uint64_t t_ns, std::uint64_t dur_ns,
                      const std::string& name) {
-        PB beg; beg.u64(9, dur_ns ? 1u : 3u); beg.u64(11, track_uuid); beg.str(23, name);  // BEGIN|INSTANT
-        PB p1; p1.u64(8, t_ns); p1.msg(11, beg); p1.u64(10, SEQ); trace.msg(1, p1);
+        PB beg;
+        beg.u64(9, dur_ns ? 1u : 3u);
+        beg.u64(11, track_uuid);
+        beg.str(23, name);  // BEGIN|INSTANT
+        PB p1;
+        p1.u64(8, t_ns);
+        p1.msg(11, beg);
+        p1.u64(10, SEQ);
+        trace.msg(1, p1);
         if (dur_ns) {
-            PB end; end.u64(9, 2u); end.u64(11, track_uuid);  // SLICE_END
-            PB p2; p2.u64(8, t_ns + dur_ns); p2.msg(11, end); p2.u64(10, SEQ); trace.msg(1, p2);
+            PB end;
+            end.u64(9, 2u);
+            end.u64(11, track_uuid);  // SLICE_END
+            PB p2;
+            p2.u64(8, t_ns + dur_ns);
+            p2.msg(11, end);
+            p2.u64(10, SEQ);
+            trace.msg(1, p2);
         }
     };
 
@@ -619,12 +695,14 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
         std::unordered_map<std::uint32_t, bool> seen;
         for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
             if (seen.emplace(s.payload.qp_num, true).second) {
-                char nm[24]; std::snprintf(nm, sizeof nm, "QP 0x%x", s.payload.qp_num);
+                char nm[24];
+                std::snprintf(nm, sizeof nm, "QP 0x%x", s.payload.qp_num);
                 track(qp_uuid(r.rank, s.payload.qp_num), nm, rank_uuid(r.rank));
             }
         }
         for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
-            char nm[24]; std::snprintf(nm, sizeof nm, "send %uB", s.payload.length);
+            char nm[24];
+            std::snprintf(nm, sizeof nm, "send %uB", s.payload.length);
             slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal.a.ticks),
                   static_cast<std::uint64_t>(c.dur_ns(s.temporal)), nm);
             n_ev++;
@@ -637,7 +715,10 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
     }
 
     std::FILE* f = std::fopen(outfile.c_str(), "wb");
-    if (!f) { std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str()); return 1; }
+    if (!f) {
+        std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str());
+        return 1;
+    }
     std::fwrite(trace.b.data(), 1, trace.b.size(), f);
     std::fclose(f);
     std::printf("pcomm-read: %zu ranks, %zu events -> %s (%zu bytes; load in ui.perfetto.dev)\n",
@@ -653,7 +734,8 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
 void dump(core::RecordTypeId type, const fs::path& file) {
     bool matched = false;
     for_each_type<TableRecords>([&]<typename R>() {
-        if (core::RecordTrait<R>::type_id != type || matched) return;
+        if (core::RecordTrait<R>::type_id != type || matched)
+            return;
         matched = true;
         const auto intern = rec::InternDictionary::load(file.parent_path());
         std::puts(Table<R>::cols);
@@ -674,7 +756,8 @@ int main(int argc, char** argv) {
             "usage: pcomm-read <trace-dir>                    stream inventory\n"
             "       pcomm-read <trace-dir> --csv <outdir>     export all tables (intern-resolved)\n"
             "       pcomm-read <trace-dir> --perfetto <out>   export Perfetto/Chrome JSON trace\n"
-            "       pcomm-read <trace-dir> --pftrace <out>    export Perfetto native protobuf trace\n"
+            "       pcomm-read <trace-dir> --pftrace <out>    export Perfetto native protobuf "
+            "trace\n"
             "       pcomm-read <trace-dir> --dump <typeid>    decode one raw stream\n",
             stderr);
         return 1;
@@ -719,19 +802,21 @@ int main(int argc, char** argv) {
     // from its name or its size. This is the first thing in the tree that is
     // told what a capture is by the capture itself.
     std::printf("streams in %s:\n", dir.c_str());
-    std::printf("  %-34s %6s %-9s %7s %9s %16s\n",
-                "file", "type", "kind", "stride", "records", "schema");
+    std::printf("  %-34s %6s %-9s %7s %9s %16s\n", "file", "type", "kind", "stride", "records",
+                "schema");
     for (const auto& entry : fs::recursive_directory_iterator(dir)) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".pcs") continue;
+        if (!entry.is_regular_file() || entry.path().extension() != ".pcs")
+            continue;
 
-        const auto rel = fs::relative(entry.path(), dir);
-        const auto bytes = static_cast<std::uintmax_t>(entry.file_size());
+        const auto        rel = fs::relative(entry.path(), dir);
+        const auto        bytes = static_cast<std::uintmax_t>(entry.file_size());
         rec::StreamHeader h{};
-        std::ifstream in(entry.path(), std::ios::binary);
+        std::ifstream     in(entry.path(), std::ios::binary);
         if (bytes < sizeof h || !in.read(reinterpret_cast<char*>(&h), sizeof h) ||
             h.magic != rec::kStreamMagic) {
             std::printf("  %-34s %10ju bytes  (no stream header — pre-format-1 "
-                        "capture, re-capture it)\n", rel.c_str(), bytes);
+                        "capture, re-capture it)\n",
+                        rel.c_str(), bytes);
             continue;
         }
         const auto payload = bytes - sizeof h;
@@ -741,8 +826,8 @@ int main(int argc, char** argv) {
                     (unsigned long long)h.schema_hash,
                     h.schema_hash == rec::kSchemaHash ? "" : " (other schema)");
         if (h.stride && payload % h.stride)
-            std::printf("  %-34s   ^ truncated: %ju trailing bytes are not a whole record\n",
-                        "", static_cast<std::uintmax_t>(payload % h.stride));
+            std::printf("  %-34s   ^ truncated: %ju trailing bytes are not a whole record\n", "",
+                        static_cast<std::uintmax_t>(payload % h.stride));
     }
     return 0;
 }

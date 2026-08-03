@@ -68,31 +68,34 @@ namespace {
 // plain POD — which is the point: gpumem is built by nvcc/gcc-11.4 and this
 // object by gcc-13.2, so nothing with a C++ ABI may cross between them.
 struct Arena final : rec::IDrainable {
-    pcomm_arena              pub{};
-    std::vector<std::byte>   storage;
-    core::RecordTypeId       type_id{};
-    core::RecordKind         kind{};
+    pcomm_arena            pub{};
+    std::vector<std::byte> storage;
+    core::RecordTypeId     type_id{};
+    core::RecordKind       kind{};
 
-    Arena(core::RecordTypeId id, core::RecordKind k, std::uint32_t stride,
-          std::uint32_t capacity)
+    Arena(core::RecordTypeId id, core::RecordKind k, std::uint32_t stride, std::uint32_t capacity)
         : storage(static_cast<std::size_t>(stride) * capacity), type_id(id), kind(k) {
-        pub.slots    = storage.data();
-        pub.count    = 0;
+        pub.slots = storage.data();
+        pub.count = 0;
         pub.capacity = capacity;
-        pub.stride   = stride;
-        pub._owner   = this;
+        pub.stride = stride;
+        pub._owner = this;
     }
 
     void drain() override {
-        if (pub.count == 0) return;
+        if (pub.count == 0)
+            return;
         auto& tracer = Tracer::instance();
-        if (!tracer.has_recorder()) { pub.count = 0; return; }
+        if (!tracer.has_recorder()) {
+            pub.count = 0;
+            return;
+        }
         tracer.recorder().sink().submit(rec::BufferView{
             .type_id = type_id,
-            .kind    = kind,
-            .data    = static_cast<const std::byte*>(pub.slots),
-            .bytes   = std::size_t{pub.count} * pub.stride,
-            .count   = pub.count,
+            .kind = kind,
+            .data = static_cast<const std::byte*>(pub.slots),
+            .bytes = std::size_t{pub.count} * pub.stride,
+            .count = pub.count,
         });
         pub.count = 0;
     }
@@ -104,7 +107,8 @@ struct Arena final : rec::IDrainable {
 using ArenaMap = std::unordered_map<core::RecordTypeId, std::unique_ptr<Arena>>;
 ArenaMap& arenas_for_this_thread() {
     thread_local ArenaMap* m = nullptr;
-    if (!m) m = new ArenaMap();
+    if (!m)
+        m = new ArenaMap();
     return *m;
 }
 
@@ -115,20 +119,22 @@ static void warn_if_undeclared(std::uint16_t type_id);
 
 extern "C" {
 
-std::uint32_t pcomm_engine_abi_version(void) { return PCOMM_ENGINE_ABI_VERSION; }
+std::uint32_t pcomm_engine_abi_version(void) {
+    return PCOMM_ENGINE_ABI_VERSION;
+}
 
 int pcomm_engine_acquire(const char* output_dir, int rank, int verbose) {
     pcomm::Config cfg;
-    if (output_dir && *output_dir) cfg.output_dir = output_dir;
-    cfg.rank    = rank;
+    if (output_dir && *output_dir)
+        cfg.output_dir = output_dir;
+    cfg.rank = rank;
     cfg.verbose = verbose != 0;
     // The engine emits its own records (clock anchors, 500-599) and is
     // therefore a provider of record ids too. Declaring here rather than
     // special-casing the check keeps one rule: every id in a capture belongs to
     // exactly one declared range.
     pcomm_engine_declare_provider("pcomm-engine", pcomm::core::id_range::internal_lo,
-                                  pcomm::core::id_range::internal_hi,
-                                  PCOMM_ENGINE_ABI_VERSION);
+                                  pcomm::core::id_range::internal_hi, PCOMM_ENGINE_ABI_VERSION);
 
     pcomm::Tracer::instance().start(cfg);
 
@@ -140,28 +146,29 @@ int pcomm_engine_acquire(const char* output_dir, int rank, int verbose) {
     if (!checked) {
         checked = true;
         if (!pcomm_engine_interposer_live())
-            std::fprintf(stderr,
-                "[pcomm] WARNING: libpcomm_engine.so is not the resolver for "
-                "`dlsym` — it was linked but not PRELOADED. Preload-based "
-                "capture will be silently incomplete. Put the engine first in "
-                "LD_PRELOAD (the pcomm launcher does this; PCOMM_ENGINE_PATH "
-                "overrides the location).\n");
+            std::fprintf(stderr, "[pcomm] WARNING: libpcomm_engine.so is not the resolver for "
+                                 "`dlsym` — it was linked but not PRELOADED. Preload-based "
+                                 "capture will be silently incomplete. Put the engine first in "
+                                 "LD_PRELOAD (the pcomm launcher does this; PCOMM_ENGINE_PATH "
+                                 "overrides the location).\n");
         else if (cfg.verbose)
             std::fprintf(stderr, "[pcomm] interposer live: dlsym resolves to the engine\n");
     }
     return 0;
 }
 
-void pcomm_engine_release(void) { pcomm::Tracer::instance().stop(); }
+void pcomm_engine_release(void) {
+    pcomm::Tracer::instance().stop();
+}
 
-pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind,
-                                std::uint32_t stride, std::uint32_t capacity) {
+pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind, std::uint32_t stride,
+                                std::uint32_t capacity) {
     auto& map = pcomm::arenas_for_this_thread();
-    auto  it  = map.find(type_id);
+    auto  it = map.find(type_id);
     if (it == map.end()) {
         warn_if_undeclared(type_id);
-        auto a = std::make_unique<pcomm::Arena>(
-            type_id, static_cast<pcomm::core::RecordKind>(kind), stride, capacity);
+        auto a = std::make_unique<pcomm::Arena>(type_id, static_cast<pcomm::core::RecordKind>(kind),
+                                                stride, capacity);
         // Registered so Tracer::finalize() can flush arenas belonging to threads
         // that never call drain_thread() (NCCL's proxy threads, NVBit's).
         pcomm::rec::ThreadBufferRegistry::instance().register_buffer(a.get());
@@ -171,11 +178,13 @@ pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind,
 }
 
 void pcomm_engine_arena_flush(pcomm_arena* arena) {
-    if (arena && arena->_owner) static_cast<pcomm::Arena*>(arena->_owner)->drain();
+    if (arena && arena->_owner)
+        static_cast<pcomm::Arena*>(arena->_owner)->drain();
 }
 
 void pcomm_engine_drain_thread(void) {
-    for (auto& [id, a] : pcomm::arenas_for_this_thread()) a->drain();
+    for (auto& [id, a] : pcomm::arenas_for_this_thread())
+        a->drain();
 }
 
 void pcomm_engine_reset_arenas_for_fork(void) {
@@ -183,25 +192,27 @@ void pcomm_engine_reset_arenas_for_fork(void) {
     // that can still be reached — and it is the one holding the parent's
     // buffered records.
     for (auto& [id, a] : pcomm::arenas_for_this_thread()) {
-        a->pub.count = 0;   // drop the parent's records; the child starts empty
+        a->pub.count = 0;  // drop the parent's records; the child starts empty
         pcomm::rec::ThreadBufferRegistry::instance().register_buffer(a.get());
     }
 }
 
 std::uint32_t pcomm_engine_intern_str(std::uint8_t domain, const char* s, std::size_t n) {
     auto& tracer = pcomm::Tracer::instance();
-    if (!tracer.has_recorder()) return 0;
-    auto  d   = static_cast<pcomm::rec::InternDomain>(domain);
-    auto& rec = tracer.recorder();
+    if (!tracer.has_recorder())
+        return 0;
+    auto            d = static_cast<pcomm::rec::InternDomain>(domain);
+    auto&           rec = tracer.recorder();
     std::lock_guard lock(rec.mutex(d));
     return rec.table(d).intern(std::string_view(s, n));
 }
 
 std::uint32_t pcomm_engine_intern_key(std::uint8_t domain, std::uint64_t key) {
     auto& tracer = pcomm::Tracer::instance();
-    if (!tracer.has_recorder()) return 0;
-    auto  d   = static_cast<pcomm::rec::InternDomain>(domain);
-    auto& rec = tracer.recorder();
+    if (!tracer.has_recorder())
+        return 0;
+    auto            d = static_cast<pcomm::rec::InternDomain>(domain);
+    auto&           rec = tracer.recorder();
     std::lock_guard lock(rec.mutex(d));
     return rec.table(d).intern(key);
 }
@@ -233,7 +244,7 @@ std::uint32_t pcomm_engine_intern_key(std::uint8_t domain, std::uint64_t key) {
 namespace {
 
 struct DeclaredProvider {
-    std::string name;
+    std::string   name;
     std::uint16_t lo{0}, hi{0};
 };
 
@@ -250,32 +261,34 @@ std::mutex& declared_mutex() {
 }  // namespace
 
 extern "C" int pcomm_engine_declare_provider(const char* name, std::uint16_t id_lo,
-                                             std::uint16_t id_hi,
-                                             std::uint32_t abi_version) {
+                                             std::uint16_t id_hi, std::uint32_t abi_version) {
     const char* who = name ? name : "?";
     if (abi_version != PCOMM_ENGINE_ABI_VERSION) {
         std::fprintf(stderr,
-            "[pcomm] provider '%s' was built against engine ABI %u but this "
-            "engine is ABI %u — refusing. Rebuild the provider.\n",
-            who, abi_version, PCOMM_ENGINE_ABI_VERSION);
+                     "[pcomm] provider '%s' was built against engine ABI %u but this "
+                     "engine is ABI %u — refusing. Rebuild the provider.\n",
+                     who, abi_version, PCOMM_ENGINE_ABI_VERSION);
         return 1;
     }
     if (id_lo > id_hi) {
-        std::fprintf(stderr, "[pcomm] provider '%s' declares an inverted id "
-                             "range [%u,%u] — refusing.\n", who, id_lo, id_hi);
+        std::fprintf(stderr,
+                     "[pcomm] provider '%s' declares an inverted id "
+                     "range [%u,%u] — refusing.\n",
+                     who, id_lo, id_hi);
         return 1;
     }
     std::lock_guard lock(declared_mutex());
     for (const auto& d : declared()) {
-        if (d.name == who && d.lo == id_lo && d.hi == id_hi) return 0;  // idempotent
+        if (d.name == who && d.lo == id_lo && d.hi == id_hi)
+            return 0;  // idempotent
         // pcomm-read merges provider streams by record-type id and assumes the
         // ranges are disjoint. Nothing enforced that until now.
         if (id_lo <= d.hi && d.lo <= id_hi) {
             std::fprintf(stderr,
-                "[pcomm] provider '%s' claims record ids [%u,%u], which overlaps "
-                "'%s' [%u,%u]. Streams would collide and pcomm-read would merge "
-                "unrelated records — refusing.\n",
-                who, id_lo, id_hi, d.name.c_str(), d.lo, d.hi);
+                         "[pcomm] provider '%s' claims record ids [%u,%u], which overlaps "
+                         "'%s' [%u,%u]. Streams would collide and pcomm-read would merge "
+                         "unrelated records — refusing.\n",
+                         who, id_lo, id_hi, d.name.c_str(), d.lo, d.hi);
             return 1;
         }
     }
@@ -288,15 +301,17 @@ extern "C" int pcomm_engine_declare_provider(const char* name, std::uint16_t id_
 // the disjointness check above exists to prevent.
 static void warn_if_undeclared(std::uint16_t type_id) {
     std::lock_guard lock(declared_mutex());
-    if (declared().empty()) return;  // nobody declared; nothing to check against
+    if (declared().empty())
+        return;  // nobody declared; nothing to check against
     for (const auto& d : declared())
-        if (type_id >= d.lo && type_id <= d.hi) return;
+        if (type_id >= d.lo && type_id <= d.hi)
+            return;
     static auto* warned = new std::unordered_map<std::uint16_t, bool>();
     if (warned->emplace(type_id, true).second)
         std::fprintf(stderr,
-            "[pcomm] record type %u is outside every declared provider id "
-            "range — the capture may be unreadable or merged wrongly.\n",
-            type_id);
+                     "[pcomm] record type %u is outside every declared provider id "
+                     "range — the capture may be unreadable or merged wrongly.\n",
+                     type_id);
 }
 
 extern "C" int pcomm_engine_interposer_live(void) {
@@ -304,9 +319,11 @@ extern "C" int pcomm_engine_interposer_live(void) {
     // actually defines what came back. If it is not us, we were linked rather
     // than preloaded and preload-based capture is silently incomplete.
     void* sym = ::dlsym(RTLD_DEFAULT, "dlsym");
-    if (!sym) return 0;
+    if (!sym)
+        return 0;
     Dl_info theirs{}, ours{};
-    if (!dladdr(sym, &theirs) || !theirs.dli_fname) return 0;
+    if (!dladdr(sym, &theirs) || !theirs.dli_fname)
+        return 0;
     if (!dladdr(reinterpret_cast<const void*>(&pcomm_engine_interposer_live), &ours) ||
         !ours.dli_fname)
         return 0;
@@ -316,8 +333,7 @@ extern "C" int pcomm_engine_interposer_live(void) {
 extern "C" const char* pcomm_engine_so_path() {
     static const std::string path = [] {
         Dl_info info{};
-        if (dladdr(reinterpret_cast<const void*>(&pcomm_engine_so_path), &info) &&
-            info.dli_fname)
+        if (dladdr(reinterpret_cast<const void*>(&pcomm_engine_so_path), &info) && info.dli_fname)
             return std::string(info.dli_fname);
         return std::string();
     }();

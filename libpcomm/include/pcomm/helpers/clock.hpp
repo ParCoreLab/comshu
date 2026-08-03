@@ -31,8 +31,7 @@ struct AnchorSample {
     std::uint64_t mono_ns;
 };
 
-template <class Clock = TscClock>
-inline AnchorSample sample_anchor() {
+template<class Clock = TscClock> inline AnchorSample sample_anchor() {
     timespec wall, mono;
     clock_gettime(CLOCK_REALTIME, &wall);
     clock_gettime(CLOCK_MONOTONIC_RAW, &mono);

@@ -15,18 +15,17 @@ namespace pcomm::core {
 // Reads the metadata PCOMM_RECORD injects. Works for records declared in any
 // namespace (providers own their record types) — no template specialization
 // across namespaces required.
-template <class R>
-struct RecordTrait {
-    static constexpr RecordKind      kind    = R::pcomm_kind;
-    static constexpr RecordTypeId    type_id = R::pcomm_type_id;
-    static constexpr std::string_view name   = R::pcomm_name;
+template<class R> struct RecordTrait {
+    static constexpr RecordKind       kind = R::pcomm_kind;
+    static constexpr RecordTypeId     type_id = R::pcomm_type_id;
+    static constexpr std::string_view name = R::pcomm_name;
     // Records with the same `name` are one *family*; `version` orders them.
     // See PCOMM_RECORD_V below for what a version actually means.
-    static constexpr std::uint16_t   version = R::pcomm_version;
-    static constexpr std::size_t size() { return sizeof(R); }
+    static constexpr std::uint16_t version = R::pcomm_version;
+    static constexpr std::size_t   size() { return sizeof(R); }
 };
 
-template <class R>
+template<class R>
 concept Record = std::is_trivially_copyable_v<R> && requires {
     { RecordTrait<R>::kind } -> std::convertible_to<RecordKind>;
     { RecordTrait<R>::type_id } -> std::convertible_to<RecordTypeId>;
@@ -35,10 +34,9 @@ concept Record = std::is_trivially_copyable_v<R> && requires {
 
 // Empty base carrying the trait metadata; records stay aggregates (C++17
 // aggregates may have public bases) and trivially copyable.
-template <RecordKind K, RecordTypeId Id, std::uint16_t Ver = 1>
-struct RecordMeta {
-    static constexpr RecordKind   pcomm_kind    = K;
-    static constexpr RecordTypeId pcomm_type_id = Id;
+template<RecordKind K, RecordTypeId Id, std::uint16_t Ver = 1> struct RecordMeta {
+    static constexpr RecordKind    pcomm_kind = K;
+    static constexpr RecordTypeId  pcomm_type_id = Id;
     static constexpr std::uint16_t pcomm_version = Ver;
 };
 
@@ -65,8 +63,7 @@ private:
 // Records must stay trivially-copyable aggregates: the writer is a memcpy and
 // the reader maps streams as arrays. High-cardinality fields (pc, pointers,
 // strings, names) must be core::Handle (interned), never raw values.
-#define PCOMM_RECORD(Struct, Kind, TypeId, NameStr)                           \
-    PCOMM_RECORD_V(Struct, Kind, TypeId, NameStr, 1)
+#define PCOMM_RECORD(Struct, Kind, TypeId, NameStr) PCOMM_RECORD_V(Struct, Kind, TypeId, NameStr, 1)
 
 // PCOMM_RECORD_V(Struct, Kind, TypeId, "name", Version) — the same, with an
 // explicit schema version. This is how a record evolves.
@@ -104,10 +101,9 @@ private:
 // The reader's side is pcomm/rec/version_map.hpp: pcomm-read loads every
 // version of a family and upconverts the old ones, so a capture written before
 // the bump and one written after produce the same table.
-#define PCOMM_RECORD_V(Struct, Kind, TypeId, NameStr, Version)                \
-    struct Struct;                                                            \
-    struct Struct##Name_ {                                                    \
-        static constexpr std::string_view pcomm_name = (NameStr);             \
-    };                                                                        \
-    struct Struct : ::pcomm::core::RecordMeta<(Kind), (TypeId), (Version)>,   \
-                    Struct##Name_
+#define PCOMM_RECORD_V(Struct, Kind, TypeId, NameStr, Version)                                     \
+    struct Struct;                                                                                 \
+    struct Struct##Name_ {                                                                         \
+        static constexpr std::string_view pcomm_name = (NameStr);                                  \
+    };                                                                                             \
+    struct Struct : ::pcomm::core::RecordMeta<(Kind), (TypeId), (Version)>, Struct##Name_

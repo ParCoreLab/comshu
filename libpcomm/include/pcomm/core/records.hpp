@@ -16,8 +16,8 @@ namespace pcomm::core::records {
 // normalized: high-cardinality fields are interned Handles; the object link
 // is inline (hot 1:1 edge), richer relations become Edge rows.
 PCOMM_RECORD(GpuAccess, RecordKind::Event, 700, "gpu_access") {
-    Handle        pc;          // interned program counter
-    Handle        object;      // interned mem-object id (0 if unattributed)
+    Handle        pc;      // interned program counter
+    Handle        object;  // interned mem-object id (0 if unattributed)
     std::uint64_t address;
     std::uint32_t size;
     MemOp         op;
@@ -30,7 +30,7 @@ PCOMM_RECORD(GpuAccess, RecordKind::Event, 700, "gpu_access") {
 // ENTITY — a memory object with a lifetime [alloc, free).
 PCOMM_RECORD(MemObject, RecordKind::Entity, 720, "mem_object") {
     Handle   id;
-    Handle   name;             // interned symbol/type name
+    Handle   name;  // interned symbol/type name
     MemRange range;
     DeviceId device;
 };
@@ -38,7 +38,7 @@ PCOMM_RECORD(MemObject, RecordKind::Entity, 720, "mem_object") {
 // ARTIFACT — one PC -> source location row (timeless, computed once).
 PCOMM_RECORD(SourceLine, RecordKind::Artifact, 740, "source_line") {
     Handle        pc;
-    Handle        file;        // interned path
+    Handle        file;  // interned path
     std::uint32_t line;
 };
 
@@ -64,9 +64,9 @@ PCOMM_RECORD(Attribution, RecordKind::Edge, 760, "attribution") {
 // intern entry, and it inherits the stream header, the schema entry, the
 // byte-level conformance check and the versioning rules for free.
 PCOMM_RECORD(InternKey, RecordKind::Artifact, 510, "intern_key") {
-    std::uint64_t key;         // the raw value: pc, pointer
-    Handle        handle;      // what records carry instead
-    std::uint8_t  domain;      // rec::InternDomain
+    std::uint64_t key;     // the raw value: pc, pointer
+    Handle        handle;  // what records carry instead
+    std::uint8_t  domain;  // rec::InternDomain
 };
 
 // ARTIFACT — one interned string, as (offset, length) into the capture's blob.
@@ -78,19 +78,19 @@ PCOMM_RECORD(InternKey, RecordKind::Artifact, 510, "intern_key") {
 // BlobHeader in the schema) so it cannot be silently paired with the wrong
 // capture either.
 PCOMM_RECORD(InternString, RecordKind::Artifact, 512, "intern_string") {
-    std::uint64_t offset;      // byte offset into intern-blob.bin
-    std::uint32_t length;      // bytes, not NUL-terminated
+    std::uint64_t offset;  // byte offset into intern-blob.bin
+    std::uint32_t length;  // bytes, not NUL-terminated
     Handle        handle;
-    std::uint8_t  domain;      // rec::InternDomain
+    std::uint8_t  domain;  // rec::InternDomain
 };
 
 // ARTIFACT — clock-domain calibration anchor (UNIFICATION §4). Emitted at
 // start/end per domain so pcomm-read can fit offset + skew.
 PCOMM_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {
     DomainId      domain;
-    Ticks         local_ticks;     // domain clock (TSC / GPU globaltimer)
-    std::uint64_t wall_ns;         // CLOCK_REALTIME at the same moment
-    std::uint64_t mono_ns;         // CLOCK_MONOTONIC_RAW at the same moment
+    Ticks         local_ticks;  // domain clock (TSC / GPU globaltimer)
+    std::uint64_t wall_ns;      // CLOCK_REALTIME at the same moment
+    std::uint64_t mono_ns;      // CLOCK_MONOTONIC_RAW at the same moment
 };
 
 }  // namespace pcomm::core::records

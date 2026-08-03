@@ -13,7 +13,8 @@
 
 __global__ void put_to_next(int* dst, const int* src, int n, int peer) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) nvshmem_int_p(&dst[i], src[i], peer);
+    if (i < n)
+        nvshmem_int_p(&dst[i], src[i], peer);
 }
 
 int main(int argc, char** argv) {
@@ -24,10 +25,13 @@ int main(int argc, char** argv) {
 
     int local = 0;
     for (const char* v : {"OMPI_COMM_WORLD_LOCAL_RANK", "SLURM_LOCALID"})
-        if (const char* e = getenv(v)) { local = atoi(e); break; }
+        if (const char* e = getenv(v)) {
+            local = atoi(e);
+            break;
+        }
     cudaSetDevice(local);
 
-    MPI_Comm comm = MPI_COMM_WORLD;
+    MPI_Comm             comm = MPI_COMM_WORLD;
     nvshmemx_init_attr_t attr = NVSHMEMX_INIT_ATTR_INITIALIZER;
     attr.mpi_comm = &comm;
     nvshmemx_init_attr(NVSHMEMX_INIT_WITH_MPI_COMM, &attr);
@@ -36,8 +40,8 @@ int main(int argc, char** argv) {
     int npes = nvshmem_n_pes();
     int peer = (mype + 1) % npes;
 
-    int n = argc > 1 ? atoi(argv[1]) : (1 << 20);      // ints
-    int iters = argc > 2 ? atoi(argv[2]) : 10;
+    int  n = argc > 1 ? atoi(argv[1]) : (1 << 20);  // ints
+    int  iters = argc > 2 ? atoi(argv[2]) : 10;
     int* dst = static_cast<int*>(nvshmem_malloc(n * sizeof(int)));
     int* src = static_cast<int*>(nvshmem_malloc(n * sizeof(int)));
     cudaMemset(src, 1, n * sizeof(int));

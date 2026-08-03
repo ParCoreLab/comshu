@@ -25,16 +25,20 @@ using core::records::MemObject;
 static void record_n(int n, std::uint16_t dev) {
     auto& r = Tracer::instance().recorder();
     for (int i = 0; i < n; ++i)
-        r.record(MemObject{{}, {}, static_cast<core::Handle>(i + 1), core::kNullHandle,
-                           {static_cast<std::uint64_t>(i), 64}, dev});
+        r.record(MemObject{{},
+                           {},
+                           static_cast<core::Handle>(i + 1),
+                           core::kNullHandle,
+                           {static_cast<std::uint64_t>(i), 64},
+                           dev});
 }
 
 static std::size_t stream_count(const fs::path& dir) {
     auto path = dir / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
-    if (!fs::exists(path)) return 0;
+    if (!fs::exists(path))
+        return 0;
     // Past the 32-byte StreamHeader every stream file opens with.
-    return (fs::file_size(path) - sizeof(rec::StreamHeader)) /
-           sizeof(rec::Stamped<MemObject>);
+    return (fs::file_size(path) - sizeof(rec::StreamHeader)) / sizeof(rec::Stamped<MemObject>);
 }
 
 // How many records in this stream carry `dev`. Counts alone cannot tell whose
@@ -44,13 +48,15 @@ static std::size_t stream_count(const fs::path& dir) {
 // right. Parent records use device 0, child records device 1.
 static std::size_t stream_count_with_device(const fs::path& dir, std::uint16_t dev) {
     auto path = dir / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
-    if (!fs::exists(path)) return 0;
+    if (!fs::exists(path))
+        return 0;
     std::ifstream in(path, std::ios::binary);
     in.seekg(sizeof(rec::StreamHeader));
-    std::size_t n = 0;
+    std::size_t             n = 0;
     rec::Stamped<MemObject> s{};
     while (in.read(reinterpret_cast<char*>(&s), sizeof s))
-        if (s.payload.device == dev) ++n;
+        if (s.payload.device == dev)
+            ++n;
     return n;
 }
 
@@ -83,20 +89,22 @@ int main() {
     auto child_n = stream_count(out / ("rank-" + std::to_string(pid)));
 
     std::printf("child exit=%d; parent rank-0=%zu (expect %d), child rank-%d=%zu (expect %d)\n",
-                WIFEXITED(status) ? WEXITSTATUS(status) : -1, parent_n,
-                kParentPre + kParentPost, (int)pid, child_n, kChild);
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1, parent_n, kParentPre + kParentPost,
+                (int)pid, child_n, kChild);
 
     // Reported rather than asserted, and all of them before exiting: one run
     // then shows the whole picture instead of stopping at the first bad number,
     // and a non-zero exit is something ctest's WILL_FAIL can express while the
     // SIGABRT from assert() is not.
-    int bad = 0;
+    int  bad = 0;
     auto check = [&bad](bool ok, const char* what) {
-        if (!ok) { std::printf("  FAIL: %s\n", what); ++bad; }
+        if (!ok) {
+            std::printf("  FAIL: %s\n", what);
+            ++bad;
+        }
     };
     check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "child crashed");
-    check(child_n == static_cast<std::size_t>(kChild),
-          "child records lost/misrouted");
+    check(child_n == static_cast<std::size_t>(kChild), "child records lost/misrouted");
     check(parent_n == static_cast<std::size_t>(kParentPre + kParentPost),
           "parent stream corrupted or truncated by the fork child");
 

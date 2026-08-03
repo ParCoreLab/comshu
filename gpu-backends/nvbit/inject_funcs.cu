@@ -9,12 +9,14 @@
 
 #include "dev_common.h"
 
-extern "C" __device__ __noinline__ void pcomm_instrument_mem(
-    int pred, int opcode_id, int dev_id, uint64_t addr, uint64_t grid_launch_id,
-    uint64_t pchannel_dev, int instr_index, int access_size) {
-    if (!pred) return;
+extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcode_id, int dev_id,
+                                                             uint64_t addr, uint64_t grid_launch_id,
+                                                             uint64_t pchannel_dev, int instr_index,
+                                                             int access_size) {
+    if (!pred)
+        return;
 
-    int active_mask = __ballot_sync(__activemask(), 1);
+    int       active_mask = __ballot_sync(__activemask(), 1);
     const int laneid = get_laneid();
     const int first_laneid = __ffs(active_mask) - 1;
 
@@ -29,11 +31,10 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(
     ma.instr_index = static_cast<uint32_t>(instr_index);
     ma.access_size = static_cast<uint32_t>(access_size);
 
-    uint64_t block_id = blockIdx.x + blockIdx.y * gridDim.x +
-                        gridDim.x * gridDim.y * blockIdx.z;
+    uint64_t block_id = blockIdx.x + blockIdx.y * gridDim.x + gridDim.x * gridDim.y * blockIdx.z;
     ma.thread_index = block_id * (blockDim.x * blockDim.y * blockDim.z) +
-                      (threadIdx.z * (blockDim.x * blockDim.y)) +
-                      (threadIdx.y * blockDim.x) + threadIdx.x;
+                      (threadIdx.z * (blockDim.x * blockDim.y)) + (threadIdx.y * blockDim.x) +
+                      threadIdx.x;
 
     if (first_laneid == laneid) {
         ChannelDev* channel_dev = (ChannelDev*)pchannel_dev;

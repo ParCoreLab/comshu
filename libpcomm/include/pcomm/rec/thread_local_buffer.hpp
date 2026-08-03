@@ -24,13 +24,12 @@ public:
 
 // What actually goes on the wire for Events/Entities: temporal header + POD.
 // Artifacts/Edges typically carry TimeKind::None (still uniform per stream).
-template <core::Record R>
-struct Stamped {
+template<core::Record R> struct Stamped {
     core::Temporal temporal;
     R              payload;
 };
 
-template <core::Record R, std::size_t Capacity = 4096>
+template<core::Record R, std::size_t Capacity = 4096>
 class ThreadLocalBuffer final : public IDrainable {
 public:
     explicit ThreadLocalBuffer(ISink& sink) : m_sink(&sink) {}
@@ -41,7 +40,8 @@ public:
 
     // Returns a slot to fill in place; commit() advances.
     R* slot(const core::Temporal& t) {
-        if (m_count == Capacity) drain();
+        if (m_count == Capacity)
+            drain();
         m_slots[m_count].temporal = t;
         return &m_slots[m_count].payload;
     }
@@ -55,13 +55,14 @@ public:
 
     // Hand the filled region to the sink. (Synchronous in the skeleton.)
     void drain() override {
-        if (m_count == 0) return;
+        if (m_count == 0)
+            return;
         m_sink->submit(BufferView{
             .type_id = core::RecordTrait<R>::type_id,
-            .kind    = core::RecordTrait<R>::kind,
-            .data    = reinterpret_cast<const std::byte*>(m_slots.data()),
-            .bytes   = m_count * sizeof(Stamped<R>),
-            .count   = m_count,
+            .kind = core::RecordTrait<R>::kind,
+            .data = reinterpret_cast<const std::byte*>(m_slots.data()),
+            .bytes = m_count * sizeof(Stamped<R>),
+            .count = m_count,
         });
         m_count = 0;
     }
@@ -69,8 +70,8 @@ public:
     std::size_t pending() const { return m_count; }
 
 private:
-    ISink* m_sink;
-    std::size_t m_count{0};
+    ISink*                           m_sink;
+    std::size_t                      m_count{0};
     std::array<Stamped<R>, Capacity> m_slots{};
 };
 

@@ -20,9 +20,9 @@ using core::RecordKind;
 
 // ENTITY — a registered memory region (ibv_reg_mr), lifetime [reg, dereg).
 PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
-    Handle        mr;      // interned ibv_mr*
-    Handle        pd;      // interned ibv_pd*
-    MemRange      range;   // addr, length
+    Handle        mr;     // interned ibv_mr*
+    Handle        pd;     // interned ibv_pd*
+    MemRange      range;  // addr, length
     std::uint32_t lkey;
     std::uint32_t rkey;
     std::uint32_t access;
@@ -30,8 +30,8 @@ PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
 
 // ENTITY — a queue-pair endpoint (ibv_create_qp), lifetime [create, destroy).
 PCOMM_RECORD(IbQueuePair, RecordKind::Entity, 102, "ib_queue_pair") {
-    Handle        qp;      // interned ibv_qp*
-    Handle        pd;      // interned ibv_pd*
+    Handle        qp;  // interned ibv_qp*
+    Handle        pd;  // interned ibv_pd*
     std::uint32_t qp_num;
     std::uint8_t  qp_type;
 };
@@ -53,7 +53,7 @@ PCOMM_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
     // Learned at the INIT transition, the only one that names a port, and
     // carried on every later transition of that QP. 0 = not yet known.
     std::uint32_t src_lid;
-    std::uint8_t  state;        // new ibv_qp_state
+    std::uint8_t  state;  // new ibv_qp_state
 };
 
 // EVENT — a work request posted to a QP (ibv_post_send). The comm firehose;
@@ -65,7 +65,7 @@ PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
     std::uint32_t rkey;         // RDMA ops only
     std::uint32_t length;       // total sg_list bytes
     std::uint32_t qp_num;
-    std::uint8_t  opcode;       // ibv_wr_opcode
+    std::uint8_t  opcode;  // ibv_wr_opcode
     std::uint8_t  num_sge;
 };
 
@@ -75,8 +75,8 @@ PCOMM_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
     std::uint64_t wr_id;
     std::uint32_t byte_len;
     std::uint32_t qp_num;
-    std::uint8_t  status;    // ibv_wc_status
-    std::uint8_t  opcode;    // ibv_wc_opcode
+    std::uint8_t  status;  // ibv_wc_status
+    std::uint8_t  opcode;  // ibv_wc_opcode
 };
 
 }  // namespace pcomm::providers::ibverbs::records

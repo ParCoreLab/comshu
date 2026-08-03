@@ -12,10 +12,13 @@
 
 // --- object-ops hooks (installed by replacing ibv_context->ops.X) ------------
 DEFINE_OBJECT_OPS_HOOK(ibv, post_send, "ibv_post_send", int, ibv_qp*, ibv_send_wr*, ibv_send_wr**);
-DEFINE_OBJECT_OPS_HOOK_PRED(ibv, poll_cq, "ibv_poll_cq", [](int out_ret, ibv_cq*, int, ibv_wc*) {
-    // Skip the empty-poll firehose; record only polls that reaped completions.
-    return out_ret > 0;
-}, int, ibv_cq*, int, ibv_wc*);
+DEFINE_OBJECT_OPS_HOOK_PRED(
+    ibv, poll_cq, "ibv_poll_cq",
+    [](int out_ret, ibv_cq*, int, ibv_wc*) {
+        // Skip the empty-poll firehose; record only polls that reaped completions.
+        return out_ret > 0;
+    },
+    int, ibv_cq*, int, ibv_wc*);
 
 // --- preload hooks (LD_PRELOAD / dlsym interposition) ------------------------
 DEFINE_PRELOAD_HOOK(ibv, open_device, "ibv_open_device", ibv_context*, ibv_device*);
@@ -37,8 +40,8 @@ DEFINE_PRELOAD_HOOK(ibv, open_device, "ibv_open_device", ibv_context*, ibv_devic
 // 01 and 06 (legacy branch) and 08 (iova2 branch) all assert. If a future
 // rdma-core ever stops routing the legacy symbol through iova2, those cases go
 // red rather than quietly losing registrations.
-DEFINE_PRELOAD_HOOK(ibv, reg_mr_iova2, "ibv_reg_mr_iova2", ibv_mr*, ibv_pd*, void*,
-                    size_t, uint64_t, unsigned int);
+DEFINE_PRELOAD_HOOK(ibv, reg_mr_iova2, "ibv_reg_mr_iova2", ibv_mr*, ibv_pd*, void*, size_t,
+                    uint64_t, unsigned int);
 DEFINE_PRELOAD_HOOK(ibv, dereg_mr, "ibv_dereg_mr", int, ibv_mr*);
 DEFINE_PRELOAD_HOOK(ibv, alloc_pd, "ibv_alloc_pd", ibv_pd*, ibv_context*);
 DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_init_attr*);

@@ -26,16 +26,14 @@ public:
         total_records += v.count;
         total_bytes += v.bytes;
     }
-    void flush() override {}
+    void        flush() override {}
     std::size_t total_records{0};
     std::size_t total_bytes{0};
 };
 
 class RemoteFilter final : public attr::IFilter {
 public:
-    bool keep(const attr::RawAccess& a) const override {
-        return a.run_device != a.mem_device;
-    }
+    bool keep(const attr::RawAccess& a) const override { return a.run_device != a.mem_device; }
 };
 
 }  // namespace
@@ -46,7 +44,7 @@ int main() {
     // --- interning: same value -> same handle, distinct values -> distinct ---
     {
         rec::InternTable t;
-        auto a = t.intern("foo.cu"), b = t.intern("bar.cu"), c = t.intern("foo.cu");
+        auto             a = t.intern("foo.cu"), b = t.intern("bar.cu"), c = t.intern("foo.cu");
         assert(a == c && a != b && a != core::kNullHandle);
         assert(t.intern(std::uint64_t{0x1f80}) == t.intern(std::uint64_t{0x1f80}));
         assert(t.size() == 3);
@@ -58,12 +56,12 @@ int main() {
     // arenas instead, so a sink a test constructs itself never sees a record —
     // the buffer is the layer where a local ISink still means something.
     {
-        CountingSink sink;
+        CountingSink     sink;
         rec::InternTable strings;
-        auto pc = strings.intern(std::uint64_t{0x1f80});
-        auto file = strings.intern("stencil.cu");
+        auto             pc = strings.intern(std::uint64_t{0x1f80});
+        auto             file = strings.intern("stencil.cu");
 
-        constexpr std::size_t n = 10'000;  // > buffer capacity: forces drains
+        constexpr std::size_t             n = 10'000;  // > buffer capacity: forces drains
         rec::ThreadLocalBuffer<GpuAccess> accesses(sink);
         for (std::size_t i = 0; i < n; ++i) {
             GpuAccess* slot = accesses.slot(core::Temporal::none());
@@ -123,27 +121,28 @@ int main() {
             accesses[i].run_device = 0;
             accesses[i].mem_device = (i % 2) ? 1 : 0;  // half remote, half local
         }
-        pipe.process(accesses);          // filter keeps the 50 remote ones
+        pipe.process(accesses);  // filter keeps the 50 remote ones
 
         // (b) the same stream, written directly through the Recorder.
         auto& recorder = Tracer::instance().recorder();
-        for (int i = 0; i < 100; ++i) recorder.record(GpuAccess{{}, {}, 1, 0, 0x100, 4});
+        for (int i = 0; i < 100; ++i)
+            recorder.record(GpuAccess{{}, {}, 1, 0, 0x100, 4});
 
         Tracer::instance().finalize();
 
-        auto stream = dir / "rank-0" / "700.pcs";   // Tracer::start makes rank-N/
+        auto stream = dir / "rank-0" / "700.pcs";  // Tracer::start makes rank-N/
         assert(fs::exists(stream));
         // 50 survived the filter + 100 direct. A filter that dropped nothing
         // would give 200, one that dropped everything 100 — the count still
         // pins the behaviour even though the two writers share a stream.
         assert(fs::file_size(stream) ==
-               sizeof(rec::StreamHeader) + 150 * sizeof(rec::Stamped<GpuAccess>) &&
+                   sizeof(rec::StreamHeader) + 150 * sizeof(rec::Stamped<GpuAccess>) &&
                "filter should drop the 50 local accesses, and both writers land here");
 
         // The file says what it is. Check it says the right thing, in the right
         // place — the header is the first 32 bytes of every capture we ship.
         rec::StreamHeader h{};
-        std::ifstream in(stream, std::ios::binary);
+        std::ifstream     in(stream, std::ios::binary);
         in.read(reinterpret_cast<char*>(&h), sizeof h);
         assert(h.magic == rec::kStreamMagic);
         assert(h.format_version == rec::kStreamFormatVersion);

@@ -28,7 +28,8 @@ int g_fail = 0;
 
 void expect(bool ok, const char* what) {
     std::printf("  [%s] %s\n", ok ? "ok " : "XX ", what);
-    if (!ok) g_fail = 1;
+    if (!ok)
+        g_fail = 1;
 }
 
 }  // namespace
@@ -106,9 +107,8 @@ int main() {
         b.begin(WrOpcode::Send, 1);
         b.set_sge(64);
         auto out = b.complete(false);
-        expect(out.empty(),
-               "a failed wr_complete records nothing: those sends never reached "
-               "the wire, and inventing them is worse than missing them");
+        expect(out.empty(), "a failed wr_complete records nothing: those sends never reached "
+                            "the wire, and inventing them is worse than missing them");
         expect(!b.in_batch(), "and the batch is closed either way");
     }
     {
@@ -130,23 +130,22 @@ int main() {
     // --- calls out of sequence, which a reader must never see as data -------
     {
         WrBuilder b;
-        b.begin(WrOpcode::Send, 99);      // no wr_start
+        b.begin(WrOpcode::Send, 99);  // no wr_start
         b.set_sge(64);
         auto out = b.complete(true);
-        expect(out.empty(),
-               "an opcode outside a batch is ignored rather than guessed at");
+        expect(out.empty(), "an opcode outside a batch is ignored rather than guessed at");
     }
     {
         WrBuilder b;
         b.start();
-        b.set_sge(4096);                  // no wr_<opcode> yet
+        b.set_sge(4096);  // no wr_<opcode> yet
         auto out = b.complete(true);
         expect(out.empty(), "an sge with no work request open is ignored");
     }
     {
         WrBuilder b;
         b.start();
-        b.begin(WrOpcode::Send, 1);       // no sge at all: a zero-length send
+        b.begin(WrOpcode::Send, 1);  // no sge at all: a zero-length send
         auto out = b.complete(true);
         expect(out.size() == 1 && out[0].length == 0 && out[0].num_sge == 0,
                "a work request with no sge is still a work request — it is "
@@ -159,7 +158,7 @@ int main() {
         b.start();
         b.begin(WrOpcode::Send, 1);
         b.set_sge(64);
-        b.start();                        // second wr_start, first never completed
+        b.start();  // second wr_start, first never completed
         b.begin(WrOpcode::Send, 2);
         b.set_sge(128);
         auto out = b.complete(true);

@@ -47,7 +47,8 @@ static long channel_size() {
     static long sz = [] {
         if (const char* e = std::getenv("PCOMM_CHANNEL_SIZE")) {
             long v = std::atol(e);
-            if (v >= (1l << 20)) return v;   // sanity floor: 1 MiB
+            if (v >= (1l << 20))
+                return v;  // sanity floor: 1 MiB
         }
         return (long)CHANNEL_SIZE_DEFAULT;
     }();
@@ -57,8 +58,8 @@ static long channel_size() {
 namespace {
 
 struct CtxState {
-    ChannelDev* channel_dev{nullptr};
-    ChannelHost channel_host;
+    ChannelDev*                  channel_dev{nullptr};
+    ChannelHost                  channel_host;
     volatile unsigned long long* dbg_host{nullptr};  // PCOMM_CHANNEL_DEBUG counters
 };
 
@@ -79,20 +80,20 @@ struct MappedRegion {
 
 struct Globals {
     std::unordered_map<CUcontext, CtxState*> ctx_state;
-    std::unordered_set<CUfunction> instrumented;
-    std::map<std::string, int> opcode_to_id;
-    std::vector<std::string> id_to_opcode;
-    std::vector<MemOp> id_to_memop;
-    std::string kernel_filter = "all";
+    std::unordered_set<CUfunction>           instrumented;
+    std::map<std::string, int>               opcode_to_id;
+    std::vector<std::string>                 id_to_opcode;
+    std::vector<MemOp>                       id_to_memop;
+    std::string                              kernel_filter = "all";
     // Touched only by the CUDA-callback thread, under g_mutex. The recv thread
     // never reads these — it used to, and needed an atomically published
     // snapshot to do it safely, because sorting the live vector while the
     // callback thread could be push_back()ing into it is a use-after-free.
     // Resolving at launch time instead makes the sharing go away entirely.
-    std::vector<MappedRegion> mapped_regions;
+    std::vector<MappedRegion>    mapped_regions;
     std::unordered_set<uint64_t> mapped_bases_seen;
-    size_t regions_resolved = 0;  // prefix already attributed from CUDA
-    size_t heap_resolved = 0;     // prefix already offered to NVSHMEM
+    size_t                       regions_resolved = 0;  // prefix already attributed from CUDA
+    size_t                       heap_resolved = 0;     // prefix already offered to NVSHMEM
 };
 Globals& G() {
     static Globals* g = new Globals();
@@ -100,10 +101,10 @@ Globals& G() {
 }
 
 pcomm::gpumem::Engine* g_engine = nullptr;
-bool g_skip_callback = false;
-bool g_shutdown_done = false;
-uint32_t g_next_instr_index = 0;
-uint64_t g_grid_launch_id = 0;
+bool                   g_skip_callback = false;
+bool                   g_shutdown_done = false;
+uint32_t               g_next_instr_index = 0;
+uint64_t               g_grid_launch_id = 0;
 
 struct MutexLock {
     explicit MutexLock(pthread_mutex_t& m) : m_m(&m) { pthread_mutex_lock(m_m); }
@@ -173,16 +174,17 @@ const NvshmemApi& nvshmem_api() {
 // space run_device is in. Negative when it cannot say.
 int device_of(uint64_t p, int ndev, const char* what) {
     int dev = -1;
-    if (cuPointerGetAttribute(&dev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
-                              (CUdeviceptr)p) != CUDA_SUCCESS)
+    if (cuPointerGetAttribute(&dev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL, (CUdeviceptr)p) !=
+        CUDA_SUCCESS)
         return -1;
     // The guard the old scheme could not have had: an owner must name a GPU
     // that exists. mem_dev = 64 on a 4-GPU node would have stopped here,
     // loudly, instead of quietly inflating the capture.
     if (dev < 0 || dev >= ndev) {
-        std::fprintf(stderr, "[pcomm-gpumem] %s owner out of range: dev=%d of %d "
-                     "GPUs; 0x%llx dropped\n", what, dev, ndev,
-                     (unsigned long long)p);
+        std::fprintf(stderr,
+                     "[pcomm-gpumem] %s owner out of range: dev=%d of %d "
+                     "GPUs; 0x%llx dropped\n",
+                     what, dev, ndev, (unsigned long long)p);
         return -1;
     }
     return dev;
@@ -208,9 +210,10 @@ int device_of(uint64_t p, int ndev, const char* what) {
 // for calls made from inside a callback, which is what handle_alloc's
 // cudaGetDevice has always relied on.
 void refresh_mapped_regions() {
-    auto& g = G();
+    auto&        g = G();
     const size_t n = g.mapped_regions.size();
-    if (!g_engine || (g.regions_resolved == n && g.heap_resolved == n)) return;
+    if (!g_engine || (g.regions_resolved == n && g.heap_resolved == n))
+        return;
 
     int ndev = 0;
     cudaGetDeviceCount(&ndev);
@@ -223,19 +226,20 @@ void refresh_mapped_regions() {
     //    was being applied to NCCL's regions — it reported mem_dev up to 8 on a
     //    4-GPU node, i.e. it was fabricating the answer that made the case pass.
     const bool verbose = std::getenv("PCOMM_VERBOSE") != nullptr;
-    int by_cuda = 0;
+    int        by_cuda = 0;
     for (size_t i = g.regions_resolved; i < n; i++) {
         const auto& r = g.mapped_regions[i];
-        const int dev = device_of(r.base, ndev, "mapped region");
+        const int   dev = device_of(r.base, ndev, "mapped region");
         if (dev >= 0) {
-            g_engine->allocs().add_range(r.base, r.size,
-                                         static_cast<pcomm::core::DeviceId>(dev));
+            g_engine->allocs().add_range(r.base, r.size, static_cast<pcomm::core::DeviceId>(dev));
             by_cuda++;
         }
     }
     if (verbose && g.regions_resolved != n)
-        std::fprintf(stderr, "[pcomm-gpumem] %d/%zu new mapped regions attributed "
-                     "by CUDA (%zu total)\n", by_cuda, n - g.regions_resolved, n);
+        std::fprintf(stderr,
+                     "[pcomm-gpumem] %d/%zu new mapped regions attributed "
+                     "by CUDA (%zu total)\n",
+                     by_cuda, n - g.regions_resolved, n);
     g.regions_resolved = n;
 
     // 2. NVSHMEM's symmetric heap, authoritatively. Step 1 already covers every
@@ -251,7 +255,7 @@ void refresh_mapped_regions() {
         if (!said && std::getenv("PCOMM_VERBOSE")) {
             said = true;
             std::fprintf(stderr, "[pcomm-gpumem] no NVSHMEM symbols; mapped regions "
-                         "attributed from CUDA alone\n");
+                                 "attributed from CUDA alone\n");
         }
         return;  // retried at the next launch — NVSHMEM may load later
     }
@@ -266,11 +270,13 @@ void refresh_mapped_regions() {
     // Returning here without advancing heap_resolved is the point of tracking
     // it separately from regions_resolved: a launch before nvshmem_init must
     // not mark the regions as having had their chance.
-    if (api.init_status() < kNvshmemStatusIsInitialized) return;
+    if (api.init_status() < kNvshmemStatusIsInitialized)
+        return;
 
     const int npes = api.n_pes();
     const int mype = api.my_pe();
-    if (npes <= 0 || mype < 0 || mype >= npes) return;
+    if (npes <= 0 || mype < 0 || mype >= npes)
+        return;
 
     int mine = 0, peers = 0;
     for (size_t i = g.heap_resolved; i < n; i++) {
@@ -279,13 +285,15 @@ void refresh_mapped_regions() {
         // peers' copies are. Unlike the positional scheme, the answer for a
         // region never depends on how many others have been seen, so processing
         // them as they arrive is safe.
-        if (!api.ptr((const void*)r.base, mype)) continue;
+        if (!api.ptr((const void*)r.base, mype))
+            continue;
         mine++;
 
         for (int pe = 0; pe < npes; pe++) {
             void* q = api.ptr((const void*)r.base, pe);
-            if (!q) continue;  // not P2P-reachable: that PE's traffic crosses
-                               // the IB link and belongs to the ib provider.
+            if (!q)
+                continue;  // not P2P-reachable: that PE's traffic crosses
+                           // the IB link and belongs to the ib provider.
             // PE is not a device. The old code cast one straight to the other,
             // which is only accidentally right when PEs and GPUs are numbered
             // alike on one node. CUDA knows where the memory nvshmem_ptr just
@@ -300,15 +308,18 @@ void refresh_mapped_regions() {
         }
     }
     if (verbose && g.heap_resolved != n)
-        std::fprintf(stderr, "[pcomm-gpumem] NVSHMEM pe %d/%d: %d of %zu new regions "
+        std::fprintf(stderr,
+                     "[pcomm-gpumem] NVSHMEM pe %d/%d: %d of %zu new regions "
                      "are my heap, %d peer ranges registered\n",
                      mype, npes, mine, n - g.heap_resolved, peers);
     g.heap_resolved = n;
 }
 
 MemOp opcode_to_memop(const std::string& opcode) {
-    if (opcode.rfind("LD", 0) == 0) return MemOp::Load;
-    if (opcode.rfind("ST", 0) == 0) return MemOp::Store;
+    if (opcode.rfind("LD", 0) == 0)
+        return MemOp::Load;
+    if (opcode.rfind("ST", 0) == 0)
+        return MemOp::Store;
     if (opcode.rfind("ATOM", 0) == 0 || opcode.rfind("RED", 0) == 0)
         return MemOp::Atomic;
     return MemOp::Load;
@@ -319,7 +330,8 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
     related.push_back(func);
 
     for (auto f : related) {
-        if (!G().instrumented.insert(f).second) continue;
+        if (!G().instrumented.insert(f).second)
+            continue;
 
         int dev_id = -1;
         cudaGetDevice(&dev_id);
@@ -342,15 +354,14 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
             // around it, completes.
             {
                 const auto sp = instr->getMemorySpace();
-                if (sp != InstrType::MemorySpace::GLOBAL &&
-                    sp != InstrType::MemorySpace::GENERIC &&
+                if (sp != InstrType::MemorySpace::GLOBAL && sp != InstrType::MemorySpace::GENERIC &&
                     sp != InstrType::MemorySpace::GLOBAL_TO_SHARED) {
                     continue;
                 }
             }
 
-            auto [it, inserted] = G().opcode_to_id.emplace(instr->getOpcode(),
-                                                         (int)G().id_to_opcode.size());
+            auto [it, inserted] =
+                G().opcode_to_id.emplace(instr->getOpcode(), (int)G().id_to_opcode.size());
             if (inserted) {
                 G().id_to_opcode.emplace_back(instr->getOpcode());
                 G().id_to_memop.push_back(opcode_to_memop(instr->getOpcode()));
@@ -375,7 +386,8 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
                     const char* e = std::getenv("PCOMM_INSTR_HI");
                     return e ? (uint32_t)std::strtoul(e, nullptr, 10) : UINT32_MAX;
                 }();
-                if (instr_index < lo || instr_index >= hi) continue;
+                if (instr_index < lo || instr_index >= hi)
+                    continue;
             }
 
             // PCOMM_INSTR_DUMP: print the index -> instruction mapping so a
@@ -384,19 +396,18 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
             if (std::getenv("PCOMM_INSTR_DUMP")) {
                 const char* fn = nvbit_get_func_name(ctx, f, true);
                 std::fprintf(stderr,
-                    "[pcomm-instr] idx=%u opcode=%s space=%d size=%d off=0x%x fn=%s\n",
-                    instr_index, instr->getOpcode(),
-                    (int)instr->getMemorySpace(), instr->getSize(),
-                    (unsigned)instr->getOffset(), fn ? fn : "?");
+                             "[pcomm-instr] idx=%u opcode=%s space=%d size=%d off=0x%x fn=%s\n",
+                             instr_index, instr->getOpcode(), (int)instr->getMemorySpace(),
+                             instr->getSize(), (unsigned)instr->getOffset(), fn ? fn : "?");
             }
 
             // Source-line artifact (nvbit_get_line_info needs -lineinfo in the
             // target app; silently absent otherwise, like snoopie).
-            char* file_name = nullptr;
-            char* dir_name = nullptr;
+            char*    file_name = nullptr;
+            char*    dir_name = nullptr;
             uint32_t line = 0;
-            if (nvbit_get_line_info(ctx, f, instr->getOffset(), &file_name,
-                                    &dir_name, &line) && line != 0) {
+            if (nvbit_get_line_info(ctx, f, instr->getOffset(), &file_name, &dir_name, &line) &&
+                line != 0) {
                 g_engine->on_source_line(instr_index, file_name ? file_name : "",
                                          dir_name ? dir_name : "", line);
             }
@@ -404,7 +415,8 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
             int mref_idx = 0;
             for (int i = 0; i < instr->getNumOperands(); i++) {
                 const InstrType::operand_t* op = instr->getOperand(i);
-                if (op->type != InstrType::OperandType::MREF) continue;
+                if (op->type != InstrType::OperandType::MREF)
+                    continue;
 
                 nvbit_insert_call(instr, "pcomm_instrument_mem", IPOINT_BEFORE);
                 nvbit_add_call_arg_guard_pred_val(instr);
@@ -412,8 +424,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
                 nvbit_add_call_arg_const_val32(instr, dev_id);
                 nvbit_add_call_arg_mref_addr64(instr, mref_idx);
                 nvbit_add_call_arg_launch_val64(instr, 0);  // grid launch id
-                nvbit_add_call_arg_const_val64(
-                    instr, (uint64_t)G().ctx_state[ctx]->channel_dev);
+                nvbit_add_call_arg_const_val64(instr, (uint64_t)G().ctx_state[ctx]->channel_dev);
                 nvbit_add_call_arg_const_val32(instr, (int)instr_index);
                 nvbit_add_call_arg_const_val32(instr, (int)instr->getSize());
                 mref_idx++;
@@ -439,9 +450,8 @@ void handle_launch(CUcontext ctx, CUfunction func) {
     // Pair it with a filter that matches nothing to skip instrumentation
     // entirely, so the run finishes in seconds.
     if (std::getenv("PCOMM_LAUNCH_DUMP")) {
-        static std::unordered_set<std::string>* seen =
-            new std::unordered_set<std::string>();
-        std::string launched(nvbit_get_func_name(ctx, func));
+        static std::unordered_set<std::string>* seen = new std::unordered_set<std::string>();
+        std::string                             launched(nvbit_get_func_name(ctx, func));
         launched = launched.substr(0, launched.find('('));
         if (seen->insert(launched).second)
             std::fprintf(stderr, "[pcomm-launch] %s\n", launched.c_str());
@@ -449,10 +459,10 @@ void handle_launch(CUcontext ctx, CUfunction func) {
 
     for (auto f : related) {
         std::string func_name(nvbit_get_func_name(ctx, f));
-        const bool want = (G().kernel_filter == "all" ||
-                           G().kernel_filter ==
-                               func_name.substr(0, func_name.find('(')));
-        if (want) instrument_function_if_needed(ctx, f);
+        const bool  want = (G().kernel_filter == "all" ||
+                           G().kernel_filter == func_name.substr(0, func_name.find('(')));
+        if (want)
+            instrument_function_if_needed(ctx, f);
 
         // The launch id is consumed for every related function whether or not
         // we instrument it, so that filtering cannot shift the id sequence and
@@ -494,8 +504,8 @@ void* recv_thread_fun(void* args) {
         dbg_ctrs = st->dbg_host;
     }
 
-    const long chan_sz = channel_size();
-    char* recv_buffer = (char*)malloc(chan_sz);
+    const long             chan_sz = channel_size();
+    char*                  recv_buffer = (char*)malloc(chan_sz);
     std::vector<RawAccess> batch;
 
     // PCOMM_CHANNEL_DEBUG=1 — diagnostic for the NVBit deadlock (cases 05/07,
@@ -515,9 +525,9 @@ void* recv_thread_fun(void* args) {
     if (dbg)
         std::fprintf(stderr, "[pcomm-chan] ctx=%p ring=%ld bytes\n", (void*)ctx, chan_sz);
     unsigned long long recv_calls = 0, empty_calls = 0, total_bytes = 0;
-    unsigned long max_n = 0;
-    auto t_start = std::chrono::steady_clock::now();
-    auto t_last_data = t_start, t_last_report = t_start;
+    unsigned long      max_n = 0;
+    auto               t_start = std::chrono::steady_clock::now();
+    auto               t_last_data = t_start, t_last_report = t_start;
 
     bool done = false;
     while (!done) {
@@ -529,22 +539,23 @@ void* recv_thread_fun(void* args) {
                 auto now = std::chrono::steady_clock::now();
                 if (now - t_last_report >= std::chrono::seconds(10)) {
                     t_last_report = now;
-                    auto since_data = std::chrono::duration_cast<std::chrono::seconds>(
-                                          now - t_last_data).count();
+                    auto since_data =
+                        std::chrono::duration_cast<std::chrono::seconds>(now - t_last_data).count();
                     const volatile unsigned long long* d = dbg_ctrs;
                     std::fprintf(stderr,
-                        "[pcomm-chan] ctx=%p idle: bytes=%llu no_data_for=%llds "
-                        "| dev push=%llu full=%llu flusher=%llu waiter=%llu "
-                        "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
-                        (void*)ctx, total_bytes, (long long)since_data,
-                        d ? d[0] : 0ull, d ? d[1] : 0ull, d ? d[2] : 0ull, d ? d[3] : 0ull,
-                        d ? d[4] : 0ull, d ? d[5] : 0ull, d ? d[6] : 0ull, d ? d[7] : 0ull);
+                                 "[pcomm-chan] ctx=%p idle: bytes=%llu no_data_for=%llds "
+                                 "| dev push=%llu full=%llu flusher=%llu waiter=%llu "
+                                 "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
+                                 (void*)ctx, total_bytes, (long long)since_data, d ? d[0] : 0ull,
+                                 d ? d[1] : 0ull, d ? d[2] : 0ull, d ? d[3] : 0ull, d ? d[4] : 0ull,
+                                 d ? d[5] : 0ull, d ? d[6] : 0ull, d ? d[7] : 0ull);
                 }
             }
             continue;
         }
         total_bytes += n;
-        if (n > max_n) max_n = n;
+        if (n > max_n)
+            max_n = n;
         t_last_data = std::chrono::steady_clock::now();
 
         for (uint32_t off = 0; off + sizeof(pcomm_gpu_access_t) <= n;
@@ -556,7 +567,8 @@ void* recv_thread_fun(void* args) {
             }
 
             for (int lane = 0; lane < 32; lane++) {
-                if (ma->addrs[lane] == 0) continue;
+                if (ma->addrs[lane] == 0)
+                    continue;
                 RawAccess a;
                 a.address = ma->addrs[lane];
                 a.pc = pcomm::gpumem::pc_handle(ma->instr_index);
@@ -582,15 +594,14 @@ void* recv_thread_fun(void* args) {
         // nothing to compare a hung run's frozen count against.
         const volatile unsigned long long* d = dbg_ctrs;
         std::fprintf(stderr,
-            "[pcomm-chan] ctx=%p done: recv_calls=%llu empty=%llu bytes=%llu "
-            "max_recv=%lu%s",
-            (void*)ctx, recv_calls, empty_calls, total_bytes, max_n,
-            d ? "" : "\n");
+                     "[pcomm-chan] ctx=%p done: recv_calls=%llu empty=%llu bytes=%llu "
+                     "max_recv=%lu%s",
+                     (void*)ctx, recv_calls, empty_calls, total_bytes, max_n, d ? "" : "\n");
         if (d)
             std::fprintf(stderr,
-                " | dev push=%llu full=%llu flusher=%llu waiter=%llu "
-                "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
-                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+                         " | dev push=%llu full=%llu flusher=%llu waiter=%llu "
+                         "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
+                         d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
     }
     g_engine->drain_thread();  // buffers never auto-drain (leaked TLS)
     free(recv_buffer);
@@ -611,21 +622,22 @@ __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
 
 void nvbit_at_init() {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
-    if (const char* k = std::getenv("PCOMM_KERNEL_NAME")) G().kernel_filter = k;
+    if (const char* k = std::getenv("PCOMM_KERNEL_NAME"))
+        G().kernel_filter = k;
     g_engine = new pcomm::gpumem::Engine();
 }
 
 void nvbit_tool_init(CUcontext) {}
 void nvbit_at_graph_node_launch(CUcontext, CUfunction, CUstream, uint64_t) {}
 
-void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
-                         const char* /*name*/, void* params, CUresult*) {
+void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, const char* /*name*/,
+                         void* params, CUresult*) {
     MutexLock lock(g_mutex);
-    if (g_skip_callback) return;
+    if (g_skip_callback)
+        return;
     g_skip_callback = true;
 
-    if (!is_exit && (cbid == API_CUDA_cuLaunchKernel_ptsz ||
-                     cbid == API_CUDA_cuLaunchKernel)) {
+    if (!is_exit && (cbid == API_CUDA_cuLaunchKernel_ptsz || cbid == API_CUDA_cuLaunchKernel)) {
         auto* p = (cuLaunchKernel_params*)params;
         handle_launch(ctx, p->f);
     } else if (!is_exit && cbid == API_CUDA_cuLaunchKernelEx) {
@@ -668,8 +680,8 @@ void nvbit_at_ctx_init(CUcontext ctx) {
     // can watch where the device stops. See channel.hpp pcomm_bump slots.
     if (std::getenv("PCOMM_CHANNEL_DEBUG")) {
         unsigned long long* h = nullptr;
-        if (cudaHostAlloc((void**)&h, 8 * sizeof(unsigned long long),
-                          cudaHostAllocMapped) == cudaSuccess) {
+        if (cudaHostAlloc((void**)&h, 8 * sizeof(unsigned long long), cudaHostAllocMapped) ==
+            cudaSuccess) {
             memset(h, 0, 8 * sizeof(unsigned long long));
             unsigned long long* d = nullptr;
             if (cudaHostGetDevicePointer((void**)&d, h, 0) == cudaSuccess) {
@@ -678,8 +690,8 @@ void nvbit_at_ctx_init(CUcontext ctx) {
             }
         }
     }
-    state->channel_host.init((int)G().ctx_state.size() - 1, channel_size(),
-                             state->channel_dev, recv_thread_fun, ctx);
+    state->channel_host.init((int)G().ctx_state.size() - 1, channel_size(), state->channel_dev,
+                             recv_thread_fun, ctx);
     nvbit_set_tool_pthread(state->channel_host.get_thread());
 }
 

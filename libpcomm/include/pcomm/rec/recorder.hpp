@@ -31,8 +31,7 @@ struct DefaultConfig {
     static constexpr std::size_t buffer_capacity = 4096;
 };
 
-template <class Config = DefaultConfig>
-class Recorder {
+template<class Config = DefaultConfig> class Recorder {
 public:
     // The recorder does not own the sink: the Tracer wires one in and controls
     // its lifetime (it must outlive all recording threads).
@@ -57,11 +56,9 @@ public:
 
     // Auto-timestamped instant Event (or timeless record when R is an
     // Artifact/Edge — pass Temporal explicitly for those if needed).
-    template <core::Record R>
-    void record(const R& r) { append(now_instant(), r); }
+    template<core::Record R> void record(const R& r) { append(now_instant(), r); }
 
-    template <core::Record R>
-    void record(const core::Temporal& t, const R& r) { append(t, r); }
+    template<core::Record R> void record(const core::Temporal& t, const R& r) { append(t, r); }
 
     // Per-thread, per-(recorder, record-type) buffer. Hoist this lookup out of
     // hot loops (it is a map lookup in the skeleton; the production version
@@ -73,16 +70,15 @@ public:
     // Crucially this is also the ABI boundary: only POD crosses into the engine.
     // gpumem is compiled by nvcc/gcc-11.4 and the engine by gcc-13.2; the old
     // code had that gcc-11.4 inline calling operator[] on a gcc-13.2 std::map.
-    template <core::Record R>
-    void append(const core::Temporal& t, const R& r) {
+    template<core::Record R> void append(const core::Temporal& t, const R& r) {
         static thread_local pcomm_arena* arena = pcomm_engine_arena(
-            core::RecordTrait<R>::type_id,
-            static_cast<std::uint8_t>(core::RecordTrait<R>::kind),
+            core::RecordTrait<R>::type_id, static_cast<std::uint8_t>(core::RecordTrait<R>::kind),
             static_cast<std::uint32_t>(sizeof(Stamped<R>)),
             static_cast<std::uint32_t>(Config::buffer_capacity));
-        if (arena->count == arena->capacity) pcomm_engine_arena_flush(arena);
-        auto* slot = reinterpret_cast<Stamped<R>*>(
-            static_cast<std::byte*>(arena->slots) + std::size_t{arena->count} * arena->stride);
+        if (arena->count == arena->capacity)
+            pcomm_engine_arena_flush(arena);
+        auto* slot = reinterpret_cast<Stamped<R>*>(static_cast<std::byte*>(arena->slots) +
+                                                   std::size_t{arena->count} * arena->stride);
         // NOTE: this does NOT currently clean the padding, and the capture
         // still carries stack residue — verified 2026-07-30, 5000/5000 records
         // in a fresh capture. Zeroing the destination is useless because
@@ -96,7 +92,7 @@ public:
         // uninitialised hole to copy from. See things-to-circle-back-to.md.
         std::memset(static_cast<void*>(slot), 0, sizeof(Stamped<R>));
         slot->temporal = t;
-        slot->payload  = r;
+        slot->payload = r;
         ++arena->count;
     }
 
@@ -129,10 +125,8 @@ public:
 
     // --- time ----------------------------------------------------------------
 
-    core::TimePoint now() const {
-        return {m_cpu_domain, Config::TimestampSource::now()};
-    }
-    core::Temporal now_instant() const { return core::Temporal::instant(now()); }
+    core::TimePoint now() const { return {m_cpu_domain, Config::TimestampSource::now()}; }
+    core::Temporal  now_instant() const { return core::Temporal::instant(now()); }
 
     ISink& sink() { return *m_sink; }
 
@@ -144,11 +138,9 @@ public:
     void drain_thread() { pcomm_engine_drain_thread(); }
 
 private:
-
     ISink*         m_sink;
     core::DomainId m_cpu_domain;
 };
-
 
 // NB deliberately NOT `extern template` any more. It was needed while the
 // Recorder owned state (buffer_store, intern tables) that had to exist once per

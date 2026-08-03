@@ -21,22 +21,24 @@
 
 namespace pcomm::gpumem {
 
-inline core::Handle pc_handle(std::uint32_t instr_index) { return instr_index + 1; }
+inline core::Handle pc_handle(std::uint32_t instr_index) {
+    return instr_index + 1;
+}
 
 // Tracks live device allocations: resolves an address to (device, object).
 // Fed by the backend's alloc callbacks; queried per access on the drain path.
 class AllocRegistry {
 public:
     struct Alloc {
-        std::uint64_t base;
-        std::uint64_t size;
+        std::uint64_t  base;
+        std::uint64_t  size;
         core::DeviceId device;
-        core::Handle object;  // MemObject entity id
+        core::Handle   object;  // MemObject entity id
     };
 
     core::Handle add(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         std::lock_guard lock(m_mutex);
-        auto object = static_cast<core::Handle>(m_allocs.size() + 1);
+        auto            object = static_cast<core::Handle>(m_allocs.size() + 1);
         m_allocs.push_back({base, size, dev, object});
         return object;
     }
@@ -56,7 +58,8 @@ public:
     const Alloc* find(std::uint64_t addr) const {
         std::lock_guard lock(m_mutex);
         for (const auto& a : m_allocs) {
-            if (a.base <= addr && addr < a.base + a.size) return &a;
+            if (a.base <= addr && addr < a.base + a.size)
+                return &a;
         }
         return nullptr;
     }
@@ -75,7 +78,8 @@ public:
 
     void attribute(const attr::RawAccess& a, core::records::GpuAccess& out,
                    rec::Recorder<>&) override {
-        if (const auto* alloc = m_allocs->find(a.address)) out.object = alloc->object;
+        if (const auto* alloc = m_allocs->find(a.address))
+            out.object = alloc->object;
     }
 
 private:
@@ -84,9 +88,7 @@ private:
 
 class RemoteFilter final : public attr::IFilter {
 public:
-    bool keep(const attr::RawAccess& a) const override {
-        return a.run_device != a.mem_device;
-    }
+    bool keep(const attr::RawAccess& a) const override { return a.run_device != a.mem_device; }
 };
 
 class Engine {
@@ -100,8 +102,7 @@ public:
         const Config cfg = Config::from_env();
         // See ibverbs: declare the 700-799 range and our ABI before acquiring.
         if (pcomm_engine_declare_provider("gpumem", core::id_range::gpumem_lo,
-                                          core::id_range::gpumem_hi,
-                                          PCOMM_ENGINE_ABI_VERSION) != 0)
+                                          core::id_range::gpumem_hi, PCOMM_ENGINE_ABI_VERSION) != 0)
             return;
         pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
         auto& rec = recorder();
@@ -122,23 +123,21 @@ public:
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         auto& rec = recorder();
-        auto object = m_allocs.add(base, size, dev);
+        auto  object = m_allocs.add(base, size, dev);
         rec.record(rec.now_instant(),  // lifetime open until free-tracking lands
-                   core::records::MemObject{{}, {}, object, core::kNullHandle,
-                                            {base, size}, dev});
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
     }
 
     // One row per instrumented instruction, at instrumentation time.
-    void on_source_line(std::uint32_t instr_index, std::string_view file,
-                        std::string_view dir, std::uint32_t line) {
-        auto& rec = recorder();
-        std::string path = dir.empty() ? std::string(file)
-                                       : std::string(dir) + "/" + std::string(file);
-        rec.record(core::Temporal::none(),
-                   core::records::SourceLine{{}, {},
-                                             pc_handle(instr_index),
-                                             rec.intern(rec::InternDomain::String, path),
-                                             line});
+    void on_source_line(std::uint32_t instr_index, std::string_view file, std::string_view dir,
+                        std::uint32_t line) {
+        auto&       rec = recorder();
+        std::string path =
+            dir.empty() ? std::string(file) : std::string(dir) + "/" + std::string(file);
+        rec.record(
+            core::Temporal::none(),
+            core::records::SourceLine{
+                {}, {}, pc_handle(instr_index), rec.intern(rec::InternDomain::String, path), line});
     }
 
     // Drain path: the backend hands raw accesses with run_device set and
@@ -149,7 +148,8 @@ public:
     // at NVSHMEM's VA layout, which is what this pipeline no longer contains.
     void process(std::span<attr::RawAccess> batch) {
         for (auto& a : batch) {
-            if (a.mem_device != attr::kUnresolvedDevice) continue;
+            if (a.mem_device != attr::kUnresolvedDevice)
+                continue;
             const auto* alloc = m_allocs.find(a.address);
             a.mem_device = alloc ? alloc->device : a.run_device;
         }
@@ -168,7 +168,7 @@ public:
     }
 
 private:
-    AllocRegistry m_allocs;
+    AllocRegistry                              m_allocs;
     std::unique_ptr<attr::AttributionPipeline> m_pipeline;
 };
 

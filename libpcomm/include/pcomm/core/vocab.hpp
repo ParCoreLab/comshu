@@ -6,7 +6,7 @@
 
 namespace pcomm::core {
 
-using GpuId    = std::uint16_t;
+using GpuId = std::uint16_t;
 using DeviceId = std::uint16_t;
 
 enum class MemOp : std::uint8_t { Load, Store, Atomic, Prefetch };

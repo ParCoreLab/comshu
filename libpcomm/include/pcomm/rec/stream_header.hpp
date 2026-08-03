@@ -48,10 +48,10 @@ struct StreamHeader {
     std::uint64_t      magic{kStreamMagic};
     std::uint16_t      format_version{kStreamFormatVersion};
     core::RecordTypeId type_id{0};
-    std::uint32_t      stride{0};       // bytes per record: sizeof(Stamped<R>)
+    std::uint32_t      stride{0};  // bytes per record: sizeof(Stamped<R>)
     std::uint64_t      schema_hash{kSchemaHash};
     core::RecordKind   kind{core::RecordKind::Event};
-    std::uint8_t       _pad[7]{};       // keep: see above
+    std::uint8_t       _pad[7]{};  // keep: see above
 
     StreamHeader() = default;
     StreamHeader(core::RecordTypeId id, core::RecordKind k, std::uint32_t bytes_per_record)
@@ -77,8 +77,8 @@ inline constexpr std::uint64_t kBlobMagic = 0x0A424F4C42435089ull;
 struct BlobHeader {
     std::uint64_t magic{kBlobMagic};
     std::uint16_t format_version{kStreamFormatVersion};
-    std::uint8_t  _pad[6]{};        // keep: explicit, see above
-    std::uint64_t byte_count{0};    // payload bytes following this header
+    std::uint8_t  _pad[6]{};      // keep: explicit, see above
+    std::uint64_t byte_count{0};  // payload bytes following this header
     std::uint64_t schema_hash{kSchemaHash};
 };
 
@@ -99,8 +99,7 @@ inline const char* blob_header_error(const BlobHeader& h, std::uint64_t actual_b
 // Why a header is not enough on its own, and what a reader must still do:
 // the fields say what the file claims to be, and this says whether the claim
 // is one this build can honour. Returns nullptr when it is.
-inline const char* stream_header_error(const StreamHeader& h,
-                                       core::RecordTypeId expected_type,
+inline const char* stream_header_error(const StreamHeader& h, core::RecordTypeId expected_type,
                                        std::uint32_t expected_stride) {
     if (h.magic != kStreamMagic)
         return "not a pcomm stream (bad magic) — a pre-format-1 capture has no "

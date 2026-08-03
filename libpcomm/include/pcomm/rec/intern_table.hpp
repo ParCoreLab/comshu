@@ -32,15 +32,15 @@ enum class InternDomain : std::uint8_t {
     Count_,  // number of domains, for array sizing
 };
 
-inline constexpr std::size_t kInternDomainCount =
-    static_cast<std::size_t>(InternDomain::Count_);
+inline constexpr std::size_t kInternDomainCount = static_cast<std::size_t>(InternDomain::Count_);
 
 // One table per (thread, domain). Handles are 1-based; 0 stays the null handle.
 class InternTable {
 public:
     core::Handle intern(std::string_view value) {
         auto it = m_by_string.find(value);
-        if (it != m_by_string.end()) return it->second;
+        if (it != m_by_string.end())
+            return it->second;
         m_strings.emplace_back(value);
         auto handle = next_handle();
         m_string_handles.push_back(handle);
@@ -50,7 +50,8 @@ public:
 
     core::Handle intern(std::uint64_t key) {
         auto [it, inserted] = m_by_key.try_emplace(key, 0);
-        if (inserted) it->second = next_handle();
+        if (inserted)
+            it->second = next_handle();
         return it->second;
     }
 
@@ -63,7 +64,7 @@ public:
     // into a string domain would have shifted every subsequent string onto the
     // wrong handle, with nothing to notice: the dictionary stays well-formed and
     // every affected record simply resolves to the wrong text.
-    const std::deque<std::string>& strings() const { return m_strings; }
+    const std::deque<std::string>&  strings() const { return m_strings; }
     const std::deque<core::Handle>& string_handles() const { return m_string_handles; }
     const std::unordered_map<std::uint64_t, core::Handle>& keys() const { return m_by_key; }
 
@@ -74,10 +75,10 @@ private:
     // std::deque (not vector): element references stay valid across growth, so
     // the string_view keys in m_by_string never dangle. (vector reallocation
     // invalidated them — passed in Release via SSO luck, aborted in Debug.)
-    std::deque<std::string> m_strings;  // stable storage for string_view keys
+    std::deque<std::string>  m_strings;         // stable storage for string_view keys
     std::deque<core::Handle> m_string_handles;  // parallel to m_strings
     std::unordered_map<std::string_view, core::Handle> m_by_string;
-    std::unordered_map<std::uint64_t, core::Handle> m_by_key;
+    std::unordered_map<std::uint64_t, core::Handle>    m_by_key;
 };
 
 }  // namespace pcomm::rec

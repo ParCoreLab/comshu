@@ -19,7 +19,7 @@
 struct SymbolLookupCtx {
     const char* lib_pattern;
     const char* symbol_name;
-    void* result;
+    void*       result;
 };
 
 static uint32_t gnu_hash(const char* name) {
@@ -30,9 +30,9 @@ static uint32_t gnu_hash(const char* name) {
     return h;
 }
 
-static void* lookup_symbol_gnu_hash(const ElfW(Sym) * symtab, const char* strtab, const uint32_t* gnu_hash_table,
-                                    const ElfW(Half) * versym, const char* name, ElfW(Addr) load_bias) {
-
+static void* lookup_symbol_gnu_hash(const ElfW(Sym) * symtab, const char* strtab,
+                                    const uint32_t* gnu_hash_table, const ElfW(Half) * versym,
+                                    const char*     name, ElfW(Addr) load_bias) {
     const uint32_t namehash = gnu_hash(name);
 
     const uint32_t nbuckets = gnu_hash_table[0];
@@ -56,7 +56,6 @@ static void* lookup_symbol_gnu_hash(const ElfW(Sym) * symtab, const char* strtab
             // Skip undefined symbols (imported references, not exports)
             if (sym->st_shndx != SHN_UNDEF) {
                 if (strcmp(strtab + sym->st_name, name) == 0) {
-
                     // Symbol Versioning Check
                     // If DT_VERSYM exists, check if the 15th bit (0x8000) is set.
                     // If it is set, this is a hidden/compatibility symbol (e.g., @GLIBC_2.2.5).
@@ -74,7 +73,7 @@ static void* lookup_symbol_gnu_hash(const ElfW(Sym) * symtab, const char* strtab
                         if ((sym->st_info & 0xf) == STT_GNU_IFUNC) {
                             // If it's an IFUNC, the address points to a resolver function.
                             // We must execute it to get the actual function pointer.
-                            auto resolver = reinterpret_cast<void* (*) ()>(sym_addr);
+                            auto resolver = reinterpret_cast<void* (*)()>(sym_addr);
                             return resolver();
                         }
 
@@ -110,7 +109,7 @@ static int dl_iterate_callback(dl_phdr_info* info, size_t /*size*/, void* data) 
     }
 
     const ElfW(Sym)* symtab = nullptr;
-    const char* strtab = nullptr;
+    const char*     strtab = nullptr;
     const uint32_t* gnu_hash = nullptr;
     const ElfW(Half)* versym = nullptr;
 
@@ -146,10 +145,11 @@ static int dl_iterate_callback(dl_phdr_info* info, size_t /*size*/, void* data) 
     }
 
     // Notice we pass info->dlpi_addr down to handle the load bias inside the lookup
-    void* sym = lookup_symbol_gnu_hash(symtab, strtab, gnu_hash, versym, ctx->symbol_name, info->dlpi_addr);
+    void* sym =
+        lookup_symbol_gnu_hash(symtab, strtab, gnu_hash, versym, ctx->symbol_name, info->dlpi_addr);
     if (sym) {
         ctx->result = sym;
-        return 1; // Stop iterating, we found it
+        return 1;  // Stop iterating, we found it
     }
     return 0;
 }
@@ -164,10 +164,10 @@ extern void* find_symbol_in_lib(const char* lib_pattern, const char* symbol_name
 // RTLD_NEXT emulation
 // ================================================================
 struct NextSymbolCtx {
-    void* caller_addr;
+    void*       caller_addr;
     const char* symbol_name;
-    void* result;
-    bool passed_caller; // true once we've walked past the caller's library
+    void*       result;
+    bool        passed_caller;  // true once we've walked past the caller's library
 };
 
 // Check if an address falls within any PT_LOAD segment of this library
@@ -193,7 +193,7 @@ static int dl_iterate_next_callback(dl_phdr_info* info, size_t /*size*/, void* d
         if (addr_in_library(info, ctx->caller_addr)) {
             ctx->passed_caller = true;
         }
-        return 0; // keep iterating
+        return 0;  // keep iterating
     }
 
     // Search subsequent libraries for the symbol
@@ -209,7 +209,7 @@ static int dl_iterate_next_callback(dl_phdr_info* info, size_t /*size*/, void* d
     }
 
     const ElfW(Sym)* symtab = nullptr;
-    const char* strtab = nullptr;
+    const char*     strtab = nullptr;
     const uint32_t* gnu_hash_table = nullptr;
     const ElfW(Half)* versym = nullptr;
 
@@ -243,7 +243,8 @@ static int dl_iterate_next_callback(dl_phdr_info* info, size_t /*size*/, void* d
         return 0;
     }
 
-    void* sym = lookup_symbol_gnu_hash(symtab, strtab, gnu_hash_table, versym, ctx->symbol_name, info->dlpi_addr);
+    void* sym = lookup_symbol_gnu_hash(symtab, strtab, gnu_hash_table, versym, ctx->symbol_name,
+                                       info->dlpi_addr);
     if (sym) {
         ctx->result = sym;
         return 1;

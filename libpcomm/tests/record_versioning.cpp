@@ -67,11 +67,12 @@ int g_fail = 0;
 
 void expect(bool ok, const char* what) {
     std::printf("  [%s] %s\n", ok ? "ok " : "XX ", what);
-    if (!ok) g_fail = 1;
+    if (!ok)
+        g_fail = 1;
 }
 
 // Write `n` records of one type into a capture directory, through the real sink.
-template <core::Record R, class Fill>
+template<core::Record R, class Fill>
 void write_stream(const fs::path& dir, std::size_t n, Fill fill) {
     std::vector<Stamped<R>> recs(n);
     for (std::size_t i = 0; i < n; ++i) {
@@ -80,17 +81,14 @@ void write_stream(const fs::path& dir, std::size_t n, Fill fill) {
     }
     rec::FileSink sink(dir);
     sink.submit({core::RecordTrait<R>::type_id, core::RecordTrait<R>::kind,
-                 reinterpret_cast<const std::byte*>(recs.data()),
-                 recs.size() * sizeof(Stamped<R>), recs.size()});
+                 reinterpret_cast<const std::byte*>(recs.data()), recs.size() * sizeof(Stamped<R>),
+                 recs.size()});
 }
 
 // Every version of the demo family in one directory, as v2. This is the shape
 // a real reader takes: one call site per family, one upgrade per step.
-std::vector<Stamped<demo::ThingV2>> load_things(const fs::path& dir,
-                                                rec::StreamDiagnostic diag) {
-    auto load = [&]<class R>() {
-        return rec::load_stream<R>(rec::stream_path<R>(dir), diag);
-    };
+std::vector<Stamped<demo::ThingV2>> load_things(const fs::path& dir, rec::StreamDiagnostic diag) {
+    auto load = [&]<class R>() { return rec::load_stream<R>(rec::stream_path<R>(dir), diag); };
     std::vector<Stamped<demo::ThingV2>> out;
     rec::load_version<demo::ThingV2, demo::ThingV1>(load, demo::upgrade_v1, out);
     rec::load_current<demo::ThingV2>(load, out);
@@ -98,7 +96,7 @@ std::vector<Stamped<demo::ThingV2>> load_things(const fs::path& dir,
 }
 
 std::vector<std::string> g_diags;
-void collect(const fs::path& p, const std::string& msg) {
+void                     collect(const fs::path& p, const std::string& msg) {
     g_diags.push_back(p.filename().string() + ": " + msg);
 }
 
@@ -107,8 +105,8 @@ void collect(const fs::path& p, const std::string& msg) {
 int main() {
     std::printf("record versioning: one family, two schema versions\n");
 
-    const auto root = fs::temp_directory_path() /
-                      ("pcomm-versioning-" + std::to_string(::getpid()));
+    const auto root =
+        fs::temp_directory_path() / ("pcomm-versioning-" + std::to_string(::getpid()));
     fs::remove_all(root);
     const auto old_capture = root / "written-by-v1";
     const auto new_capture = root / "written-by-v2";
@@ -137,8 +135,7 @@ int main() {
 
         bool values_ok = true, temporal_ok = true, device_ok = true;
         for (std::size_t i = 0; i < things.size(); ++i) {
-            values_ok &= things[i].payload.id == i + 1 &&
-                         things[i].payload.value == 100 + i;
+            values_ok &= things[i].payload.id == i + 1 && things[i].payload.value == 100 + i;
             temporal_ok &= things[i].temporal.a.ticks == 1000 + i &&
                            things[i].temporal.kind == core::TimeKind::Instant;
             device_ok &= things[i].payload.device == demo::kDeviceUnknown;
@@ -165,10 +162,13 @@ int main() {
     {
         const auto mixed = root / "mixed";
         write_stream<demo::ThingV1>(mixed, 2, [](demo::ThingV1& r, std::size_t i) {
-            r.id = static_cast<core::Handle>(i + 1); r.value = 10;
+            r.id = static_cast<core::Handle>(i + 1);
+            r.value = 10;
         });
         write_stream<demo::ThingV2>(mixed, 4, [](demo::ThingV2& r, std::size_t i) {
-            r.id = static_cast<core::Handle>(i + 1); r.value = 20; r.device = 3;
+            r.id = static_cast<core::Handle>(i + 1);
+            r.value = 20;
+            r.device = 3;
         });
         g_diags.clear();
         auto things = load_things(mixed, collect);
@@ -176,8 +176,7 @@ int main() {
         std::size_t unknown = 0, known = 0;
         for (const auto& t : things)
             (t.payload.device == demo::kDeviceUnknown ? unknown : known)++;
-        expect(unknown == 2 && known == 4,
-               "and each record keeps what its own version knew");
+        expect(unknown == 2 && known == 4, "and each record keeps what its own version knew");
     }
 
     // --- a stream from a build newer than this one ----------------------------
@@ -187,13 +186,15 @@ int main() {
     {
         const auto future = root / "written-by-v3";
         write_stream<demo::ThingV2>(future, 1, [](demo::ThingV2& r, std::size_t) {
-            r.id = 1; r.value = 1; r.device = 0;
+            r.id = 1;
+            r.value = 1;
+            r.device = 0;
         });
         // Same bytes, a type_id this build has never heard of.
         fs::rename(future / "901.pcs", future / "902.pcs");
-        {   // rewrite the header's type_id so the file is self-consistently v3
+        {  // rewrite the header's type_id so the file is self-consistently v3
             rec::StreamHeader h{};
-            std::FILE* f = std::fopen((future / "902.pcs").c_str(), "r+b");
+            std::FILE*        f = std::fopen((future / "902.pcs").c_str(), "r+b");
             std::fread(&h, sizeof h, 1, f);
             h.type_id = 902;
             std::fseek(f, 0, SEEK_SET);
@@ -205,9 +206,9 @@ int main() {
         auto things = load_things(future, collect);
         expect(things.empty(), "a version this build cannot name yields no rows");
 
-        auto unhandled = rec::unhandled_streams(
-            future, {core::RecordTrait<demo::ThingV1>::type_id,
-                     core::RecordTrait<demo::ThingV2>::type_id});
+        auto unhandled =
+            rec::unhandled_streams(future, {core::RecordTrait<demo::ThingV1>::type_id,
+                                            core::RecordTrait<demo::ThingV2>::type_id});
         expect(unhandled.size() == 1 && unhandled[0].type_id == 902,
                "but the reader reports it instead of exporting a short table");
         if (unhandled.size() == 1)
@@ -216,15 +217,15 @@ int main() {
 
     // --- a known stream is not reported as unhandled --------------------------
     {
-        auto unhandled = rec::unhandled_streams(
-            new_capture, {core::RecordTrait<demo::ThingV1>::type_id,
-                          core::RecordTrait<demo::ThingV2>::type_id});
+        auto unhandled =
+            rec::unhandled_streams(new_capture, {core::RecordTrait<demo::ThingV1>::type_id,
+                                                 core::RecordTrait<demo::ThingV2>::type_id});
         expect(unhandled.empty(), "a stream this build does handle is not flagged");
     }
 
     fs::remove_all(root);
-    std::printf("%s\n", g_fail
-        ? "FAIL"
-        : "PASS — captures from both sides of a version bump read into one table");
+    std::printf("%s\n",
+                g_fail ? "FAIL"
+                       : "PASS — captures from both sides of a version bump read into one table");
     return g_fail;
 }

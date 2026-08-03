@@ -46,7 +46,7 @@ struct FamilyDiagnostic {
 // `Newest` is the current record type; `Old` is the version on disk. `Upgrade`
 // maps one Old to one Newest — Stamped, because the temporal stamp carries
 // forward untouched and a version bump must never silently restamp a record.
-template <class Newest, class Old, class Loader, class Upgrade>
+template<class Newest, class Old, class Loader, class Upgrade>
 std::size_t load_version(const Loader& load, const Upgrade& upgrade,
                          std::vector<Stamped<Newest>>& out) {
     static_assert(core::RecordTrait<Old>::version <= core::RecordTrait<Newest>::version,
@@ -60,15 +60,15 @@ std::size_t load_version(const Loader& load, const Upgrade& upgrade,
     auto olds = load.template operator()<Old>();
     for (const auto& o : olds) {
         Stamped<Newest> n{};
-        n.temporal = o.temporal;      // carried, never recomputed
-        n.payload  = upgrade(o.payload);
+        n.temporal = o.temporal;  // carried, never recomputed
+        n.payload = upgrade(o.payload);
         out.push_back(n);
     }
     return olds.size();
 }
 
 // The identity step, for the newest version: it is already what it should be.
-template <class Newest, class Loader>
+template<class Newest, class Loader>
 std::size_t load_current(const Loader& load, std::vector<Stamped<Newest>>& out) {
     auto cur = load.template operator()<Newest>();
     out.insert(out.end(), cur.begin(), cur.end());
@@ -84,31 +84,32 @@ std::size_t load_current(const Loader& load, std::vector<Stamped<Newest>>& out) 
 // export looks complete. That is the failure mode the whole schema effort
 // exists to remove, arriving one level up — so a reader must be able to say
 // "there is data here I cannot represent" out loud.
-inline std::vector<FamilyDiagnostic> unhandled_streams(
-    const std::filesystem::path& rank_dir,
-    const std::vector<core::RecordTypeId>& known) {
+inline std::vector<FamilyDiagnostic>
+unhandled_streams(const std::filesystem::path&           rank_dir,
+                  const std::vector<core::RecordTypeId>& known) {
     namespace fs = std::filesystem;
     std::vector<FamilyDiagnostic> out;
-    std::error_code ec;
+    std::error_code               ec;
     for (const auto& entry : fs::directory_iterator(rank_dir, ec)) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".pcs") continue;
+        if (!entry.is_regular_file() || entry.path().extension() != ".pcs")
+            continue;
 
-        StreamHeader h{};
+        StreamHeader  h{};
         std::ifstream in(entry.path(), std::ios::binary);
         if (!in.read(reinterpret_cast<char*>(&h), sizeof h) || h.magic != kStreamMagic) {
-            out.push_back({0, entry.path().filename().string() +
-                              ": not a format-1 stream — re-capture it"});
+            out.push_back(
+                {0, entry.path().filename().string() + ": not a format-1 stream — re-capture it"});
             continue;
         }
-        if (std::find(known.begin(), known.end(), h.type_id) != known.end()) continue;
+        if (std::find(known.begin(), known.end(), h.type_id) != known.end())
+            continue;
 
         const auto payload = entry.file_size() - sizeof(StreamHeader);
-        out.push_back({h.type_id,
-                       entry.path().filename().string() + ": type " +
-                           std::to_string(h.type_id) + " is unknown to this build (" +
-                           std::to_string(h.stride ? payload / h.stride : 0) +
-                           " records ignored) — a capture from a newer schema, or "
-                           "a provider this build does not know"});
+        out.push_back({h.type_id, entry.path().filename().string() + ": type " +
+                                      std::to_string(h.type_id) + " is unknown to this build (" +
+                                      std::to_string(h.stride ? payload / h.stride : 0) +
+                                      " records ignored) — a capture from a newer schema, or "
+                                      "a provider this build does not know"});
     }
     return out;
 }

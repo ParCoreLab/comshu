@@ -28,9 +28,9 @@ enum class TimeKind : std::uint8_t {
 // Layout and size are unchanged (16 B), and this is exactly how
 // libpcomm/schema/pcomm.fbs describes it.
 struct TimePoint {
-    DomainId      domain{0};
-    std::uint8_t  _pad[6]{};   // keep: see above
-    Ticks         ticks{0};
+    DomainId     domain{0};
+    std::uint8_t _pad[6]{};  // keep: see above
+    Ticks        ticks{0};
 
     // The constructor exists so the explicit padding member does not change
     // how callers write these: `{domain, ticks}` still works. Still
@@ -45,7 +45,7 @@ static_assert(std::is_standard_layout_v<TimePoint>);
 // pre-converted — alignment is a reader pass, raw streams are immutable.
 struct Temporal {
     TimeKind      kind{TimeKind::None};
-    std::uint8_t  _pad[7]{};   // explicit + zeroed, see TimePoint
+    std::uint8_t  _pad[7]{};  // explicit + zeroed, see TimePoint
     TimePoint     a{};        // instant / interval.start / window.lo / counter.t / lifetime.from
     TimePoint     b{};        // interval.end / window.hi / lifetime.to (open if zeroed)
     std::uint64_t value{0};   // counter value
@@ -54,7 +54,9 @@ struct Temporal {
     static Temporal instant(TimePoint t) { return {TimeKind::Instant, {}, t, {}, 0}; }
     static Temporal interval(TimePoint a, TimePoint b) { return {TimeKind::Interval, {}, a, b, 0}; }
     static Temporal window(TimePoint lo, TimePoint hi) { return {TimeKind::Window, {}, lo, hi, 0}; }
-    static Temporal counter(TimePoint t, std::uint64_t v) { return {TimeKind::Counter, {}, t, {}, v}; }
+    static Temporal counter(TimePoint t, std::uint64_t v) {
+        return {TimeKind::Counter, {}, t, {}, v};
+    }
 };
 
 static_assert(sizeof(Temporal) == 48);

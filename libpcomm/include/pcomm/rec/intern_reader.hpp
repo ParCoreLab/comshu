@@ -49,7 +49,8 @@ public:
     // rather than a plausible zero when the handle is unknown.
     bool value(InternDomain d, core::Handle h, std::uint64_t& out) const {
         auto it = m_keys.find(key(d, h));
-        if (it == m_keys.end()) return false;
+        if (it == m_keys.end())
+            return false;
         out = it->second;
         return true;
     }
@@ -61,31 +62,32 @@ public:
     // dictionary is whatever could be resolved, so a partial failure still
     // exports the rest of the capture — but never quietly.
     static InternDictionary load(const std::filesystem::path& rank_dir,
-                                 StreamDiagnostic diag = warn_to_stderr) {
+                                 StreamDiagnostic             diag = warn_to_stderr) {
         namespace fs = std::filesystem;
         InternDictionary dict;
 
         for (const auto& k : load_stream<core::records::InternKey>(
                  stream_path<core::records::InternKey>(rank_dir), diag))
-            dict.m_keys.emplace(key(static_cast<InternDomain>(k.payload.domain),
-                                    k.payload.handle), k.payload.key);
+            dict.m_keys.emplace(key(static_cast<InternDomain>(k.payload.domain), k.payload.handle),
+                                k.payload.key);
 
         const auto index = load_stream<core::records::InternString>(
             stream_path<core::records::InternString>(rank_dir), diag);
-        if (index.empty()) return dict;
+        if (index.empty())
+            return dict;
 
-        const auto blob_path = rank_dir / "intern-blob.bin";
+        const auto      blob_path = rank_dir / "intern-blob.bin";
         std::error_code ec;
-        const auto size = fs::file_size(blob_path, ec);
+        const auto      size = fs::file_size(blob_path, ec);
         if (ec) {
             diag(blob_path, std::to_string(index.size()) +
-                     " interned strings are indexed but intern-blob.bin is missing — "
-                     "every string in this rank is unresolvable");
+                                " interned strings are indexed but intern-blob.bin is missing — "
+                                "every string in this rank is unresolvable");
             return dict;
         }
 
         std::ifstream in(blob_path, std::ios::binary);
-        BlobHeader bh{};
+        BlobHeader    bh{};
         if (size < sizeof bh || !in.read(reinterpret_cast<char*>(&bh), sizeof bh)) {
             diag(blob_path, "too short to hold a blob header");
             return dict;
@@ -96,10 +98,8 @@ public:
         }
         if (bh.schema_hash != kSchemaHash) {
             char buf[128];
-            std::snprintf(buf, sizeof buf,
-                          "written by schema %016llx, this build has %016llx",
-                          (unsigned long long)bh.schema_hash,
-                          (unsigned long long)kSchemaHash);
+            std::snprintf(buf, sizeof buf, "written by schema %016llx, this build has %016llx",
+                          (unsigned long long)bh.schema_hash, (unsigned long long)kSchemaHash);
             diag(blob_path, buf);
         }
 
@@ -110,15 +110,18 @@ public:
         for (const auto& s : index) {
             const std::uint64_t off = s.payload.offset;
             const std::uint64_t len = s.payload.length;
-            if (off + len > blob.size()) { ++out_of_range; continue; }
+            if (off + len > blob.size()) {
+                ++out_of_range;
+                continue;
+            }
             dict.m_strings.emplace(
                 key(static_cast<InternDomain>(s.payload.domain), s.payload.handle),
                 blob.substr(static_cast<std::size_t>(off), static_cast<std::size_t>(len)));
         }
         if (out_of_range)
             diag(blob_path, std::to_string(out_of_range) +
-                     " intern entries point past the end of the blob — the index and "
-                     "the blob are from different runs");
+                                " intern entries point past the end of the blob — the index and "
+                                "the blob are from different runs");
         return dict;
     }
 

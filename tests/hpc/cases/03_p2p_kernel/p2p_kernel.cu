@@ -13,22 +13,32 @@
 #include <vector>
 #include <cuda_runtime.h>
 
-#define CK(x) do{ cudaError_t e=(x); if(e!=cudaSuccess){ \
-  fprintf(stderr,"cuda %s:%d: %s\n",__FILE__,__LINE__,cudaGetErrorString(e)); exit(1);} }while(0)
+#define CK(x)                                                                                      \
+    do {                                                                                           \
+        cudaError_t e = (x);                                                                       \
+        if (e != cudaSuccess) {                                                                    \
+            fprintf(stderr, "cuda %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(e));        \
+            exit(1);                                                                               \
+        }                                                                                          \
+    } while (0)
 
 // peer[] lives on the neighbor GPU; local[] on this one. The store to peer[i]
 // crosses NVLink; the load of local[i] stays home.
 __global__ void peer_rw(int* peer, const int* local, int n, int add) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) peer[i] = local[i] + add;
+    if (i < n)
+        peer[i] = local[i] + add;
 }
 
 int main(int argc, char** argv) {
-    int n     = argc > 1 ? atoi(argv[1]) : 4096;   // elements per GPU
+    int n = argc > 1 ? atoi(argv[1]) : 4096;  // elements per GPU
     int iters = argc > 2 ? atoi(argv[2]) : 4;
     int ngpu = 0;
     CK(cudaGetDeviceCount(&ngpu));
-    if (ngpu < 2) { fprintf(stderr, "need >= 2 GPUs, have %d\n", ngpu); return 1; }
+    if (ngpu < 2) {
+        fprintf(stderr, "need >= 2 GPUs, have %d\n", ngpu);
+        return 1;
+    }
 
     std::vector<int*> buf(ngpu);
     for (int d = 0; d < ngpu; ++d) {
@@ -36,8 +46,10 @@ int main(int argc, char** argv) {
         CK(cudaMalloc(&buf[d], n * sizeof(int)));
         CK(cudaMemset(buf[d], 0, n * sizeof(int)));
         int peer = (d + 1) % ngpu;
-        int can = 0; CK(cudaDeviceCanAccessPeer(&can, d, peer));
-        if (can) cudaDeviceEnablePeerAccess(peer, 0);  // idempotent-safe
+        int can = 0;
+        CK(cudaDeviceCanAccessPeer(&can, d, peer));
+        if (can)
+            cudaDeviceEnablePeerAccess(peer, 0);  // idempotent-safe
     }
 
     dim3 block(256), grid((n + 255) / 256);
@@ -47,9 +59,11 @@ int main(int argc, char** argv) {
             int peer = (d + 1) % ngpu;
             peer_rw<<<grid, block>>>(buf[peer], buf[d], n, it);  // store->peer, load<-local
         }
-    for (int d = 0; d < ngpu; ++d) { CK(cudaSetDevice(d)); CK(cudaDeviceSynchronize()); }
+    for (int d = 0; d < ngpu; ++d) {
+        CK(cudaSetDevice(d));
+        CK(cudaDeviceSynchronize());
+    }
 
-    printf("p2p_kernel OK: %d GPUs, %d elems, %d iters (ring peer writes)\n",
-           ngpu, n, iters);
+    printf("p2p_kernel OK: %d GPUs, %d elems, %d iters (ring peer writes)\n", ngpu, n, iters);
     return 0;
 }

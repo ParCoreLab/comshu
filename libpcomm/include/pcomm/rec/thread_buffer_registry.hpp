@@ -43,7 +43,8 @@ public:
     // writes, so concurrent drains from different buffers are safe.
     void drain_all() {
         std::lock_guard lock(m_mutex);
-        for (IDrainable* b : m_buffers) b->drain();
+        for (IDrainable* b : m_buffers)
+            b->drain();
     }
 
     std::size_t size() {
@@ -64,7 +65,7 @@ public:
     }
 
 private:
-    std::mutex m_mutex;
+    std::mutex               m_mutex;
     std::vector<IDrainable*> m_buffers;
 };
 

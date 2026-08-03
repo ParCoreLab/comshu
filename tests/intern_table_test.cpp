@@ -19,9 +19,9 @@
 
 #include "pcomm/rec/intern_table.hpp"
 
-using pcomm::rec::InternTable;
 using pcomm::core::Handle;
 using pcomm::core::kNullHandle;
+using pcomm::rec::InternTable;
 
 namespace {
 
@@ -29,7 +29,8 @@ int g_fail = 0;
 
 void expect(bool ok, const char* what) {
     std::printf("  [%s] %s\n", ok ? "ok " : "XX ", what);
-    if (!ok) g_fail = 1;
+    if (!ok)
+        g_fail = 1;
 }
 
 }  // namespace
@@ -40,17 +41,17 @@ int main() {
     // --- identity ------------------------------------------------------------
     {
         InternTable t;
-        const auto a = t.intern("foo.cu");
-        const auto b = t.intern("bar.cu");
-        const auto c = t.intern("foo.cu");
+        const auto  a = t.intern("foo.cu");
+        const auto  b = t.intern("bar.cu");
+        const auto  c = t.intern("foo.cu");
         expect(a == c, "the same string interns to the same handle");
         expect(a != b, "different strings get different handles");
         expect(t.size() == 2, "and re-interning adds no entry");
     }
     {
         InternTable t;
-        const auto a = t.intern(std::uint64_t{0x1f80});
-        const auto b = t.intern(std::uint64_t{0x1f81});
+        const auto  a = t.intern(std::uint64_t{0x1f80});
+        const auto  b = t.intern(std::uint64_t{0x1f81});
         expect(a == t.intern(std::uint64_t{0x1f80}), "same for numeric keys");
         expect(a != b && t.size() == 2, "distinct keys, two entries");
     }
@@ -73,9 +74,9 @@ int main() {
     // just resolves to the wrong text.
     {
         InternTable t;
-        const auto s1 = t.intern("first");
-        const auto k1 = t.intern(std::uint64_t{111});
-        const auto s2 = t.intern("second");
+        const auto  s1 = t.intern("first");
+        const auto  k1 = t.intern(std::uint64_t{111});
+        const auto  s2 = t.intern("second");
         expect(s1 == 1 && k1 == 2 && s2 == 3,
                "strings and keys draw from one counter, in call order");
         expect(t.strings().size() == 2 && t.string_handles().size() == 2,
@@ -97,16 +98,16 @@ int main() {
     // against freed memory, misses, and issues a second handle for a string that
     // is already there — so the count grows and the handle changes.
     {
-        InternTable t;
-        constexpr int kN = 2000;
+        InternTable         t;
+        constexpr int       kN = 2000;
         std::vector<Handle> handles;
         handles.reserve(kN);
         for (int i = 0; i < kN; ++i) {
             // Long enough that no small-string optimisation keeps the bytes
             // inside the std::string object, so the view really points at heap
             // storage that a vector would have moved.
-            handles.push_back(t.intern("a-deliberately-long-interned-name-well-past-SSO-" +
-                                       std::to_string(i)));
+            handles.push_back(
+                t.intern("a-deliberately-long-interned-name-well-past-SSO-" + std::to_string(i)));
         }
         expect(t.size() == kN, "every distinct string is stored once");
 
@@ -128,8 +129,8 @@ int main() {
     // --- prefixes, and the NUL trap -----------------------------------------
     {
         InternTable t;
-        const auto a = t.intern("kernel");
-        const auto b = t.intern("kernel_name");
+        const auto  a = t.intern("kernel");
+        const auto  b = t.intern("kernel_name");
         expect(a != b && t.size() == 2, "a prefix is a different string");
 
         // A char* literal reaches string_view through the strlen constructor, so
@@ -154,7 +155,9 @@ int main() {
     // --- insertion order is what the writer serialises ----------------------
     {
         InternTable t;
-        t.intern("one"); t.intern("two"); t.intern("three");
+        t.intern("one");
+        t.intern("two");
+        t.intern("three");
         const auto& s = t.strings();
         expect(s.size() == 3 && s[0] == "one" && s[1] == "two" && s[2] == "three",
                "strings() yields insertion order, which is the order the blob is "

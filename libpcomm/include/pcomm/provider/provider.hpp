@@ -23,16 +23,16 @@ struct ProviderInfo {
 // passed through env by the pcomm launcher as PCOMM_* variables).
 struct ProviderConfig {
     std::string_view output_dir;
-    int  rank{0};
-    bool verbose{false};
+    int              rank{0};
+    bool             verbose{false};
 };
 
 class IProvider {
 public:
     virtual ~IProvider() = default;
     virtual ProviderInfo info() const = 0;
-    virtual bool init(const ProviderConfig&, rec::Recorder<>&) = 0;
-    virtual void shutdown() = 0;
+    virtual bool         init(const ProviderConfig&, rec::Recorder<>&) = 0;
+    virtual void         shutdown() = 0;
 };
 
 }  // namespace pcomm::provider
@@ -40,12 +40,12 @@ public:
 // Each provider .so exports exactly these two symbols:
 //   extern "C" pcomm::provider::IProvider* pcomm_create_provider();
 //   extern "C" std::uint32_t               pcomm_abi_version();
-#define PCOMM_EXPORT_PROVIDER(ProviderClass)                          \
-    extern "C" ::pcomm::provider::IProvider* pcomm_create_provider() {\
-        return new ProviderClass();                                   \
-    }                                                                 \
-    extern "C" std::uint32_t pcomm_abi_version() {                    \
-        return ::pcomm::provider::kAbiVersion;                        \
+#define PCOMM_EXPORT_PROVIDER(ProviderClass)                                                       \
+    extern "C" ::pcomm::provider::IProvider* pcomm_create_provider() {                             \
+        return new ProviderClass();                                                                \
+    }                                                                                              \
+    extern "C" std::uint32_t pcomm_abi_version() {                                                 \
+        return ::pcomm::provider::kAbiVersion;                                                     \
     }
 
 // Absolute path of the loaded libpcomm_engine.so, or nullptr if it can't be
