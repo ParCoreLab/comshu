@@ -31,12 +31,15 @@ class IbModifyQp(object):
     # IbModifyQp
     def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(60))
     # IbModifyQp
-    def State(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
+    def SrcLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
+    # IbModifyQp
+    def State(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(68))
 
-def CreateIbModifyQp(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, qp, qpNum, destQpNum, destLid, state):
+def CreateIbModifyQp(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, qp, qpNum, destQpNum, destLid, srcLid, state):
     builder.Prep(8, 72)
-    builder.Pad(7)
+    builder.Pad(3)
     builder.PrependUint8(state)
+    builder.PrependUint32(srcLid)
     builder.PrependUint32(destLid)
     builder.PrependUint32(destQpNum)
     builder.PrependUint32(qpNum)

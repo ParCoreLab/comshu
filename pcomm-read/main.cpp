@@ -201,11 +201,13 @@ struct Table<ibr::IbQueuePair> {
 template <>
 struct Table<ibr::IbModifyQp> {
     static constexpr const char* name = "ib_modify_qp";
-    static constexpr const char* cols = "ticks,qp,qp_num,dest_qp_num,dest_lid,state";
+    static constexpr const char* cols =
+        "ticks,qp,qp_num,dest_qp_num,dest_lid,src_lid,state";
     static void row(std::FILE* f, const Stamped<ibr::IbModifyQp>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
                      s.payload.qp, s.payload.qp_num, s.payload.dest_qp_num,
-                     s.payload.dest_lid, qp_state_name(s.payload.state).c_str());
+                     s.payload.dest_lid, s.payload.src_lid,
+                     qp_state_name(s.payload.state).c_str());
     }
 };
 
@@ -316,8 +318,17 @@ std::vector<RankDir> scan_ranks(const fs::path& root) {
 // below pick out the types that carry graph information, the template swallows
 // the rest.
 struct CsvAgg {
-    std::unordered_map<std::uint32_t, int> qp_owner;          // qp_num -> rank
-    std::map<std::pair<int, std::uint32_t>, std::uint32_t> rtr_dest;  // (rank,qp_num)->dest_qp_num
+    // (lid, qp_num) -> rank. Keyed on the PAIR, not on qp_num: qp_num is
+    // allocated per HCA, so two ranks on different nodes routinely draw the
+    // same one — 199 collisions in one 8-rank NCCL capture (job 44139911). A
+    // qp_num-keyed map resolved every colliding peer to whichever rank was
+    // scanned last, producing impossible self-edges (0->0, 3->3) and a peer set
+    // of {0,2,3,6} for eight ranks. qp_num IS unique within one HCA, so adding
+    // the LID makes the key exact rather than merely better.
+    std::map<std::pair<std::uint32_t, std::uint32_t>, int> qp_owner;
+    // (rank, qp_num) -> (dest_lid, dest_qp_num) from the RTR transition.
+    std::map<std::pair<int, std::uint32_t>,
+             std::pair<std::uint32_t, std::uint32_t>> rtr_dest;
     std::map<std::pair<int, std::uint32_t>, std::pair<long, long>> send_by_qp;  // (rank,qp_num)->(sends,bytes)
     std::size_t n_access = 0, n_send = 0;
 };
@@ -327,13 +338,20 @@ void aggregate(CsvAgg&, const RankDir&, const Stamped<R>&) {}
 
 void aggregate(CsvAgg& a, const RankDir&, const Stamped<GpuAccess>&) { a.n_access++; }
 
-void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbQueuePair>& s) {
-    a.qp_owner[s.payload.qp_num] = r.rank;
-}
+// NB IbQueuePair deliberately does NOT feed the owner map any more. It is
+// emitted at create_qp, and a QP is not bound to a port until the INIT
+// transition, so it has no LID to be keyed by — which is exactly why the old
+// qp_num-only key collided.
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbModifyQp>& s) {
+    // Any transition that knows our LID names this QP. src_lid == 0 means the
+    // provider never saw the INIT that binds the port; an unkeyed entry would
+    // re-introduce the very collision this replaces, so it is skipped.
+    if (s.payload.src_lid)
+        a.qp_owner[{s.payload.src_lid, s.payload.qp_num}] = r.rank;
     if (s.payload.state == 2 /*RTR*/ && s.payload.dest_qp_num)
-        a.rtr_dest[{r.rank, s.payload.qp_num}] = s.payload.dest_qp_num;
+        a.rtr_dest[{r.rank, s.payload.qp_num}] = {s.payload.dest_lid,
+                                                  s.payload.dest_qp_num};
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {

@@ -39,6 +39,34 @@ static pcomm::core::Handle h(const void* p) {
     return rec().intern(InternDomain::Pointer, reinterpret_cast<std::uint64_t>(p));
 }
 
+// Our own port's LID, per QP.
+//
+// A QP is bound to a port at the INIT transition and nowhere else, so that is
+// the one call that can tell us which port — and therefore which LID — this QP
+// speaks from. Learned there, remembered for the QP's life, and stamped on
+// every transition so a reader never has to join across rows to get it.
+//
+// This is what makes a QP nameable. qp_num is allocated per HCA, so it collides
+// across nodes as a matter of course; with the LID, (src_lid, qp_num) is unique
+// because qp_num IS unique within one HCA.
+static std::mutex g_lid_mutex;
+static std::unordered_map<const ibv_qp*, std::uint32_t> g_qp_lid;
+
+static std::uint32_t local_lid(ibv_qp* qp, const ibv_qp_attr* attr, int mask) {
+    if ((mask & IBV_QP_PORT) && qp && qp->context) {
+        ibv_port_attr pa{};
+        std::uint32_t lid = 0;
+        if (ibv_query_port(qp->context, attr->port_num, &pa) == 0)
+            lid = pa.lid;
+        std::lock_guard<std::mutex> lk(g_lid_mutex);
+        g_qp_lid[qp] = lid;
+        return lid;
+    }
+    std::lock_guard<std::mutex> lk(g_lid_mutex);
+    auto it = g_qp_lid.find(qp);
+    return it == g_qp_lid.end() ? 0u : it->second;
+}
+
 // Interval [call-start, call-end] from the hook engine's captured rdtsc stamps
 // (same clock domain as the recorder + clock anchors), so post_send/poll_cq
 // render as slices with real durations instead of instants.
@@ -361,6 +389,7 @@ Profiler::Profiler() {
             {}, {}, h(qp), qp->qp_num,
             (mask & IBV_QP_DEST_QPN) ? attr->dest_qp_num : 0u,
             (mask & IBV_QP_AV) ? static_cast<std::uint32_t>(attr->ah_attr.dlid) : 0u,
+            local_lid(qp, attr, mask),
             static_cast<std::uint8_t>((mask & IBV_QP_STATE) ? attr->qp_state : 0xFF)});
     });
 

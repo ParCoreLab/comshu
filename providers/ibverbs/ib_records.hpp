@@ -38,11 +38,21 @@ PCOMM_RECORD(IbQueuePair, RecordKind::Entity, 102, "ib_queue_pair") {
 
 // EVENT — a QP state transition (ibv_modify_qp). The ->RTR transition carries
 // the remote endpoint (dest_qp_num/dest_lid), giving the connection topology.
-PCOMM_RECORD(IbModifyQp, RecordKind::Event, 104, "ib_modify_qp") {
+PCOMM_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
     Handle        qp;
     std::uint32_t qp_num;
-    std::uint32_t dest_qp_num;  // remote QP (valid when moving to RTR)
-    std::uint32_t dest_lid;     // remote LID
+    std::uint32_t dest_qp_num;  // remote QP  (set only under IBV_QP_DEST_QPN)
+    std::uint32_t dest_lid;     // remote LID (set only under IBV_QP_AV)
+    // Our own port's LID. Without it a QP has no globally unique name: qp_num
+    // is allocated per HCA, so two ranks on different nodes routinely get the
+    // same one (199 collisions in a single 8-rank NCCL capture, job 44139911),
+    // and a reader keying peers on qp_num alone attributes edges to whichever
+    // rank it happened to scan last — including impossible self-edges. With the
+    // LID, (src_lid, qp_num) is unique: qp_num IS unique within one HCA.
+    //
+    // Learned at the INIT transition, the only one that names a port, and
+    // carried on every later transition of that QP. 0 = not yet known.
+    std::uint32_t src_lid;
     std::uint8_t  state;        // new ibv_qp_state
 };
 

@@ -914,8 +914,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
   uint32_t qp_num_;
   uint32_t dest_qp_num_;
   uint32_t dest_lid_;
+  uint32_t src_lid_;
   uint8_t state_;
-  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+  int8_t padding0__;  int16_t padding1__;
 
  public:
   IbModifyQp()
@@ -924,27 +925,25 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
         qp_num_(0),
         dest_qp_num_(0),
         dest_lid_(0),
+        src_lid_(0),
         state_(0),
         padding0__(0),
-        padding1__(0),
-        padding2__(0) {
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
-  IbModifyQp(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint32_t _qp_num, uint32_t _dest_qp_num, uint32_t _dest_lid, uint8_t _state)
+  IbModifyQp(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint32_t _qp_num, uint32_t _dest_qp_num, uint32_t _dest_lid, uint32_t _src_lid, uint8_t _state)
       : temporal_(_temporal),
         qp_(::flatbuffers::EndianScalar(_qp)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
         dest_qp_num_(::flatbuffers::EndianScalar(_dest_qp_num)),
         dest_lid_(::flatbuffers::EndianScalar(_dest_lid)),
+        src_lid_(::flatbuffers::EndianScalar(_src_lid)),
         state_(::flatbuffers::EndianScalar(_state)),
         padding0__(0),
-        padding1__(0),
-        padding2__(0) {
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -960,6 +959,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
   }
   uint32_t dest_lid() const {
     return ::flatbuffers::EndianScalar(dest_lid_);
+  }
+  uint32_t src_lid() const {
+    return ::flatbuffers::EndianScalar(src_lid_);
   }
   uint8_t state() const {
     return ::flatbuffers::EndianScalar(state_);

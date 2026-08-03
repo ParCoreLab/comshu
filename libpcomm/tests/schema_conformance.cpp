@@ -195,9 +195,9 @@ int main() {
     {   Stamped<ir::IbModifyQp> c{};
         c.temporal = pcomm::core::Temporal::instant({1, 0x50});
         c.payload.qp = 21; c.payload.qp_num = 0x1EFFD; c.payload.dest_qp_num = 0x1EFFC;
-        c.payload.dest_lid = 0xA93; c.payload.state = 3;
+        c.payload.dest_lid = 0xA93; c.payload.src_lid = 0x1F0E; c.payload.state = 3;
         fb::IbModifyQp f(fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(1,0x50), fb::TimePoint(0,0), 0),
-                         21, 0x1EFFD, 0x1EFFC, 0xA93, 3);
+                         21, 0x1EFFD, 0x1EFFC, 0xA93, 0x1F0E, 3);
         expect_identical("IbModifyQp", &c, &f, sizeof(c)); }
     {   Stamped<ir::IbPollCq> c{};
         c.temporal = pcomm::core::Temporal::interval({1,0x60}, {1,0x70});

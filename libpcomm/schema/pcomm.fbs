@@ -205,7 +205,7 @@ struct IbQueuePair {
   qp_type:uint8;
 }
 
-// type 104, Event. A QP state transition; ->RTR carries the remote endpoint,
+// type 106, Event. A QP state transition; ->RTR carries the remote endpoint,
 // which is what makes the connection topology recoverable.
 struct IbModifyQp {
   temporal:Temporal;
@@ -213,6 +213,7 @@ struct IbModifyQp {
   qp_num:uint32;
   dest_qp_num:uint32;
   dest_lid:uint32;
+  src_lid:uint32;      // our own port's LID; (src_lid, qp_num) names a QP uniquely
   state:uint8;
 }
 
