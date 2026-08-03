@@ -2,6 +2,63 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN: fork-aware capture is broken — the child records nothing
+
+`fork_smoke` (XFAIL as of this note): parent 130/130, **child 0 of 50**. The
+feature was validated at exactly those numbers when it landed (ec32ab2), so it
+regressed since, invisibly — the assertion that would have caught it was
+compiled out by `NDEBUG` (see the next entry).
+
+**Cause.** `Recorder::append` caches the engine arena in a
+`static thread_local`, initialised once per thread per record type:
+
+```cpp
+static thread_local pcomm_arena* arena = pcomm_engine_arena(...);
+```
+
+After `fork()`, the child's cache still points at the **parent's** arena — the
+one `atfork_child` deliberately leaked (`m_sink.release()` /
+`m_recorder.release()`) and which `reset_for_fork()` dropped from the registry.
+The child's records go into an arena nothing will ever drain.
+
+`atfork_child`'s comment still says *"The fresh Recorder has a new address, so
+the per-thread buffer_store rebuilds against the child's sink"* — true of the
+map-keyed `{recorder, type_id}` design, false since the shared-engine C ABI
+(4dd6a69) replaced it with an unkeyed thread-local. The comment outlived the
+mechanism it described.
+
+**Fix shape:** a generation counter — bump on fork, have `append` re-resolve
+when the cached generation differs. Small, but it sits on the hot path of every
+single record, so it wants its own plan and an MN5 gate rather than a drive-by.
+
+## OPEN (minor): Tracer cannot restart after finalize()
+
+`start()` is attach-if-running by design (two preloaded providers must join one
+capture), and `finalize()` does not clear `m_recorder`. So a second `start()`
+with a *different* `output_dir` silently joins the first capture and prints
+"joining the latter" — the second capture's directory is never created.
+
+Harmless in production, where `finalize()` runs once at exit. It bit
+`tests/core_smoke.cpp`, which had two capture blocks and whose second block was
+therefore asserting against a directory that did not exist; the test now uses
+one capture. Worth deciding deliberately whether a restart should be supported
+rather than leaving it as an accident of the refcount.
+
+## FIXED: every assert() in the test suite was compiled out
+
+`tools/build_all.sh` builds `RelWithDebInfo`, and the README's `Release` does
+the same — both define `NDEBUG`, which makes `assert()` a no-op. **44 runtime
+assertions across five files** were dead: `core_smoke` (19), `hook_smoke` (13),
+`schema_conformance` (6), `fork_smoke` (4), `thread_flush_smoke` (2). The suite
+reported "tests ok (13 tests)" while verifying only that nothing segfaulted.
+
+Found by reintroducing, on purpose, the bug a newly written test existed to
+catch — and watching it pass.
+
+Fixed with `-UNDEBUG` on the test targets only (the library and providers keep
+`NDEBUG`, so hot-path asserts stay compiled out). Turning them on immediately
+surfaced the two entries above.
+
 ## OPEN: gpumem stamps *drain* time, as an Instant — plan written
 
 Every `GpuAccess` carries `TimeKind::Instant` at a host TSC read taken when the

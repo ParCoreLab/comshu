@@ -68,10 +68,26 @@ int main() {
                 WIFEXITED(status) ? WEXITSTATUS(status) : -1, parent_n,
                 kParentPre + kParentPost, (int)pid, child_n, kChild);
 
-    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0 && "child crashed");
-    assert(child_n == static_cast<std::size_t>(kChild) && "child records lost/misrouted");
-    assert(parent_n == static_cast<std::size_t>(kParentPre + kParentPost) &&
-           "parent stream corrupted or truncated by the fork child");
+    // Reported, not asserted: these three are the substance of the test, and it
+    // is currently a known failure (see the XFAIL note in tests/CMakeLists.txt —
+    // the child records 0 of its 50). A failing exit code lets ctest express
+    // that with WILL_FAIL; abort() from assert() is a signal, which ctest counts
+    // as an error whatever WILL_FAIL says. Printing all three also means one run
+    // shows the whole picture rather than stopping at the first bad number.
+    int bad = 0;
+    auto check = [&bad](bool ok, const char* what) {
+        if (!ok) { std::printf("  FAIL: %s\n", what); ++bad; }
+    };
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "child crashed");
+    check(child_n == static_cast<std::size_t>(kChild),
+          "child records lost/misrouted");
+    check(parent_n == static_cast<std::size_t>(kParentPre + kParentPost),
+          "parent stream corrupted or truncated by the fork child");
+
+    if (bad) {
+        std::printf("fork_smoke: %d check(s) failed\n", bad);
+        return 1;
+    }
     std::puts("fork_smoke OK");
     return 0;
 }

@@ -89,17 +89,31 @@ int main() {
         assert(sink.total_records == n + 2);
     }
 
-    // --- attribution pipeline: filter drops local accesses --------------------
-    // AttributionPipeline holds a Recorder, so its output goes through the
-    // engine to the engine's sink. Count the records where they actually land.
+    // --- one capture, two checks: the pipeline's filter, and the file sink -----
+    //
+    // These were two blocks with a Tracer capture each, and that was a latent
+    // bug in the test rather than a choice. Tracer is a process singleton whose
+    // start() is attach-if-running (deliberately — two preloaded providers must
+    // join one capture, see tracer.hpp), and finalize() does not clear
+    // m_recorder. So a second start() with a different output_dir *joins the
+    // first capture* and prints "joining the latter"; the second block's
+    // directory was never created and its `assert(fs::exists(stream))` was
+    // false. Nobody saw it because NDEBUG had compiled every assert away.
+    //
+    // One capture, therefore, with both checks accounted against it. (Whether
+    // the Tracer *should* support a restart after finalize is a product
+    // question, noted in things-to-circle-back-to.md; in production finalize
+    // runs once at exit, so it has never mattered outside this test.)
     {
-        auto dir = fs::temp_directory_path() / "pcomm-core-smoke-pipeline";
+        auto dir = fs::temp_directory_path() / "pcomm-core-smoke";
         fs::remove_all(dir);
         Config cfg;
         cfg.output_dir = dir;
         cfg.rank = 0;
         Tracer::instance().start(cfg);
 
+        // (a) AttributionPipeline holds a Recorder, so its output goes through
+        //     the engine to the engine's sink; count where records land.
         attr::AttributionPipeline pipe(Tracer::instance().recorder());
         pipe.add_filter(std::make_unique<RemoteFilter>());
 
@@ -109,34 +123,22 @@ int main() {
             accesses[i].run_device = 0;
             accesses[i].mem_device = (i % 2) ? 1 : 0;  // half remote, half local
         }
-        pipe.process(accesses);
+        pipe.process(accesses);          // filter keeps the 50 remote ones
+
+        // (b) the same stream, written directly through the Recorder.
+        auto& recorder = Tracer::instance().recorder();
+        for (int i = 0; i < 100; ++i) recorder.record(GpuAccess{{}, {}, 1, 0, 0x100, 4});
+
         Tracer::instance().finalize();
 
         auto stream = dir / "rank-0" / "700.pcs";   // Tracer::start makes rank-N/
         assert(fs::exists(stream));
-        auto records = (fs::file_size(stream) - sizeof(rec::StreamHeader)) /
-                       sizeof(rec::Stamped<GpuAccess>);
-        assert(records == 50 && "filter should drop the 50 local accesses");
-        fs::remove_all(dir);
-    }
-
-    // --- file sink: homogeneous per-type streams appear on disk ---------------
-    {
-        auto dir = fs::temp_directory_path() / "pcomm-core-smoke";
-        fs::remove_all(dir);
-        {
-            Config cfg;
-            cfg.output_dir = dir;
-            cfg.rank = 0;
-            Tracer::instance().start(cfg);
-            auto& recorder = Tracer::instance().recorder();
-            for (int i = 0; i < 100; ++i) recorder.record(GpuAccess{{}, {}, 1, 0, 0x100, 4});
-            Tracer::instance().finalize();
-        }
-        auto stream = dir / "rank-0" / "700.pcs";   // Tracer::start makes rank-N/
-        assert(fs::exists(stream));
+        // 50 survived the filter + 100 direct. A filter that dropped nothing
+        // would give 200, one that dropped everything 100 — the count still
+        // pins the behaviour even though the two writers share a stream.
         assert(fs::file_size(stream) ==
-               sizeof(rec::StreamHeader) + 100 * sizeof(rec::Stamped<GpuAccess>));
+               sizeof(rec::StreamHeader) + 150 * sizeof(rec::Stamped<GpuAccess>) &&
+               "filter should drop the 50 local accesses, and both writers land here");
 
         // The file says what it is. Check it says the right thing, in the right
         // place — the header is the first 32 bytes of every capture we ship.

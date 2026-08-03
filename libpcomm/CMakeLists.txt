@@ -83,6 +83,9 @@ if(PCOMM_BUILD_TESTS AND EXISTS ${PCOMM_FLATBUFFERS_INCLUDE})
     ${CMAKE_SOURCE_DIR}/providers/ibverbs
     ${PCOMM_FLATBUFFERS_INCLUDE})
   target_compile_features(pcomm_schema_conformance PRIVATE cxx_std_20)
+  # Keep assert() alive: every build type that runs tests defines
+  # NDEBUG. See the note in tests/CMakeLists.txt.
+  target_compile_options(pcomm_schema_conformance PRIVATE -UNDEBUG)
   add_test(NAME schema_conformance COMMAND pcomm_schema_conformance)
 endif()
 
@@ -93,6 +96,9 @@ if(PCOMM_BUILD_TESTS)
   add_executable(pcomm_stream_format tests/stream_format.cpp)
   target_link_libraries(pcomm_stream_format PRIVATE pcomm)
   target_compile_features(pcomm_stream_format PRIVATE cxx_std_20)
+  # Keep assert() alive: every build type that runs tests defines
+  # NDEBUG. See the note in tests/CMakeLists.txt.
+  target_compile_options(pcomm_stream_format PRIVATE -UNDEBUG)
   add_test(NAME stream_format COMMAND pcomm_stream_format)
 endif()
 
@@ -102,6 +108,9 @@ if(PCOMM_BUILD_TESTS)
   add_executable(pcomm_record_versioning tests/record_versioning.cpp)
   target_link_libraries(pcomm_record_versioning PRIVATE pcomm)
   target_compile_features(pcomm_record_versioning PRIVATE cxx_std_20)
+  # Keep assert() alive: every build type that runs tests defines
+  # NDEBUG. See the note in tests/CMakeLists.txt.
+  target_compile_options(pcomm_record_versioning PRIVATE -UNDEBUG)
   add_test(NAME record_versioning COMMAND pcomm_record_versioning)
 endif()
 
