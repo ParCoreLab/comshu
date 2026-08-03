@@ -143,8 +143,21 @@ if [ "$check_only" -eq 0 ]; then
     fi
     branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
     head=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
-    say "sync (git) $branch@$head → $REMOTE:$RDIR"
-    git -C "$REPO_ROOT" push --quiet "$PCOMM_REMOTE_GIT" "$branch" \
+    # Detached HEAD — a `git worktree` pinned to a commit, or a bisect. That is
+    # exactly how you isolate a regression ("did case 07 pass before this?"), so
+    # it has to work: `rev-parse --abbrev-ref HEAD` answers the literal string
+    # "HEAD" there, which is not a pushable refspec and made the push fail with
+    # "not a full refname" *after* claiming it was syncing. Deploy such runs
+    # under one throwaway ref instead, force-pushed because it moves anywhere.
+    if [ "$branch" = "HEAD" ]; then
+      branch=_detached
+      refspec="HEAD:refs/heads/_detached"
+      say "sync (git) detached@$head → $REMOTE:$RDIR (as $branch)"
+    else
+      refspec="$branch"
+      say "sync (git) $branch@$head → $REMOTE:$RDIR"
+    fi
+    git -C "$REPO_ROOT" push --quiet --force "$PCOMM_REMOTE_GIT" "$refspec" \
       || { echo "push to $PCOMM_REMOTE_GIT failed" >&2; exit 1; }
     # Hard reset, not merge: the remote tree is a deploy target, never edited
     # there. Untracked build dirs survive (they are gitignored).
