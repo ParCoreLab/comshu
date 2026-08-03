@@ -1,7 +1,10 @@
 # PLAN — correctness checks derived from the workload, alongside the goldens
 
 - **Created:** 2026-08-03 15:20 +03
-- **Status:** TODO
+- **Status:** DONE (2026-08-03) — plumbing, cross-cutting assertions and all
+  eight cases landed; validated against the stored MN5 captures without any
+  cluster time. Three derivations in this plan did **not** survive contact with
+  the data; see "What the data changed" at the end.
 - **Findings:** `things-to-circle-back-to.md` — "goldens that encode
   run-specific identifiers", "NVSHMEM heap attribution depends on when a record
   is drained".
@@ -237,13 +240,66 @@ contradict.
 
 ## Acceptance
 
-- `01` passes on an allocation that reuses a `qp_num` (tonight's failure mode).
-- `03` unchanged — it is the control.
-- `04`'s `peer_fanout` assertion fails today and passes once
-  `PLAN-20260803-1448` lands, with no edit to the assertion.
-- `owner_in_range` fails on a capture with `mem_dev = 64` — verifiable against
-  the stored capture from job 44111484 without any cluster time.
-- Every case reports both a golden verdict and an assertion verdict.
+- ✔ `01` passes on an allocation that reuses a `qp_num` (tonight's failure
+  mode). All four assertions green on 44111484 and 44113361, both of which
+  collide; the topology golden is red on both.
+- ✔ `03` unchanged — it is the control. Six assertions green on both runs,
+  including `peer_topology` at `(run_dev+1) % gpus` and `owner_in_range`.
+- ✔ `04`'s `peer_fanout` lands `expect_fail` and fails on both stored runs, at
+  `peers = 2` for every device.
+- ✔ `owner_in_range` fails on the `mem_dev = 64` capture (07, job 44111484) and
+  passes on 44113361 and 44116827 — no cluster time used.
+- ✔ Every case reports both verdicts, in the log and in `result.json`'s
+  `goldens` / `asserts` objects.
+
+## What the data changed
+
+Validated by running the new `sql_check.sh` against every stored CSV export in
+`~/pcomm-suite` (jobs 44111484, 44113361, 44116827). Four things this plan
+asserted turned out not to hold, and one new bug fell out.
+
+1. **01's `topology` cannot claim "and it is not itself".** Both stored pingpong
+   captures collide on `qp_num` (449 in 44111484, 461 in 44113361) and both
+   report `0 -> 0`. The assertion as landed is fan-out 1 carrying `iters` sends
+   of `msg_bytes`, which passes on both; the self-edge is a `comm_edges`
+   limitation, not a pingpong property, and asserting it would just move the
+   false red from the golden to the assertion.
+2. **02's `degree` — "every rank's peer count is equal, > 0" — is false today.**
+   Job 44113361's edges name only `dst_rank` 0 and 3, with degrees alternating
+   1 and 2 across the eight ranks. Per-rank send *totals* are a flat 3360, so
+   the assertion landed as `symmetric_participation` (all ranks post, and post
+   equally) and peer count is not asserted at all. The existing degree golden
+   fails on both stored runs, independently of this work.
+3. **04's `traffic` as written here re-encodes the bug.** "per rank per op:
+   `elems*iters`" accepts 196608 loads *and* 196608 stores. `gpu_access` is
+   peer-only by construction (`engine.hpp`'s `RemoteFilter` keeps an access iff
+   `run_device != mem_device`) and `put_to_next`'s only peer access is the
+   store — `src[i]` is a local read. `07_nvshmem_multinode`, running the
+   identical binary with correct attribution, records **zero** loads. So the
+   loads are phantom, the doubled count is this bug, and the derivation splits:
+   `traffic` (stores only) passes, and a new `no_local_loads` fails
+   `expect_fail` alongside `peer_fanout`.
+4. **`owner_in_range` fails on more than case 07.** It fails *constantly* on 04
+   and 06 (`mem_dev` 65..69 and 238..242 on a four-GPU node), not only on the
+   corrupted multinode run — so the heap attribution fault is the single-node
+   steady state, not just a multinode timing race. It also fails on **05**
+   (`mem_dev` up to 8), which NVSHMEM cannot explain and
+   `PLAN-20260803-1448` does not cover; that is a separate, undiagnosed
+   instance now recorded in `things-to-circle-back-to.md`.
+5. **New bug, found by the cheapest check in the plan.** `expect_tables` caught
+   `08_ib_send_bw`'s `ib_queue_pair` being **empty on every capture we have**,
+   with three green goldens beside it: perftest creates its QP through
+   `mlx5dv_create_qp` and only `ibv_create_qp` is hooked, so the QP's modify
+   records refer to an entity nothing ever created. Exactly the third door in
+   the class case 08 exists to cover.
+
+Deviation from the mechanism as written: the `size` param is spelled
+`msg_bytes`, because `size` would have meant bytes for the IB cases and elements
+for the GPU ones. `elems` / `elem_bytes` carry the latter.
+
+Step 6 (retiring goldens that the assertions subsume) is **not** done and should
+stay undone for now: 01 and 03 probably qualify, and the goldens are the
+regression net while the assertions are new.
 
 ## Notes
 

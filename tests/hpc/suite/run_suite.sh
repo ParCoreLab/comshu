@@ -38,12 +38,17 @@ cmd="${1:-list}"; shift || true
 
 case "$cmd" in
   list)
-    printf '%-20s %-6s %s\n' CASE PROV CHECKS
+    # Assertions are listed first because they are the primary check: derived
+    # from the workload, so a green one means correct rather than unchanged.
+    # A case with 0 of them is only characterized, not tested — see README's
+    # "Adding a case".
+    printf '%-22s %-6s %s\n' CASE PROV CHECKS
     for c in $(all_cases); do
       p=$(python3 -c "import json;print(','.join(json.load(open('$CASES_DIR/$c/meta.json'))['providers']))" 2>/dev/null)
-      n=$(ls "$CASES_DIR/$c"/checks/*.sql 2>/dev/null | wc -l | tr -d ' ')
+      g=$(ls "$CASES_DIR/$c"/checks/*.sql 2>/dev/null | wc -l | tr -d ' ')
+      a=$(ls "$CASES_DIR/$c"/asserts/*.sql 2>/dev/null | wc -l | tr -d ' ')
       x=$(python3 -c "import json;print('  [xfail]' if 'expect_fail' in json.load(open('$CASES_DIR/$c/meta.json')) else '')" 2>/dev/null)
-      printf '%-22s %-6s %s sql%s\n' "$c" "$p" "$n" "$x"
+      printf '%-22s %-6s %s asserts + %s goldens%s\n' "$c" "$p" "$a" "$g" "$x"
     done ;;
 
   submit)

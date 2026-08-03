@@ -3,12 +3,78 @@
 Regression + correctness tests that answer one question concretely: **does the
 tool still capture the *right* thing for a real workload?** Each case runs a
 genuine communication workload on MareNostrum 5 under `pcomm`, exports the
-capture with `pcomm-read --csv`, and runs SQL assertions whose results are
-diffed against committed golden tables.
+capture with `pcomm-read --csv`, and runs SQL over it.
+
+## Two kinds of check, and why
+
+Each case carries both, and they answer different questions.
+
+| | `asserts/<name>.sql` | `checks/<name>.sql` + `.golden` |
+|---|---|---|
+| shape | returns the **offending rows**; empty = pass | output **diffed** against a committed table |
+| oracle | the workload's own parameters, from `meta.json`'s `workload` block | a previous run |
+| answers | "is this capture correct?" | "did this capture change?" |
+| on failure | prints what violated the claim | prints a diff of two blobs |
+
+**Assertions are primary. Goldens are the regression net.** A golden is a
+characterization test, and it fails two ways:
+
+- *It cannot catch a bug that predates it.* `04_nvshmem`'s `peer_fanout` golden
+  asserted `peers = 2` for a ring in which each PE puts to one neighbour — its
+  own comment says so. It had captured the NVSHMEM device-attribution bug and
+  made it the expected result. No golden can ever find that, because the golden
+  **is** the defect. The derived assertion beside it fails on day one, which is
+  the point.
+- *It fails on things that were never the claim.* The fabric handed both ranks
+  of `01_ib_pingpong` `qp_num 449` (job 44111484) and again `461` (44113361);
+  `comm_edges` maps sends to ranks through `qp_num`, so rank 0's edge collapsed
+  onto itself and the topology golden went red twice with nothing wrong in the
+  tool. The assertion — fan-out 1 carrying `iters` sends of `msg_bytes` — passes
+  on both.
+
+The rule that keeps an assertion honest: **it must either reference `params`, or
+be an invariant that names no specific rank, device or QP number.** If it names
+an identifier the run produced, it is a golden wearing a costume.
+
+`params` is a one-row table `sql_check.sh` materialises from `meta.json`:
+
+```json
+"workload": { "ranks": 2, "nodes": 2, "iters": 20, "msg_bytes": 4096,
+              "regions_per_rank": 1 }
+```
+
+```sql
+-- asserts/traffic.sql — each rank posts exactly iters sends of msg_bytes
+SELECT rank, count(*) AS sends, sum(CAST(length AS INTEGER)) AS bytes
+FROM ib_post_send GROUP BY rank
+HAVING sends != (SELECT iters FROM params)
+    OR bytes != (SELECT iters * msg_bytes FROM params);
+```
+
+The numbers were always in `job.sbatch`; the `workload` block is the first place
+they are written down as an *oracle* rather than as shell variables.
+
+Supporting machinery, all in `meta.json`:
+
+- `expect_tables` — every one must exist and be non-empty. Not written as SQL,
+  because the failure it guards against is SQL not running at all: this suite
+  has twice reported STABLE on a `no such table` error. It is what found
+  `08_ib_send_bw`'s empty `ib_queue_pair`.
+- `expect_fail_asserts` — `{"<assert name>": "<why, with the blocking plan>"}`.
+  Reports `[xfail]` and does not fail the case; if it starts passing it reports
+  `[XPASS]` loudly. **Never edit an assertion to match what we emit** — mark it,
+  with evidence, and let the fix flip it.
+- `-- requires: <table> params.<col>` at the top of an assertion. Reports
+  `[skip]` when the capture has no such table or the workload no such
+  parameter, so `suite/asserts/*.sql` can be genuinely cross-cutting.
+
+`suite/asserts/` holds the checks worth running everywhere: `owner_in_range`
+(every `mem_dev` names a GPU that exists), `completions_succeed`,
+`sends_have_payload`, `ranks_complete`.
 
 ## How correctness is verified
 
-The chain is: **deterministic workload → capture → `pcomm-read --csv` → SQL query → diff golden.**
+The chain is: **deterministic workload → capture → `pcomm-read --csv` → SQL → assert / diff golden.**
 
 - **Tests bind to the CSV column contract, not the on-disk format.** A check is
   a `.sql` file querying columns like `ib_post_send(rank, opcode, length)` or the
@@ -114,24 +180,65 @@ recorded 295,044 and 550,064 loads on rank 0. See the case's meta.json.
 
 **Why case 04 filters kernels:** unfiltered, NVBit instruments all of nvshmem's
 internal device code (~400 MB/rank, not repeatable). `PCOMM_KERNEL_NAME=put_to_next`
-restricts capture to the user kernel → a small deterministic golden. NVSHMEM 3.7's
-fragmented heap breaks positional device attribution, so `peer_fanout` asserts the
-run-stable fan-out count, not the (unreliable) device ids; `traffic` is the real
-volume oracle.
+restricts capture to the user kernel → a small deterministic golden.
+
+**Case 04 is also where the goldens were caught ratifying a bug.** NVSHMEM 3.7's
+fragmented heap breaks positional device attribution, and the `peer_fanout`
+golden had turned that into the expected result: `peers = 2` for a ring in which
+each PE puts to exactly one neighbour. Its three `asserts/` state the workload
+instead, and two of them are marked `expect_fail` against
+`PLAN-20260803-1448-nvshmem-heap-attribution`:
+
+- `traffic` — passes. 196608 peer stores of 4 B per rank. We capture the right
+  accesses and the right number of them.
+- `peer_fanout` — one peer per device. Reads 2, because one real edge is split
+  across two adjacent phantom devices (`mem_dev` 65 and 66 in job 44113361, 238
+  and 239 in 44111484).
+- `no_local_loads` — `put_to_next`'s only peer access is the store; `src[i]` is
+  a local read and `gpu_access` is peer-only by construction. Reads 196608
+  phantom loads per rank, which is the doubled access count that went
+  unexplained for three weeks. `07_nvshmem_multinode` runs the identical binary
+  with correct attribution and records zero loads — that is the proof the claim
+  is right, which is why the same file is unmarked there.
+- `owner_in_range` (cross-cutting) — `mem_dev < gpus`. Reads 65..69 / 238..242
+  on a four-GPU node. The most direct evidence of the fault, and it costs one
+  scan on every case that has GPU accesses.
 
 ## Layout
 
 ```
 cases/<case>/
   job.sbatch          runs the workload under pcomm, exports CSV, runs sql_check
-  meta.json           providers + topology (informational)
-  checks/<name>.sql       one deterministic assertion each
+  meta.json           providers, topology, and the `workload` oracle + expectations
+  asserts/<name>.sql      derived check: offending rows, empty = pass
+  checks/<name>.sql       one deterministic query each
   checks/<name>.golden    its expected result table
 suite/
-  sql_check.sh        loads the CSVs into sqlite, runs each .sql, diffs golden
+  asserts/<name>.sql  cross-cutting assertions, run for every case that has the tables
+  sql_check.sh        loads the CSVs into sqlite, runs asserts + diffs goldens
   run_suite.sh        {list, submit, check, status}
   common.sh           MN5 env (accounts, modules, provider paths)
 ```
+
+## Adding a case
+
+**A new case needs at least one derived assertion in `asserts/`. A golden alone
+is not a test of correctness** — it can only ratify whatever the tool happened
+to emit the first time, which is how `04_nvshmem` shipped a green check over a
+live attribution bug. Concretely:
+
+1. Write `meta.json` with a `workload` block (the numbers from your `job.sbatch`,
+   nothing read off a capture) and `expect_tables`.
+2. Write `asserts/*.sql` that derive the case's volume and shape from `params`.
+   If you cannot derive anything, say why in `workload_note` — `02` and `05`
+   both do, and both still assert symmetry and participation, which are
+   invariants that need no oracle.
+3. Only then commit goldens, once the query is byte-identical across two
+   independent runs.
+
+Check yourself against the one rule: an assertion that names a rank, a device
+ordinal or a QP number, and does not reference `params`, is a golden in
+disguise. Delete it and write the claim you actually meant.
 
 ## Running
 

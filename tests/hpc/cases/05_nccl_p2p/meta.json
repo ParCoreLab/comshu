@@ -1,10 +1,28 @@
 {
   "case": "05_nccl_p2p",
-  "providers": ["p2p"],
+  "providers": [
+    "p2p"
+  ],
   "topology": "1 node x4 H100, ncclAllReduce over NVLink",
   "golden": "committed (verified across two independent filter=all runs at N=262144, job 43971039)",
   "why": "NCCL is the collective library most users actually run. This is the gpumem/NVBit provider against a real persistent-kernel collective, as opposed to case 03's discrete kernel.",
   "cost_note": "The run takes ~435s, and that is a FIXED cost of NVBit processing NCCL's module (223 device-function specializations, 434k instructions) — not a property of the workload. Measured at N=100/1024/16384/65536/262144: 433-443s in every case while the capture scales 0.6 MB -> 47 MB. Uninstrumented is 6s. Neither restricting instrumentation to the one launched kernel (438s vs 436s) nor skipping the per-launch arming of unfiltered functions changes it. DEADLINE is 600s for that reason; do not try to shrink the message, which was tested across a 2621x range and does nothing.",
   "oracle_note": "The checks assert structure, not volume, because volume is genuinely not repeatable here: NCCL's LL protocol spins on flag polling, so two identical runs recorded 295,044 and 550,064 loads on rank 0. The exact (run_dev, mem_dev) peer pairs are unstable too — (3,0) vs (2,8) across those runs, even with a >1000-access floor — which is consistent with the known-approximate device attribution in things-to-circle-back-to.md. What is invariant, and what is asserted: one tracked allocation per rank, both load and store present on every rank, and peer traffic (run_dev != mem_dev) present on every rank. That last one is the signal only the p2p provider can see and is empty in the pure-IB case 02.",
+  "workload": {
+    "ranks": 4,
+    "nodes": 1,
+    "gpus": 4,
+    "iters": 3,
+    "elems": 262144,
+    "elem_bytes": 4
+  },
+  "workload_note": "`mpirun -np 4 ... nccl_allreduce 262144 3`. elems/iters buy nothing here and are recorded only so the block is complete: NCCL's LL protocol spins on flag polling, so the instrumented access count is not a function of the message at all (295,041 / 556,546 / 493,031 / 507,375 loads across four ranks of one run, against a flat 294,990 stores). The derivable parameter this case actually uses is `ranks` — every rank must be present and must record both directions.",
+  "expect_tables": [
+    "gpu_access",
+    "mem_object"
+  ],
+  "expect_fail_asserts": {
+    "ops": "Asserts every rank does peer loads AND stores. That was recorded from fabricated attribution (find_nvshmem_heap_owner applied to NCCL's cuMemMap regions). With attribution fixed (21f3b74) the measurement is 0 loads / 294987 stores per rank, uniform across all four — consistent with a push-model ring. NOT flipped to match: unlike cases 04 and 06, whose answer follows from a three-line kernel, deciding this means knowing whether NCCL's ring allreduce does direct peer reads. See things-to-circle-back-to.md."
+  },
   "history": "was xfail, filed as 'NCCL's persistent kernel starves NVBit's bounded channel -> producer/consumer deadlock'. Refuted by measurement: the channel is empty during the slow phase, and the run completes given time. The launched kernel is ncclDevKernel_AllReduce_Sum_f32_RING_LL — RING_LL despite the job pinning NCCL_PROTO=Simple, since NCCL selects protocol by message size (found with PCOMM_LAUNCH_DUMP, cb7fce7)."
 }
