@@ -39,21 +39,40 @@ namespace {
 FILE* log_file() {
     static FILE* f = [] {
         const char* path = std::getenv("PCOMM_PROBE_LOG");
-        FILE*       out = path ? std::fopen(path, "we") : stderr;
+        if (!path)
+            return stderr;
+        // One file per rank. All eight ranks sharing one path corrupted job
+        // 44156479's log into unparseable fragments ("1 uuar 0x7f613uar ..."):
+        // fprintf+fflush is not atomic across processes, so records interleaved
+        // mid-line. Per-rank files also make per-rank symmetry checkable, which
+        // one merged file cannot express.
+        const char* rank = std::getenv("OMPI_COMM_WORLD_RANK");
+        if (!rank)
+            rank = std::getenv("SLURM_PROCID");
+        if (!rank)
+            rank = std::getenv("PMI_RANK");
+        char named[4096];
+        std::snprintf(named, sizeof(named), "%s.%s", path, rank ? rank : "unknown");
+        FILE* out = std::fopen(named, "we");
         return out ? out : stderr;
     }();
     return f;
 }
 
-// CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL on a host pointer fails rather than
-// answering, which is the discriminator we want: a umem that CUDA does not
-// recognise is host memory and cannot be an IBGDA send queue.
-void classify(const void* addr, int* mem_type, int* ordinal) {
+// A umem CUDA does not recognise is host memory and cannot be an IBGDA send
+// queue. But "does not recognise" and "could not be asked" are different
+// answers, and job 44156479 could not tell them apart: every row came back
+// -1 -1, which reads as "all host memory" and is equally consistent with the
+// driver never having been initialised in this process yet. So the failure
+// reason is now recorded rather than flattened into a sentinel.
+void classify(const void* addr, int* mem_type, int* ordinal, int* err) {
     *mem_type = -1;
     *ordinal = -1;
     unsigned int type = 0;
-    if (cuPointerGetAttribute(&type, CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-                              reinterpret_cast<CUdeviceptr>(addr)) == CUDA_SUCCESS) {
+    CUresult     rc = cuPointerGetAttribute(&type, CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                                            reinterpret_cast<CUdeviceptr>(addr));
+    *err = static_cast<int>(rc);
+    if (rc == CUDA_SUCCESS) {
         *mem_type = static_cast<int>(type);
     }
     int ord = -1;
@@ -76,11 +95,11 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg(ibv_context* ctx, void* addr, 
         "mlx5dv_devx_umem_reg");
     mlx5dv_devx_umem* out = real ? real(ctx, addr, size, access) : nullptr;
     if (out) {
-        int mem_type = -1, ordinal = -1;
-        classify(addr, &mem_type, &ordinal);
-        std::fprintf(log_file(), "umem 0x%llx %zu %d %d %u\n",
+        int mem_type = -1, ordinal = -1, err = 0;
+        classify(addr, &mem_type, &ordinal, &err);
+        std::fprintf(log_file(), "umem 0x%llx %zu %d %d %u cuerr=%d\n",
                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(addr)), size,
-                     mem_type, ordinal, out->umem_id);
+                     mem_type, ordinal, out->umem_id, err);
         std::fflush(log_file());
     }
     return out;

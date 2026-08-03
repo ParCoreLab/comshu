@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Answer Stage 2's question from a probe log + a pcomm capture.
 
-    analyze.py <probe.txt> <capture.csv-dir>
+    analyze.py <probe-log-dir> <capture.csv-dir>
 
 Three questions, in the order that makes a NO conclusive:
 
@@ -24,52 +24,85 @@ CU_MEMORYTYPE_DEVICE = 2
 MLX5_CMD_OP_CREATE_QP = 0x500
 
 
-def read_probe(path):
+def read_probe(log_dir):
+    """Read every per-rank probe.txt.<rank> under log_dir.
+
+    Malformed lines are counted, not skipped silently: a shredded log is what
+    job 44156479 produced, and a parser that quietly drops fragments would have
+    turned that into a confident wrong answer.
+    """
     umems, uars, devx = [], [], collections.Counter()
-    with open(path) as f:
-        for line in f:
-            parts = line.split()
-            if not parts:
-                continue
-            if parts[0] == "umem" and len(parts) >= 6:
-                addr, size, mem_type, ordinal, umem_id = parts[1:6]
-                umems.append((int(addr, 16), int(size), int(mem_type), int(ordinal), umem_id))
-            elif parts[0] == "uar" and len(parts) >= 3:
-                uars.append((int(parts[1], 16), parts[2]))
-            elif parts[0] == "devx" and len(parts) >= 2:
-                devx[int(parts[1], 16)] += 1
+    bad, ranks = 0, []
+    names = sorted(n for n in os.listdir(log_dir) if n.startswith("probe.txt."))
+    for name in names:
+        ranks.append(name.rsplit(".", 1)[-1])
+        with open(os.path.join(log_dir, name)) as f:
+            for line in f:
+                parts = line.split()
+                if not parts:
+                    continue
+                try:
+                    if parts[0] == "umem" and len(parts) >= 6:
+                        addr, size, mem_type, ordinal, umem_id = parts[1:6]
+                        umems.append(
+                            (int(addr, 16), int(size), int(mem_type), int(ordinal), umem_id)
+                        )
+                    elif parts[0] == "uar" and len(parts) >= 3:
+                        uars.append((int(parts[1], 16), parts[2]))
+                    elif parts[0] == "devx" and len(parts) >= 2:
+                        devx[int(parts[1], 16)] += 1
+                    else:
+                        bad += 1
+                except ValueError:
+                    bad += 1
+    print(f"  probe logs read              : {len(names)} ({', '.join(ranks) or 'none'})")
+    if bad:
+        print(f"  MALFORMED LINES              : {bad}  <- log corruption, treat with care")
     return umems, uars, devx
 
 
 def main():
-    probe_path, csv_dir = sys.argv[1], sys.argv[2]
-    umems, uars, devx = read_probe(probe_path)
+    log_dir, csv_dir = sys.argv[1], sys.argv[2]
+    print("--- 0. inputs ---")
+    umems, uars, devx = read_probe(log_dir)
+    print()
 
+    # DEVX QP creations do NOT prove IBGDA engaged, and reading them that way is
+    # the mistake this guard exists to prevent. Job 44156479 logged 159 DEVX
+    # CREATE_QPs on a run where IBGDA failed to initialise outright ("neither
+    # nv_peer_mem, or nvidia_peermem detected. Skipping transport") — HPC-X/UCX
+    # drives DEVX for ordinary MPI, so the count was never NVSHMEM's to claim.
+    #
+    # The discriminator is the one SigmaTrace uses (Mlx5dv.cpp:82-87): a QP whose
+    # work-queue buffer lives in GPU memory. A CPU-side DEVX QP cannot produce
+    # GPU doorbells, so no GPU-resident umem means no IBGDA, whatever the QP
+    # count says.
     print("--- 1. did IBGDA engage? ---")
     n_qp = devx.get(MLX5_CMD_OP_CREATE_QP, 0)
+    gpu_umems = [u for u in umems if u[2] == CU_MEMORYTYPE_DEVICE]
     print(f"  mlx5dv_devx_obj_create calls : {sum(devx.values())}")
-    print(f"    of which CREATE_QP (0x500) : {n_qp}")
+    print(f"    of which CREATE_QP (0x500) : {n_qp}   <- NOT evidence on its own")
     print(f"  mlx5dv_devx_alloc_uar calls  : {len(uars)}")
+    print(f"  umems resident in GPU memory : {len(gpu_umems)}   <- this is the evidence")
     for op, n in sorted(devx.items()):
         print(f"    opcode 0x{op:04x} : {n}")
-    if n_qp == 0:
-        print("  VERDICT: IBGDA did NOT engage — no DEVX queue pairs were created.")
-        print("  Everything below is vacuous. Check NVSHMEM_DEBUG=INFO output for a")
-        print("  fallback message before drawing ANY conclusion about option B.")
+    if not gpu_umems:
+        print("  VERDICT: IBGDA did NOT engage — no NIC buffer is in GPU memory.")
+        print("  Everything below is vacuous. Read the NVSHMEM_DEBUG=INFO output for")
+        print("  the transport-init line before concluding anything about option B;")
+        print("  a DEVX QP count above is MPI's, not NVSHMEM's.")
+        unknown = [u for u in umems if u[2] == -1]
+        if len(unknown) == len(umems) and umems:
+            print(f"  CAUTION: all {len(umems)} umems classified as -1. Check the cuerr=")
+            print("  column — if it is 3 (NOT_INITIALIZED) the probe could not ask CUDA")
+            print("  rather than CUDA answering 'host memory', and this verdict is void.")
         return 2
 
     print("\n--- 2. NIC-registered buffers in GPU memory ---")
-    gpu_umems = [u for u in umems if u[2] == CU_MEMORYTYPE_DEVICE]
     print(f"  umem registrations total     : {len(umems)}")
     print(f"    resident in GPU memory     : {len(gpu_umems)}")
     for addr, size, _, ordinal, umem_id in sorted(gpu_umems)[:20]:
         print(f"      0x{addr:012x} + {size:<10} dev={ordinal} umem_id={umem_id}")
-    if not gpu_umems:
-        print("  VERDICT: no NIC buffer is in GPU memory. Either the NIC handler fell")
-        print("  back to the CPU, or NVSHMEM placed the queues in host memory")
-        print("  (NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE). Option B cannot be judged")
-        print("  from this run.")
-        return 2
 
     print("\n--- 3. do instrumented accesses land in them? ---")
     access_csv = os.path.join(csv_dir, "gpu_access.csv")

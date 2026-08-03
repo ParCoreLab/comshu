@@ -62,10 +62,31 @@ pcomm_load_runtime
 export NVSHMEM_REMOTE_TRANSPORT=ibgda
 export NVSHMEM_IB_ENABLE_IBGDA=1
 export NVSHMEM_IBGDA_NIC_HANDLER=gpu
-# SigmaTrace sets this; without it NVSHMEM logs "system does not support
-# registering the NIC control buffers with DMABUF" and may fall back.
-export NVSHMEM_IB_DISABLE_DMABUF=1
 export NVSHMEM_DEBUG=INFO
+# NOT setting NVSHMEM_IB_DISABLE_DMABUF. Copying it from SigmaTrace is what
+# killed job 44156479. IBGDA has to pin its control buffers for the NIC by one
+# of two routes — DMABUF, or the nv_peer_mem/nvidia_peermem kernel module — and
+# that flag disables the first. SigmaTrace sets it because *their* system lacks
+# DMABUF support and needs the fallback; on MN5 the fallback is what is missing:
+#
+#   ibgda.cpp:nvshmemt_init:3577: neither nv_peer_mem, or nvidia_peermem
+#   detected. Skipping transport.
+#   init failed for transport: IBGDA
+#
+# so disabling DMABUF left IBGDA with no route at all. An environment flag
+# carried across clusters without checking which half of an either/or it
+# disables.
+
+# ---- can this node do IBGDA at all? ---------------------------------------
+# IBGDA needs one of two ways to let the NIC reach GPU memory. If neither is
+# present the run cannot answer anything, and that is a fact about MN5 rather
+# than about pcomm — worth printing before the workload rather than inferring
+# from a stack trace afterwards.
+echo "=== IBGDA prerequisites on $(hostname) ==="
+lsmod 2>/dev/null | grep -E "nvidia_peermem|nv_peer_mem" || echo "  peermem module: NOT LOADED"
+ls /sys/kernel/mm/memory_peers/ 2>/dev/null || echo "  /sys/kernel/mm/memory_peers: absent"
+ls /sys/class/infiniband/*/device/  2>/dev/null | grep -c dmabuf ||
+  echo "  dmabuf: could not determine from sysfs (NVSHMEM_DEBUG will say)"
 
 # ---- run ------------------------------------------------------------------
 # -p p2p only: this asks what NVBit sees, and the ib provider has nothing to
@@ -80,15 +101,28 @@ timeout 400 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   "$PCOMM" -p p2p -o "$OUT/capture" -- "$APP" 65536 3
 rc=$?; echo "mpirun exit=$rc"
 
-# LD_PRELOAD is process-wide, so all 8 ranks append to one log unless the
-# launcher gives each its own name. mpirun does not expand %r, so ranks share
-# the file; entries are flushed per line, which is enough for set arithmetic.
-echo "=== probe log ==="; cat "$OUT/logs/probe.txt" 2>/dev/null | sort | uniq -c | sort -rn | head -40
+# The shim writes one file per rank (probe.txt.<rank>) — mpirun does not expand
+# %r, so the shim appends the rank itself. Job 44156479 had all eight ranks on
+# one path and the log came back shredded mid-line, because fprintf+fflush is
+# not atomic across processes.
+echo "=== probe log (per rank) ==="
+for f in "$OUT"/logs/probe.txt.*; do
+  [ -e "$f" ] || continue
+  echo "--- $f: $(wc -l < "$f") lines"
+done
+
+# The transport-init lines are what decide whether this run means anything, and
+# they are the first thing to read on a failure — 44156479 died because IBGDA
+# never initialised, which the probe log alone made look like the opposite.
+echo "=== transport init ==="
+grep -hE "transport|IBGDA|peermem|DMABUF|dmabuf" "$SLURM_SUBMIT_DIR"/*"$SLURM_JOB_ID".out 2>/dev/null |
+  grep -viE "^\+" | sort -u | head -20
 
 if [ $rc -ne 0 ]; then
-  echo "PROBE INCONCLUSIVE: workload did not complete (rc=$rc; 124 = timed out)"
-  echo "A hang here is itself a finding — case 07's history is instrumenting"
-  echo "NVSHMEM-internal device code wedging the transport."
+  echo "PROBE: workload did not complete (rc=$rc; 124 = timed out)"
+  echo "Running the analysis anyway — the probe log still says whether IBGDA"
+  echo "engaged, and on a failed run that is the whole question."
+  python3 "$PROBE_DIR/analyze.py" "$OUT/logs" "$OUT/capture.csv"
   exit 1
 fi
 
@@ -96,4 +130,4 @@ fi
 
 # ---- the join -------------------------------------------------------------
 echo "=== ANSWER ==="
-python3 "$PROBE_DIR/analyze.py" "$OUT/logs/probe.txt" "$OUT/capture.csv"
+python3 "$PROBE_DIR/analyze.py" "$OUT/logs" "$OUT/capture.csv"
