@@ -1,7 +1,9 @@
 # PLAN — ask NVSHMEM who owns an address, instead of guessing from the VA layout
 
 - **Created:** 2026-08-03 14:48 +03
-- **Status:** TODO
+- **Status:** DONE — implemented in `21f3b74`. Step 1's premise held (evidence
+  below); Design A was taken. Two deliberate departures from the plan, both
+  recorded under "What actually happened".
 - **Blocks:** `PLAN-20260803-1021-gpumem-window-timestamps-todo.md` (the window
   change is parked because it perturbs the race this plan removes).
 - **Findings:** `things-to-circle-back-to.md` — "NVSHMEM heap attribution
@@ -229,6 +231,85 @@ depends on drain timing, and it is the thing this plan unblocks.
 - PE vs device: the current code casts a PE straight to `DeviceId`, so PE and
   device are already conflated. That is fine single-node but is a latent
   wrongness worth deciding on deliberately rather than inheriting.
+
+## What actually happened
+
+### Step 1: the premise held, in four configurations
+
+A standalone NVSHMEM probe (jobs **44135828**, **44136107**; NVSHMEM 3.2.5) ran
+4 PEs on one node, 8 PEs over two nodes under IBRC **and** under IBGDA, and 4
+PEs with `NVSHMEM_DISABLE_P2P`. In every one of them:
+
+| question | answer |
+|---|---|
+| `nvshmem_ptr(a, my_pe) == a` for local symmetric `a` | **holds** — allocation bases, interiors, and a 64 MiB object's last byte |
+| `nvshmem_ptr(x, my_pe)` for non-symmetric `x` | **NULL** — `cudaMalloc` pointers, host addresses, junk VAs |
+| `nvshmem_ptr(q, my_pe)` for a *peer's* mapping `q` | **NULL** |
+| non-`NULL` exactly for P2P-reachable PEs | **yes** — 0-3 within a node, NULL for the four PEs across the IB link, self only under `DISABLE_P2P` |
+| `delta_pe = nvshmem_ptr(a,pe) - a` constant over the heap | **yes** (not relied on; see below) |
+| callable off the main thread | **yes** |
+| resolvable by `dlsym(RTLD_DEFAULT, ...)` | **yes**, all three symbols |
+
+The third row is the one that mattered most and the plan did not ask for it: a
+peer's mapping answering `NULL` to `my_pe` is what makes "non-`NULL` for
+`my_pe`" a *sound* test for "this region is my heap" rather than a test that
+claims every mapping in the process. IBGDA changed nothing.
+
+### Departure 1: probe with the `cuMemMap` region bases, not with an observed access
+
+The plan's Design A takes the first *observed access address* satisfying
+`nvshmem_ptr(a, my_pe) == a` as the anchor. Using the `cuMemMap` region bases
+instead is strictly better and needs no extra machinery: they are already
+collected, they come with exact sizes, and each one is independently classified
+by the same API predicate. That removes the anchor, removes any reliance on the
+constant `delta`, and — the point — removes the last thing that could depend on
+*which* region was seen first. `cuMemMap` is now purely a source of extents; it
+contributes no ordering, no index, and no count.
+
+### Departure 2: `mem_device` is a device, resolved by CUDA, not a PE
+
+The plan's open question ("PE vs device: the current code casts a PE straight to
+a `DeviceId`") has a clean answer. `cuPointerGetAttribute(...
+DEVICE_ORDINAL, q)` on the peer address `nvshmem_ptr` returned names the GPU
+that memory actually lives on — measured correct for every peer mapping in job
+44136107. That is the same space `run_device` is in, so `RemoteFilter` compares
+like with like. On one node it is numerically identical to the PE, so no golden
+moves; at 8 PEs over 2 nodes it is the difference between a device id and a
+rank id that merely looked like one.
+
+### Consequence: three goldens changed, and why that is not regeneration
+
+Predicted from the workload *before* the run, not read off it. `put_to_next`
+issues two global accesses per element — a load of the local `src[i]` and the
+peer store — and `gpu_access` holds only what `RemoteFilter` kept. So a `load`
+row in cases 04 and 06 meant a rank's own local memory had been attributed to
+another GPU: the bug itself, 196608 phantom accesses per rank. Correct output is
+stores only.
+
+| golden | before | after |
+|---|---|---|
+| 04 `peer_fanout` → `peer_topology` | `peers = 2` | exact ring `0→1, 1→2, 2→3, 3→0`, 196608 each |
+| 04 `traffic` | `load` + `store` rows | `store` rows only |
+| 06 `traffic` | `load` + `store` rows | `store` rows only |
+| 07 `cross_transport` | 196608 / 0 | **unchanged** — it already encoded the correct answer |
+| 03 `peer_topology` | exact ring | **unchanged** — regression guard |
+
+Case 07's golden needing no change is the strongest single check here: it was
+captured from a run that happened to land on the right side of the race, and
+the new scheme reproduces it by construction.
+
+## Still open
+
+- **Re-landing `2bfb376`** (the window change) as the timing-perturbation probe
+  for case 07 is the remaining acceptance item; it belongs to
+  `PLAN-20260803-1021-gpumem-window-timestamps-todo.md`, which this unblocks.
+- **The "NVSHMEM 3.7" in case 04's old comment** was never resolved — MN5 has
+  3.2.5, and the comment is gone now. It no longer matters: the new scheme reads
+  no version and asks for no layout, which was always the better argument.
+- **Team-scoped allocations** (`nvshmemx_mc_ptr`, `nvshmem_team_*`) remain out of
+  scope, as planned. Multicast addresses are not `nvshmem_ptr`-resolvable and
+  would fall through to the alloc registry, i.e. be treated as local and
+  filtered out.
 
 ## Rejected
 

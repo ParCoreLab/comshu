@@ -71,7 +71,7 @@ pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;  // serializes callbacks
 // A region some library mapped with cuMemMap, as observed — base and size, no
 // interpretation. NVSHMEM's symmetric heap arrives this way; so do other
 // things, and telling them apart is nvshmem_ptr's job, not ours (see
-// refresh_nvshmem_heap_map).
+// refresh_mapped_regions).
 struct MappedRegion {
     uint64_t base;
     uint64_t size;
@@ -122,7 +122,7 @@ void publish_mapped_snapshot() {
                             std::memory_order_release);
 }
 
-// --- NVSHMEM symmetric-heap ownership ---------------------------------------
+// --- Ownership of cuMemMap'd memory, NVSHMEM's symmetric heap included -------
 //
 // This used to be derived from NVSHMEM's *private* VA layout: sort the cuMemMap
 // regions, and region i belongs to PE (mype + i) % npes with npes taken from
@@ -158,8 +158,13 @@ struct NvshmemApi {
     void* (*ptr)(const void*, int){nullptr};
     int (*my_pe)(){nullptr};
     int (*n_pes)(){nullptr};
-    bool ok() const { return ptr && my_pe && n_pes; }
+    int (*init_status)(){nullptr};
+    bool ok() const { return ptr && my_pe && n_pes && init_status; }
 };
+
+// From nvshmem_constants.h; not included, since the whole point is to have no
+// build dependency on NVSHMEM.
+constexpr int kNvshmemStatusIsInitialized = 2;
 
 // Lazy on purpose: NVSHMEM is not loaded when the tool's nvbit_at_init runs, so
 // resolving there would fail permanently. Called only under g_heap_mutex.
@@ -169,49 +174,97 @@ const NvshmemApi& nvshmem_api() {
         api->ptr = (void* (*)(const void*, int))dlsym(RTLD_DEFAULT, "nvshmem_ptr");
         api->my_pe = (int (*)())dlsym(RTLD_DEFAULT, "nvshmem_my_pe");
         api->n_pes = (int (*)())dlsym(RTLD_DEFAULT, "nvshmem_n_pes");
+        api->init_status = (int (*)())dlsym(RTLD_DEFAULT, "nvshmemx_init_status");
     }
     return *api;
 }
 
 // NOT g_mutex: nvbit_at_ctx_term holds that across the pthread_join of the recv
 // thread, so anything the recv thread locks must be a different mutex or
-// teardown deadlocks. Guards nvshmem_api()'s resolution and g_heap_resolved.
+// teardown deadlocks. Guards nvshmem_api()'s resolution and the resolved sets.
 std::mutex g_heap_mutex;
+std::unordered_set<uint64_t>* g_mapped_resolved = new std::unordered_set<uint64_t>();
 std::unordered_set<uint64_t>* g_heap_resolved = new std::unordered_set<uint64_t>();
 
-// Turn newly observed symmetric-heap regions into (range -> device) entries in
-// the alloc registry the drain path already consults. Nothing NVSHMEM-shaped
+// Which GPU does the memory at `p` live on? CUDA's own answer, in the same
+// space run_device is in. Negative when it cannot say.
+int device_of(uint64_t p, int ndev, const char* what) {
+    int dev = -1;
+    if (cuPointerGetAttribute(&dev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                              (CUdeviceptr)p) != CUDA_SUCCESS)
+        return -1;
+    // The guard the old scheme could not have had: an owner must name a GPU
+    // that exists. mem_dev = 64 on a 4-GPU node would have stopped here,
+    // loudly, instead of quietly inflating the capture.
+    if (dev < 0 || dev >= ndev) {
+        std::fprintf(stderr, "[pcomm-gpumem] %s owner out of range: dev=%d of %d "
+                     "GPUs; 0x%llx dropped\n", what, dev, ndev,
+                     (unsigned long long)p);
+        return -1;
+    }
+    return dev;
+}
+
+// Turn newly observed cuMemMap regions into (range -> device) entries in the
+// alloc registry the drain path already consults. Nothing vendor-shaped
 // survives on the hot path: attribution is one range lookup, as it is for
 // cudaMalloc'd memory. Called from the recv thread when a new snapshot appears.
-void refresh_nvshmem_heap_map(const std::vector<MappedRegion>* snap) {
+void refresh_mapped_regions(const std::vector<MappedRegion>* snap) {
     if (!snap || snap->empty() || !g_engine) return;
     std::lock_guard<std::mutex> lock(g_heap_mutex);
 
+    // CUDA calls are safe from the recv thread despite g_mutex:
+    // nvbit_at_ctx_init registers it with nvbit_set_tool_pthread, so NVBit does
+    // not deliver callbacks for the tool's own driver calls and there is no
+    // re-entry into nvbit_at_cuda_event to block on.
+    int ndev = 0;
+    cudaGetDeviceCount(&ndev);
+
+    // 1. Every mapped region, from CUDA. cuMemMap is not NVSHMEM's alone —
+    //    NCCL registers its peer buffers through the same APIs, and the
+    //    cuMemAlloc-fed registry never sees those, so without this they resolve
+    //    to run_device and RemoteFilter drops real peer traffic. Case 05's
+    //    peer traffic used to appear only because the NVSHMEM positional guess
+    //    was being applied to NCCL's regions — it reported mem_dev up to 8 on a
+    //    4-GPU node, i.e. it was fabricating the answer that made the case pass.
+    for (const auto& r : *snap) {
+        if (!g_mapped_resolved->insert(r.base).second) continue;
+        const int dev = device_of(r.base, ndev, "mapped region");
+        if (dev >= 0)
+            g_engine->allocs().add_range(r.base, r.size,
+                                         static_cast<pcomm::core::DeviceId>(dev));
+    }
+
+    // 2. NVSHMEM's symmetric heap, authoritatively. Step 1 already covers every
+    //    peer mapping we *observed* a cuMemMap for; this covers the rest and is
+    //    the only source that knows a region is symmetric memory at all rather
+    //    than inferring it from where it happens to sit in the VA space.
     const NvshmemApi& api = nvshmem_api();
     if (!api.ok()) {
-        // Not an error: most workloads are not NVSHMEM, and cuMemMap has other
-        // users (NCCL registers buffers with it). Say it once under
-        // PCOMM_VERBOSE rather than either staying silent or spamming runs that
-        // were never going to have a symmetric heap.
+        // Not an error: most workloads are not NVSHMEM. Say it once under
+        // PCOMM_VERBOSE rather than either staying silent or annotating every
+        // run that was never going to have a symmetric heap.
         static bool said = false;
         if (!said && std::getenv("PCOMM_VERBOSE")) {
             said = true;
-            std::fprintf(stderr, "[pcomm-gpumem] no NVSHMEM symbols (nvshmem_ptr/"
-                         "my_pe/n_pes); mapped regions left to the alloc registry\n");
+            std::fprintf(stderr, "[pcomm-gpumem] no NVSHMEM symbols; mapped regions "
+                         "attributed from CUDA alone\n");
         }
         return;  // retried on the next snapshot — NVSHMEM may load later
     }
+    // nvshmem_ptr dereferences NVSHMEM's heap state, which does not exist before
+    // nvshmem_init or after nvshmem_finalize; calling it outside that window
+    // segfaults on a null+0x20 (all four ranks of case 04, job 44136544 — the
+    // recv thread's last refresh lands after the application has finalized).
+    // nvshmem_my_pe and nvshmem_n_pes keep answering plausibly across the same
+    // boundary, so they cannot be the test. nvshmemx_init_status can, and is
+    // required rather than optional: without it there is no safe window to
+    // check and the heap path must stay off.
+    if (api.init_status() < kNvshmemStatusIsInitialized) return;
 
     const int npes = api.n_pes();
     const int mype = api.my_pe();
-    if (npes <= 0 || mype < 0 || mype >= npes) return;  // not initialised yet
-
-    // CUDA calls are safe from here despite g_mutex: nvbit_at_ctx_init registers
-    // the recv thread with nvbit_set_tool_pthread, so NVBit does not deliver
-    // callbacks for the tool's own driver calls and there is no re-entry into
-    // nvbit_at_cuda_event to block on.
-    int ndev = 0;
-    cudaGetDeviceCount(&ndev);
+    if (npes <= 0 || mype < 0 || mype >= npes) return;
 
     for (const auto& r : *snap) {
         if (g_heap_resolved->count(r.base)) continue;
@@ -230,25 +283,12 @@ void refresh_nvshmem_heap_map(const std::vector<MappedRegion>* snap) {
             // PE is not a device. The old code cast one straight to the other,
             // which is only accidentally right when PEs and GPUs are numbered
             // alike on one node. CUDA knows where the memory nvshmem_ptr just
-            // named actually lives, so ask it rather than inherit the
-            // conflation: measured, this returns the owning GPU's ordinal for a
-            // peer mapping (job 44136107), i.e. the same space run_device is in.
-            int dev = -1;
-            if (cuPointerGetAttribute(&dev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
-                                      (CUdeviceptr)q) != CUDA_SUCCESS)
-                continue;
-            // The guard the old scheme could not have had: an owner must name a
-            // GPU that exists. mem_dev = 64 on a 4-GPU node would have stopped
-            // here, loudly, instead of quietly inflating the capture.
-            if (dev < 0 || dev >= ndev) {
-                std::fprintf(stderr,
-                    "[pcomm-gpumem] NVSHMEM heap owner out of range: pe=%d dev=%d "
-                    "(%d GPUs); region 0x%llx dropped\n",
-                    pe, dev, ndev, (unsigned long long)r.base);
-                continue;
-            }
-            g_engine->allocs().add_range((uint64_t)q, r.size,
-                                         static_cast<pcomm::core::DeviceId>(dev));
+            // named actually lives (measured, job 44136107), so ask it rather
+            // than inherit the conflation.
+            const int dev = device_of((uint64_t)q, ndev, "NVSHMEM heap");
+            if (dev >= 0)
+                g_engine->allocs().add_range((uint64_t)q, r.size,
+                                             static_cast<pcomm::core::DeviceId>(dev));
         }
     }
 }
@@ -515,12 +555,15 @@ void* recv_thread_fun(void* args) {
             }
         }
 
-        // Pick up symmetric-heap regions mapped since the last batch. One
-        // atomic load unless a new mapping actually appeared.
+        // Pick up regions mapped since the last batch. One atomic load unless a
+        // new mapping actually appeared. Not once `done`: that token means the
+        // context is terminating, so the application has already finalized
+        // NVSHMEM and probing it would be a use-after-free (see
+        // refresh_mapped_regions). The records already in hand still drain.
         const auto* snap = G().mapped_snapshot.load(std::memory_order_acquire);
-        if (snap != heap_snap_seen) {
+        if (!done && snap != heap_snap_seen) {
             heap_snap_seen = snap;
-            refresh_nvshmem_heap_map(snap);
+            refresh_mapped_regions(snap);
         }
 
         g_engine->process(batch);
@@ -598,7 +641,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
     } else if (is_exit && cbid == API_CUDA_cuMemMap) {
         // Record the extent, nothing more. Which of these are NVSHMEM's
         // symmetric heap, and whose, is decided later by asking NVSHMEM — see
-        // refresh_nvshmem_heap_map. cuMemMap is only the source of exact sizes.
+        // refresh_mapped_regions. cuMemMap is only the source of exact sizes.
         auto* p = (cuMemMap_params*)params;
         auto& g = G();
         if (g.mapped_bases_seen.insert((uint64_t)p->ptr).second) {
