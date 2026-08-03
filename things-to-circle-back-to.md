@@ -2,9 +2,33 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
-## OPEN: NVSHMEM heap attribution depends on when a record is drained
+## FIXED (2026-08-03, `21f3b74`+`ebaaf3c`): NVSHMEM heap attribution depended on when a record was drained
 
-`find_nvshmem_heap_owner` (`nvbit_backend.cu`) resolves which PE owns an address
+**Resolution first, history below.** Ownership no longer comes from NVSHMEM's VA
+layout at all. `nvshmem_ptr(a, pe)` is asked directly (`dlsym` at runtime, no
+build dependency), and `cuPointerGetAttribute` names the GPU the answer lives
+on, so `mem_device` is a device rather than a PE wearing one's clothes. The
+premise — `nvshmem_ptr(a, my_pe) == a` for local symmetric memory and NULL for
+everything else, including peers' own mappings — was measured on MN5 in four
+configurations *before* the code was written (jobs 44135828, 44136107), because
+the scheme being replaced failed precisely by assuming an unverified layout
+property. See `plans/PLAN-20260803-1448-nvshmem-heap-attribution-todo.md`.
+
+Two things the fix turned up that the plan did not predict:
+
+- **`nvshmem_ptr` segfaults outside NVSHMEM's init window** (null+0x20), and
+  `nvshmem_my_pe` / `nvshmem_n_pes` keep answering plausibly across the same
+  boundary, so they cannot be used as the liveness test. `nvshmemx_init_status`
+  can. The recv thread's last refresh naturally lands after the application has
+  finalized, so this is the normal path, not an edge case.
+- **`cuMemMap` is not NVSHMEM's alone.** NCCL registers peer buffers through it
+  too, and case 05's peer traffic existed only because the NVSHMEM positional
+  guess was being applied to NCCL's regions — `mem_dev` up to 8 on a 4-GPU node.
+  Every mapped region now gets CUDA's answer for which GPU it lives on.
+
+The original entry:
+
+`find_nvshmem_heap_owner` (`nvbit_backend.cu`) resolved which PE owns an address
 as:
 
 ```cpp
@@ -42,29 +66,19 @@ interleaving and still be wrong. Ownership has to stop depending on discovery
 order — see the unblocking steps in
 `plans/PLAN-20260803-1021-gpumem-window-timestamps-todo.md`.
 
-**Deferred 2026-08-03 (user decision), but no longer open-ended — see
-`plans/PLAN-20260803-1448-nvshmem-heap-attribution-todo.md`.** It is worse than
-a race: the model assumes one heap region per PE, which is where
-`npes = snap->size()` comes from, and this workload maps ~76 regions for 8 PEs,
-so the PE count is wrong and everything derived from it is too.
+It was worse than a race: the model assumed one heap region per PE, which is
+where `npes = snap->size()` came from, and this workload maps ~76 regions for 8
+PEs, so the PE count was wrong and everything derived from it was too.
 
-The fix is **not** to get NVSHMEM internals — it is to stop guessing.
-`nvshmem_ptr(ptr, pe)` returns the local address of PE `pe`'s copy of a
-symmetric object, and `nvshmem_my_pe` / `nvshmem_n_pes` give the real PE count.
-All are exported from `libnvshmem_host.so` (verified on MN5, 3.2.5) and
-reachable by `dlsym` at runtime — no link-time dependency, and
-`pcomm::smart_dlsym` already does this for ibverbs. That turns the item from
-"needs vendor internals" into "bounded, uses the public API", and it is a net
-deletion: both the 3.x positional scheme and the 2.x hardcoded-VA path go.
-
-**Already worked around, in a passing test.** `case 04`'s `peer_fanout.sql` says
-"the ring put has each PE store to one neighbor" and its golden asserts
-`peers = 2`, with a comment that mem_device ids are "unreliable and
-run-varying". A one-neighbour ring reporting fan-out 2 *is* this bug, visible in
-a green check. Fixing attribution should let that golden become an exact peer
-assertion like case 03's. Case 07 stays green in the meantime *because the change
-that exposed this is parked*, not because the attribution is sound — any future
-change to recv-thread timing will surface it again.
+**It had already been worked around, in a passing test.** `case 04`'s
+`peer_fanout.sql` said "the ring put has each PE store to one neighbor" while
+its golden asserted `peers = 2`, with a comment that mem_device ids were
+"unreliable and run-varying". A one-neighbour ring reporting fan-out 2 *was*
+this bug, visible in a green check — the second "peer" being the rank's own
+local `src` loads wearing someone else's device id. That check is now
+`peer_topology.sql` and asserts the exact ring, and cases 04 and 06 lost the
+196608 phantom `load` rows per rank that the misattribution had been
+manufacturing.
 
 Related: case 06's `regions_per_rank` (115 -> 114) and `ib_entities`
 (mem_region 460 -> 456) fail *independently of any of this* — they fail at
@@ -621,15 +635,16 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   (entities are open-ended). Add close events when lifetime queries matter.
 
 ## gpumem / NVSHMEM
-- **NVSHMEM 3.x ownership heuristic breaks on NVSHMEM 3.7** (validated). 3.7
-  fragments the symmetric heap into ~788 cuMemMap regions, so the "one region
-  per PE" positional model mis-attributes. Real 3.7 layout is a fixed-VA
-  windowed scheme (base 0x10020000000, stride 0x4000000000). Fix options:
-  detect the npes evenly-strided super-windows, or move to host-side ownership
-  (hook `nvshmem_malloc` / query `nvshmem_ptr`) — the robust, version-proof
-  path. See memory `pcomm-nvshmem-version-fragility` / `-hostside-ownership`.
-- **NVSHMEM 2.x legacy path** (`find_nvshmem_dev_of_ptr_legacy`) coded but never
-  exercised (du04 has 3.x only).
+- ~~**NVSHMEM 3.x ownership heuristic breaks on NVSHMEM 3.7**~~ and ~~**the 2.x
+  legacy path**~~ — both deleted 2026-08-03. The positional model and the
+  hardcoded-VA model are gone; ownership comes from `nvshmem_ptr` +
+  `cuPointerGetAttribute`, which read no version and assume no layout, so "which
+  NVSHMEM fragments the heap" stopped being a question anyone has to answer.
+  See the FIXED entry at the top.
+- **Team-scoped symmetric allocations are unhandled.** `nvshmemx_mc_ptr` /
+  multicast addresses are not `nvshmem_ptr`-resolvable; they fall through to the
+  alloc registry, resolve to `run_device`, and are filtered out — i.e. missing,
+  not wrong. No case uses them today.
 - **gpumem provider not re-validated on du04 after the fork/cross-thread tracer
   changes** — only core tests + the ibverbs provider were re-checked. Rebuild
   libgpumem_trace.so on du04 and re-run the diim/nvshmem baselines before

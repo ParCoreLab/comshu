@@ -277,6 +277,35 @@ like with like. On one node it is numerically identical to the PE, so no golden
 moves; at 8 PEs over 2 nodes it is the difference between a device id and a
 rank id that merely looked like one.
 
+### Departure 3: two things the first MN5 run (44136544) forced
+
+Both were found by running, not by reasoning, and both are now in `ebaaf3c`.
+
+**`nvshmem_ptr` is only safe inside NVSHMEM's init window.** It dereferences the
+heap state, and outside `nvshmem_init` .. `nvshmem_finalize` that state does not
+exist: null+0x20, all four ranks of case 04, in the recv thread. The recv
+thread's *last* refresh naturally lands after the application has finalized, so
+this is the normal path rather than an edge case. `nvshmem_my_pe` and
+`nvshmem_n_pes` keep answering plausibly across the same boundary — the probe in
+step 1 could not have caught this, because it only ever called them while
+initialised — so they cannot be the liveness test. `nvshmemx_init_status` can,
+and is now *required* to be resolvable rather than optional: without it there is
+no safe window to check and the heap path stays off. The crash also took the
+whole capture with it, since records buffer until `drain_thread`; an empty
+capture is what a dead recv thread looks like.
+
+**`cuMemMap` is not NVSHMEM's alone, and case 05 was living off the bug.** NCCL
+registers its peer buffers through the same APIs, and the `cuMemAlloc`-fed
+registry never sees those. Deleting the positional guess therefore left case 05
+(NCCL, no NVSHMEM anywhere) with *no peer traffic at all* — because its peer
+traffic had only ever existed as `find_nvshmem_heap_owner` fabricating owners
+for NCCL's regions. It reported `mem_dev` up to 8 on a 4-GPU node, which is the
+same `owner_in_range` violation as cases 04 and 06 wearing a different hat. The
+fix is not NVSHMEM-shaped: every mapped region now gets the device
+`cuPointerGetAttribute` says it lives on. That is the honest form of what case
+05 was measuring, and it is what the plan's "adds entries to a registry that
+already exists" was always going to have to cover.
+
 ### Consequence: three goldens changed, and why that is not regeneration
 
 Predicted from the workload *before* the run, not read off it. `put_to_next`
