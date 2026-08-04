@@ -164,6 +164,46 @@ static std::uint32_t port_lid(ibv_context* ctx, std::uint8_t port_num) {
     return ibv_query_port(ctx, port_num, &pa) == 0 ? pa.lid : 0u;
 }
 
+// Per-QP source LID, learned at RST2INIT.
+//
+// A queue pair is bound to a port at the ->INIT transition and nowhere else, so
+// that is the one command that can say which port — exactly as the ibverbs
+// provider learns it under IBV_QP_PORT (ib_records.hpp). Reading
+// primary_address_path.vhca_port_num out of INIT2RTR instead returned 0 on
+// every connection of the first real capture, while rlid from the same pointer
+// decoded correctly as 17 — the path was right, the field is simply not set
+// there. src_lid came back 0 everywhere as a result, which is the collision
+// (src_lid, qp_num) exists to prevent, reintroduced.
+static std::mutex                                    g_lid_mutex;
+static std::unordered_map<std::uint32_t, std::uint32_t> g_qp_src_lid;
+
+static void remember_src_lid(std::uint32_t qp_num, std::uint32_t lid) {
+    std::lock_guard<std::mutex> lk(g_lid_mutex);
+    g_qp_src_lid[qp_num] = lid;
+}
+
+static std::uint32_t src_lid_of(std::uint32_t qp_num) {
+    std::lock_guard<std::mutex> lk(g_lid_mutex);
+    auto                        it = g_qp_src_lid.find(qp_num);
+    return it == g_qp_src_lid.end() ? 0u : it->second;
+}
+
+static void decode_rst2init(mlx5dv_devx_obj* obj, const void* cmd_in) {
+    auto*      qpc = DEVX_ADDR_OF(rst2init_qp_in, const_cast<void*>(cmd_in), qpc);
+    const auto qp_num = DEVX_GET(rst2init_qp_in, cmd_in, qpn);
+    const auto* path = DEVX_ADDR_OF(qpc, qpc, primary_address_path);
+    const auto  port_num = DEVX_GET(ads, path, vhca_port_num);
+
+    ibv_context* ctx = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_obj_mutex);
+        auto                        it = g_obj_ctx.find(obj);
+        if (it != g_obj_ctx.end())
+            ctx = it->second;
+    }
+    remember_src_lid(qp_num, port_lid(ctx, static_cast<std::uint8_t>(port_num)));
+}
+
 // --- DEVX decoding ---------------------------------------------------------
 
 static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd_out) {
@@ -213,14 +253,10 @@ static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
     std::memcpy(&gid_prefix, rgid, 8);
     std::memcpy(&gid_iface, rgid + 8, 8);
 
-    ibv_context* ctx = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(g_obj_mutex);
-        auto                        it = g_obj_ctx.find(obj);
-        if (it != g_obj_ctx.end())
-            ctx = it->second;
-    }
-
+    // src_lid comes from the RST2INIT we already saw for this queue pair, not
+    // from this command — see decode_rst2init. port_num is still reported from
+    // here so a capture shows what INIT2RTR actually carried (0 on this stack)
+    // rather than silently borrowing the INIT value and looking consistent.
     rec().record(rr::Mlx5DevxQpConnect{{},
                                        {},
                                        be64toh(gid_prefix),
@@ -228,7 +264,7 @@ static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
                                        qp_num,
                                        dest_qp_num,
                                        static_cast<std::uint32_t>(dest_lid),
-                                       port_lid(ctx, static_cast<std::uint8_t>(port_num)),
+                                       src_lid_of(qp_num),
                                        static_cast<std::uint8_t>(port_num)});
 }
 
@@ -307,8 +343,11 @@ Profiler::Profiler() {
             if (ret != 0 || !obj || !cmd_in || inlen < 4)
                 return;
             const auto opcode = DEVX_GET(init2rtr_qp_in, cmd_in, opcode);
-            const bool decode = (opcode == MLX5_CMD_OP_INIT2RTR_QP);
-            if (decode)
+            const bool decode =
+                (opcode == MLX5_CMD_OP_INIT2RTR_QP || opcode == MLX5_CMD_OP_RST2INIT_QP);
+            if (opcode == MLX5_CMD_OP_RST2INIT_QP)
+                decode_rst2init(obj, cmd_in);   // learn the port -> our LID
+            else if (opcode == MLX5_CMD_OP_INIT2RTR_QP)
                 decode_init2rtr(obj, cmd_in);
             rec().record(rr::Mlx5DevxCmd{{},
                                          {},
