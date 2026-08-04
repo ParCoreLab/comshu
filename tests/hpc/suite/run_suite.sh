@@ -103,7 +103,16 @@ case "$cmd" in
       fi
       ok=$(python3 -c "import json;print(json.load(open('$d/result.json'))['ok'])")
       n=$(python3 -c "import json;print(json.load(open('$d/result.json')).get('checks',0))")
-      if [ "$ok" = "True" ]; then printf '%-20s %-6s %s\n' "$c" PASS "$n checks · $(basename "$d")"
+      # A case that declined to run is not a case that passed. It sets ok:true
+      # so the board stays green — the host genuinely cannot test it, and a red
+      # square there would report a fact about the cluster as a defect — but
+      # rendering it as PASS tells the reader something untrue. Case 09 skips on
+      # MN5, which has no IBGDA, and showed up as "PASS 0 checks" in 0s among
+      # eight real passes: nine greens implying coverage that does not exist.
+      why=$(python3 -c "import json;d=json.load(open('$d/result.json'));print(d.get('reason','') if d.get('skipped') else '')")
+      if [ -n "$why" ]; then
+        printf '%-20s %-6s %s\n' "$c" SKIP "$why · $(basename "$d")"
+      elif [ "$ok" = "True" ]; then printf '%-20s %-6s %s\n' "$c" PASS "$n checks · $(basename "$d")"
       else printf '%-20s %-6s %s\n' "$c" FAIL "see job .out · $(basename "$d")"; fail=1; fi
     done
     [ "$skipped" -gt 0 ] && echo "  !! INCOMPLETE: $skipped case(s) skipped — a green board here covers less than a full run"

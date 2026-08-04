@@ -315,9 +315,21 @@ fi
 # --- 5. board ---------------------------------------------------------------
 say "suite board"
 echo "  results: $OUT_ROOT   manifest: $MANIFEST_REMOTE"
-rsh "cd $RDIR && PCOMM_ROOT=$PROOT PCOMM_OUT_ROOT=$OUT_ROOT PCOMM_RUN_MANIFEST=$MANIFEST_REMOTE bash tests/hpc/suite/run_suite.sh check"
+# Captured rather than streamed, so the banner below can count what is on the
+# board. Printed verbatim immediately after, so nothing is hidden by capturing.
+board="$(rsh "cd $RDIR && PCOMM_ROOT=$PROOT PCOMM_OUT_ROOT=$OUT_ROOT PCOMM_RUN_MANIFEST=$MANIFEST_REMOTE bash tests/hpc/suite/run_suite.sh check")"
 rc=$?
+printf '%s\n' "$board"
 [ "$run_rc" -eq 0 ] || rc=$(( rc == 0 ? 1 : rc ))   # a bad submit/wait is a red run
 echo
-[ $rc -eq 0 ] && echo "SUITE GREEN (PASS/XFAIL)" || echo "SUITE RED (exit $rc)"
+# Name the skips in the banner. "SUITE GREEN" over a board containing a case
+# that never ran overstates what was tested — case 09 skips on MN5 for want of
+# IBGDA, and a green banner should not quietly absorb that.
+n_skip=$(printf '%s\n' "$board" | grep -c ' SKIP ')
+if [ $rc -eq 0 ]; then
+  echo "SUITE GREEN (PASS/XFAIL)"
+  [ "$n_skip" -gt 0 ] && echo "  note: $n_skip case(s) SKIPPED on this host — green here covers less than the full suite"
+else
+  echo "SUITE RED (exit $rc)"
+fi
 exit $rc
