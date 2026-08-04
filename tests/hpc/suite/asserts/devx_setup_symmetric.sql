@@ -1,4 +1,10 @@
 -- requires: mlx5_umem mlx5_devx_qp mlx5_devx_qp_connect params.ranks
+-- SUITE-WIDE, but note what it assumes: that every rank runs the same code.
+-- That holds for every DEVX case today (09, 10 and 11 all run the same putget
+-- binary under a different transport or umem binding). A future case with
+-- deliberately asymmetric ranks would have to override this file rather than
+-- inherit it — the assertion would be wrong there, not the capture.
+--
 -- Every rank runs the same NVSHMEM bootstrap, so every rank must register the
 -- same number of buffers, create the same number of DEVX queue pairs, and drive
 -- the same number of connections. Asymmetry means a rank's DEVX traffic stopped

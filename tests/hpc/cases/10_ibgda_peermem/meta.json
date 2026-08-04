@@ -1,0 +1,32 @@
+{
+  "case": "10_ibgda_peermem",
+  "providers": [
+    "mlx5dv"
+  ],
+  "platform": "a100",
+  "topology": "1 node x2 A100 PEs over one ConnectX-5, NVSHMEM put-ring forced through the NIC with P2P disabled, GPU-initiated (IBGDA), NIC buffers registered through nvidia_peermem rather than DMABUF",
+  "golden": "none, by design — same reasoning as case 09",
+  "why": "case 09 proved the mlx5dv/DEVX provider sees device-initiated traffic, but only under the by_dmabuf umem binding. This case is the same experiment with exactly one variable changed — NVSHMEM_IB_DISABLE_DMABUF=1 — so the buffers are registered by address through nvidia_peermem instead. It is the only case that executes the by_addr arm of umem_referential.",
+  "why_one_variable": "transport, workload, rank count and every other NVSHMEM setting are identical to case 09 on purpose. Case 11 changes the transport instead. Keeping the two changes in separate cases is the point: an earlier attempt conflated 'ibdevx' with 'no dmabuf', and when the run failed there was no way to attribute it. Two cases that differ from 09 in one variable each can be read; one case that differs in two cannot.",
+  "what_this_catches_that_09_cannot": "under by_dmabuf the umem address is 0 by construction and sq_base is an OFFSET into the descriptor, so 0x0 is the legitimate first slot — umem_referential's 'known umem but no send-queue address' clause is unreachable there and was only ever reasoned about. Under by_addr a zero sq_base means the registry resolved the id but not the buffer, which is a real defect. This case is what makes that clause executable.",
+  "platform_note": "requires BOTH nvidia_peermem (or nv_peer_mem) and PeerMappingOverride=1. du04 has both (verified 2026-08-05 in /proc/driver/nvidia/params). MN5's ACC partition has neither, and NVSHMEM_IB_DISABLE_DMABUF=1 there removes the only remaining registration path, so IBGDA cannot initialise at all — the case SKIPs, which is honest rather than red.",
+  "loopback_note": "same as case 09: both PEs sit behind one HCA, so src_lid == dest_lid on every connection and that is correct. The invariant that survives loopback is closure, not distinctness.",
+  "workload": {
+    "ranks": 2,
+    "nodes": 1,
+    "gpus": 2,
+    "iters": 2,
+    "elems": 1024,
+    "elem_bytes": 4,
+    "umem_binding": 0
+  },
+  "workload_note": "`mpirun -np 2 ... putget 1024 2`, the same binary as cases 04/06/07/09. umem_binding=0 (by_addr) is the *configured* transport, asserted against the capture by umem_binding_as_configured rather than read from it — so a capture can never be checked against the wrong experiment.",
+  "expect_tables": [
+    "mlx5_umem",
+    "mlx5_uar",
+    "mlx5_devx_cmd",
+    "mlx5_devx_qp",
+    "mlx5_devx_qp_connect"
+  ],
+  "oracle_note": "ibgda_engaged gates everything else here exactly as in case 09, and it matters more: under by_addr a silent fallback to a CPU-proxy transport would still produce plausible-looking DEVX rows, and only the GPU-residency of the umems distinguishes them."
+}

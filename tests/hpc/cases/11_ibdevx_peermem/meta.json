@@ -1,0 +1,32 @@
+{
+  "case": "11_ibdevx_peermem",
+  "providers": [
+    "mlx5dv"
+  ],
+  "platform": "a100",
+  "topology": "1 node x2 A100 PEs over one ConnectX-5, NVSHMEM put-ring forced through the NIC with P2P disabled, CPU-driven DEVX (ibdevx), NIC buffers registered through nvidia_peermem",
+  "golden": "none, by design — same reasoning as cases 09 and 10",
+  "why": "SigmaTrace's published artifact configuration, and the third corner of a deliberate design. Cases 09, 10 and 11 differ from one another by exactly one variable each: 09→10 changes the umem binding, 10→11 changes the transport. Read together they separate what the provider decodes from who drives the hardware.",
+  "why_not_device_initiated": "ibdevx drives the DEVX control plane from the CPU. There is no GPU-initiated data plane here and none is asserted — ibgda_engaged is deliberately ABSENT rather than expect_fail, because asserting device-initiated traffic in a CPU-driven transport would be asserting a bug rather than recording one. What this case proves is that the DEVX decoding, the umem registry and topology closure hold independently of who rings the doorbell, which cases 09 and 10 structurally cannot show because there the two always move together.",
+  "prerequisite_note": "requires nvidia_peermem but NOT PeerMappingOverride=1, unlike cases 09 and 10. PeerMappingOverride exists to let the NIC's UAR doorbell page be mapped into the GPU's address space, which is what a GPU-initiated transport needs; ibdevx rings the doorbell from the CPU. Registering GPU buffers with the NIC by address still needs peermem. This narrower condition is intentional: if PeerMappingOverride turns out to be required after all, this case FAILS on a host that has peermem without it, rather than skipping and hiding the fact. A skip condition that is too broad makes a case invisible exactly where it would have been informative.",
+  "comparison_note": "this is the one configuration where SigmaTrace's results and pcomm's can be compared directly. That comparison has not been run yet — the case exists so that it can be, and so that any claim about parity has a capture behind it rather than a reading of source.",
+  "loopback_note": "same as cases 09 and 10: both PEs sit behind one HCA, so src_lid == dest_lid on every connection and that is correct. The invariant that survives loopback is closure, not distinctness.",
+  "workload": {
+    "ranks": 2,
+    "nodes": 1,
+    "gpus": 2,
+    "iters": 2,
+    "elems": 1024,
+    "elem_bytes": 4,
+    "umem_binding": 0
+  },
+  "workload_note": "`mpirun -np 2 ... putget 1024 2`, the same binary as cases 04/06/07/09/10 — held constant so the transport is the only thing that varies from case 10.",
+  "expect_tables": [
+    "mlx5_umem",
+    "mlx5_uar",
+    "mlx5_devx_cmd",
+    "mlx5_devx_qp",
+    "mlx5_devx_qp_connect"
+  ],
+  "oracle_note": "without ibgda_engaged this case has no transport-engagement guard of its own, and expect_tables is what stands in for one: a silent fallback to a non-DEVX transport (ibrc) produces no 200-range streams at all, which expect_tables turns into a red board rather than an empty pass. That substitution is worth stating because it is weaker than case 09's guard — it catches 'no DEVX at all', not 'DEVX but not the transport we asked for'."
+}
