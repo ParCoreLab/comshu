@@ -87,7 +87,15 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # fixed and shared by every case so an assertion referencing a param a case does
 # not define gets NULL — which `-- requires:` turns into a visible [skip] rather
 # than a query that quietly matches nothing and reads as a pass.
-PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes regions_per_rank"
+# umem_binding is the transport configuration as an oracle input, not an
+# observation: IBGDA hands buffers to the NIC either by address (peermem path,
+# NVSHMEM_IB_DISABLE_DMABUF=1) or by dmabuf fd, and the two produce *different
+# correct captures* — by address the umem carries a real pointer, by dmabuf it
+# carries an offset of 0 and a descriptor. A capture that does not say which was
+# configured cannot be checked against either, which is exactly how hours went
+# into comparing two runs that were never the same experiment. 0 = by_addr,
+# 1 = by_dmabuf.
+PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes regions_per_rank umem_binding"
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
 params_sql="$(meta_py <<'PY'
