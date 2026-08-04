@@ -93,7 +93,15 @@ case "$cmd" in
         [ "$xfail" = "True" ] || fail=1; continue
       fi
       if [ "$xfail" = "True" ]; then
-        outcome=$(python3 -c "import json;print(json.load(open('$d/result.json')).get('outcome','?'))")
+        # Keyed on `ok`, which every writer of a result.json actually sets —
+        # sql_check.sh and each case's failure path both do. This read `outcome`,
+        # which NOTHING writes, so it was always '?': the XFAIL branch was taken
+        # unconditionally and XPASS was unreachable. A case marked expect_fail
+        # that started working would have gone on reporting XFAIL forever, which
+        # is precisely the signal the marker exists to produce. Latent rather
+        # than live — no case is currently case-level xfail — but the whole point
+        # of the mechanism is to notice, and it could not.
+        outcome=$(python3 -c "import json;d=json.load(open('$d/result.json'));print('completed' if d.get('ok') and not d.get('skipped') else d.get('reason') or 'did not complete')")
         if [ "$outcome" = "completed" ]; then
           printf '%-20s %-6s %s\n' "$c" XPASS "unexpectedly ran — remove xfail, add goldens · $(basename "$d")"
         else
@@ -110,9 +118,15 @@ case "$cmd" in
       # MN5, which has no IBGDA, and showed up as "PASS 0 checks" in 0s among
       # eight real passes: nine greens implying coverage that does not exist.
       why=$(python3 -c "import json;d=json.load(open('$d/result.json'));print(d.get('reason','') if d.get('skipped') else '')")
+      # Assertion-level xfails ride inside a PASS. Case 08 passes with one
+      # known-failing assertion (perftest's mlx5dv_create_qp, unhooked by the ib
+      # provider) and the board said only "PASS 10 checks" — true, and quiet
+      # about the part that is known broken.
+      nx=$(python3 -c "import json;print(json.load(open('$d/result.json')).get('asserts',{}).get('xfail',0))" 2>/dev/null || echo 0)
       if [ -n "$why" ]; then
         printf '%-20s %-6s %s\n' "$c" SKIP "$why · $(basename "$d")"
-      elif [ "$ok" = "True" ]; then printf '%-20s %-6s %s\n' "$c" PASS "$n checks · $(basename "$d")"
+      elif [ "$ok" = "True" ]; then
+        printf '%-20s %-6s %s\n' "$c" PASS "$n checks${nx:+$([ "$nx" -gt 0 ] && echo ", $nx xfail")} · $(basename "$d")"
       else printf '%-20s %-6s %s\n' "$c" FAIL "see job .out · $(basename "$d")"; fail=1; fi
     done
     [ "$skipped" -gt 0 ] && echo "  !! INCOMPLETE: $skipped case(s) skipped — a green board here covers less than a full run"
