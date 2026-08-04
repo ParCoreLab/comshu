@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <type_traits>
 
@@ -13,6 +16,50 @@
 
 namespace pcomm::hook {
 static constexpr bool DebugPrint{false};
+
+// ================================================================
+// PROBE — which interposers does a workload actually enter?
+//
+// Enabled only by PCOMM_TRACE_HOOKS=1; off, it costs one predictable branch on
+// a function-local static.
+//
+// This exists because LD_DEBUG=bindings answers a different question than the
+// one case 08 asks. Bindings show which definition a symbol *resolves* to, and
+// for perftest every candidate door — ibv_create_qp, mlx5dv_create_qp,
+// rdma_create_qp — resolved somewhere plausible in the same run. Resolution
+// cannot distinguish the door that was opened from the doors that merely exist,
+// and three explanations asserted from resolution-level evidence were wrong.
+// Entry is not ambiguous: the interposer either ran or it did not.
+//
+// It prints the first entry per tag rather than every call, so a workload with
+// 1000 sends stays readable, and it prints whether anything was *listening* on
+// that tag. Those two facts separate the two failure modes that look identical
+// from the outside: a door we never hooked, and a hook nobody registered a
+// callback on.
+// ================================================================
+namespace detail {
+
+inline bool hook_trace_enabled() noexcept {
+    static const bool on = [] {
+        const char* v = std::getenv("PCOMM_TRACE_HOOKS");
+        return v && *v && std::strcmp(v, "0") != 0;
+    }();
+    return on;
+}
+
+// `first` is per-tag: the caller passes a distinct static for each.
+inline void hook_trace_first(bool& first, const char* sym, const char* mechanism,
+                             bool listening) noexcept {
+    if (!hook_trace_enabled() || !first)
+        return;
+    first = false;
+    const char* rank = std::getenv("PCOMM_RANK");
+    std::fprintf(stderr, "[pcomm-trace] rank=%s ENTER %s (%s, listening=%s)\n", rank ? rank : "?",
+                 sym, mechanism, listening ? "yes" : "no");
+    std::fflush(stderr);
+}
+
+}  // namespace detail
 
 // ================================================================
 namespace TS = pcomm::helpers::ts;
@@ -147,6 +194,14 @@ public:
     static auto invoke_preload(Args&&... args) noexcept -> HookTrait<Tag>::RetType {
         auto& mgr = instance();
 
+        // Before the resolution below, so that a symbol we fail to resolve is
+        // still reported as entered rather than only as an abort. The static is
+        // per-tag by virtue of the template instantiation; the racy write costs
+        // at worst a duplicate line.
+        static bool trace_first = true;
+        detail::hook_trace_first(trace_first, HookTrait<Tag>::symbol_name, "preload",
+                                 std::get<TaggedBool<Tag>>(mgr.m_registered_tags).value);
+
         // Lazy resolution: the real library may not have been loaded at
         // registration time. If we are here at all, the target application
         // just called the symbol, so it is resolvable now — or never.
@@ -231,6 +286,11 @@ public:
         requires is_object_ops_hook_v<Tag>
     static auto invoke_object_ops(Args... args) noexcept -> typename HookTrait<Tag>::RetType {
         auto& mgr = instance();
+
+        // Object-ops tags are traced too: a healthy ib provider entering
+        // post_send while no create_qp door reports is itself the finding.
+        static bool trace_first = true;
+        detail::hook_trace_first(trace_first, HookTrait<Tag>::symbol_name, "object-ops", true);
 
         // Start timestamp as soon as the function hook is invoked
         auto ts_start = mgr.m_timestamp.now();

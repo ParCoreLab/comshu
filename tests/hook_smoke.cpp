@@ -9,7 +9,11 @@
 //     suppresses them — the same mechanism the ibverbs provider uses on
 //     ibv_context->ops, minus libibverbs (this host has none; the real thing
 //     is exercised on MN5 by the suite);
-//  3. the ELF symbol resolver links and resolves a real libc export.
+//  3. the preload path WORKS: invoke_preload lazily resolves the real symbol,
+//     fires pre/post callbacks around it and returns the real result — the
+//     choke point every provider's interposers forward to, exercised here on
+//     libc's puts because this host has no vendor library;
+//  4. the ELF symbol resolver links and resolves a real libc export.
 
 #include <cassert>
 #include <cstdio>
@@ -22,6 +26,10 @@
 // Vendor-free preload-hook definition: exercises the trait/macro machinery
 // (tag creation + HookTrait specialization).
 DEFINE_PRELOAD_HOOK(demo, puts, "puts", int, const char*);
+
+// A preload hook whose "real" implementation lives in this binary, so
+// invoke_preload's dispatch can be exercised without a vendor library.
+DEFINE_PRELOAD_HOOK(demo, preload_fn, "demo_preload_fn", int, int);
 
 // A fake "device context" with an ops table, standing in for ibv_context.
 struct fake_ctx;
@@ -36,6 +44,10 @@ struct fake_ctx {
 };
 
 namespace {
+int real_preload_fn(int x) noexcept {
+    return x * 2;
+}
+
 int real_add(fake_ctx*, int x) {
     return x + 1;
 }
@@ -48,7 +60,8 @@ int g_post_maybe = 0;
 
 struct DemoHooks
     : pcomm::hook::CompositeHookManager<DemoHooks, pcomm::hook::DefaultHookManagerConfig,
-                                        demo::op_add_tag, demo::op_maybe_tag, demo::puts_tag> {
+                                        demo::op_add_tag, demo::op_maybe_tag, demo::puts_tag,
+                                        demo::preload_fn_tag> {
     template<pcomm::hook::ValidCallbackTag Tag> auto& get_op(fake_ctx* c) const noexcept {
         if constexpr (std::is_same_v<Tag, demo::op_add_tag>) {
             return c->add;
@@ -95,7 +108,38 @@ int main() {
     std::printf("object-ops: patched call=%d, post_add=%d, post_maybe=%d\n", r, g_post_add,
                 g_post_maybe);
 
-    // 3. SmartDlsym runtime (SymbolResolver.cpp) links and resolves a real export.
+    // 3. The preload path, actually invoked. Until now this file only
+    // static_asserted the traits, so invoke_preload — the choke point every
+    // LD_PRELOAD interposer in every provider forwards to — had no runtime
+    // coverage at all.
+    //
+    // The real pointer is seeded here rather than resolved, because
+    // register_real's lazy resolution cannot succeed from a binary like this
+    // one. It decides "did I resolve back to myself?" by dladdr-ing what
+    // RTLD_DEFAULT returns for the symbol; a provider .so exports the symbol so
+    // that correctly finds the provider, but a test binary exports nothing, so
+    // the lookup lands on the defining library and every candidate is then
+    // rejected as self. That path needs a real interposing .so and is covered
+    // by the suite on MN5. What is coverable here is everything after it:
+    // registered-tag gating, interval stamping, pre/post dispatch, and the real
+    // result coming back out.
+    static int  g_post_pf = 0;
+    static bool g_pre_pf = false;
+    mgr.real_func<demo::preload_fn_tag>() = &real_preload_fn;
+    mgr.register_pre<demo::preload_fn_tag>([](int, Timestamp) { g_pre_pf = true; });
+    mgr.register_post<demo::preload_fn_tag>([](int ret, int x, Timestamp t0, Timestamp t1) {
+        assert(ret == x * 2 && "post callback sees the real return value");
+        assert(t1 >= t0 && "call interval is ordered");
+        g_post_pf++;
+    });
+
+    const int pr = DemoHooks::invoke_preload<demo::preload_fn_tag>(21);
+    assert(pr == 42 && "the real function ran and its result came back");
+    assert(g_pre_pf && "pre callback fired");
+    assert(g_post_pf == 1 && "post callback fired exactly once");
+    std::printf("preload: ret=%d pre=%d post=%d\n", pr, int(g_pre_pf), g_post_pf);
+
+    // 4. SmartDlsym runtime (SymbolResolver.cpp) links and resolves a real export.
     void* p = find_symbol_in_lib("libc", "puts");
     std::printf("find_symbol_in_lib(libc, puts) = %p\n", p);
     assert(p != nullptr);

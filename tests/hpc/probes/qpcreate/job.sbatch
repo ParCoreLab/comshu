@@ -1,20 +1,26 @@
 #!/bin/bash
-# PROBE — which symbol does perftest actually create its queue pair with?
+# PROBE — which interposer does perftest actually ENTER to create its queue pair?
 #
 # Not a suite case. It answers one question and then either becomes a hook or
 # gets deleted.
 #
-# Case 08 has never captured a queue-pair entity. The standing explanation was
-# "perftest uses mlx5dv_create_qp, which we do not hook". That hook now exists
-# and the entity is still missing: job 44199402 ran -p ib,devx with both
-# providers loaded, no engine error, and wrote ZERO 200-range streams while the
-# ib provider worked normally beside it (1000 post_send, 1010 poll_cq).
+# Case 08 captures a queue pair being driven (5 ib_modify_qp rows) and never
+# being created (ib_queue_pair and mlx5_queue_pair both empty), while the ib
+# provider is healthy in the same process (1000 post_send, 1010 poll_cq).
 #
-# ib_send_bw's dynamic symbol table imports THREE candidate doors —
-#   ibv_create_qp@IBVERBS_1.1, mlx5dv_create_qp@MLX5_1.3, rdma_create_qp@RDMACM_1.0
-# — and guessing between them has now been wrong twice, so this measures.
-# LD_DEBUG=bindings names both the caller and the definition each reference
-# resolves to, which is what settled the equivalent question for IBGDA.
+# The previous revision of this probe used LD_DEBUG=bindings. That was the wrong
+# instrument and it is worth recording why, because three explanations were
+# asserted from its output and all three were wrong. Bindings show which
+# definition a symbol RESOLVES to, not which symbol is CALLED. In job 44205459
+# both rdma_create_qp and rdma_create_qp_ex resolved, and perftest cannot be
+# calling both. So bindings proved "if this is called it reaches us" — for every
+# door — and could not narrow further.
+#
+# PCOMM_TRACE_HOOKS=1 measures entry instead, at invoke_preload/invoke_object_ops
+# in the hook engine, so it covers EVERY hooked symbol in both providers at once
+# rather than a hand-picked three. It prints the first entry per symbol and
+# whether a callback was listening, which separates the two indistinguishable
+# failure modes: a door we never hooked, versus a hook nobody registered on.
 #
 #SBATCH --job-name=pcomm-probe-qpcreate
 #SBATCH --account=etur02
@@ -30,30 +36,45 @@ source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
 
 OUT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/probe-qpcreate-${SLURM_JOB_ID:-local}"
-rm -rf "$OUT"; mkdir -p "$OUT/bind"
+rm -rf "$OUT"; mkdir -p "$OUT"
 
 nodes=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
 server="${nodes[0]}"; client="${nodes[1]}"
 devcmd='DEV=$(ibv_devinfo 2>/dev/null | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print d; exit}")'
 
-# LD_DEBUG on the client only: one side is enough to see which door is used, and
-# the output is large enough that both would just double it.
+# Traced on both sides: the client is the active connector, but a create path
+# taken only by the passive side would otherwise be invisible, and that asymmetry
+# is exactly the kind of thing this probe exists to not assume.
 srun --nodes=1 --ntasks=1 --nodelist="$server" --overlap bash -c \
-  "$devcmd; PCOMM_RANK=0 '$PCOMM' -p ib,devx -o '$OUT/cap' -- ib_send_bw -d \$DEV -n 20 -s 1024" &
+  "$devcmd; PCOMM_TRACE_HOOKS=1 PCOMM_RANK=0 '$PCOMM' -p ib,devx -o '$OUT/cap' \
+   -- ib_send_bw -d \$DEV -n 20 -s 1024" >"$OUT/server.log" 2>&1 &
 sleep 4
 srun --nodes=1 --ntasks=1 --nodelist="$client" --overlap bash -c \
-  "$devcmd; LD_DEBUG=bindings LD_DEBUG_OUTPUT='$OUT/bind/b' PCOMM_RANK=1 '$PCOMM' -p ib,devx \
-   -o '$OUT/cap' -- ib_send_bw -d \$DEV -n 20 -s 1024 $server"
+  "$devcmd; PCOMM_TRACE_HOOKS=1 PCOMM_RANK=1 '$PCOMM' -p ib,devx -o '$OUT/cap' \
+   -- ib_send_bw -d \$DEV -n 20 -s 1024 $server" >"$OUT/client.log" 2>&1
 wait
 
-echo "=== which create-qp symbols were bound, and to what? ==="
-for s in ibv_create_qp mlx5dv_create_qp rdma_create_qp rdma_create_qp_ex ibv_create_qp_ex; do
-  echo "--- $s"
-  grep -rh "\`$s'" "$OUT/bind"/ 2>/dev/null | sed 's/.*binding file //' | sort -u | head -4
-done
+echo "=== every interposer entered, both ranks ==="
+grep -h 'pcomm-trace' "$OUT"/server.log "$OUT"/client.log | sort -u
 
-echo "=== did the mlx5dv provider write anything? ==="
-find "$OUT/cap" -name '2*.pcs' | head -5 || echo "  no 200-range streams"
+echo "=== of those, the create-qp doors specifically ==="
+if grep -h 'pcomm-trace' "$OUT"/server.log "$OUT"/client.log | grep -E 'create_qp|devx_obj_create'; then
+  :
+else
+  # This is a real outcome, not an error: it means the queue pair is built by
+  # something outside our hook set entirely. Do not add a hook on this alone —
+  # widen the trace (the engine already covers every hooked symbol, so the next
+  # step is ltrace/gdb on the create path, not a guess).
+  echo "  NONE — no create door was entered by either rank"
+fi
+
+echo "=== positive control: the trace itself is working ==="
+# Without this, "no create door" and "the probe printed nothing at all" look
+# identical. post_send is known to fire ~1000 times on this workload.
+grep -hc 'pcomm-trace' "$OUT"/server.log "$OUT"/client.log
+
+echo "=== did either provider write a queue-pair entity? ==="
+find "$OUT/cap" -name '*.pcs' | sed 's|.*/||' | sort | uniq -c
 
 echo "=== what the binary imports (static, for comparison) ==="
 readelf --dyn-syms --wide "$(command -v ib_send_bw)" 2>/dev/null |
