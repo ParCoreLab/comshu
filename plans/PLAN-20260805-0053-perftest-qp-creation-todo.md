@@ -1,8 +1,9 @@
 # PLAN — find the door perftest creates its queue pair with
 
 - **Created:** 2026-08-05 00:53 +03
-- **Status:** TODO — narrowed by measurement, not closed. Four hypotheses dead,
-  one contradiction standing.
+- **Status:** ANSWERED 2026-08-05 — the door is `verbs_context::create_qp_ex`,
+  a function pointer, not a symbol. Hooked in `eaf6c57`/follow-up; awaiting the
+  green board before this file is renamed `-done`.
 - **Blocks:** case 08's `qp_creation_accounted` assertion, currently
   `expect_fail` with the evidence attached.
 - **Related:** `PLAN-20260803-2253-ibgda-device-initiated-capture` (the mlx5dv
@@ -63,6 +64,51 @@ Expected outcomes and what each means:
   when it selects a device. Note `ib_send_bw` does *not* import
   `ibv_create_qp_ex`, so this outcome would itself be surprising and worth
   pausing on rather than patching past.
+
+## The answer (job 44233994)
+
+Step 1 ran as an engine-level entry trace (`PCOMM_TRACE_HOOKS=1`) rather than
+three hand-placed prints, which made it cover every hooked symbol in both
+providers at once. Both ranks reported identically:
+
+```
+ENTER ibv_open_device    (preload,    listening=yes)
+ENTER ibv_reg_mr_iova2   (preload,    listening=yes)
+ENTER ibv_modify_qp      (preload,    listening=yes)
+ENTER ibv_qp_to_qp_ex    (preload,    listening=yes)
+ENTER ibv_poll_cq        (object-ops, listening=yes)
+ENTER ibv_alloc_pd / ibv_dereg_mr / ibv_destroy_qp  (listening=no)
+```
+
+**No create door at all** — and the positive control (8 traced symbols per rank)
+proves the instrument was live. A queue pair is modified, converted to an
+extended QP, and driven, having been created by nothing we can see.
+
+The reason is that it was never a symbol:
+
+```
+$ readelf --dyn-syms /lib64/libibverbs.so.1 | grep create_qp
+  ibv_create_qp@@IBVERBS_1.1
+  ibv_create_qp@IBVERBS_1.0
+```
+
+There is no exported `ibv_create_qp_ex`. `verbs.h:3071` makes it a `static
+inline` that dispatches through `verbs_get_ctx_op(context, create_qp_ex)` →
+`vctx->create_qp_ex(...)`. `librdmacm` likewise imports only
+`ibv_create_qp@IBVERBS_1.1`, so `rdma_create_qp_ex` reaches the same inline.
+
+### Why six hypotheses died and the seventh was not reachable
+
+Every earlier instrument — `nm`, `readelf`, `LD_DEBUG=bindings` — answers
+questions about **symbols**. A `static inline` has no symbol, so all three were
+constitutionally incapable of naming this door, and each failure looked like
+"wrong guess, try another symbol" rather than "wrong category of thing". The
+guesses were not unlucky; they were drawn from a set that could not contain the
+answer.
+
+The fix was to measure a different thing entirely: not what resolves, but what
+is **entered**. That distinction is the transferable lesson, and it is why the
+trace was added to the engine choke point rather than to three functions.
 
 ## Step 2 — only after step 1 names the door
 

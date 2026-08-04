@@ -19,10 +19,9 @@
     "ib_mem_region",
     "ib_modify_qp",
     "ib_post_send",
-    "ib_poll_cq"
+    "ib_poll_cq",
+    "ib_queue_pair"
   ],
-  "qp_creation_note": "Every modify_qp must refer to a queue pair some provider recorded creating. That is the invariant regardless of which entry point the application used, which is why the assertion takes the union of ib_queue_pair and mlx5_queue_pair rather than pinning either \u2014 pinning one would encode a fact about perftest as if it were a fact about pcomm.",
-  "expect_fail_asserts": {
-    "qp_creation_accounted": "LIVE GAP, narrowed by measurement (probe job 44205459, LD_DEBUG=bindings). ELIMINATED: symbol versioning (ibv_create_qp@IBVERBS_1.1 binds to libibverbs_trace.so from ib_send_bw, libibverbs AND librdmacm); the RDMA CM route (librdmacm imports only ibv_create_qp@IBVERBS_1.1, which resolves to us); DEVX (zero mlx5_devx_cmd records, and that hook works on du04); provider load and id-range conflict (100-199 and 200-299 are disjoint, declare_provider permits it, no engine error). STILL UNEXPLAINED: 5 modify_qp rows exist for a queue pair, every creation door resolves to one of our interposers, and no creation hook fired. Bindings cannot close this \u2014 LD_DEBUG shows RESOLUTION, not invocation (rdma_create_qp_ex bound too and perftest cannot be calling both). Next step is call-level evidence: a temporary build printing on entry to ibv_create_qp, mlx5dv_create_qp and mlx5dv_devx_obj_create. Do not weaken this assertion to close the gap."
-  }
+  "qp_creation_note": "Every modify_qp must refer to a queue pair some provider recorded creating. That is the invariant regardless of which entry point the application used, which is why the assertion takes the union of ib_queue_pair and mlx5_queue_pair rather than pinning either \u2014 pinning one would encode a fact about perftest as if it were a fact about pcomm. This assertion was expect_fail from its introduction until 2026-08-05 and was never weakened to close the gap; it went green when the missing door was hooked. The door was verbs_context::create_qp_ex, a function pointer rather than a symbol, which is why nm, readelf and LD_DEBUG=bindings could not name it \u2014 all three answer questions about symbols, and ibv_create_qp_ex is a static inline. Entry tracing (PCOMM_TRACE_HOOKS=1, jobs 44233994 then 44234284) settled it. See plans/PLAN-20260805-0053-perftest-qp-creation.",
+  "expect_tables_note": "ib_queue_pair joined expect_tables on 2026-08-05; before the create_qp_ex hook it was empty on every run of this case."
 }
