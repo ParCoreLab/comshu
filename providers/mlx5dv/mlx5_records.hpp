@@ -125,4 +125,22 @@ PCOMM_RECORD(Mlx5DevxQpConnect, RecordKind::Event, 208, "mlx5_devx_qp_connect") 
     std::uint8_t  port_num;
 };
 
+// ENTITY — a queue pair created through mlx5dv_create_qp, lifetime [create,
+// destroy). Not a DEVX object: this is an ordinary verbs queue pair reached
+// through the mlx5 extension entry point, which is why it carries an ibv_qp
+// handle and a qp_type rather than a send-queue address.
+//
+// It exists because perftest creates its queue pairs this way and never calls
+// ibv_create_qp, so ib_queue_pair has been empty on case 08 for as long as the
+// case has existed — while three goldens sat green beside it and its 3
+// modify_qp transitions referred to a queue pair no record had created. The
+// entity is emitted here rather than as an IbQueuePair because a provider may
+// only write inside its declared id range, which the engine now enforces.
+PCOMM_RECORD(Mlx5QueuePair, RecordKind::Entity, 210, "mlx5_queue_pair") {
+    Handle        qp;      // interned ibv_qp*
+    Handle        pd;      // interned ibv_pd*
+    std::uint32_t qp_num;
+    std::uint8_t  qp_type;
+};
+
 }  // namespace pcomm::providers::mlx5dv::records

@@ -50,6 +50,7 @@ PCOMM_SCHEMA_MATCH(mr::Mlx5Uar, fb::Mlx5Uar);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DevxCmd, fb::Mlx5DevxCmd);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQp, fb::Mlx5DevxQp);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQpConnect, fb::Mlx5DevxQpConnect);
+PCOMM_SCHEMA_MATCH(mr::Mlx5QueuePair, fb::Mlx5QueuePair);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -339,6 +340,18 @@ int main() {
             fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(1, 0x90), fb::TimePoint(0, 0), 0),
             0xFE80000000000000ull, 0x0002C90300ABCDEFull, 0x1EFFD, 0x1EFFC, 0xA93, 0x1F0E, 1);
         expect_identical("Mlx5DevxQpConnect", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5QueuePair> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.qp = 51;
+        c.payload.pd = 52;
+        c.payload.qp_num = 0x1EFFB;
+        c.payload.qp_type = 2;
+        fb::Mlx5QueuePair f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 51, 52,
+            0x1EFFB, 2);
+        expect_identical("Mlx5QueuePair", &c, &f, sizeof(c));
     }
     {  // InternKey / InternString: the dictionary every Handle depends on.
         Stamped<cr::InternKey> c{};

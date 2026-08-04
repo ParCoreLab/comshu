@@ -343,6 +343,16 @@ template<> struct Table<mxr::Mlx5DevxQpConnect> {
     }
 };
 
+
+template<> struct Table<mxr::Mlx5QueuePair> {
+    static constexpr const char* name = "mlx5_queue_pair";
+    static constexpr const char* cols = "ticks,qp,pd,qp_num,qp_type";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5QueuePair>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.qp,
+                     s.payload.pd, s.payload.qp_num, s.payload.qp_type);
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
@@ -350,7 +360,7 @@ using TableRecords =
     std::tuple<GpuAccess, MemObject, SourceLine, ClockAnchor, Attribution, ibr::IbQueuePair,
                ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
-               mxr::Mlx5DevxQpConnect>;
+               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair>;
 
 template<typename Tuple, typename F, std::size_t... Is>
 void for_each_type_impl(F&& f, std::index_sequence<Is...>) {

@@ -173,7 +173,7 @@ fi
 if [ "$do_build" -eq 1 ]; then
   say "build tools + ibverbs provider (gcc-13.2)"
   rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1; cd $RDIR &&
-       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON >/dev/null &&
+       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON >/dev/null &&
        cmake --build build -j 2>&1 | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2; exit 1; }
 

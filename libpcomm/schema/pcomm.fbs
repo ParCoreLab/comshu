@@ -311,3 +311,14 @@ struct Mlx5DevxQpConnect {
   src_lid:uint32;
   port_num:uint8;
 }
+
+// type 210, Entity. A queue pair created through mlx5dv_create_qp — an
+// ordinary verbs queue pair reached by the mlx5 entry point, not a DEVX object.
+// perftest creates its queue pairs this way and never calls ibv_create_qp.
+struct Mlx5QueuePair {
+  temporal:Temporal;
+  qp:uint32;
+  pd:uint32;
+  qp_num:uint32;
+  qp_type:uint8;
+}

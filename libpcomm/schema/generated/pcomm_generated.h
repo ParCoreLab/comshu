@@ -60,6 +60,8 @@ struct Mlx5DevxQp;
 
 struct Mlx5DevxQpConnect;
 
+struct Mlx5QueuePair;
+
 enum TimeKind : uint8_t {
   TimeKind_None = 0,
   TimeKind_Instant = 1,
@@ -1432,6 +1434,56 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
   }
 };
 FLATBUFFERS_STRUCT_END(Mlx5DevxQpConnect, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5QueuePair FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t qp_;
+  uint32_t pd_;
+  uint32_t qp_num_;
+  uint8_t qp_type_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  Mlx5QueuePair()
+      : temporal_(),
+        qp_(0),
+        pd_(0),
+        qp_num_(0),
+        qp_type_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  Mlx5QueuePair(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint32_t _pd, uint32_t _qp_num, uint8_t _qp_type)
+      : temporal_(_temporal),
+        qp_(::flatbuffers::EndianScalar(_qp)),
+        pd_(::flatbuffers::EndianScalar(_pd)),
+        qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        qp_type_(::flatbuffers::EndianScalar(_qp_type)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t qp() const {
+    return ::flatbuffers::EndianScalar(qp_);
+  }
+  uint32_t pd() const {
+    return ::flatbuffers::EndianScalar(pd_);
+  }
+  uint32_t qp_num() const {
+    return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint8_t qp_type() const {
+    return ::flatbuffers::EndianScalar(qp_type_);
+  }
+};
+FLATBUFFERS_STRUCT_END(Mlx5QueuePair, 64);
 
 }  // namespace fb
 }  // namespace pcomm

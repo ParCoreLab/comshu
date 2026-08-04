@@ -338,6 +338,29 @@ Profiler::Profiler() {
             {}, {}, h(obj), static_cast<std::uint32_t>(opcode), decode ? std::uint8_t{1} : std::uint8_t{0}});
     });
 
+
+    // mlx5dv_create_qp -> the queue-pair entity the ibverbs provider cannot see.
+    //
+    // perftest reaches its queue pairs through here and never calls
+    // ibv_create_qp, so ib_queue_pair has been empty on case 08 since the case
+    // was written — with three green goldens beside it and three modify_qp
+    // transitions referring to a queue pair no record had created. The entity
+    // goes in this provider's range because a provider may only write inside
+    // the range it declared, which the engine enforces.
+    this->register_post<create_qp_tag>(
+        [](ibv_qp* qp, ibv_context*, ibv_qp_init_attr_ex* attr, mlx5dv_qp_init_attr*, auto...) {
+            if (!qp)
+                return;
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::Mlx5QueuePair{{},
+                                           {},
+                                           h(qp),
+                                           h(attr ? attr->pd : nullptr),
+                                           qp->qp_num,
+                                           static_cast<std::uint8_t>(attr ? attr->qp_type
+                                                                          : qp->qp_type)});
+        });
+
     this->register_post<devx_obj_modify_tag>(
         [](int ret, mlx5dv_devx_obj* obj, const void* cmd_in, size_t inlen, void*, size_t, auto...) {
             if (ret != 0 || !obj || !cmd_in || inlen < 4)
