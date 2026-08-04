@@ -703,3 +703,87 @@ one more attempt before this is treated as settled.
 Port the *mechanism*, not the code. `providers/mlx5dv/` must hook `umem_reg_ex`,
 identify GPU buffers by dmabuf handle rather than address, and treat an unknown
 QP as a record to drop rather than a precondition to assert.
+
+## RETRACTION: SigmaTrace works. The crash was my configuration.
+
+The paper's artifact description settles it, and the fault was mine.
+
+Its A2/A4 platform is *"Single node, 4× NVIDIA A100-SXM4-40GB, 1× Mellanox
+ConnectX-5 (MT27800)"* — du04 exactly. Single-node was never the problem; it is
+the machine the doorbell benchmarks were published on. But the environment they
+use is not the one I used:
+
+```
+NVSHMEM_REMOTE_TRANSPORT=ibdevx      I used: ibgda
+NVSHMEM_IB_DISABLE_DMABUF=1          I used: unset (deliberately removed)
+```
+
+Re-run with their configuration, unchanged binary:
+
+```
+nvshmem put-ring OK: 2 PEs
+[Profiler] num_fake_nic_accesses: 1030   (rank 1: 1033)
+[Profiler] doorbell_submitted:    23
+[Profiler] doorbell_skipped:      1007
+[Profiler] Exited Normally!
+```
+
+Over a thousand intercepted doorbells per rank, application completes, exit 0.
+**SigmaTrace's UAR interposition works on current hardware, on this NVSHMEM
+(3.4.5, newer than the paper's 3.3.24), and is not version-stale.**
+
+### How the error was made
+
+`NVSHMEM_IB_DISABLE_DMABUF=1` was removed two sections ago, and the reasoning
+was recorded as *"an environment flag carried across clusters without checking
+which half of an either/or it disables"*. That reasoning was correct **for MN5**,
+where no peermem module exists and DMABUF is the only route to GPU memory.
+It is wrong for du04, which has `nvidia_peermem` loaded — there, disabling
+DMABUF pushes registration onto the peermem path, where umems carry **real
+addresses** instead of `addr=0x0 + dmabuf fd`.
+
+And a real address is precisely what SigmaTrace's GPU-residency discriminator
+needs. So the chain was:
+
+> removed the flag → registrations became dmabuf → `cudaPointerGetAttributes`
+> could not classify them → `Mlx5dv.cpp:82-87` returned early → `m_mlx5_qp_info`
+> stayed empty → first doorbell hit `.at()` → abort.
+
+The mechanical diagnosis was right — the QP map *was* empty and `.at()` *did*
+throw. The attribution was wrong. I called it version rot in SigmaTrace when it
+was misconfiguration by me, then read the resulting crash as confirmation of a
+prediction I had already published in this file. Predicting a failure and then
+causing it is not evidence.
+
+### What stands and what falls
+
+**Falls:**
+- "A verbatim port captures nothing" — false in the supported configuration.
+- "The NVSHMEM bindings are measurably stale" — false; they work against a
+  *newer* NVSHMEM than the paper targets.
+- "It fails destructively" — it fails destructively *when driven outside its
+  supported configuration*, which is a much weaker and different claim.
+
+**Stands:**
+- The mechanism is validated, now by execution rather than by reading.
+- `.at()` on an unregistered QP does abort the application rather than skip the
+  record. Still worth not copying: pcomm should degrade, not terminate, when it
+  meets something it does not recognise. This is now a robustness note about an
+  unsupported configuration, not a defect claim.
+- Under `REMOTE_TRANSPORT=ibgda` + DMABUF enabled, registrations really are
+  `addr=0x0` with `comp_mask=0x1`, and `umem_reg_ex` really is the only entry
+  point called. Those measurements were independent and remain true — they
+  describe a configuration SigmaTrace does not claim to support, and are a
+  coverage question for pcomm rather than a bug in SigmaTrace.
+
+### Bearing on the plan
+
+Port the mechanism with confidence — it is demonstrated working on the exact
+hardware available. Two additions to Stage 1:
+
+1. **Record the transport configuration in the capture.** A capture taken under
+   `ibgda`+dmabuf and one taken under `ibdevx`+peermem are not the same
+   experiment, and this session lost hours to not distinguishing them.
+2. **Support both registration paths** — address-based (peermem) and
+   dmabuf-fd-based — rather than only the one the reference implementation
+   needs. That is where pcomm can genuinely exceed the prior art.
