@@ -869,6 +869,54 @@ du04 has **`nvidia_peermem` loaded and `PeerMappingOverride=1`**. That makes
 the cheapest remaining item in this plan and does not depend on the data-plane
 work.
 
+### Cases 10 and 11 shipped (2026-08-05), and case 10 immediately paid for itself
+
+All three green on du04 at `bd74abb`, 9 assertions each:
+
+|  | transport | dmabuf | umem binding | GPU-initiated |
+|---|---|---|---|---|
+| case 09 | ibgda | on | by_dmabuf | yes |
+| case 10 | ibgda | **off** | by_addr | yes |
+| case 11 | **ibdevx** | off | by_addr | no |
+
+One variable changes per step, deliberately. The five DEVX invariants moved to
+`suite/asserts/` (they were already `-- requires:`-guarded) rather than being
+copied three times; `ibgda_engaged` stays case-local because it is a claim about
+the workload, not an invariant.
+
+**Case 10 went red on its first run and was right to.** `device` was 65535
+(unknown) on every umem in *every* case — `device_of()` had never worked. The
+cause was `kAttrDeviceOrdinal = 4`, which is `CU_POINTER_ATTRIBUTE_HOST_POINTER`;
+`DEVICE_ORDINAL` is 9. Asking for the host pointer of device memory fails, so
+every GPU buffer fell through to unknown. Fixed; case 10 now shows `device=0` on
+rank 0 and `device=1` on rank 1, and case 11 correctly stays unknown with host
+addresses.
+
+Three things worth carrying:
+
+1. **The bug was invisible by construction.** `gpu_driven` ORs in
+   `binding == ByDmabuf`, so under DMABUF the answer came out right without
+   consulting CUDA at all. Case 09's engagement gate — whose comment claims it
+   proves the GPU can write the send queue — was in fact asserting that the
+   binding is dmabuf, which `umem_binding_as_configured` already asserts. It was
+   circular, and **no by_dmabuf case could ever have caught it.** This is the
+   argument for the one-variable-at-a-time design, made concrete.
+2. **Two hypotheses were wrong first** — a latched `dlopen` (fixed anyway; it is
+   a real defect, and its comment now says plainly it was not this cause) and
+   NVSHMEM declining IBGDA. What settled it was printing `rc` and `type` at the
+   call site: `rc=0 type=2` said CUDA had resolved, the call had worked, and the
+   buffer *was* device memory — leaving only the second query. Same lesson as
+   case 08: measure at the point of use, not around it.
+3. **Hand-copied constants have no compiler behind them.** This provider does not
+   link CUDA on purpose, so `kAttr*` are unchecked by anything. They now carry a
+   comment saying so.
+
+**Still open:** under by_dmabuf there is no address to ask CUDA about, so
+`gpu_driven`'s dmabuf fallback remains a heuristic and case 09 still cannot
+verify residency. Case 10 is now the case that genuinely does. Strengthening
+case 09 needs the `fd → GPU VA` work below, which is the same prerequisite the
+data plane needs.
+
 ### Follow-ups that are now their own plans
 
 - Case 10, the `ibdevx`+peermem (`by_addr`) configuration — the one SigmaTrace's

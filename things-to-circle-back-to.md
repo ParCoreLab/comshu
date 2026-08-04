@@ -882,3 +882,39 @@ existed. `run_on_mn5.sh` cannot do this — it pushes HEAD over git and refuses 
 dirty tree. The A100 runner now prints the source commit, flags a dirty tree and
 honours `PCOMM_EXPECT_COMMIT`, but the underlying hop is still asynchronous:
 pin the commit when a board needs to be attributable.
+
+## FIXED (2026-08-05): a queue pair driven by a door that was never a symbol
+Case 08 recorded five `ib_modify_qp` rows against a queue pair no record had
+created, and six hypotheses died to `nm`, `readelf` and `LD_DEBUG=bindings`
+before the seventh was even reachable. All three answer questions about
+**symbols**; `ibv_create_qp_ex` is a `static inline` dispatching through
+`verbs_context::create_qp_ex`, so none of them could name it and each failure
+read as "wrong guess" rather than "wrong category of thing". Settled by tracing
+hook **entry** (`PCOMM_TRACE_HOOKS=1`) at the engine choke point, which covers
+every hook in every provider at once — the *absence* across all of them was the
+evidence. Hooked as an object-ops slot, reproducing the two guards
+`verbs_get_ctx_op` applies, because patching a NULL slot would advertise a
+capability the application had declined.
+
+## FIXED (2026-08-05): device attribution asked CUDA for the wrong attribute
+`kAttrDeviceOrdinal` was 4 — `CU_POINTER_ATTRIBUTE_HOST_POINTER`, not
+`DEVICE_ORDINAL` (9). Every GPU buffer the mlx5dv provider ever saw came back
+`kUnknownDevice`, since the provider was written. It survived because
+`gpu_driven` ORs in `binding == ByDmabuf`: under DMABUF the answer came out
+right without consulting CUDA at all, so case 09's engagement gate was
+effectively asserting the binding rather than GPU residency — circular with
+`umem_binding_as_configured`, and **unfalsifiable by any by_dmabuf case**. Only
+case 10's by_addr binding could expose it.
+
+Two general points, both of which have now cost time twice:
+- **Hand-copied constants have no compiler behind them.** This provider does not
+  link CUDA on purpose, so nothing checks the `kAttr*` values.
+- **A fallback that makes the common case right hides the general case being
+  wrong.** Worth auditing the other discriminators for the same shape.
+
+## OPEN (2026-08-05): `gpu_driven` under dmabuf is still a heuristic
+Under by_dmabuf the umem address is 0, so there is nothing to ask CUDA about and
+`gpu_driven` falls back to the binding. Case 10 now verifies residency
+genuinely; case 09 still cannot. Closing it needs the same `fd → GPU VA` work
+(`cuMemGetHandleForAddressRange` through `smart_dlsym`) that the IBGDA data
+plane needs.
