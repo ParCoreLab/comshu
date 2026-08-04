@@ -8,6 +8,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(PCOMM_BUILD_TESTS      "Build core tests (no GPU required)" ON)
 option(PCOMM_PROVIDER_GPUMEM  "Build the GPU memory-access provider (needs CUDA + NVBit)" OFF)
 option(PCOMM_PROVIDER_IBVERBS "Build the ibverbs provider (needs libibverbs)" OFF)
+# Separate from IBVERBS rather than implied by it: this one captures the DEVX
+# control plane that IBGDA uses instead of verbs, and it needs libmlx5 as well.
+option(PCOMM_PROVIDER_MLX5DV  "Build the mlx5dv/DEVX provider (needs libmlx5)" OFF)
 
 # ── Install layout ─────────────────────────────────────────────────────────
 # Deliberately a literal lib/, not GNUInstallDirs' LIBDIR: on RHEL-likes that

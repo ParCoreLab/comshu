@@ -81,6 +81,7 @@ if(PCOMM_BUILD_TESTS AND EXISTS ${PCOMM_FLATBUFFERS_INCLUDE})
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/schema/generated
     ${CMAKE_SOURCE_DIR}/providers/ibverbs
+    ${CMAKE_SOURCE_DIR}/providers/mlx5dv
     ${PCOMM_FLATBUFFERS_INCLUDE})
   target_compile_features(pcomm_schema_conformance PRIVATE cxx_std_20)
   # Keep assert() alive: every build type that runs tests defines

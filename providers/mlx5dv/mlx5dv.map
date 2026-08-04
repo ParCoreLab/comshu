@@ -1,0 +1,32 @@
+/* Export surface for libmlx5dv_trace.so.
+ *
+ * The mlx5dv_* entries MUST stay global: they are LD_PRELOAD interposers, and
+ * interposition is precisely "be the first global definition of this name".
+ * Hiding one does not fail loudly — it silently stops capturing that call,
+ * which for this provider means an IBGDA run comes back with no queue pairs and
+ * no topology, looking exactly like a workload that made none.
+ *
+ * Everything else is local, for the reason recorded in ibverbs.map: two
+ * providers exporting the same weak-linkage symbols made the dynamic linker
+ * pick whichever loaded first, and they shared a Tracer by accident (7a5b55a).
+ * This provider coexists with ibverbs in the same process by design, so that
+ * failure is live rather than hypothetical here.
+ *
+ * NB `dlsym` is NOT here: it lives in libpcomm_engine.so, which must own the
+ * single definition.
+ */
+{
+  global:
+    mlx5dv_create_qp;
+    mlx5dv_devx_alloc_uar;
+    mlx5dv_devx_free_uar;
+    mlx5dv_devx_obj_create;
+    mlx5dv_devx_obj_modify;
+    mlx5dv_devx_umem_dereg;
+    mlx5dv_devx_umem_reg;
+    mlx5dv_devx_umem_reg_ex;
+    pcomm_create_provider;
+    pcomm_abi_version;
+  local:
+    *;
+};

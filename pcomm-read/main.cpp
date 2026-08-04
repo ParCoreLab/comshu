@@ -31,11 +31,13 @@
 #include "pcomm/rec/thread_local_buffer.hpp"
 
 #include "ib_records.hpp"  // provider record schemas (reader knows all types)
+#include "mlx5_records.hpp"
 
 namespace fs = std::filesystem;
 using namespace pcomm;
 using namespace pcomm::core::records;
 namespace ibr = pcomm::providers::ibverbs::records;
+namespace mxr = pcomm::providers::mlx5dv::records;
 using rec::Stamped;
 
 namespace {
@@ -265,12 +267,90 @@ template<> struct Table<ibr::IbPollCq> {
     }
 };
 
+
+// --- mlx5dv/DEVX (200-299) --------------------------------------------------
+// The tables that make a GPU-initiated run queryable at all. Under IBGDA the
+// ib_* tables above are empty, so these are not a supplement to them — they are
+// the only rows there are.
+
+// `binding` and `entry` are decoded to names rather than left as integers for
+// the same reason the wc_status/opcode tables exist: a raw 0/1 in a CSV is a
+// value nobody checks. Both distinctions are load-bearing — ByDmabuf means the
+// address column is an offset and NOT a pointer, and the entry point is how
+// double-counted registrations become visible instead of inferred.
+inline const char* umem_binding_name(std::uint8_t v) {
+    return v == 0 ? "by_addr" : v == 1 ? "by_dmabuf" : "?";
+}
+inline const char* umem_entry_name(std::uint8_t v) {
+    return v == 0 ? "reg" : v == 1 ? "reg_ex" : "?";
+}
+
+template<> struct Table<mxr::Mlx5Umem> {
+    static constexpr const char* name = "mlx5_umem";
+    static constexpr const char* cols =
+        "ticks,umem,addr,size,umem_id,access,dmabuf_fd,device,binding,entry";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5Umem>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,0x%llx,%llu,%u,0x%x,%d,%u,%s,%s",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.umem,
+                     (unsigned long long)s.payload.range.base,
+                     (unsigned long long)s.payload.range.size, s.payload.umem_id, s.payload.access,
+                     s.payload.dmabuf_fd, s.payload.device,
+                     umem_binding_name(s.payload.binding), umem_entry_name(s.payload.entry));
+    }
+};
+
+template<> struct Table<mxr::Mlx5Uar> {
+    static constexpr const char* name = "mlx5_uar";
+    static constexpr const char* cols = "ticks,uar,reg_addr,base_addr,page_id,flags";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5Uar>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,0x%llx,0x%llx,%u,0x%x", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.uar, (unsigned long long)s.payload.reg_addr,
+                     (unsigned long long)s.payload.base_addr, s.payload.page_id, s.payload.flags);
+    }
+};
+
+template<> struct Table<mxr::Mlx5DevxCmd> {
+    static constexpr const char* name = "mlx5_devx_cmd";
+    static constexpr const char* cols = "ticks,obj,opcode,decoded";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxCmd>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,0x%x,%u", (unsigned long long)s.temporal.a.ticks, s.payload.obj,
+                     s.payload.opcode, s.payload.decoded);
+    }
+};
+
+template<> struct Table<mxr::Mlx5DevxQp> {
+    static constexpr const char* name = "mlx5_devx_qp";
+    static constexpr const char* cols =
+        "ticks,obj,sq_base,qp_num,wq_umem_id,log_sq_size,device,service_type,gpu_driven";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxQp>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,0x%llx,%u,%u,%u,%u,0x%x,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.obj, (unsigned long long)s.payload.sq_base, s.payload.qp_num,
+                     s.payload.wq_umem_id, s.payload.log_sq_size, s.payload.device,
+                     s.payload.service_type, s.payload.gpu_driven);
+    }
+};
+
+template<> struct Table<mxr::Mlx5DevxQpConnect> {
+    static constexpr const char* name = "mlx5_devx_qp_connect";
+    static constexpr const char* cols =
+        "ticks,qp_num,dest_qp_num,dest_lid,src_lid,port_num,dest_gid_prefix,dest_gid_iface";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxQpConnect>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,0x%llx,0x%llx", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.qp_num, s.payload.dest_qp_num, s.payload.dest_lid, s.payload.src_lid,
+                     s.payload.port_num, (unsigned long long)s.payload.dest_gid_prefix,
+                     (unsigned long long)s.payload.dest_gid_iface);
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
 using TableRecords =
     std::tuple<GpuAccess, MemObject, SourceLine, ClockAnchor, Attribution, ibr::IbQueuePair,
-               ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion>;
+               ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion,
+               mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
+               mxr::Mlx5DevxQpConnect>;
 
 template<typename Tuple, typename F, std::size_t... Is>
 void for_each_type_impl(F&& f, std::index_sequence<Is...>) {

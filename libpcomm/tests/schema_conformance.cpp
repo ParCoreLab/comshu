@@ -20,10 +20,12 @@
 #include "pcomm/rec/stream_header.hpp"
 #include "pcomm/rec/thread_local_buffer.hpp"
 #include "ib_records.hpp"
+#include "mlx5_records.hpp"
 
 using pcomm::rec::Stamped;
 namespace cr = pcomm::core::records;
 namespace ir = pcomm::providers::ibverbs::records;
+namespace mr = pcomm::providers::mlx5dv::records;
 namespace fb = pcomm::fb;
 
 #define PCOMM_SCHEMA_MATCH(CppRecord, FbStruct)                                                    \
@@ -43,6 +45,11 @@ PCOMM_SCHEMA_MATCH(ir::IbQueuePair, fb::IbQueuePair);
 PCOMM_SCHEMA_MATCH(ir::IbModifyQp, fb::IbModifyQp);
 PCOMM_SCHEMA_MATCH(ir::IbPostSend, fb::IbPostSend);
 PCOMM_SCHEMA_MATCH(ir::IbPollCq, fb::IbPollCq);
+PCOMM_SCHEMA_MATCH(mr::Mlx5Umem, fb::Mlx5Umem);
+PCOMM_SCHEMA_MATCH(mr::Mlx5Uar, fb::Mlx5Uar);
+PCOMM_SCHEMA_MATCH(mr::Mlx5DevxCmd, fb::Mlx5DevxCmd);
+PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQp, fb::Mlx5DevxQp);
+PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQpConnect, fb::Mlx5DevxQpConnect);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -260,6 +267,78 @@ int main() {
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x60), fb::TimePoint(1, 0x70), 0),
             31, 0xFEEDFACE, 4096, 0x1EFFD, 0, 1);
         expect_identical("IbPollCq", &c, &f, sizeof(c));
+    }
+    // --- mlx5dv/DEVX (200-299) ---------------------------------------------
+    // Values chosen to be distinguishable per field rather than round: a
+    // reordered pair of same-width fields is exactly what byte comparison is
+    // here to catch, and equal values would hide it.
+    {
+        Stamped<mr::Mlx5Umem> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.umem = 41;
+        c.payload.range = {0xDEAD0000, 0x50000};
+        c.payload.umem_id = 0x2A;
+        c.payload.access = 0x7;
+        c.payload.dmabuf_fd = -1;
+        c.payload.device = 3;
+        c.payload.binding = 0;
+        c.payload.entry = 1;
+        fb::Mlx5Umem f(fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+                       41, fb::MemRange(0xDEAD0000, 0x50000), 0x2A, 0x7, -1, 3, 0, 1);
+        expect_identical("Mlx5Umem", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5Uar> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.uar = 42;
+        c.payload.reg_addr = 0x7F0000001800;
+        c.payload.base_addr = 0x7F0000001000;
+        c.payload.page_id = 275;
+        c.payload.flags = 1;
+        fb::Mlx5Uar f(fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+                      42, 0x7F0000001800, 0x7F0000001000, 275, 1);
+        expect_identical("Mlx5Uar", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5DevxCmd> c{};
+        c.temporal = pcomm::core::Temporal::instant({1, 0x80});
+        c.payload.obj = 43;
+        c.payload.opcode = 0x500;
+        c.payload.decoded = 1;
+        fb::Mlx5DevxCmd f(
+            fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(1, 0x80), fb::TimePoint(0, 0), 0), 43,
+            0x500, 1);
+        expect_identical("Mlx5DevxCmd", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5DevxQp> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.obj = 44;
+        c.payload.sq_base = 0x7FAB00000000;
+        c.payload.qp_num = 0x1EFFD;
+        c.payload.wq_umem_id = 0x2A;
+        c.payload.log_sq_size = 10;
+        c.payload.device = 2;
+        c.payload.service_type = 0x5;
+        c.payload.gpu_driven = 1;
+        fb::Mlx5DevxQp f(fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+                         44, 0x7FAB00000000, 0x1EFFD, 0x2A, 10, 2, 0x5, 1);
+        expect_identical("Mlx5DevxQp", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5DevxQpConnect> c{};
+        c.temporal = pcomm::core::Temporal::instant({1, 0x90});
+        c.payload.dest_gid_prefix = 0xFE80000000000000ull;
+        c.payload.dest_gid_iface = 0x0002C90300ABCDEFull;
+        c.payload.qp_num = 0x1EFFD;
+        c.payload.dest_qp_num = 0x1EFFC;
+        c.payload.dest_lid = 0xA93;
+        c.payload.src_lid = 0x1F0E;
+        c.payload.port_num = 1;
+        fb::Mlx5DevxQpConnect f(
+            fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(1, 0x90), fb::TimePoint(0, 0), 0),
+            0xFE80000000000000ull, 0x0002C90300ABCDEFull, 0x1EFFD, 0x1EFFC, 0xA93, 0x1F0E, 1);
+        expect_identical("Mlx5DevxQpConnect", &c, &f, sizeof(c));
     }
     {  // InternKey / InternString: the dictionary every Handle depends on.
         Stamped<cr::InternKey> c{};

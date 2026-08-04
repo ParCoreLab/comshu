@@ -240,3 +240,74 @@ struct IbPollCq {
   status:uint8;
   opcode:uint8;
 }
+
+// --- mlx5dv/DEVX provider records (200-299) --------------------------------
+//
+// The control plane IBGDA uses instead of verbs. A GPU-initiated NVSHMEM run
+// creates its queue pairs with mlx5dv_devx_obj_create and connects them with
+// mlx5dv_devx_obj_modify, so nothing in the 100-range above sees any of it.
+
+// type 200, Entity. A buffer handed to the NIC, lifetime [reg, dereg).
+// `range.base` is 0 when binding == ByDmabuf: the buffer is named by file
+// descriptor and the address field is an offset, not a pointer.
+struct Mlx5Umem {
+  temporal:Temporal;
+  umem:uint32;
+  range:MemRange;
+  umem_id:uint32;
+  access:uint32;
+  dmabuf_fd:int32;     // -1 unless binding == ByDmabuf
+  device:uint16;       // owning GPU, or 0xFFFF for unknown (NOT 0 — 0 is real)
+  binding:uint8;       // UmemBinding: 0 = ByAddress, 1 = ByDmabuf
+  entry:uint8;         // UmemEntry: 0 = umem_reg, 1 = umem_reg_ex
+}
+
+// type 202, Entity. A User Access Region — the doorbell page a GPU writes to
+// in order to tell the NIC a work-queue entry is ready.
+struct Mlx5Uar {
+  temporal:Temporal;
+  uar:uint32;
+  reg_addr:uint64;
+  base_addr:uint64;
+  page_id:uint32;
+  flags:uint32;
+}
+
+// type 204, Event. One DEVX command, decoded or not. Recorded even when this
+// build does not know the opcode, so a version boundary is visible in the
+// capture rather than silently absent from it.
+struct Mlx5DevxCmd {
+  temporal:Temporal;
+  obj:uint32;
+  opcode:uint32;
+  decoded:uint8;
+}
+
+// type 206, Entity. A DEVX queue pair — the GPU-initiated counterpart of
+// IbQueuePair. sq_base + log_sq_size locate the send queue the GPU writes into.
+struct Mlx5DevxQp {
+  temporal:Temporal;
+  obj:uint32;
+  sq_base:uint64;
+  qp_num:uint32;
+  wq_umem_id:uint32;   // joins to Mlx5Umem.umem_id
+  log_sq_size:uint32;
+  device:uint16;
+  service_type:uint8;  // mlx5 transport service type (0x5 = DCI)
+  gpu_driven:uint8;
+}
+
+// type 208, Event. The ->RTR transition, carrying the remote endpoint. Same
+// role as IbModifyQp's RTR row, and carries src_lid for the same reason:
+// qp_num is per-HCA and collides across nodes, so (src_lid, qp_num) is what
+// names a queue pair uniquely.
+struct Mlx5DevxQpConnect {
+  temporal:Temporal;
+  dest_gid_prefix:uint64;
+  dest_gid_iface:uint64;
+  qp_num:uint32;
+  dest_qp_num:uint32;
+  dest_lid:uint32;
+  src_lid:uint32;
+  port_num:uint8;
+}
