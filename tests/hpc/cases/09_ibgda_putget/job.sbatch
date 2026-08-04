@@ -37,12 +37,29 @@ OUT=$(pcomm_out ibgda_putget)
 # A host that cannot do IBGDA must SKIP, not fail. A red board there would be
 # reporting a fact about the cluster as if it were a defect in the tool — and
 # would train everyone to ignore the case.
+# SKIP means one thing only: this host cannot do IBGDA, so the case has nothing
+# to say. It is NOT a place to put "something went wrong".
 skip() {
   echo "=== 09_ibgda_putget : SKIP ($1) ==="
   mkdir -p "$OUT.csv"
   printf '{"case":"09_ibgda_putget","ok":true,"skipped":true,"reason":"%s","checks":0}\n' \
     "$1" > "$OUT.csv/result.json"
   exit 0
+}
+
+# FAIL is for a host that CAN do IBGDA where the harness broke — a missing
+# compiler, an SDK that did not resolve, a workload that would not build. That is
+# not a skip, and calling it one is how the first run of this case reported
+# ok:true having tested nothing: peermem, PeerMappingOverride and mpirun all
+# passed, then nvcc was missing because common.sh had MareNostrum's paths
+# hardcoded, and skip() swallowed it. A green board that built nothing is the
+# precise failure this suite exists to stop.
+fail() {
+  echo "=== 09_ibgda_putget : FAIL ($1) ==="
+  mkdir -p "$OUT.csv"
+  printf '{"case":"09_ibgda_putget","ok":false,"reason":"%s","checks":0}\n' \
+    "$1" > "$OUT.csv/result.json"
+  exit 1
 }
 
 [ -d /sys/class/infiniband ] || skip "no InfiniBand device on this host"
@@ -53,19 +70,25 @@ grep -q "PeerMappingOverride=1" /proc/driver/nvidia/params 2>/dev/null || \
 [ "$have_peermem" = "1" ] || skip "no nvidia_peermem/nv_peer_mem module loaded"
 
 MPIRUN="${PCOMM_MPIRUN:-mpirun}"
-command -v "$MPIRUN" >/dev/null || skip "no mpirun on PATH"
+command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
 # ---- workload -------------------------------------------------------------
 # Same binary as cases 04/06/07 — the ring spans whatever PE count it is given.
 APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget_sm80}"
 if [ ! -x "$APP" ]; then
   pcomm_load_build
+  # Everything below is a harness problem on a host that already proved it can
+  # do IBGDA, so each one fails rather than skips.
+  command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || \
+    fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
+  [ -n "${NVSHMEM_HOME:-}" ] && [ -d "$NVSHMEM_HOME" ] || \
+    fail "NVSHMEM_HOME did not resolve (PCOMM_SDK=${PCOMM_SDK:-unset})"
   ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
     -gencode arch="${PCOMM_CUDA_ARCH:-compute_80}",code="${PCOMM_CUDA_CODE:-sm_80}" \
     -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
-    -lnvshmem_host -lnvshmem_device -lcudart || skip "workload did not build"
+    -lnvshmem_host -lnvshmem_device -lcudart || fail "workload did not build"
   pcomm_load_runtime
 fi
 
