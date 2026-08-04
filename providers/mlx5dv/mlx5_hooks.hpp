@@ -41,7 +41,19 @@ DEFINE_PRELOAD_HOOK(mlx5, devx_umem_dereg, "mlx5dv_devx_umem_dereg", int, mlx5dv
 // what lets a later stage recognise a doorbell write for what it is.
 DEFINE_PRELOAD_HOOK(mlx5, devx_alloc_uar, "mlx5dv_devx_alloc_uar", mlx5dv_devx_uar*, ibv_context*,
                     uint32_t);
-DEFINE_PRELOAD_HOOK(mlx5, devx_free_uar, "mlx5dv_devx_free_uar", void, mlx5dv_devx_uar*);
+//
+// mlx5dv_devx_free_uar is deliberately NOT hooked, and the reason is a limit in
+// the hook engine rather than a decision about the data: HookTrait cannot
+// express a void-returning call. `invoke_preload` does `auto ret = real(...);
+// return ret;`, which is ill-formed for void, and the predicate/callback
+// signatures take ret_type as a parameter. SigmaTrace hit the same wall and
+// passed std::monostate as the return type to get around it.
+//
+// Nothing is lost yet — no record is emitted for UAR teardown — but a UAR
+// lifetime needs a close, so this is owed. Fixing it belongs in the engine (an
+// `if constexpr (std::is_void_v<RetType>)` branch in invoke_preload), not in a
+// per-provider workaround, since every provider will eventually hook something
+// that returns void.
 
 // The DEVX command plane. create carries CREATE_QP (queue pairs, send-queue
 // location, transport type); modify carries INIT2RTR_QP (the remote endpoint,

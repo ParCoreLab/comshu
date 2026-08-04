@@ -19,7 +19,6 @@
   global:
     mlx5dv_create_qp;
     mlx5dv_devx_alloc_uar;
-    mlx5dv_devx_free_uar;
     mlx5dv_devx_obj_create;
     mlx5dv_devx_obj_modify;
     mlx5dv_devx_umem_dereg;

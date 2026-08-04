@@ -322,9 +322,6 @@ extern "C" int mlx5dv_devx_umem_dereg(mlx5dv_devx_umem* umem) {
 extern "C" mlx5dv_devx_uar* mlx5dv_devx_alloc_uar(ibv_context* ctx, uint32_t flags) {
     return mlx5::Profiler::invoke_preload<mlx5::devx_alloc_uar_tag>(ctx, flags);
 }
-extern "C" void mlx5dv_devx_free_uar(mlx5dv_devx_uar* uar) {
-    mlx5::Profiler::invoke_preload<mlx5::devx_free_uar_tag>(uar);
-}
 extern "C" mlx5dv_devx_obj* mlx5dv_devx_obj_create(ibv_context* ctx, const void* in, size_t inlen,
                                                    void* out, size_t outlen) {
     return mlx5::Profiler::invoke_preload<mlx5::devx_obj_create_tag>(ctx, in, inlen, out, outlen);
