@@ -28,7 +28,5 @@
     "mlx5_devx_qp_connect"
   ],
   "oracle_note": "The engagement guard runs first and gates everything else. A silent fallback to a CPU-proxy transport produces zero device-initiated traffic, which is indistinguishable from 'the provider captured nothing' \u2014 that ambiguity is how case 08's unhooked mlx5dv_create_qp hid behind an empty golden for weeks, and how a probe run earlier this week was read as proving IBGDA engaged when it had failed to initialise entirely.",
-  "expect_fail_asserts": {
-    "qp_is_nameable": "LIVE BUG in the provider, not the assertion. Every connection comes back src_lid=0 and port_num=0 while dest_lid=17, so DEVX_GET(ads, path, vhca_port_num) is not yielding the port and port_lid() has nothing to query. The row is therefore not uniquely nameable \u2014 the exact defect (src_lid, qp_num) exists to prevent, reproduced in the new provider. Marked xfail so it reports rather than blocks, and turns [XPASS] the moment the decode is fixed."
-  }
+  "fixed_note": "qp_is_nameable was expect_fail for one run: src_lid and port_num came back 0 on every connection because the port was read from INIT2RTR, where it is not set. A queue pair is bound to a port at RST2INIT and nowhere else \u2014 which ib_records.hpp already documents for the verbs path. Fixed in 114992a and the marker dropped, so the assertion now guards the fix instead of describing the bug."
 }

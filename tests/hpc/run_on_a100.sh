@@ -52,6 +52,26 @@ $SSH "$REMOTE" true 2>/dev/null || {
   echo "  failed'.)" >&2
   exit 1; }
 
+# ---- provenance -----------------------------------------------------------
+# Which commit is this board about? run_on_mn5.sh answers that by pushing HEAD
+# over git and refusing a dirty tree. This runner rsyncs from whatever the local
+# checkout currently holds — and when that checkout is itself fed by syncthing,
+# files arrive INDEPENDENTLY. A run has already executed a mixed tree: the
+# provider .cpp had landed and the .sql assertion beside it in the same commit
+# had not, so a fixed provider was judged by a stale assertion and the case went
+# red for a reason that no longer existed.
+#
+# So the commit is printed with every board, a dirty tree is called out, and
+# PCOMM_EXPECT_COMMIT lets a caller demand the tree it meant to test.
+src_commit="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+src_dirty="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | head -1)"
+echo "== source $src_commit${src_dirty:+  (DIRTY — this board is not attributable to a commit)}"
+if [ -n "${PCOMM_EXPECT_COMMIT:-}" ] && [ "$src_commit" != "$PCOMM_EXPECT_COMMIT" ]; then
+  echo "run_on_a100.sh: tree is at $src_commit, expected $PCOMM_EXPECT_COMMIT." >&2
+  echo "  If this checkout is fed by syncthing, the files may still be arriving." >&2
+  exit 1
+fi
+
 # ---- sync -----------------------------------------------------------------
 # rsync rather than the git round-trip run_on_mn5.sh uses: there is no bare repo
 # on this host, and --delete is not optional — a stale check file left behind
