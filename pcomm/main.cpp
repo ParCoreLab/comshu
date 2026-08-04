@@ -74,6 +74,19 @@ const std::vector<Provider>& registry() {
          /*built*/ true,
          "GPU-initiated peer read/write over NVLink (NVBit, à la Snoopie)",
          "intra-node"},
+        // Separate from ibverbs rather than folded into it, because it captures
+        // a different plane rather than more of the same one. IBGDA never calls
+        // ibv_create_qp, ibv_modify_qp or ibv_post_send — it drives DEVX
+        // directly and the GPU rings the doorbell — so a GPU-initiated run
+        // traced with `-p ib` comes back with empty tables and no error. The two
+        // co-run happily: a workload that uses both verbs and DEVX needs both.
+        {"mlx5dv",
+         "libmlx5dv_trace.so",
+         {"devx", "mlx5", "mlx5dv", "ibgda"},
+         /*exclusive*/ false,
+         /*built*/ true,
+         "GPU-initiated InfiniBand (IBGDA) — DEVX queue pairs, doorbell pages",
+         "inter-node"},
         {"cupti",
          "libcupti_trace.so",
          {"memcpy", "cupti"},
