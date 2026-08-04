@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -67,24 +68,82 @@ namespace cuda {
 
 using PtrAttrFn = int (*)(void*, int, unsigned long long);
 constexpr int kAttrMemoryType = 2;     // CU_POINTER_ATTRIBUTE_MEMORY_TYPE
-constexpr int kAttrDeviceOrdinal = 4;  // CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL
+constexpr int kAttrDeviceOrdinal = 9;  // CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL
 constexpr int kMemoryTypeDevice = 2;   // CU_MEMORYTYPE_DEVICE
 
+// These are hand-copied from cuda.h because this provider deliberately does not
+// link CUDA (see resolve() below), which means the compiler cannot check them.
+// kAttrDeviceOrdinal was 4 — that is CU_POINTER_ATTRIBUTE_HOST_POINTER, and
+// asking for the host pointer of device memory fails, so device_of returned
+// kUnknownDevice for every GPU buffer it was ever given.
+//
+// It survived because nothing downstream could tell. gpu_driven ORs in
+// `binding == ByDmabuf`, so case 09 came out right without consulting CUDA at
+// all; only case 10, whose by_addr binding has no such fallback, could fail.
+// Two wrong guesses preceded the answer here as well, and what settled it was
+// printing the actual return code and type at the call site: rc=0 type=2 said
+// plainly that CUDA had resolved, the call had worked, and the buffer WAS
+// device memory — which left only the second query.
+
+// RTLD_NOLOAD on purpose: this must never *load* libcuda into a process that
+// did not already have it, only borrow it from one that did.
+//
+// The result is cached once RESOLVED, and deliberately not cached when it is
+// not. The previous version latched on first call — `static fn = [...]()` runs
+// exactly once — so a single early miss would make attribution permanently
+// dead. That is a real defect and this is a real fix.
+//
+// It is NOT, however, the explanation for device=65535 on du04. That was the
+// hypothesis this change was made to test, and the test refused it: every umem
+// in cases 09 and 10 still reports kUnknownDevice with the latch removed. The
+// cause is still open — see the plan — and the honest reading of that is that
+// the latch and the attribution failure are two separate things, one of which
+// is now fixed.
+//
+// Why it went unnoticed for so long is the more useful part: gpu_driven ORs in
+// `binding == ByDmabuf`, so under DMABUF the answer comes out right without
+// consulting CUDA at all, and case 09's engagement gate has never actually
+// tested GPU residency. Case 10, which has no such fallback, is what exposed
+// it.
 static PtrAttrFn resolve() {
-    static PtrAttrFn fn = [] {
-        void* lib = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_NOLOAD);
-        return lib ? reinterpret_cast<PtrAttrFn>(dlsym(lib, "cuPointerGetAttribute")) : nullptr;
-    }();
-    return fn;
+    static PtrAttrFn cached = nullptr;
+    if (cached)
+        return cached;
+    void* lib = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_NOLOAD);
+    if (!lib)
+        return nullptr;
+    cached = reinterpret_cast<PtrAttrFn>(dlsym(lib, "cuPointerGetAttribute"));
+    return cached;
+}
+
+// PROBE, gated on PCOMM_TRACE_HOOKS=1 — prints the FIRST attribution attempt
+// only. Three outcomes look identical from the capture (device=65535) and imply
+// completely different work, so guessing between them is what this exists to
+// stop: the symbol never resolved, the CUDA call failed, or the call succeeded
+// and the buffer is genuinely host memory.
+static void trace_attr(const char* stage, int rc, unsigned int type) {
+    static bool first = true;
+    if (!first)
+        return;
+    const char* on = std::getenv("PCOMM_TRACE_HOOKS");
+    if (!on || !*on || std::strcmp(on, "0") == 0)
+        return;
+    first = false;
+    std::fprintf(stderr, "[pcomm-trace] device_of: stage=%s rc=%d type=%u\n", stage, rc, type);
+    std::fflush(stderr);
 }
 
 // Owning device of a host-visible address, or kUnknownDevice.
 static pcomm::core::DeviceId device_of(const void* addr) {
     auto* fn = resolve();
-    if (!fn || !addr)
+    if (!fn || !addr) {
+        trace_attr(fn ? "null-addr" : "unresolved", -1, 0);
         return kUnknownDevice;
+    }
     unsigned int type = 0;
-    if (fn(&type, kAttrMemoryType, reinterpret_cast<unsigned long long>(addr)) != 0)
+    const int    rc = fn(&type, kAttrMemoryType, reinterpret_cast<unsigned long long>(addr));
+    trace_attr("called", rc, type);
+    if (rc != 0)
         return kUnknownDevice;  // not a CUDA pointer: host memory
     if (static_cast<int>(type) != kMemoryTypeDevice)
         return kUnknownDevice;
@@ -103,15 +162,15 @@ static pcomm::core::DeviceId device_of(const void* addr) {
 // than reconstructed by the reader because the reader would have to join across
 // streams and would still not know the owning device.
 struct UmemInfo {
-    std::uint64_t             addr{0};
-    std::uint64_t             size{0};
-    pcomm::core::DeviceId     device{kUnknownDevice};
-    UmemBinding               binding{UmemBinding::ByAddress};
-    std::int32_t              dmabuf_fd{-1};
+    std::uint64_t         addr{0};
+    std::uint64_t         size{0};
+    pcomm::core::DeviceId device{kUnknownDevice};
+    UmemBinding           binding{UmemBinding::ByAddress};
+    std::int32_t          dmabuf_fd{-1};
 };
 
-static std::mutex                                    g_umem_mutex;
-static std::unordered_map<std::uint32_t, UmemInfo>   g_umems;
+static std::mutex                                  g_umem_mutex;
+static std::unordered_map<std::uint32_t, UmemInfo> g_umems;
 // DEVX objects carry no context pointer into obj_modify, so the context is
 // remembered at create time. Without it there is no way to query our own port's
 // LID, and without that a queue pair has no globally unique name.
@@ -137,11 +196,9 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
     if (!out)
         return;
     const bool by_dmabuf = dmabuf_fd >= 0;
-    UmemInfo   info{reinterpret_cast<std::uint64_t>(addr),
-                    size,
-                    by_dmabuf ? kUnknownDevice : cuda::device_of(addr),
-                    by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress,
-                    dmabuf_fd};
+    UmemInfo   info{reinterpret_cast<std::uint64_t>(addr), size,
+                  by_dmabuf ? kUnknownDevice : cuda::device_of(addr),
+                  by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress, dmabuf_fd};
     remember_umem(out->umem_id, info);
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5Umem{{},
@@ -174,7 +231,7 @@ static std::uint32_t port_lid(ibv_context* ctx, std::uint8_t port_num) {
 // decoded correctly as 17 — the path was right, the field is simply not set
 // there. src_lid came back 0 everywhere as a result, which is the collision
 // (src_lid, qp_num) exists to prevent, reintroduced.
-static std::mutex                                    g_lid_mutex;
+static std::mutex                                       g_lid_mutex;
 static std::unordered_map<std::uint32_t, std::uint32_t> g_qp_src_lid;
 
 static void remember_src_lid(std::uint32_t qp_num, std::uint32_t lid) {
@@ -189,8 +246,8 @@ static std::uint32_t src_lid_of(std::uint32_t qp_num) {
 }
 
 static void decode_rst2init(mlx5dv_devx_obj* obj, const void* cmd_in) {
-    auto*      qpc = DEVX_ADDR_OF(rst2init_qp_in, const_cast<void*>(cmd_in), qpc);
-    const auto qp_num = DEVX_GET(rst2init_qp_in, cmd_in, qpn);
+    auto*       qpc = DEVX_ADDR_OF(rst2init_qp_in, const_cast<void*>(cmd_in), qpc);
+    const auto  qp_num = DEVX_GET(rst2init_qp_in, cmd_in, qpn);
     const auto* path = DEVX_ADDR_OF(qpc, qpc, primary_address_path);
     const auto  port_num = DEVX_GET(ads, path, vhca_port_num);
 
@@ -220,10 +277,10 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
     // queue pair, still carries topology, and is still invisible to the ibverbs
     // provider — dropping it is how a capture comes back empty and looks like a
     // workload that made no connections.
-    UmemInfo wq{};
+    UmemInfo   wq{};
     const bool known = lookup_umem(wq_umem_id, &wq);
-    const bool gpu_driven = known && (wq.device != kUnknownDevice ||
-                                      wq.binding == UmemBinding::ByDmabuf);
+    const bool gpu_driven =
+        known && (wq.device != kUnknownDevice || wq.binding == UmemBinding::ByDmabuf);
 
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5DevxQp{{},
@@ -300,8 +357,8 @@ Profiler::Profiler() {
             if (!in)
                 return;
             const bool has_dmabuf = (in->comp_mask & MLX5DV_UMEM_MASK_DMABUF) != 0;
-            record_umem(out, in->addr, in->size, in->access,
-                        has_dmabuf ? in->dmabuf_fd : -1, UmemEntry::RegEx);
+            record_umem(out, in->addr, in->size, in->access, has_dmabuf ? in->dmabuf_fd : -1,
+                        UmemEntry::RegEx);
         });
 
     this->register_post<devx_alloc_uar_tag>(
@@ -334,10 +391,12 @@ Profiler::Profiler() {
         // Every command is recorded, decoded or not. An opcode this build does
         // not know is the version boundary most likely to move under us, and it
         // must be visible in the capture rather than absent from it.
-        rec().record(rr::Mlx5DevxCmd{
-            {}, {}, h(obj), static_cast<std::uint32_t>(opcode), decode ? std::uint8_t{1} : std::uint8_t{0}});
+        rec().record(rr::Mlx5DevxCmd{{},
+                                     {},
+                                     h(obj),
+                                     static_cast<std::uint32_t>(opcode),
+                                     decode ? std::uint8_t{1} : std::uint8_t{0}});
     });
-
 
     // mlx5dv_create_qp -> the queue-pair entity the ibverbs provider cannot see.
     //
@@ -351,33 +410,33 @@ Profiler::Profiler() {
         [](ibv_qp* qp, ibv_context*, ibv_qp_init_attr_ex* attr, mlx5dv_qp_init_attr*, auto...) {
             if (!qp)
                 return;
-            rec().record(pcomm::core::Temporal::none(),
-                         rr::Mlx5QueuePair{{},
-                                           {},
-                                           h(qp),
-                                           h(attr ? attr->pd : nullptr),
-                                           qp->qp_num,
-                                           static_cast<std::uint8_t>(attr ? attr->qp_type
-                                                                          : qp->qp_type)});
+            rec().record(
+                pcomm::core::Temporal::none(),
+                rr::Mlx5QueuePair{{},
+                                  {},
+                                  h(qp),
+                                  h(attr ? attr->pd : nullptr),
+                                  qp->qp_num,
+                                  static_cast<std::uint8_t>(attr ? attr->qp_type : qp->qp_type)});
         });
 
-    this->register_post<devx_obj_modify_tag>(
-        [](int ret, mlx5dv_devx_obj* obj, const void* cmd_in, size_t inlen, void*, size_t, auto...) {
-            if (ret != 0 || !obj || !cmd_in || inlen < 4)
-                return;
-            const auto opcode = DEVX_GET(init2rtr_qp_in, cmd_in, opcode);
-            const bool decode =
-                (opcode == MLX5_CMD_OP_INIT2RTR_QP || opcode == MLX5_CMD_OP_RST2INIT_QP);
-            if (opcode == MLX5_CMD_OP_RST2INIT_QP)
-                decode_rst2init(obj, cmd_in);   // learn the port -> our LID
-            else if (opcode == MLX5_CMD_OP_INIT2RTR_QP)
-                decode_init2rtr(obj, cmd_in);
-            rec().record(rr::Mlx5DevxCmd{{},
-                                         {},
-                                         h(obj),
-                                         static_cast<std::uint32_t>(opcode),
-                                         decode ? std::uint8_t{1} : std::uint8_t{0}});
-        });
+    this->register_post<devx_obj_modify_tag>([](int ret, mlx5dv_devx_obj* obj, const void* cmd_in,
+                                                size_t inlen, void*, size_t, auto...) {
+        if (ret != 0 || !obj || !cmd_in || inlen < 4)
+            return;
+        const auto opcode = DEVX_GET(init2rtr_qp_in, cmd_in, opcode);
+        const bool decode =
+            (opcode == MLX5_CMD_OP_INIT2RTR_QP || opcode == MLX5_CMD_OP_RST2INIT_QP);
+        if (opcode == MLX5_CMD_OP_RST2INIT_QP)
+            decode_rst2init(obj, cmd_in);  // learn the port -> our LID
+        else if (opcode == MLX5_CMD_OP_INIT2RTR_QP)
+            decode_init2rtr(obj, cmd_in);
+        rec().record(rr::Mlx5DevxCmd{{},
+                                     {},
+                                     h(obj),
+                                     static_cast<std::uint32_t>(opcode),
+                                     decode ? std::uint8_t{1} : std::uint8_t{0}});
+    });
 }
 
 }  // namespace mlx5
@@ -390,7 +449,7 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg(ibv_context* ctx, void* addr, 
                                                   uint32_t access) {
     return mlx5::Profiler::invoke_preload<mlx5::devx_umem_reg_tag>(ctx, addr, size, access);
 }
-extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg_ex(ibv_context* ctx,
+extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg_ex(ibv_context*         ctx,
                                                      mlx5dv_devx_umem_in* umem_in) {
     return mlx5::Profiler::invoke_preload<mlx5::devx_umem_reg_ex_tag>(ctx, umem_in);
 }
