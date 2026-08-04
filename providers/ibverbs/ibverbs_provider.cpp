@@ -407,6 +407,27 @@ Profiler::Profiler() {
                                      static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
     });
 
+    // create_qp_ex -> the extended creation door, reached through the
+    // verbs_context function pointer rather than a symbol (see ib_hooks.hpp).
+    // This is the door perftest uses, and until it was hooked case 08 recorded
+    // a queue pair being modified that nothing had created.
+    this->register_post<create_qp_ex_tag>(
+        [](ibv_qp* qp, ibv_context*, ibv_qp_init_attr_ex* a, auto...) {
+            if (!qp)
+                return;
+            // Same mask discipline as modify_qp: ibv_qp_init_attr_ex fields are
+            // only meaningful when comp_mask says the caller set them, and pd is
+            // one of them. qp_type is a base field and always set.
+            const bool has_pd = a && (a->comp_mask & IBV_QP_INIT_ATTR_PD);
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbQueuePair{{},
+                                         {},
+                                         h(qp),
+                                         has_pd ? h(a->pd) : pcomm::core::Handle{},
+                                         qp->qp_num,
+                                         static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
+        });
+
     // qp_to_qp_ex -> patch this QP's wr_* pointers. Without it the application's
     // sends are invisible: they never reach ctx->ops.post_send, and nothing
     // anywhere fails.

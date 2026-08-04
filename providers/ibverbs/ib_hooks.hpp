@@ -12,6 +12,27 @@
 
 // --- object-ops hooks (installed by replacing ibv_context->ops.X) ------------
 DEFINE_OBJECT_OPS_HOOK(ibv, post_send, "ibv_post_send", int, ibv_qp*, ibv_send_wr*, ibv_send_wr**);
+// Extended queue-pair creation. This is an object-ops hook and not a preload
+// hook because **there is no exported ibv_create_qp_ex symbol to preload**:
+//
+//   $ readelf --dyn-syms /lib64/libibverbs.so.1 | grep create_qp
+//     ibv_create_qp@@IBVERBS_1.1
+//     ibv_create_qp@IBVERBS_1.0
+//
+// verbs.h makes ibv_create_qp_ex a static inline that dispatches through
+// verbs_context::create_qp_ex (verbs.h:3071-3085), so the function pointer is
+// the only thing there is to hook — the same shape as post_send.
+//
+// This cost case 08 a week of wrong answers, so the method is worth recording:
+// three explanations were asserted from `nm` on the binary and LD_DEBUG=bindings
+// on the run, and all three failed the same way. Both instruments answer
+// questions about *symbols*, and a static inline has no symbol. What settled it
+// was tracing hook **entry** (PCOMM_TRACE_HOOKS=1, job 44233994): every hooked
+// door reported, ibv_modify_qp and ibv_qp_to_qp_ex among them, and no create
+// door at all. A queue pair that is modified but never created cannot have come
+// through an exported symbol.
+DEFINE_OBJECT_OPS_HOOK(ibv, create_qp_ex, "ibv_create_qp_ex", ibv_qp*, ibv_context*,
+                       ibv_qp_init_attr_ex*);
 DEFINE_OBJECT_OPS_HOOK_PRED(
     ibv, poll_cq, "ibv_poll_cq",
     [](int out_ret, ibv_cq*, int, ibv_wc*) {
@@ -50,12 +71,17 @@ DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_in
 // ibv_wr_* callers are static inline wrappers over pointers inside qp_ex, so
 // nothing else can reach them.
 //
-// Hooked here rather than at QP creation because creation has many doors —
-// perftest reaches the WR API through mlx5dv_create_qp, and never calls
-// ibv_create_qp_ex at all (checked with nm on the binary, after hooking the
-// wrong one first). Every one of those paths still has to come through this
-// function, and it hands us the qp_ex directly, so nothing has to guess whether
-// a given ibv_qp is really the base of an ibv_qp_ex.
+// Hooked here rather than at QP creation because creation has many doors, and
+// every one of them still has to come through this function, which hands us the
+// qp_ex directly — so nothing has to guess whether a given ibv_qp is really the
+// base of an ibv_qp_ex.
+//
+// This comment used to claim "perftest reaches the WR API through
+// mlx5dv_create_qp, and never calls ibv_create_qp_ex at all (checked with nm on
+// the binary)". Both halves were wrong. Entry tracing shows perftest enters
+// neither mlx5dv_create_qp nor ibv_create_qp; it creates through
+// verbs_context::create_qp_ex, which `nm` cannot see because the caller is a
+// static inline. See the create_qp_ex hook above.
 DEFINE_PRELOAD_HOOK(ibv, qp_to_qp_ex, "ibv_qp_to_qp_ex", ibv_qp_ex*, ibv_qp*);
 DEFINE_PRELOAD_HOOK(ibv, destroy_qp, "ibv_destroy_qp", int, ibv_qp*);
 DEFINE_PRELOAD_HOOK(ibv, modify_qp, "ibv_modify_qp", int, ibv_qp*, ibv_qp_attr*, int);
