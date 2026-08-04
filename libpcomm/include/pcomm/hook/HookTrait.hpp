@@ -61,6 +61,34 @@ concept ValidCallbackTag = requires {
 // come from a C ABI struct and cannot be. That one token is the only
 // difference between the expansions, so it is a macro argument.
 // ================================================================
+// Callback signatures, with the void-returning case spelled separately.
+//
+// A hook whose function returns void cannot have `ret_type` in its callback
+// signatures: `bool (*)(void, Args...)` is ill-formed, and so is
+// `void (*)(void, Args...)`. Without this the macro simply fails to compile for
+// such a symbol, which is how mlx5dv_devx_free_uar ended up unhooked and a UAR
+// lifetime ended up with no close. SigmaTrace passes std::monostate as the
+// return type to dodge the same wall; spelling the specialisation is cheaper
+// than teaching every provider a placeholder convention.
+//
+// For a void hook the post callback simply has no result parameter — there is
+// no result. Everything else is identical.
+namespace detail {  // already inside pcomm::hook — see the opener above
+
+template<typename Ret, typename... Args> struct HookSigs {
+    using RunPredicateFn = bool (*)(Ret, Args...);
+    using PreCallback = void (*)(Args..., const Timestamp);
+    using PostCallback = void (*)(Ret, Args..., const Timestamp, const Timestamp);
+};
+
+template<typename... Args> struct HookSigs<void, Args...> {
+    using RunPredicateFn = bool (*)(Args...);
+    using PreCallback = void (*)(Args..., const Timestamp);
+    using PostCallback = void (*)(Args..., const Timestamp, const Timestamp);
+};
+
+}  // namespace detail
+
 #define PCOMM_DEFINE_HOOK_(ns, hook_name, sym_name, hook_type, pred, noexcept_spec, ret_type, ...) \
     namespace ns {                                                                                 \
     struct hook_name##_tag {};                                                                     \
@@ -68,10 +96,11 @@ concept ValidCallbackTag = requires {
     template<> struct pcomm::hook::HookTrait<ns::hook_name##_tag> {                                \
         using FuncPtr = ret_type (*)(__VA_ARGS__) noexcept_spec;                                   \
         using RetType = ret_type;                                                                  \
-        using RunPredicateFn = bool (*)(ret_type, __VA_ARGS__);                                    \
+        using Sigs = ::pcomm::hook::detail::HookSigs<ret_type, __VA_ARGS__>;                         \
+        using RunPredicateFn = typename Sigs::RunPredicateFn;                                      \
         static constexpr RunPredicateFn predicate_fn = pred;                                       \
-        using PreCallback = void (*)(__VA_ARGS__, const Timestamp);                                \
-        using PostCallback = void (*)(ret_type, __VA_ARGS__, const Timestamp, const Timestamp);    \
+        using PreCallback = typename Sigs::PreCallback;                                            \
+        using PostCallback = typename Sigs::PostCallback;                                          \
         static constexpr pcomm::hook::HookType type = pcomm::hook::HookType::hook_type;            \
         static constexpr const char*           name = #hook_name;                                  \
         static constexpr const char*           symbol_name = sym_name;                             \

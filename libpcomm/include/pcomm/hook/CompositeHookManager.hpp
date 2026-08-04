@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iostream>
+#include <type_traits>
 
 #include "pcomm/helpers/timestamp.hpp"
 
@@ -169,21 +170,38 @@ public:
 
         mgr.template invoke_all_pre<Tag>(args..., ts_start);
 
-        auto ret = real(args...);
-
-        // Skip post hooks if the predicate is false
-        if constexpr (HookTrait<Tag>::predicate_fn != nullptr) {
-            if (!HookTrait<Tag>::predicate_fn(ret, args...)) {
-                return ret;
+        // A void-returning hook has no result to carry through the predicate or
+        // into the post callbacks, so it needs its own path: `auto ret =
+        // real(...)` does not compile for void and neither does `return ret`.
+        // Without this branch such a symbol could not be hooked at all — which
+        // is why mlx5dv_devx_free_uar was left out and a UAR entity has no
+        // close record.
+        if constexpr (std::is_void_v<typename HookTrait<Tag>::RetType>) {
+            real(args...);
+            if constexpr (HookTrait<Tag>::predicate_fn != nullptr) {
+                if (!HookTrait<Tag>::predicate_fn(args...))
+                    return;
             }
+            auto ts_end = mgr.m_timestamp.now();
+            mgr.template invoke_all_post<Tag>(std::forward<Args>(args)..., ts_start, ts_end);
+            return;
+        } else {
+            auto ret = real(args...);
+
+            // Skip post hooks if the predicate is false
+            if constexpr (HookTrait<Tag>::predicate_fn != nullptr) {
+                if (!HookTrait<Tag>::predicate_fn(ret, args...)) {
+                    return ret;
+                }
+            }
+
+            // End timestamp
+            auto ts_end = mgr.m_timestamp.now();
+
+            mgr.template invoke_all_post<Tag>(ret, std::forward<Args>(args)..., ts_start, ts_end);
+
+            return ret;
         }
-
-        // End timestamp
-        auto ts_end = mgr.m_timestamp.now();
-
-        mgr.template invoke_all_post<Tag>(ret, std::forward<Args>(args)..., ts_start, ts_end);
-
-        return ret;
     }
 
     // ================================================================

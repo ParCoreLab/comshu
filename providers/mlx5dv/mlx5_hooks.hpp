@@ -42,22 +42,14 @@ DEFINE_PRELOAD_HOOK(mlx5, devx_umem_dereg, "mlx5dv_devx_umem_dereg", int, mlx5dv
 DEFINE_PRELOAD_HOOK(mlx5, devx_alloc_uar, "mlx5dv_devx_alloc_uar", mlx5dv_devx_uar*, ibv_context*,
                     uint32_t);
 //
-// mlx5dv_devx_free_uar is deliberately NOT hooked, and the reason is a limit in
-// the hook engine rather than a decision about the data: HookTrait cannot
-// express a void-returning call. `invoke_preload` does `auto ret = real(...);
-// return ret;`, which is ill-formed for void, and the predicate/callback
-// signatures take ret_type as a parameter. SigmaTrace hit the same wall and
-// passed std::monostate as the return type to get around it.
-//
-// Nothing is lost yet — no record is emitted for UAR teardown — but a UAR
-// lifetime needs a close, so this is owed. Fixing it belongs in the engine (an
-// `if constexpr (std::is_void_v<RetType>)` branch in invoke_preload), not in a
-// per-provider workaround, since every provider will eventually hook something
-// that returns void.
+// free_uar returns void, which the hook engine could not express until the
+// HookSigs specialisation and invoke_preload's is_void_v branch landed:
+// `bool (*)(void, Args...)` is ill-formed and so is `auto ret = real(...)`.
+// SigmaTrace passes std::monostate as a placeholder return type to dodge the
+// same wall. Spelling it in the engine means no provider has to learn a
+// convention, and a UAR gets a close instead of an open-ended lifetime.
+DEFINE_PRELOAD_HOOK(mlx5, devx_free_uar, "mlx5dv_devx_free_uar", void, mlx5dv_devx_uar*);
 
-// The DEVX command plane. create carries CREATE_QP (queue pairs, send-queue
-// location, transport type); modify carries INIT2RTR_QP (the remote endpoint,
-// hence the topology).
 DEFINE_PRELOAD_HOOK(mlx5, devx_obj_create, "mlx5dv_devx_obj_create", mlx5dv_devx_obj*,
                     ibv_context*, const void*, size_t, void*, size_t);
 DEFINE_PRELOAD_HOOK(mlx5, devx_obj_modify, "mlx5dv_devx_obj_modify", int, mlx5dv_devx_obj*,
