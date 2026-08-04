@@ -76,7 +76,14 @@ DB="$(mktemp)"; trap 'rm -f "$DB"' EXIT
 case_name="$(basename "$CASE_DIR")"
 meta="$CASE_DIR/meta.json"
 checks_dir="$CASE_DIR/checks"
-[ -d "$checks_dir" ] || { echo "$case_name: no checks/ dir" >&2; exit 2; }
+# A case needs SOMETHING to check, but goldens are not that something. Requiring
+# checks/ rejected the first assertions-only case outright — it exited 2 before
+# running a single assertion and wrote no result.json, so the board came back
+# EMPTY rather than red, which is worse than either verdict. Cases are supposed
+# to be moving away from goldens; the harness has to allow arriving.
+[ -d "$checks_dir" ] || [ -d "$CASE_DIR/asserts" ] || {
+  echo "$case_name: neither checks/ nor asserts/ — a case must check something" >&2
+  exit 2; }
 
 sql() { "$SQL_ENGINE" "$DB" "$@"; }
 have_table() { [ -n "$(sql "SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name='$1';")" ]; }
@@ -131,7 +138,10 @@ sql "$params_sql"
 gfail=0; gn=0
 echo "  -- goldens (regression net: reports change, not correctness)"
 for q in "$checks_dir"/*.sql; do
-  [ -e "$q" ] || { echo "$case_name: no .sql checks" >&2; exit 2; }
+  # No goldens is a legitimate state now, not an error: a case whose every
+  # invariant is allocation-dependent has nothing honest to characterize. Bail
+  # out only if there are no assertions either — that check is above.
+  [ -e "$q" ] || { echo "     (none — this case asserts instead)"; break; }
   name="$(basename "$q" .sql)"
   golden="$checks_dir/$name.golden"
   got="$("$SQL_ENGINE" -csv -header "$DB" < "$q" 2>&1)"

@@ -233,7 +233,23 @@ static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
 }
 
 Profiler::Profiler() {
-    pcomm::Tracer::instance();
+    // Bring up sink + recorder. `Tracer::instance()` alone was not enough and
+    // failed in the most misleading way available: every hook fired (LD_DEBUG
+    // confirmed nvshmem_transport_ibgda.so binding to this .so for umem_reg_ex,
+    // alloc_uar and obj_create), every record was constructed, and the capture
+    // directory came back empty because no engine had been acquired to hold a
+    // sink. "The provider captured nothing" looked exactly like "the hooks do
+    // not work", which is the wrong half of the system to go debugging.
+    const pcomm::Config cfg = pcomm::Config::from_env();
+    // Declare before acquiring: checks our ABI against the engine's and that
+    // nobody else has claimed 200-299. That matters more here than for ibverbs,
+    // because this provider is designed to co-run with it and pcomm-read merges
+    // provider streams assuming the ranges are disjoint.
+    if (pcomm_engine_declare_provider("mlx5dv", pcomm::core::id_range::mlx5dv_lo,
+                                      pcomm::core::id_range::mlx5dv_hi,
+                                      PCOMM_ENGINE_ABI_VERSION) != 0)
+        return;  // the engine has already explained why on stderr
+    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     this->register_post<devx_umem_reg_tag>(
         [](mlx5dv_devx_umem* out, ibv_context*, void* addr, size_t size, uint32_t access, auto...) {
