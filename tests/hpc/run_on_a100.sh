@@ -20,6 +20,14 @@
 #
 # Config via env:
 #   PCOMM_A100=missa18@a100        ssh target (may be a ProxyJump alias)
+#   PCOMM_SSH_OPTS=               extra ssh options, e.g.
+#                                  '-o ProxyJump=mktips@100.64.0.8'.
+#                                  For hosts where ~/.ssh/config cannot carry the
+#                                  jump: on simurgh-base it is a read-only
+#                                  symlink into the nix store, and tailnet
+#                                  MagicDNS names do not resolve there, so the
+#                                  configured `ProxyJump university-base` fails
+#                                  and cannot be fixed locally.
 #   PCOMM_A100_DIR=/DATA/$USER/pcomm   checkout on the remote. NOT $HOME —
 #                                  the A100 box's root filesystem runs at 98%
 #                                  and other people's jobs live there.
@@ -28,7 +36,7 @@ set -uo pipefail
 REMOTE="${PCOMM_A100:-missa18@a100}"
 RDIR="${PCOMM_A100_DIR:-/DATA/missa18/pcomm}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=20"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 ${PCOMM_SSH_OPTS:-}"
 
 do_build=1
 cases_filter="09"
@@ -46,10 +54,11 @@ rsh() { $SSH "$REMOTE" "bash -lc '$1'"; }
 
 $SSH "$REMOTE" true 2>/dev/null || {
   echo "run_on_a100.sh: cannot reach $REMOTE." >&2
-  echo "  If it needs a jump host, put it in ~/.ssh/config — this script does" >&2
-  echo "  not guess one. (Overriding a configured ProxyJump on the command" >&2
-  echo "  line is what made the first attempt fail with 'Host key verification" >&2
-  echo "  failed'.)" >&2
+  echo "  If it needs a jump host, put it in ~/.ssh/config, or pass it as" >&2
+  echo "  PCOMM_SSH_OPTS='-o ProxyJump=user@host' when that file is not yours" >&2
+  echo "  to edit. This script does not guess one. (Overriding a configured" >&2
+  echo "  ProxyJump on the command line is what made the first attempt fail" >&2
+  echo "  with 'Host key verification failed'.)" >&2
   exit 1; }
 
 # ---- provenance -----------------------------------------------------------

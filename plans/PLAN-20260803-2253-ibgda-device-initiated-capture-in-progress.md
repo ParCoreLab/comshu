@@ -841,6 +841,34 @@ queues.** Under `ibgda`+dmabuf the umem carries `addr=0x0` and a descriptor, so
 `cuMemGetHandleForAddressRange` is intercepted through `smart_dlsym`. Nothing
 in the data plane can be located without it.
 
+### Instrument now available for the open routing question (2026-08-05)
+
+Stage 3's open question — whether `cuGetExportTable` patching is *also* required,
+or whether interposing `dlsym` suffices — has been argued from `LD_DEBUG` output
+and from reading NVSHMEM. Neither can answer it, for the reason case 08 took a
+week to learn: those instruments describe **resolution**, and the question is
+about **invocation**.
+
+`PCOMM_TRACE_HOOKS=1` now prints first entry per hooked symbol at both engine
+choke points (`invoke_preload`, `invoke_object_ops`). Pointed at an IBGDA run on
+du04 it answers the routing question directly — which CUDA entry points are
+actually entered through our interposers, rather than which ones resolve to
+them. Do that before writing any export-table patcher.
+
+### du04 access, and what it unblocks (2026-08-05)
+
+du04 is reachable from simurgh-base again — the configured
+`ProxyJump university-base` fails there because tailnet MagicDNS does not
+resolve, so use the tailnet IP (`-o ProxyJump=mktips@100.64.0.8`, or
+`PCOMM_SSH_OPTS` for `run_on_a100.sh`). simurgh's key is now in du04's
+`authorized_keys`.
+
+du04 has **`nvidia_peermem` loaded and `PeerMappingOverride=1`**. That makes
+**case 10 runnable now**: the `by_addr`/peermem binding is the half of
+`umem_referential` that has only ever been reasoned about, never executed. It is
+the cheapest remaining item in this plan and does not depend on the data-plane
+work.
+
 ### Follow-ups that are now their own plans
 
 - Case 10, the `ibdevx`+peermem (`by_addr`) configuration — the one SigmaTrace's
