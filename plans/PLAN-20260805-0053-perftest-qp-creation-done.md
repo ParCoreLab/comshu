@@ -1,9 +1,10 @@
 # PLAN — find the door perftest creates its queue pair with
 
 - **Created:** 2026-08-05 00:53 +03
-- **Status:** ANSWERED 2026-08-05 — the door is `verbs_context::create_qp_ex`,
-  a function pointer, not a symbol. Hooked in `eaf6c57`/follow-up; awaiting the
-  green board before this file is renamed `-done`.
+- **Status:** DONE 2026-08-05. The door is `verbs_context::create_qp_ex`, a
+  function pointer rather than a symbol. Hooked as an object-ops slot; MN5 suite
+  job 44234365 is 8 PASS + 1 SKIP with case 08 green on 8 assertions, and du04
+  case 09 still passes on 9. The assertion was never weakened.
 - **Blocks:** case 08's `qp_creation_accounted` assertion, currently
   `expect_fail` with the evidence attached.
 - **Related:** `PLAN-20260803-2253-ibgda-device-initiated-capture` (the mlx5dv
@@ -110,7 +111,42 @@ The fix was to measure a different thing entirely: not what resolves, but what
 is **entered**. That distinction is the transferable lesson, and it is why the
 trace was added to the engine choke point rather than to three functions.
 
-## Step 2 — only after step 1 names the door
+## Step 2 — done: hooked as an object-ops slot
+
+`DEFINE_OBJECT_OPS_HOOK(ibv, create_qp_ex, ...)`, with `get_op` returning
+`verbs_get_ctx(ctx)->create_qp_ex`. Two guards reproduce what
+`verbs_get_ctx_op` checks before dispatching there, and the second is
+load-bearing:
+
+- **`sz`** — `verbs_context` "grows up", so an older libibverbs may not have the
+  field and writing there lands past the struct.
+- **a NULL slot** means the driver did not implement extended creation, and
+  `ibv_create_qp_ex` falls back to `ibv_create_qp` — which is already hooked.
+  Patching a NULL slot would make `verbs_get_ctx_op` report the capability as
+  present, push the application down a path it had declined, and call through a
+  trampoline whose saved original is NULL. That is the `devx_probe` mistake
+  exactly: **a hook must never manufacture a capability, or a failure, that the
+  application did not have.**
+
+Verified job 44234284: `ibv_create_qp_ex` entered on both ranks, `102.pcs`
+(`ib_queue_pair`) written where the stream had never existed.
+
+## What this cost, and the transferable part
+
+Six hypotheses died to symbol-level instruments before the seventh was even
+reachable, because the answer was not a symbol. Worth carrying forward:
+
+1. **`nm`, `readelf` and `LD_DEBUG` all answer questions about symbols.** When
+   the thing you are looking for might be a function pointer, an inline, or a
+   vtable slot, they cannot find it and their silence looks like "wrong guess".
+2. **Measure entry, not resolution.** The trace went into the engine choke point
+   rather than three chosen functions, so it covered every hook in both
+   providers at once — and the *absence* across all of them was the evidence.
+3. **A probe needs a positive control.** The job prints a count of traced
+   symbols precisely so "no create door fired" cannot be confused with "the
+   trace printed nothing". The same discipline caught an earlier all-zeros grep.
+
+## Step 2 (original text) — only after step 1 names the door
 
 Hook it in whichever provider owns the range, emit the entity, drop the
 `expect_fail` marker, and let `qp_creation_accounted` guard it.
