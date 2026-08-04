@@ -27,6 +27,12 @@ source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/09_ibgda_putget"
 OUT=$(pcomm_out ibgda_putget)
 
+# The workload links libnvshmem_host.so.3, which lives in the SDK rather than in
+# any default search path — cases 04/06/07 all carry this line and omitting it
+# here cost a run (rc=127, "cannot open shared object file"). common.sh cannot
+# set it because it does not know whether a case needs NVSHMEM.
+export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBRARY_PATH:-}"
+
 # ---- prerequisites --------------------------------------------------------
 # IBGDA needs the NIC to be allowed to expose its doorbell page to the GPU. That
 # takes either the nvidia_peermem/nv_peer_mem kernel module or DMABUF support,
