@@ -835,3 +835,50 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   ELF/`link.h`, no `CLOCK_MONOTONIC_RAW`): libpcomm's hook engine and recorder
   build only on Linux targets (du04 / MN5). Use `perl -i` not `sed -i` locally;
   build/verify remotely.
+
+## OPEN (2026-08-05): case 08 drives a queue pair nothing recorded creating
+5 `ib_modify_qp` rows exist for queue pairs that neither `ib_queue_pair` nor
+`mlx5_queue_pair` records, while the ib provider is healthy in the same process
+(1000 post_send, 1010 poll_cq). The standing explanation — "perftest uses
+`mlx5dv_create_qp`, which we don't hook" — is **refuted**: the hook exists,
+emits an entity, and captured nothing. Versioning, the RDMA CM route, DEVX,
+provider-load failure and id-range conflict are all eliminated by measurement
+(probe job 44205459). See `PLAN-20260805-0053-perftest-qp-creation-todo.md`.
+
+**Method note worth keeping.** `LD_DEBUG=bindings` shows symbol *resolution*,
+not *invocation* — `rdma_create_qp` and `rdma_create_qp_ex` both bound in a run
+where perftest can call only one. It proves "if called, it reaches us", which is
+what killed the versioning hypothesis, and cannot name the caller. Three
+successive explanations here were asserted from resolution-level evidence and
+all three were wrong; the next step is call-level instrumentation.
+
+## FIXED (2026-08-04): a case that declined to run reported PASS
+MN5's board showed 9 PASS where the ninth was case 09 skipping in 0s because the
+host has no IBGDA. `result.json` said `skipped:true` and the board rendered
+`PASS` anyway — nine greens implying coverage that does not exist. Skips now
+render `SKIP` with their reason and the banner names the count.
+
+Two smaller reporting defects went with it. Case-level `expect_fail` keyed on an
+`outcome` field **nothing writes**, so the XFAIL branch fired unconditionally
+and **XPASS was unreachable** — a case marked xfail that started working would
+have reported XFAIL forever, which is the one signal the marker exists to
+produce. And assertion-level xfails rode invisibly inside a PASS (case 08 passes
+with one known-failing assertion; the board said only "PASS 10 checks").
+
+## FIXED (2026-08-04): a broken harness reported a green board
+Case 09's first run on du04 returned `ok:true` having tested nothing: the
+provider built, all three IBGDA prerequisites passed, then `nvcc` was missing
+because `common.sh` hardcoded MareNostrum's SDK path — and `skip()` swallowed
+it. SKIP now means only "this host cannot do IBGDA"; a host that can, where the
+harness broke, FAILS. `common.sh` resolves the SDK by search with env override,
+globs `comm_libs/*/` for the CUDA version, and locates `nvcc` explicitly because
+`module` is a MareNostrum thing that silently no-ops elsewhere.
+
+## OPEN (2026-08-05): run_on_a100.sh syncs from a syncthing-fed checkout
+A board can execute a **mixed tree**: the provider `.cpp` and the `.sql`
+assertion beside it in the same commit arrived separately, so a fixed provider
+was judged by a stale assertion and went red for a reason that no longer
+existed. `run_on_mn5.sh` cannot do this — it pushes HEAD over git and refuses a
+dirty tree. The A100 runner now prints the source commit, flags a dirty tree and
+honours `PCOMM_EXPECT_COMMIT`, but the underlying hop is still asynchronous:
+pin the commit when a board needs to be attributable.

@@ -1,12 +1,12 @@
 # PLAN — capture device-initiated IB (IBGDA), which pcomm currently records as silence
 
 - **Created:** 2026-08-03 22:53 +03
-- **Status:** UNBLOCKED — wrong machine, not wrong plan. MN5's ACC partition
-  cannot run IBGDA (jobs 44156334/44156479/44156594), but **`a100` / `du04`
-  can**, and a real IBGDA workload has now completed under the probe there. One
-  architectural finding changes the design for both options: **CUDA driver-API
-  interception is required even for passive observation** — see "Stage 2 — what
-  actually happened".
+- **Status:** STAGE 1 SHIPPED, stages 2-4 re-scoped by measurement. The
+  mlx5dv/DEVX provider is in the tree, builds on MN5 and du04, and captures real
+  GPU-initiated traffic: case 09 passes on du04 with **0 goldens and 9
+  assertions**, all derived. What remains is the *data plane* — doorbells and
+  WQE contents — where the A-vs-B choice is now informed rather than argued.
+  See "What actually shipped" below.
 - **Prior art:** `../SigmaTrace` — `Mlx5dvTrace/`, `Profiler/Handlers/IBV/Mlx5dv.cpp`,
   `Profiler/Handlers/CUDAHijack.cpp`, `Profiler/Modules/MemoryHijack/`,
   `Profiler/Modules/CudaExportTableOverwrite/`, `Profiler/Modules/GPUMemoryHijack/`.
@@ -787,3 +787,65 @@ hardware available. Two additions to Stage 1:
 2. **Support both registration paths** — address-based (peermem) and
    dmabuf-fd-based — rather than only the one the reference implementation
    needs. That is where pcomm can genuinely exceed the prior art.
+
+## What actually shipped (2026-08-04/05)
+
+Stage 1 is done, and several of this plan's own assumptions were corrected on
+the way by hardware rather than by argument.
+
+**`providers/mlx5dv/`** — ids 200-299, reserved in `ids.hpp` since it was
+written and unused until now. Records: `mlx5_umem`, `mlx5_uar`,
+`mlx5_devx_cmd`, `mlx5_devx_qp`, `mlx5_devx_qp_connect`, `mlx5_queue_pair`.
+Hooks: `devx_umem_reg`, `devx_umem_reg_ex`, `devx_umem_dereg`,
+`devx_alloc_uar`, `devx_free_uar`, `devx_obj_create`, `devx_obj_modify`,
+`create_qp`. Registered in the launcher as `devx` (aliases `mlx5`, `mlx5dv`,
+`ibgda`), non-exclusive so it co-runs with `ib`.
+
+**`tests/hpc/cases/09_ibgda_putget`** — assertions only, no goldens, because
+every quantity here is allocation-dependent. `verify_asserts.sh` tests the
+assertions themselves against a synthetic fixture (22 checks) and needs only
+sqlite3, so they are exercised on hosts that cannot run IBGDA at all.
+`tests/hpc/run_on_a100.sh` is the runner; MN5 self-skips with a reason.
+
+**Corrections this plan owes to measurement**, each of which was first argued
+the other way in the sections above:
+
+| claimed earlier | what hardware said |
+|---|---|
+| the export-table patcher is "unproven necessity" | `cuGetProcAddress` 2, `_v2` 8, `cuGetExportTable` 2 — SigmaTrace's design is validated |
+| SigmaTrace is "version-stale" and captures nothing | it works; I ran it in the configuration it does not support and read the crash as confirmation of my own prediction |
+| src_lid decodes from INIT2RTR | it does not — a queue pair is bound to a port at RST2INIT, which `ib_records.hpp` already documented for the verbs path |
+
+**Engine changes this required:** void-returning hooks (`HookSigs` void
+specialisation + `is_void_v` branch in `invoke_preload`) — without them no
+provider could hook a symbol returning void, which is why `free_uar` was
+initially dropped.
+
+### What Stage 3 now looks like
+
+The A-vs-B question is settled on cost and re-opened on scope. The user's
+original point stands: the doorbell hijack is far cheaper at runtime than
+instrumenting every global memory instruction, and B's only remaining argument
+is marginal cost on a capture already running NVBit.
+
+But **both need CUDA driver interception**, and the route is now known
+precisely: NVSHMEM `dlopen`s `libcuda.so.1` and resolves through
+`dlsym(handle, …)`, which bypasses `LD_PRELOAD` entirely. pcomm already
+interposes `dlsym` (`Dlsym.cpp:107`), so the first hop is covered; whether
+`cuGetExportTable` patching is *also* required is the open question, and the
+measurement above says SigmaTrace was right to do it.
+
+Prerequisite for any of it: **`fd → GPU VA` for dmabuf-registered send
+queues.** Under `ibgda`+dmabuf the umem carries `addr=0x0` and a descriptor, so
+`sq_base` is an offset and the send queue has no address until
+`cuMemGetHandleForAddressRange` is intercepted through `smart_dlsym`. Nothing
+in the data plane can be located without it.
+
+### Follow-ups that are now their own plans
+
+- Case 10, the `ibdevx`+peermem (`by_addr`) configuration — the one SigmaTrace's
+  artifact uses, and the half of `umem_referential` currently only reasoned
+  about.
+- Entity close records (`PLAN-20260805-0053-entity-lifetimes-todo.md`).
+- Case 08's unaccounted queue pair
+  (`PLAN-20260805-0053-perftest-qp-creation-todo.md`).
