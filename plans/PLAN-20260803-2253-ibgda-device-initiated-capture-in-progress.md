@@ -588,6 +588,45 @@ redundant by it. Treat the previous section's "unproven necessity" as retracted.
 the table, which is the only reason it was caught. Counted patterns that return
 zero need a positive control every time.)
 
+### Refinement from the source (2026-08-06): one interception point covers NVSHMEM
+
+The correction above stands — `cuGetExportTable` *is* live — but the source now
+says something the ELF and `LD_DEBUG` evidence could not, and it makes the
+`fd → GPU VA` work substantially cheaper. `reference/nvshmem-3.7.2-0` (the
+checkout added for exactly this kind of question):
+
+```c
+cudaLib = dlopen(path, RTLD_LAZY);                                  // cudawrap.cpp:123
+table->pfn_cuGetProcAddress = (PFN_...)dlsym(cudaLib,
+                                  "cuGetProcAddress");              // cudawrap.cpp:147
+// and then EVERY other entry point, through that pointer:
+table->pfn_cuGetProcAddress(#symbol, &table->pfn_##symbol, ver, 0); // cudawrap.cpp:39-41
+LOAD_SYM(table, cuMemGetHandleForAddressRange, 11070, , 1);         // cudawrap.cpp:70
+LOAD_SYM(table, cuGetExportTable,              3000,  , 1);         // cudawrap.cpp:92
+```
+
+NVSHMEM performs **exactly one `dlsym`** — for `cuGetProcAddress` — and obtains
+everything else through it, `cuGetExportTable` included. So for this application,
+interposing that single lookup yields control of every CUDA entry point it uses,
+and no export-table *patcher* is needed to reach the dmabuf export. pcomm
+already interposes `dlsym`, so the mechanism exists today.
+
+Two things this does NOT say, because the distinction is what the earlier
+retraction was about:
+
+- It does not retract the retraction. SigmaTrace's patcher is still the right
+  general design: an application that calls `cuGetExportTable` and uses the raw
+  table it returns is not covered by hooking `cuGetProcAddress`. NVSHMEM simply
+  is not such an application.
+- It is a fact about **NVSHMEM 3.7.2**, read from source, not a property of
+  CUDA. A different version, or NCCL, may resolve differently — and
+  `reference/` now exists so that is one grep away rather than another week.
+
+Consequence for sequencing: `fd → GPU VA` is the highest-leverage remaining
+item. One mechanism pays for the dmabuf half of memory attribution
+(`PLAN-20260806-1329` step 4), the `gpu_driven` heuristic that makes case 09's
+gate circular, and Stage 3's data plane.
+
 ### What remains genuinely open
 
 `cuMemHostGetDevicePointer_v2` shows **0 lookups**, and it is the linchpin of the
