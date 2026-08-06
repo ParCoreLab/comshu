@@ -780,27 +780,22 @@ extern "C" ibv_context* ibv_open_device(ibv_device* device) {
     return ibv::Profiler::invoke_preload<ibv::open_device_tag>(device);
 }
 extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
-    ibv::ensure_installed(context);
     return ibv::Profiler::invoke_preload<ibv::alloc_pd_tag>(context);
 }
 // Interposing this is what makes the new work-request API visible at all: it is
 // where a qp_ex first reaches the application, and the wr_* calls that follow
 // are static inline wrappers no interposer can reach.
 extern "C" ibv_qp_ex* ibv_qp_to_qp_ex(ibv_qp* qp) {
-    if (qp) ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::qp_to_qp_ex_tag>(qp);
 }
 
 extern "C" ibv_qp* ibv_create_qp(ibv_pd* pd, ibv_qp_init_attr* attr) {
-    if (pd) ibv::ensure_installed(pd->context);
     return ibv::Profiler::invoke_preload<ibv::create_qp_tag>(pd, attr);
 }
 extern "C" int ibv_destroy_qp(ibv_qp* qp) {
-    if (qp) ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::destroy_qp_tag>(qp);
 }
 extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
-    if (qp) ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::modify_qp_tag>(qp, attr, mask);
 }
 // DIAGNOSTIC, gated on PCOMM_TRACE_MR_CALLERS=1 — which LIBRARY calls each
@@ -882,6 +877,25 @@ static std::set<const void*>* g_known_mrs = nullptr;  // leaked: outlives atexit
 // opening door, not at the registration door.
 static std::set<const void*>* g_installed_ctxs = nullptr;
 
+// REVERTED as the primary mechanism, and kept as the record of why.
+//
+// Calling this from every context-holding door LOST capture rather than adding
+// it: case 02 went from 26880 sends to 20160, ranks 2 and 6 vanishing from
+// ib_post_send entirely, reproducing exactly across jobs 44370049, 44370229 and
+// 44370263. Deterministic and wrong, not flaky — my first reading of the golden
+// diff had the direction backwards and called it recovered traffic.
+//
+// The mechanism is still the right idea and the diagnosis behind it still holds
+// (job 44369505: every unmatched close sat on a context we never installed
+// into). But installing a context at an arbitrary later door evidently disturbs
+// something the open-time install does not, and that has to be understood before
+// it goes back in — most likely the driver repopulating ctx->ops after we have
+// saved an original, which would leave us bypassed on exactly the contexts we
+// meant to instrument.
+//
+// So it is called from open_device only, as before, and the deterministic fix
+// is to interpose the OPENING doors (mlx5dv_open_device et al) instead.
+
 // INSTALL ON FIRST SIGHT, not at the opening door.
 //
 // Object-ops hooks live inside one ibv_context, so a context opened through a
@@ -961,7 +975,6 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
 extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
                                      int fd, int access) {
     trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
-    if (pd) ibv::ensure_installed(pd->context);
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
                                                                      access);
     remember_mr(mr);
@@ -974,8 +987,6 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     // own question. That is the fourth time in this project a diagnostic has
     // been blinded by a line placed above it for an unrelated reason.
     trace_unmatched_dereg(mr, __builtin_return_address(0));
-    if (mr)
-        ibv::ensure_installed(mr->context);
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
 
@@ -990,7 +1001,6 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
 #undef ibv_reg_mr
 extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
     trace_mr_caller("reg_mr", __builtin_return_address(0));
-    if (pd) ibv::ensure_installed(pd->context);
     struct Depth {
         Depth() noexcept { ++ibv::reg_mr_depth(); }
         ~Depth() noexcept { --ibv::reg_mr_depth(); }
@@ -1006,7 +1016,6 @@ extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access)
 extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint64_t iova,
                                     unsigned int access) {
     trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));
-    if (pd) ibv::ensure_installed(pd->context);
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);
     remember_mr(mr);
     return mr;
