@@ -39,7 +39,7 @@
 #include "pcomm/tracer.hpp"
 
 #include "mlx5_event_source.hpp"
-#include "cuda_dmabuf.hpp"
+#include "pcomm/core/dmabuf_registry.hpp"
 #include "mlx5_records.hpp"
 
 namespace mlx5 {
@@ -119,7 +119,7 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
     //
     // What the descriptor can NOW yield is the range it was exported from:
     // NVSHMEM called cuMemGetHandleForAddressRange(&fd, dptr, size, ...) one
-    // step earlier and dmabuf::lookup carries that here. It feeds two things
+    // step earlier and pcomm::core::dmabuf::lookup carries that here. It feeds two things
     // that were previously impossible, neither of which is the umem's address:
     //
     //   - the owning device, which gpu_driven otherwise has to infer from the
@@ -129,8 +129,8 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
     // If the conversion was not observed, both stay unknown. That is the answer
     // this provider gave for every dmabuf umem until now, so a miss is a
     // regression to the previous behaviour rather than a new fiction.
-    dmabuf::Range dmabuf_range{};
-    const bool    resolved = by_dmabuf && dmabuf::lookup(dmabuf_fd, &dmabuf_range);
+    pcomm::core::dmabuf::Range dmabuf_range{};
+    const bool    resolved = by_dmabuf && pcomm::core::dmabuf::lookup(dmabuf_fd, &dmabuf_range);
 
     UmemInfo info{reinterpret_cast<std::uint64_t>(addr), size,
                   by_dmabuf ? (resolved ? dmabuf_range.device : kUnknownDevice)
@@ -322,7 +322,7 @@ Profiler::Profiler() {
     // Registering costs nothing on a host with no CUDA: the symbols are simply
     // never resolved, the callbacks never run, and every dmabuf umem reports the
     // unknown device it reported before.
-    dmabuf::install();
+    pcomm::core::dmabuf::install();
 
     // Bring up sink + recorder. `Tracer::instance()` alone was not enough and
     // failed in the most misleading way available: every hook fired (LD_DEBUG

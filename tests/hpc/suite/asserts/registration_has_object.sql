@@ -16,9 +16,22 @@
 -- resolved every colliding peer to whichever rank was scanned last.
 --
 -- Names no rank, no address and no count.
+--
+-- ONE EXEMPTION, named explicitly rather than folded into the clause below: a
+-- dmabuf-registered region (dmabuf_fd >= 0) whose address could not be
+-- recovered. Such a region has no host address of its own — whether one exists
+-- depends on the caller, and NCCL demonstrates both cases in one codebase,
+-- passing the real address as `iova` on its net_ib path (reg.cc:35) and 0 on its
+-- GDAKI path (gin_host_gdaki.cc:131). Emitting a MemObject at base 0 to satisfy
+-- this assertion would put a fiction in the capture that range containment then
+-- resolves real addresses against, so the region is recorded and the object is
+-- not. The exemption is `base = 0x0 AND dmabuf_fd >= 0`, which is as narrow as
+-- it can be: an ordinary registration at base 0 still fails, and a dmabuf region
+-- WITH an address is still required to have its object.
 SELECT 'registered region with no mem_object' AS problem, r.rank, r.base, r.size, r.lkey
 FROM ib_mem_region r
-WHERE NOT EXISTS (
+WHERE NOT (r.base = '0x0' AND CAST(r.dmabuf_fd AS INTEGER) >= 0)
+  AND NOT EXISTS (
   SELECT 1 FROM mem_object m
   WHERE m.rank = r.rank AND m.base = r.base AND m.size = r.size
 )

@@ -234,9 +234,10 @@ int main() {
         c.payload.lkey = 5;
         c.payload.rkey = 6;
         c.payload.access = 7;
+        c.payload.dmabuf_fd = -1;
         fb::IbMemRegion f(
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x10), fb::TimePoint(1, 0x20), 0),
-            1, 2, fb::MemRange(0x3000, 0x4000), 5, 6, 7);
+            1, 2, fb::MemRange(0x3000, 0x4000), 5, 6, 7, -1);
         expect_identical("IbMemRegion", &c, &f, sizeof(c));
     }
     {

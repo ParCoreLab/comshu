@@ -29,6 +29,14 @@
 // 100-199, internal 500-599, gpumem 700-799). See PCOMM_RECORD_V in
 // pcomm/core/record.hpp for the convention and pcomm/rec/version_map.hpp for
 // how a reader serves captures from both sides of a bump.
+//
+// PRE-ALPHA EXCEPTION, and it is a deliberate project decision rather than an
+// oversight: while no capture outlives the commit that wrote it, a field is
+// added in place and kSchemaHash is bumped, instead of minting a version and
+// carrying two readers forever. IbMemRegion.dmabuf_fd was added this way. The
+// versioning machinery stays because the moment captures outlive a release this
+// stops being free — and the schema hash is what makes the break loud: an old
+// capture fails the header check instead of misparsing.
 
 namespace pcomm.fb;
 
@@ -206,6 +214,7 @@ struct IbMemRegion {
   lkey:uint32;
   rkey:uint32;
   access:uint32;
+  dmabuf_fd:int32;     // -1 unless registered via ibv_reg_dmabuf_mr
 }
 
 // type 102, Entity. A queue-pair endpoint, lifetime [create, destroy).

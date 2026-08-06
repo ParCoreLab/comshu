@@ -26,6 +26,14 @@ PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
     std::uint32_t lkey;
     std::uint32_t rkey;
     std::uint32_t access;
+    // -1 for an ordinary registration; otherwise the dmabuf descriptor the
+    // buffer was named by (ibv_reg_dmabuf_mr). It marks the rows whose `range`
+    // may be unresolvable: a dmabuf MR has no host address of its own, and
+    // whether one can be recovered depends on the caller — NCCL passes the real
+    // address as `iova` on its net_ib path (reg.cc:35) and 0 on its GDAKI path
+    // (gin_host_gdaki.cc:131). registration_has_object exempts a row with no
+    // resolvable address rather than us inventing one.
+    std::int32_t dmabuf_fd;
 };
 
 // ENTITY — a queue-pair endpoint (ibv_create_qp), lifetime [create, destroy).

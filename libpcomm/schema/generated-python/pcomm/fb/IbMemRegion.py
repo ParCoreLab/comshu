@@ -37,10 +37,12 @@ class IbMemRegion(object):
     def Rkey(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
     # IbMemRegion
     def Access(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
+    # IbMemRegion
+    def DmabufFd(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
 
-def CreateIbMemRegion(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, mr, pd, range_base, range_size, lkey, rkey, access):
+def CreateIbMemRegion(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, mr, pd, range_base, range_size, lkey, rkey, access, dmabufFd):
     builder.Prep(8, 88)
-    builder.Pad(4)
+    builder.PrependInt32(dmabufFd)
     builder.PrependUint32(access)
     builder.PrependUint32(rkey)
     builder.PrependUint32(lkey)

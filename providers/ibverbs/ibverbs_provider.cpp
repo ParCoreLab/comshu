@@ -11,6 +11,7 @@
 #include <cstdlib>
 
 #include "pcomm/core/ids.hpp"
+#include "pcomm/core/dmabuf_registry.hpp"
 #include "pcomm/core/mem_attr.hpp"
 #include "pcomm/core/records.hpp"
 #include "pcomm/provider/provider.hpp"
@@ -356,6 +357,17 @@ static void install(ibv_qp* qp, ibv_qp_ex* qpx) {
 }  // namespace wr
 
 Profiler::Profiler() {
+    // Watch for dmabuf exports. ibverbs needs fd -> address for
+    // ibv_reg_dmabuf_mr exactly as mlx5dv needs it for DEVX umems, and each
+    // provider installs its own interception and keeps its own table rather than
+    // one asking the other at runtime — the design rule is that a provider may
+    // need allocation facts for its own decisions and cannot wait on a peer.
+    //
+    // Both providers registering "cuGetProcAddress" is only legal because the
+    // dlsym registry chains; it used to throw on the second registrant and abort
+    // the process.
+    pcomm::core::dmabuf::install();
+
     // The launcher/preload sets PCOMM_* env; bring up sink + recorder once.
     const pcomm::Config cfg = pcomm::Config::from_env();
     // Declare before acquiring: checks our ABI against the engine's and that
@@ -393,7 +405,8 @@ Profiler::Profiler() {
                                      {reinterpret_cast<std::uint64_t>(addr), length},
                                      mr->lkey,
                                      mr->rkey,
-                                     static_cast<std::uint32_t>(access)});
+                                     static_cast<std::uint32_t>(access),
+                                     -1});
 
         // ...and the buffer it registered, attributed to its owning device.
         //
@@ -461,6 +474,58 @@ Profiler::Profiler() {
                                          qp->qp_num,
                                          static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
         });
+
+    // reg_dmabuf_mr -> a region the NIC was given by descriptor.
+    //
+    // The address is recovered in the order most-trustworthy first:
+    //
+    //   1. the fd -> range table, populated by our own interception of
+    //      cuMemGetHandleForAddressRange (core/dmabuf_registry.hpp). This is the
+    //      only source that also yields the owning DEVICE.
+    //   2. `iova`, when the caller supplied one. NCCL passes the real address
+    //      there on its net_ib path (reg.cc:35) and 0 on its GDAKI path
+    //      (gin_host_gdaki.cc:131), so this is right when it is nonzero and
+    //      absent when it is not.
+    //
+    // If neither yields an address the region is still recorded — it exists, and
+    // an unrecorded region is what made these buffers invisible in the first
+    // place — with base 0 and no MemObject. Synthesising an object at base 0
+    // would put a fiction in the capture that range containment then resolves
+    // real addresses against, which is the same thing mlx5dv refuses for dmabuf
+    // umems.
+    this->register_post<reg_dmabuf_mr_tag>([](ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
+                                              std::size_t length, std::uint64_t iova, int fd,
+                                              int access, auto...) {
+        if (!mr)
+            return;
+        pcomm::core::dmabuf::Range  r{};
+        const bool                  resolved = pcomm::core::dmabuf::lookup(fd, &r);
+        const std::uint64_t         base = resolved ? r.base + offset : iova;
+        const pcomm::core::DeviceId device =
+            resolved ? r.device
+                     : (base ? pcomm::core::device_of(reinterpret_cast<const void*>(base))
+                             : pcomm::core::kUnknownDevice);
+
+        rec().record(pcomm::core::Temporal::none(),
+                     rr::IbMemRegion{{},
+                                     {},
+                                     h(mr),
+                                     h(pd),
+                                     {base, length},
+                                     mr->lkey,
+                                     mr->rkey,
+                                     static_cast<std::uint32_t>(access),
+                                     fd});
+
+        if (base)
+            rec().record(rec().now_instant(),
+                         pcomm::core::records::MemObject{{},
+                                                         {},
+                                                         h(reinterpret_cast<const void*>(base)),
+                                                         pcomm::core::kNullHandle,
+                                                         {base, length},
+                                                         device});
+    });
 
     // dereg_mr / destroy_qp -> the entity's lifetime ended.
     //
@@ -602,6 +667,11 @@ extern "C" int ibv_destroy_qp(ibv_qp* qp) {
 }
 extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
     return ibv::Profiler::invoke_preload<ibv::modify_qp_tag>(qp, attr, mask);
+}
+extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
+                                     int fd, int access) {
+    return ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
+                                                                 access);
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);

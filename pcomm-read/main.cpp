@@ -220,13 +220,14 @@ template<> struct Table<Attribution> {
 
 template<> struct Table<ibr::IbMemRegion> {
     static constexpr const char* name = "ib_mem_region";
-    static constexpr const char* cols = "ticks,mr,pd,base,size,lkey,rkey,access";
+    static constexpr const char* cols = "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd";
     static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s,
                                      const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
-                                      s.payload.mr, s.payload.pd, (unsigned long long)s.payload.range.base,
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d",
+                                      (unsigned long long)s.temporal.a.ticks, s.payload.mr, s.payload.pd,
+                                      (unsigned long long)s.payload.range.base,
                                       (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
-                                      s.payload.access);
+                                      s.payload.access, s.payload.dmabuf_fd);
     }
 };
 

@@ -20,6 +20,7 @@
   global:
     ibv_alloc_pd;
     ibv_create_qp;
+    ibv_reg_dmabuf_mr;
     ibv_dereg_mr;
     ibv_destroy_qp;
     ibv_modify_qp;

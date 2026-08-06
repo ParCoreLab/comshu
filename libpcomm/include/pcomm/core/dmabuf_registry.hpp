@@ -23,11 +23,28 @@
 // a build where cuGetProcAddress fails to resolve, which is precisely the kind
 // of version-luck this file exists to avoid.
 //
-// No CUDA headers: this provider must build where there is no CUDA at all (MN5's
-// core configuration does). The types below are hand-copied from cuda.h and
-// NOTHING CHECKS THEM — the same exposure that left kAttrDeviceOrdinal wrong for
-// the provider's entire life. They are pinned by the typedefs NVSHMEM itself
+// No CUDA headers: this must build where there is no CUDA at all (MN5's core
+// configuration does). The types below are hand-copied from cuda.h and NOTHING
+// CHECKS THEM — the same exposure that left kAttrDeviceOrdinal wrong for the
+// mlx5dv provider's entire life. They are pinned by the typedefs NVSHMEM itself
 // uses (src/include/internal/host_transport/cudawrap.h:41,173).
+//
+// IN CORE, NOT IN A PROVIDER, and shared by copy rather than by reference. Both
+// ibverbs and mlx5dv need `fd -> address`: mlx5dv for DEVX umems, ibverbs for
+// ibv_reg_dmabuf_mr. Each provider calls install() and gets its OWN table,
+// populated by its OWN interception of the same CUDA calls.
+//
+// That is not a workaround for the lack of shared state, it is the stated design
+// rule: any provider may hook CUDA itself, because a provider may need
+// allocation facts for its own runtime decisions and cannot wait on another
+// provider for them. It only became possible when the dlsym registry learned to
+// chain — before that, the second provider to register "cuGetProcAddress" threw
+// and aborted the process.
+//
+// The duplication is real and bounded: two wrappers in the chain, two small
+// tables, one extra indirection per CUDA export call. If a single shared table
+// is ever wanted instead, it belongs in the engine — a static library linked
+// into two .so's gives two copies, which is exactly what this design leans on.
 
 #include <cstdint>
 #include <cstring>
@@ -38,7 +55,7 @@
 #include "pcomm/core/vocab.hpp"
 #include "pcomm/hook/dlsym/Dlsym.hpp"
 
-namespace mlx5::dmabuf {
+namespace pcomm::core::dmabuf {
 
 // cuda.h: CUresult is an enum (int); CUdeviceptr is unsigned 64-bit on LP64.
 using CuResult = int;
@@ -52,9 +69,9 @@ using PfnMemGetHandle = CuResult (*)(void*, CuDevicePtr, std::size_t, int, unsig
 using PfnGetProcAddress = CuResult (*)(const char*, void**, int, unsigned long long);
 
 struct Range {
-    std::uint64_t         base{0};
-    std::uint64_t         size{0};
-    pcomm::core::DeviceId device{pcomm::core::kUnknownDevice};
+    std::uint64_t base{0};
+    std::uint64_t size{0};
+    DeviceId      device{kUnknownDevice};
 };
 
 inline std::mutex& mutex() {
@@ -107,7 +124,7 @@ inline CuResult get_handle_for_address_range(void* handle, CuDevicePtr dptr, std
     if (rc == 0 && handle && handle_type == kDmaBufFd) {
         const int fd = *static_cast<int*>(handle);
         remember(fd, Range{static_cast<std::uint64_t>(dptr), static_cast<std::uint64_t>(size),
-                           pcomm::core::device_of(reinterpret_cast<const void*>(dptr))});
+                           device_of(reinterpret_cast<const void*>(dptr))});
     }
     return rc;
 }
@@ -150,4 +167,4 @@ inline void install() {
         });
 }
 
-}  // namespace mlx5::dmabuf
+}  // namespace pcomm::core::dmabuf

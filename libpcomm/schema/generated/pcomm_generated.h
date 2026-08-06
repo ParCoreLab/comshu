@@ -850,7 +850,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
   uint32_t lkey_;
   uint32_t rkey_;
   uint32_t access_;
-  int32_t padding0__;
+  int32_t dmabuf_fd_;
 
  public:
   IbMemRegion()
@@ -861,10 +861,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
         lkey_(0),
         rkey_(0),
         access_(0),
-        padding0__(0) {
-    (void)padding0__;
+        dmabuf_fd_(0) {
   }
-  IbMemRegion(const pcomm::fb::Temporal &_temporal, uint32_t _mr, uint32_t _pd, const pcomm::fb::MemRange &_range, uint32_t _lkey, uint32_t _rkey, uint32_t _access)
+  IbMemRegion(const pcomm::fb::Temporal &_temporal, uint32_t _mr, uint32_t _pd, const pcomm::fb::MemRange &_range, uint32_t _lkey, uint32_t _rkey, uint32_t _access, int32_t _dmabuf_fd)
       : temporal_(_temporal),
         mr_(::flatbuffers::EndianScalar(_mr)),
         pd_(::flatbuffers::EndianScalar(_pd)),
@@ -872,8 +871,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
         lkey_(::flatbuffers::EndianScalar(_lkey)),
         rkey_(::flatbuffers::EndianScalar(_rkey)),
         access_(::flatbuffers::EndianScalar(_access)),
-        padding0__(0) {
-    (void)padding0__;
+        dmabuf_fd_(::flatbuffers::EndianScalar(_dmabuf_fd)) {
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -895,6 +893,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
   }
   uint32_t access() const {
     return ::flatbuffers::EndianScalar(access_);
+  }
+  int32_t dmabuf_fd() const {
+    return ::flatbuffers::EndianScalar(dmabuf_fd_);
   }
 };
 FLATBUFFERS_STRUCT_END(IbMemRegion, 88);

@@ -63,6 +63,17 @@ DEFINE_PRELOAD_HOOK(ibv, open_device, "ibv_open_device", ibv_context*, ibv_devic
 // red rather than quietly losing registrations.
 DEFINE_PRELOAD_HOOK(ibv, reg_mr_iova2, "ibv_reg_mr_iova2", ibv_mr*, ibv_pd*, void*, size_t,
                     uint64_t, unsigned int);
+// The dmabuf registration door, and it was invisible until entity_close_accounted
+// found it: closes naming regions nothing created, ~47 of 290 per rank on case
+// 02 (MN5 44358674). NCCL calls it (nccl src/transport/net_ib/reg.cc:35) and so
+// does NVSHMEM (nvshmem transport_ib_common.cpp:921), while ib_pingpong and
+// perftest do not — which is exactly which cases failed.
+//
+// A separate symbol from reg_mr/reg_mr_iova2, not a wrapper over them, so
+// hooking those never saw it. Unlike ibv_create_qp_ex this IS exported
+// (verbs.h:2632), so a plain preload hook reaches it.
+DEFINE_PRELOAD_HOOK(ibv, reg_dmabuf_mr, "ibv_reg_dmabuf_mr", ibv_mr*, ibv_pd*, uint64_t, size_t,
+                    uint64_t, int, int);
 DEFINE_PRELOAD_HOOK(ibv, dereg_mr, "ibv_dereg_mr", int, ibv_mr*);
 DEFINE_PRELOAD_HOOK(ibv, alloc_pd, "ibv_alloc_pd", ibv_pd*, ibv_context*);
 DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_init_attr*);
