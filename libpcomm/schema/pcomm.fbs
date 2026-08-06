@@ -176,6 +176,16 @@ struct MemObject {
   device:uint16;
 }
 
+// type 522, Event. An entity's lifetime ended — dereg_mr, destroy_qp,
+// devx_umem_dereg, devx_free_uar. One shared type for every provider, because
+// `subject` is an interned handle and those are unique across providers. See
+// core/records.hpp for why this is a separate record rather than a window
+// back-filled into the open record.
+struct EntityClose {
+  temporal:Temporal;
+  subject:uint32;      // the interned handle the open record carries
+}
+
 // type 590, Artifact. Clock-domain calibration anchor.
 struct ClockAnchor {
   temporal:Temporal;

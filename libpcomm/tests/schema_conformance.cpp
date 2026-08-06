@@ -35,6 +35,7 @@ namespace fb = pcomm::fb;
 
 PCOMM_SCHEMA_MATCH(cr::GpuAccess, fb::GpuAccess);
 PCOMM_SCHEMA_MATCH(cr::MemObject, fb::MemObject);
+PCOMM_SCHEMA_MATCH(cr::EntityClose, fb::EntityClose);
 PCOMM_SCHEMA_MATCH(cr::SourceLine, fb::SourceLine);
 PCOMM_SCHEMA_MATCH(cr::Attribution, fb::Attribution);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
@@ -182,6 +183,15 @@ int main() {
         expect_identical("MemObject", &c, &f, sizeof(c));
     }
     {
+        Stamped<cr::EntityClose> c{};
+        c.temporal = pcomm::core::Temporal::interval({3, 0x333}, {4, 0x444});
+        c.payload.subject = 0xBEEF;
+        fb::EntityClose f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(3, 0x333),
+                                       fb::TimePoint(4, 0x444), 0),
+                          0xBEEF);
+        expect_identical("EntityClose", &c, &f, sizeof(c));
+    }
+    {
         Stamped<cr::SourceLine> c{};
         c.temporal = pcomm::core::Temporal::none();
         c.payload.pc = 0x1234;
@@ -322,8 +332,9 @@ int main() {
         c.payload.device = 2;
         c.payload.service_type = 0x5;
         c.payload.gpu_driven = 1;
-        fb::Mlx5DevxQp f(fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
-                         44, 0x7FAB00000000, 0x1EFFD, 0x2A, 10, 2, 0x5, 1);
+        fb::Mlx5DevxQp f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 44,
+            0x7FAB00000000, 0x1EFFD, 0x2A, 10, 2, 0x5, 1);
         expect_identical("Mlx5DevxQp", &c, &f, sizeof(c));
     }
     {

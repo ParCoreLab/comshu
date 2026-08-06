@@ -462,6 +462,31 @@ Profiler::Profiler() {
                                          static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
         });
 
+    // dereg_mr / destroy_qp -> the entity's lifetime ended.
+    //
+    // Both hooks existed and neither emitted anything, so a capture could count
+    // registration CALLS but never live regions — which is why case 06's region
+    // count tracks NVSHMEM's allocator churn and had to retreat to per-rank
+    // symmetry, and why range containment in pcomm-read is sound only while no
+    // address is reused.
+    //
+    // Only on success: a dereg that failed closed nothing, and recording it
+    // would make a live region look freed — worse than the missing row, because
+    // the error is silent and downstream.
+    //
+    // The subject is the same interned pointer the open record carries
+    // (IbMemRegion h(mr), IbQueuePair h(qp)), so the join is exact.
+    this->register_post<dereg_mr_tag>([](int ret, ibv_mr* mr, auto...) {
+        if (ret != 0 || !mr)
+            return;
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(mr)});
+    });
+    this->register_post<destroy_qp_tag>([](int ret, ibv_qp* qp, auto...) {
+        if (ret != 0 || !qp)
+            return;
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(qp)});
+    });
+
     // qp_to_qp_ex -> patch this QP's wr_* pointers. Without it the application's
     // sends are invisible: they never reach ctx->ops.post_send, and nothing
     // anywhere fails.

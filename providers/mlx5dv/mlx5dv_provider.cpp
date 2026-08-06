@@ -373,6 +373,25 @@ Profiler::Profiler() {
                                      flags});
         });
 
+    // devx_umem_dereg / devx_free_uar -> the entity's lifetime ended.
+    //
+    // free_uar returns void, which is why it could not be hooked at all until
+    // the engine grew a void specialisation — a UAR lifetime was unrecordable
+    // for a reason that had nothing to do with UARs.
+    //
+    // The subject is the same interned pointer the open record carries
+    // (Mlx5Umem h(out), Mlx5Uar h(out)), so the join is exact.
+    this->register_post<devx_umem_dereg_tag>([](int ret, mlx5dv_devx_umem* umem, auto...) {
+        if (ret != 0 || !umem)
+            return;
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(umem)});
+    });
+    this->register_post<devx_free_uar_tag>([](mlx5dv_devx_uar* uar, auto...) {
+        if (!uar)
+            return;
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(uar)});
+    });
+
     this->register_post<devx_obj_create_tag>([](mlx5dv_devx_obj* obj, ibv_context* ctx,
                                                 const void* cmd_in, size_t inlen, void* cmd_out,
                                                 size_t, auto...) {

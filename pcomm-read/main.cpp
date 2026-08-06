@@ -183,6 +183,14 @@ template<> struct Table<MemObject> {
     }
 };
 
+template<> struct Table<EntityClose> {
+    static constexpr const char* name = "entity_close";
+    static constexpr const char* cols = "ticks,subject";
+    static void row(std::FILE* f, const Stamped<EntityClose>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u", (unsigned long long)s.temporal.a.ticks, s.payload.subject);
+    }
+};
+
 template<> struct Table<SourceLine> {
     static constexpr const char* name = "source_line";
     static constexpr const char* cols = "pc,file,line";
@@ -358,10 +366,11 @@ template<> struct Table<mxr::Mlx5QueuePair> {
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
-using TableRecords = std::tuple<GpuAccess, MemObject, SourceLine, ClockAnchor, Attribution,
-                                ibr::IbQueuePair, ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq,
-                                ibr::IbMemRegion, mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd,
-                                mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair>;
+using TableRecords =
+    std::tuple<GpuAccess, MemObject, EntityClose, SourceLine, ClockAnchor, Attribution,
+               ibr::IbQueuePair, ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion,
+               mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
+               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair>;
 
 template<typename Tuple, typename F, std::size_t... Is>
 void for_each_type_impl(F&& f, std::index_sequence<Is...>) {

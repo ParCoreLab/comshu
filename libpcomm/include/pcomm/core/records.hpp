@@ -110,6 +110,33 @@ PCOMM_RECORD(MemObject, RecordKind::Entity, 520, "mem_object") {
     DeviceId device;
 };
 
+// EVENT — an entity's lifetime ended: dereg_mr, destroy_qp, devx_umem_dereg,
+// devx_free_uar. One shared type rather than a close record per entity, because
+// `subject` is an interned Handle and those are unique across providers, so no
+// provider needs a new id to say "this one is gone".
+//
+// Every entity pcomm records has a lifetime and, until now, none recorded its
+// end: every destroy path was hooked and none emitted anything. So a capture
+// could answer "how many registration calls happened" but not "how many regions
+// were live at time T" — which is why case 06's region count tracks NVSHMEM's
+// allocator churn and had to retreat to per-rank symmetry, and why range
+// containment in pcomm-read is only sound as long as no address is reused.
+//
+// A separate close record rather than back-filling the open record's Temporal
+// window: the writer is an fwrite of a packed array with no index, so revising
+// an already-written record would mean buffering every open entity until its
+// close — unbounded — and reordering the stream. That is a different writer, not
+// a change to this one.
+//
+// A close naming a subject no open record created is NOT a bug in the close
+// hook. It is the same blindness as case 08's unaccounted queue pair arriving
+// from the other side: evidence of a creation door we do not hook. Count and
+// report those; suppressing them discards the only signal that would find the
+// next missing door.
+PCOMM_RECORD(EntityClose, RecordKind::Event, 522, "entity_close") {
+    Handle subject;  // the interned handle the open record carries
+};
+
 // ARTIFACT — clock-domain calibration anchor (UNIFICATION §4). Emitted at
 // start/end per domain so pcomm-read can fit offset + skew.
 PCOMM_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {
