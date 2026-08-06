@@ -92,7 +92,7 @@ awk '/pcomm-mrcaller/ {door=$2; who=$4; if (door=="dereg_mr") d[who]=1; else r[w
 # what libuct_ib opened.
 echo "=== UNMATCHED: closes of regions no hooked door opened ==="
 printf 'unmatched lines: %s\n' "$(grep -c 'pcomm-unmatched' "$OUT/run.log")"
-grep -h 'pcomm-unmatched' "$OUT/run.log" | awk '{print $NF}' | sort | uniq -c | sort -rn
+grep -h 'pcomm-unmatched' "$OUT/run.log" | sed 's/.*<- //' | sort | uniq -c | sort -rn
 
 echo "=== their sizes — a 1GB region is a heap, a 4KB one is a control buffer ==="
 grep -h 'pcomm-unmatched' "$OUT/run.log" | grep -o 'len=[0-9]*' | sort -n -t= -k2 | uniq -c

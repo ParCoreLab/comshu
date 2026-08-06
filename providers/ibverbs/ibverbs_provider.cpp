@@ -827,10 +827,18 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
         if (g_known_mrs && g_known_mrs->count(mr))
             return;  // opened through a door we hook — nothing to report
     }
+    // dli_sname, not just dli_fname: the library was not enough. Both callers
+    // are UCX, neither references any other ibv_mr*-returning symbol, and every
+    // unmatched region has addr=NULL — so the useful question is which UCX
+    // FUNCTION is closing them, which names the registration path that created
+    // them. The symbol is the nearest preceding one, so read it as "in or after
+    // this function", not as an exact frame.
     Dl_info info{};
-    const char* who = (dladdr(ret_addr, &info) && info.dli_fname) ? info.dli_fname : "?";
-    std::fprintf(stderr, "[pcomm-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u <- %s\n",
-                 static_cast<const void*>(mr), mr->addr, mr->length, mr->lkey, who);
+    const bool  ok = dladdr(ret_addr, &info) != 0;
+    const char* who = (ok && info.dli_fname) ? info.dli_fname : "?";
+    const char* fn = (ok && info.dli_sname) ? info.dli_sname : "?";
+    std::fprintf(stderr, "[pcomm-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u <- %s in %s\n",
+                 static_cast<const void*>(mr), mr->addr, mr->length, mr->lkey, fn, who);
     std::fflush(stderr);
 }
 
