@@ -24,10 +24,13 @@ class EntityClose(object):
 
     # EntityClose
     def Subject(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(48))
+    # EntityClose
+    def Opener(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(52))
 
-def CreateEntityClose(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, subject):
+def CreateEntityClose(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, subject, opener):
     builder.Prep(8, 56)
-    builder.Pad(4)
+    builder.Pad(2)
+    builder.PrependUint16(opener)
     builder.PrependUint32(subject)
     builder.Prep(8, 48)
     builder.PrependUint64(temporal_value)

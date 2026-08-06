@@ -130,7 +130,7 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
     // this provider gave for every dmabuf umem until now, so a miss is a
     // regression to the previous behaviour rather than a new fiction.
     pcomm::core::dmabuf::Range dmabuf_range{};
-    const bool    resolved = by_dmabuf && pcomm::core::dmabuf::lookup(dmabuf_fd, &dmabuf_range);
+    const bool resolved = by_dmabuf && pcomm::core::dmabuf::lookup(dmabuf_fd, &dmabuf_range);
 
     UmemInfo info{reinterpret_cast<std::uint64_t>(addr), size,
                   by_dmabuf ? (resolved ? dmabuf_range.device : kUnknownDevice)
@@ -384,12 +384,14 @@ Profiler::Profiler() {
     this->register_post<devx_umem_dereg_tag>([](int ret, mlx5dv_devx_umem* umem, auto...) {
         if (ret != 0 || !umem)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(umem)});
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
+                                              {}, {}, h(umem), rr::Mlx5Umem::pcomm_type_id});
     });
     this->register_post<devx_free_uar_tag>([](mlx5dv_devx_uar* uar, auto...) {
         if (!uar)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(uar)});
+        rec().record(rec().now_instant(),
+                     pcomm::core::records::EntityClose{{}, {}, h(uar), rr::Mlx5Uar::pcomm_type_id});
     });
 
     this->register_post<devx_obj_create_tag>([](mlx5dv_devx_obj* obj, ibv_context* ctx,

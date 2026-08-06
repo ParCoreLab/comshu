@@ -544,12 +544,14 @@ Profiler::Profiler() {
     this->register_post<dereg_mr_tag>([](int ret, ibv_mr* mr, auto...) {
         if (ret != 0 || !mr)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(mr)});
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
+                                              {}, {}, h(mr), rr::IbMemRegion::pcomm_type_id});
     });
     this->register_post<destroy_qp_tag>([](int ret, ibv_qp* qp, auto...) {
         if (ret != 0 || !qp)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(qp)});
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
+                                              {}, {}, h(qp), rr::IbQueuePair::pcomm_type_id});
     });
 
     // qp_to_qp_ex -> patch this QP's wr_* pointers. Without it the application's

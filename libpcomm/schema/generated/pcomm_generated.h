@@ -767,18 +767,21 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) EntityClose FLATBUFFERS_FINAL_CLASS {
  private:
   pcomm::fb::Temporal temporal_;
   uint32_t subject_;
-  int32_t padding0__;
+  uint16_t opener_;
+  int16_t padding0__;
 
  public:
   EntityClose()
       : temporal_(),
         subject_(0),
+        opener_(0),
         padding0__(0) {
     (void)padding0__;
   }
-  EntityClose(const pcomm::fb::Temporal &_temporal, uint32_t _subject)
+  EntityClose(const pcomm::fb::Temporal &_temporal, uint32_t _subject, uint16_t _opener)
       : temporal_(_temporal),
         subject_(::flatbuffers::EndianScalar(_subject)),
+        opener_(::flatbuffers::EndianScalar(_opener)),
         padding0__(0) {
     (void)padding0__;
   }
@@ -787,6 +790,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) EntityClose FLATBUFFERS_FINAL_CLASS {
   }
   uint32_t subject() const {
     return ::flatbuffers::EndianScalar(subject_);
+  }
+  uint16_t opener() const {
+    return ::flatbuffers::EndianScalar(opener_);
   }
 };
 FLATBUFFERS_STRUCT_END(EntityClose, 56);

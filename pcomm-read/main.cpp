@@ -185,9 +185,10 @@ template<> struct Table<MemObject> {
 
 template<> struct Table<EntityClose> {
     static constexpr const char* name = "entity_close";
-    static constexpr const char* cols = "ticks,subject";
+    static constexpr const char* cols = "ticks,subject,opener";
     static void row(std::FILE* f, const Stamped<EntityClose>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u", (unsigned long long)s.temporal.a.ticks, s.payload.subject);
+        std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.subject,
+                     s.payload.opener);
     }
 };
 

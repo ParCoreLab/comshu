@@ -192,6 +192,7 @@ struct MemObject {
 struct EntityClose {
   temporal:Temporal;
   subject:uint32;      // the interned handle the open record carries
+  opener:uint16;       // type_id of the record that should have opened it
 }
 
 // type 590, Artifact. Clock-domain calibration anchor.

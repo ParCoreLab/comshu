@@ -186,9 +186,10 @@ int main() {
         Stamped<cr::EntityClose> c{};
         c.temporal = pcomm::core::Temporal::interval({3, 0x333}, {4, 0x444});
         c.payload.subject = 0xBEEF;
+        c.payload.opener = 100;
         fb::EntityClose f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(3, 0x333),
                                        fb::TimePoint(4, 0x444), 0),
-                          0xBEEF);
+                          0xBEEF, 100);
         expect_identical("EntityClose", &c, &f, sizeof(c));
     }
     {

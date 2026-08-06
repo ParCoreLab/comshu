@@ -24,16 +24,21 @@
 -- every colliding peer to whichever rank was scanned last.
 --
 -- Names no rank, no handle and no count.
+-- `opener` is the type_id of the record that should have created the subject,
+-- so an unmatched row names the door to go looking for instead of merely saying
+-- something is missing: 100 ib_mem_region, 102 ib_queue_pair, 200 mlx5_umem,
+-- 202 mlx5_uar.
 WITH opens AS (
-  SELECT rank, mr AS subject FROM ib_mem_region
-  UNION ALL SELECT rank, qp FROM ib_queue_pair
-  UNION ALL SELECT rank, umem FROM mlx5_umem
-  UNION ALL SELECT rank, uar FROM mlx5_uar
+  SELECT rank, mr AS subject, 100 AS opener FROM ib_mem_region
+  UNION ALL SELECT rank, qp, 102 FROM ib_queue_pair
+  UNION ALL SELECT rank, umem, 200 FROM mlx5_umem
+  UNION ALL SELECT rank, uar, 202 FROM mlx5_uar
 ),
-closes AS (SELECT rank, subject, count(*) AS n FROM entity_close GROUP BY rank, subject),
+closes AS (SELECT rank, subject, opener, count(*) AS n
+           FROM entity_close GROUP BY rank, subject, opener),
 open_n AS (SELECT rank, subject, count(*) AS n FROM opens GROUP BY rank, subject)
 
-SELECT 'close names an entity no open record created' AS problem,
+SELECT 'close names an entity no open record created (opener ' || c.opener || ')' AS problem,
        c.rank, c.subject, c.n AS closes, 0 AS opens
 FROM closes c
 WHERE NOT EXISTS (SELECT 1 FROM open_n o WHERE o.rank = c.rank AND o.subject = c.subject)
@@ -45,7 +50,8 @@ UNION ALL
 -- means opens and closes must interleave and the running count can never go
 -- negative. A total that does is either a double-free in the application or a
 -- close recorded for something we saw opened under a different handle.
-SELECT 'more closes than opens for one subject', c.rank, c.subject, c.n,
+SELECT 'more closes than opens for one subject (opener ' || c.opener || ')',
+       c.rank, c.subject, c.n,
        (SELECT n FROM open_n o WHERE o.rank = c.rank AND o.subject = c.subject)
 FROM closes c
 WHERE c.n > COALESCE((SELECT n FROM open_n o WHERE o.rank = c.rank AND o.subject = c.subject), 0)
