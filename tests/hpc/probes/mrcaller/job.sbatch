@@ -65,6 +65,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 # NCCL init, so 2 iterations observe exactly what 20 would.
 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x PCOMM_TRACE_DLSYM=1 -x PCOMM_TRACE_MR_CALLERS=1 \
+  -x PCOMM_TRACE_HOOKS=1 \
   -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=1 \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
@@ -99,6 +100,25 @@ grep -h 'pcomm-unmatched' "$OUT/run.log" | grep -o 'len=[0-9]*' | sort -n -t= -k
 
 echo "=== first few in full ==="
 grep -h 'pcomm-unmatched' "$OUT/run.log" | head -10
+
+# Are the two verbs_context trampolines ENTERED? Case 02 records zero
+# device_memory and zero null_mr regions while this same workload deregisters
+# 474 memoryless MRs, and no "no usable verbs_context" warning was printed
+# either — so the slots were judged usable and nothing dispatched through them.
+# Entered-but-recording-nothing and never-entered are different bugs.
+#
+# POSITIVE CONTROL: create_qp_ex is the third verbs_context slot and is known to
+# work (it is what closed case 08). If its line is absent too, the trace is not
+# running rather than the slots being dead.
+echo "=== verbs_context trampolines: entered or not ==="
+grep -h 'pcomm-trace' "$OUT/run.log" | grep -E 'reg_dm_mr|alloc_null_mr|create_qp_ex' | sort -u
+printf 'reg_dm_mr:%s alloc_null_mr:%s create_qp_ex(control):%s\n' \
+  "$(grep -c 'reg_dm_mr' "$OUT/run.log")" \
+  "$(grep -c 'alloc_null_mr' "$OUT/run.log")" \
+  "$(grep -c 'create_qp_ex' "$OUT/run.log")"
+
+echo "=== every hooked door entered, for context ==="
+grep -h 'pcomm-trace' "$OUT/run.log" | sort -u
 
 echo "=== dlsym/dlvsym entry, for continuity with job 44368260 ==="
 grep -h 'pcomm-entry' "$OUT/run.log" | grep -v 'first entry' | sort -u
