@@ -1,5 +1,9 @@
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <set>
 
 #include <dlfcn.h>
 
@@ -28,6 +32,53 @@ void* (*real_dlclose)(void*) = nullptr;
 // If you see an undebuggable floating point exception it's this
 std::unordered_map<std::string, std::vector<CallbackType>>* RegisteredSymbols{nullptr};
 
+// DIAGNOSTIC, gated on PCOMM_TRACE_DLSYM=1 — which vendor symbols did the
+// application RESOLVE, and which of those do we not intercept?
+//
+// This exists because "a door we do not hook" has cost this project two long
+// hunts, and both times the missing symbol was sitting in plain sight in a
+// dlsym the application made. entity_close_accounted currently reports 33
+// closes of memory regions nothing opened; the candidate set is whatever
+// registration symbol NCCL resolves and we ignore.
+//
+// It reports RESOLUTION, not invocation. That distinction is the whole of the
+// case 08 lesson — a symbol can bind and never be called — so this narrows the
+// search and never concludes it. A name appearing here is a candidate; proving
+// it is called still takes an entry trace.
+//
+// Its own positive control is built in: symbols we DO hook print as `hooked`,
+// so an output with no `hooked` lines means the diagnostic never ran rather
+// than "nothing was resolved".
+static bool trace_dlsym_enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("PCOMM_TRACE_DLSYM");
+        return v && *v && std::strcmp(v, "0") != 0;
+    }();
+    return on;
+}
+
+// Only the vendor surfaces pcomm interposes. Everything else is libc noise and
+// would bury the answer.
+static bool trace_dlsym_interesting(const char* s) {
+    return std::strncmp(s, "ibv_", 4) == 0 || std::strncmp(s, "mlx5dv_", 7) == 0 ||
+           std::strncmp(s, "rdma_", 5) == 0 || std::strncmp(s, "cuMem", 5) == 0 ||
+           std::strncmp(s, "cuGetProc", 9) == 0;
+}
+
+static void trace_dlsym_lookup(const char* symbol_name, bool hooked) {
+    if (!trace_dlsym_enabled() || !symbol_name || !trace_dlsym_interesting(symbol_name))
+        return;
+    // Once per distinct name: an application resolves the same symbol on every
+    // reconnect and the repetition says nothing the first line did not.
+    static std::mutex            m;
+    static std::set<std::string> seen;
+    std::lock_guard<std::mutex>  lk(m);
+    if (!seen.insert(symbol_name).second)
+        return;
+    std::fprintf(stderr, "[pcomm-dlsym] %-32s %s\n", symbol_name, hooked ? "hooked" : "UNHOOKED");
+    std::fflush(stderr);
+}
+
 void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
     if (!real_symbol) {
         return real_symbol;
@@ -38,6 +89,7 @@ void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
     }
 
     const auto& registered_handler = RegisteredSymbols->find(symbol_name);
+    trace_dlsym_lookup(symbol_name, registered_handler != RegisteredSymbols->end());
     if (registered_handler == RegisteredSymbols->end()) {
         return real_symbol;
     }
