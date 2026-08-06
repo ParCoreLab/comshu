@@ -54,6 +54,28 @@ This is a constraint on the design, not an aspiration. Any proposal that
 requires a provider to ask another provider for memory information at runtime is
 out of bounds, however tidy it looks.
 
+**The engine does not currently permit it** (found 2026-08-06, not yet fixed).
+`smart_dlsym::register_symbol` allows exactly one callback per symbol and
+*throws* on a duplicate:
+
+```cpp
+if (RegisteredSymbols->contains(symbol_name))
+    throw std::runtime_error("Symbol already registered");
+```
+
+Since NVSHMEM reaches every CUDA entry point through a single
+`dlsym(handle, "cuGetProcAddress")` (see the IBGDA plan's 2026-08-06
+refinement), any provider wanting CUDA interception must register exactly that
+symbol — so the *first* one to do so claims it, and the second aborts the
+application at load. That is the `devx_probe` failure mode again: a hook
+breaking the process it was meant to observe passively.
+
+Prerequisite, therefore, before any provider hooks CUDA: make the registry hold
+a **chain** per symbol, each callback receiving what the previous returned, so
+registration order composes instead of colliding. Order must not matter for
+correctness — if it does, two providers are fighting over the same entry point
+and that is a design error the chain should surface, not hide.
+
 The direct consequence is that **two providers can observe the same allocation**,
 and the failure mode is already documented in this repo: hooking both
 `ibv_reg_mr` and `ibv_reg_mr_iova2` made case 01 record every region twice —
