@@ -27,14 +27,6 @@ PCOMM_RECORD(GpuAccess, RecordKind::Event, 700, "gpu_access") {
     std::uint32_t thread;
 };
 
-// ENTITY — a memory object with a lifetime [alloc, free).
-PCOMM_RECORD(MemObject, RecordKind::Entity, 720, "mem_object") {
-    Handle   id;
-    Handle   name;  // interned symbol/type name
-    MemRange range;
-    DeviceId device;
-};
-
 // ARTIFACT — one PC -> source location row (timeless, computed once).
 PCOMM_RECORD(SourceLine, RecordKind::Artifact, 740, "source_line") {
     Handle        pc;
@@ -82,6 +74,27 @@ PCOMM_RECORD(InternString, RecordKind::Artifact, 512, "intern_string") {
     std::uint32_t length;  // bytes, not NUL-terminated
     Handle        handle;
     std::uint8_t  domain;  // rec::InternDomain
+};
+
+// ENTITY — a memory object with a lifetime [alloc, free).
+//
+// Id 520, in the INTERNAL range, and that placement is the point. It sat at 720
+// — inside gpumem_lo=700..gpumem_hi=799 — which made "any provider may emit a
+// MemObject" false by convention while true by declaration, and left gpumem as
+// its only producer. gpumem obtains the owning device through NVBit, so
+// answering "which GPU owns this buffer" cost instrumentation of every global
+// memory instruction for a fact one driver call already knows.
+//
+// 520 opens an entity block in a range whose three occupants (510, 512, 590)
+// were all artifacts, and leaves 522+ adjacent for EntityClose when the
+// entity-lifetimes plan lands. Those two are joined at the hip — range
+// containment is only sound within a lifetime — and the id map should read that
+// way.
+PCOMM_RECORD(MemObject, RecordKind::Entity, 520, "mem_object") {
+    Handle   id;
+    Handle   name;  // interned symbol/type name
+    MemRange range;
+    DeviceId device;
 };
 
 // ARTIFACT — clock-domain calibration anchor (UNIFICATION §4). Emitted at

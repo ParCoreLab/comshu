@@ -159,7 +159,7 @@ int main() {
         rec::BufferView view{core::RecordTrait<MemObject>::type_id,
                              core::RecordTrait<MemObject>::kind, nullptr, 0, 0};
         sink.submit(view);
-        expect(!fs::exists(empty_dir / "720.pcs"),
+        expect(!fs::exists(empty_dir / "520.pcs"),
                "an empty buffer writes no file rather than a strideless one");
     }
 

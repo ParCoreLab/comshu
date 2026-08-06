@@ -129,15 +129,6 @@ struct GpuAccess {
   thread:uint32;
 }
 
-// type 720, Entity. A device allocation with lifetime [alloc, free).
-struct MemObject {
-  temporal:Temporal;
-  id:uint32;
-  name:uint32;         // interned symbol/type name
-  range:MemRange;
-  device:uint16;
-}
-
 // type 740, Artifact. One PC -> source location row.
 struct SourceLine {
   temporal:Temporal;
@@ -172,6 +163,17 @@ struct InternString {
   length:uint32;
   handle:uint32;
   domain:uint8;
+}
+
+// type 520, Entity. A memory object with lifetime [alloc, free). In the
+// internal range rather than gpumem's, because any provider holding an address
+// may emit one — see core/records.hpp.
+struct MemObject {
+  temporal:Temporal;
+  id:uint32;
+  name:uint32;         // interned symbol/type name
+  range:MemRange;
+  device:uint16;
 }
 
 // type 590, Artifact. Clock-domain calibration anchor.

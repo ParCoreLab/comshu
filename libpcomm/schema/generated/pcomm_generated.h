@@ -28,8 +28,6 @@ struct BlobHeader;
 
 struct GpuAccess;
 
-struct MemObject;
-
 struct SourceLine;
 
 struct Attribution;
@@ -37,6 +35,8 @@ struct Attribution;
 struct InternKey;
 
 struct InternString;
+
+struct MemObject;
 
 struct ClockAnchor;
 
@@ -525,56 +525,6 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(GpuAccess, 80);
 
-FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
- private:
-  pcomm::fb::Temporal temporal_;
-  uint32_t id_;
-  uint32_t name_;
-  pcomm::fb::MemRange range_;
-  uint16_t device_;
-  int16_t padding0__;  int32_t padding1__;
-
- public:
-  MemObject()
-      : temporal_(),
-        id_(0),
-        name_(0),
-        range_(),
-        device_(0),
-        padding0__(0),
-        padding1__(0) {
-    (void)padding0__;
-    (void)padding1__;
-  }
-  MemObject(const pcomm::fb::Temporal &_temporal, uint32_t _id, uint32_t _name, const pcomm::fb::MemRange &_range, uint16_t _device)
-      : temporal_(_temporal),
-        id_(::flatbuffers::EndianScalar(_id)),
-        name_(::flatbuffers::EndianScalar(_name)),
-        range_(_range),
-        device_(::flatbuffers::EndianScalar(_device)),
-        padding0__(0),
-        padding1__(0) {
-    (void)padding0__;
-    (void)padding1__;
-  }
-  const pcomm::fb::Temporal &temporal() const {
-    return temporal_;
-  }
-  uint32_t id() const {
-    return ::flatbuffers::EndianScalar(id_);
-  }
-  uint32_t name() const {
-    return ::flatbuffers::EndianScalar(name_);
-  }
-  const pcomm::fb::MemRange &range() const {
-    return range_;
-  }
-  uint16_t device() const {
-    return ::flatbuffers::EndianScalar(device_);
-  }
-};
-FLATBUFFERS_STRUCT_END(MemObject, 80);
-
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) SourceLine FLATBUFFERS_FINAL_CLASS {
  private:
   pcomm::fb::Temporal temporal_;
@@ -760,6 +710,56 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) InternString FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(InternString, 72);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t id_;
+  uint32_t name_;
+  pcomm::fb::MemRange range_;
+  uint16_t device_;
+  int16_t padding0__;  int32_t padding1__;
+
+ public:
+  MemObject()
+      : temporal_(),
+        id_(0),
+        name_(0),
+        range_(),
+        device_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  MemObject(const pcomm::fb::Temporal &_temporal, uint32_t _id, uint32_t _name, const pcomm::fb::MemRange &_range, uint16_t _device)
+      : temporal_(_temporal),
+        id_(::flatbuffers::EndianScalar(_id)),
+        name_(::flatbuffers::EndianScalar(_name)),
+        range_(_range),
+        device_(::flatbuffers::EndianScalar(_device)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t id() const {
+    return ::flatbuffers::EndianScalar(id_);
+  }
+  uint32_t name() const {
+    return ::flatbuffers::EndianScalar(name_);
+  }
+  const pcomm::fb::MemRange &range() const {
+    return range_;
+  }
+  uint16_t device() const {
+    return ::flatbuffers::EndianScalar(device_);
+  }
+};
+FLATBUFFERS_STRUCT_END(MemObject, 80);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) ClockAnchor FLATBUFFERS_FINAL_CLASS {
  private:
