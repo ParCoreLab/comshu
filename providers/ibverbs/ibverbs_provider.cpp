@@ -53,10 +53,10 @@ using pcomm::rec::InternDomain;
 // once, and a shared counter would let one thread's outer call suppress
 // another's. This is the same per-thread discipline the flush path already
 // needs.
-// Instrument this context if it has not been instrumented yet. Defined at the
-// bottom with the other context machinery; declared here because the callbacks
-// above need it.
-static void ensure_installed(ibv_context* ctx);
+// Diagnostic only — records which contexts we installed into, so an unmatched
+// dereg can say whether its context was ever instrumented. Defined at the bottom
+// with the other diagnostics; declared here because open_device needs it.
+static void remember_installed_ctx(const ibv_context* ctx);
 
 static int& reg_mr_depth() noexcept {
     static thread_local int depth = 0;
@@ -415,7 +415,19 @@ Profiler::Profiler() {
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>([](ibv_context* ctx, ibv_device*, auto...) {
-        ensure_installed(ctx);
+        // ALWAYS install, never deduplicate on the context pointer.
+        //
+        // A short-lived dedup set here cost case 02 two of its eight ranks
+        // (26880 sends -> 20160, jobs 44370049/44370229/44370263, against
+        // 26880 at 055d18b). ibv_close_device frees the context and the
+        // allocator hands the same address back to the next open, so a set
+        // keyed on the pointer reports "already installed" for a context that
+        // is brand new and unpatched. It fails silently and only on the ranks
+        // whose allocator happens to recycle.
+        if (ctx) {
+            instance().install(ctx);
+            remember_installed_ctx(ctx);
+        }
     });
 
     // reg_mr_iova2 -> the same memory-region entity. `iova` is the virtual
@@ -877,57 +889,35 @@ static std::set<const void*>* g_known_mrs = nullptr;  // leaked: outlives atexit
 // opening door, not at the registration door.
 static std::set<const void*>* g_installed_ctxs = nullptr;
 
-// REVERTED as the primary mechanism, and kept as the record of why.
+// Which ibv_contexts we installed object-ops into. DIAGNOSTIC ONLY: nothing in
+// the capture path may branch on it — see below for what happened when it did.
 //
-// Calling this from every context-holding door LOST capture rather than adding
-// it: case 02 went from 26880 sends to 20160, ranks 2 and 6 vanishing from
-// ib_post_send entirely, reproducing exactly across jobs 44370049, 44370229 and
-// 44370263. Deterministic and wrong, not flaky — my first reading of the golden
-// diff had the direction backwards and called it recovered traffic.
+// An unmatched dereg reports whether its mr's context was ever instrumented,
+// which is what identified the real gap (job 44369505: every unmatched close sat
+// on a context opened by a door we do not interpose, so ibv_reg_dm_mr's
+// object-ops trampoline was never installed there while ibv_dereg_mr, a preload
+// hook, still fired).
 //
-// The mechanism is still the right idea and the diagnosis behind it still holds
-// (job 44369505: every unmatched close sat on a context we never installed
-// into). But installing a context at an arbitrary later door evidently disturbs
-// something the open-time install does not, and that has to be understood before
-// it goes back in — most likely the driver repopulating ctx->ops after we have
-// saved an original, which would leave us bypassed on exactly the contexts we
-// meant to instrument.
+// TWO THINGS THIS SET MUST NOT BECOME:
 //
-// So it is called from open_device only, as before, and the deterministic fix
-// is to interpose the OPENING doors (mlx5dv_open_device et al) instead.
-
-// INSTALL ON FIRST SIGHT, not at the opening door.
+//  - a gate on installation. Calling install only for contexts absent from it
+//    lost two of case 02's eight ranks, because ibv_close_device frees a context
+//    and the allocator reuses the address, so the set reports "already
+//    installed" for a new one. Silent, deterministic, and confined to whichever
+//    ranks recycle.
 //
-// Object-ops hooks live inside one ibv_context, so a context opened through a
-// door we do not interpose is invisible to every one of them at once —
-// post_send and poll_cq included. MN5 job 44369505 measured that: 262 unmatched
-// closes, every one of them `installed=NO`, on contexts UCX opened by a route
-// this provider never saw. The unmatched closes were the visible symptom; the
-// missing sends on those contexts were the real cost.
-//
-// Hooking mlx5dv_open_device would fix that instance and leave the class open:
-// the next opening door (rdma_create_id, an _ex variant, a vendor path) fails
-// identically, and this hunt already spent two rounds hooking doors that were
-// plausible and untaken. So instead every interposer that already holds a
-// context hands it here, and a context becomes instrumented the first time it is
-// seen through ANY door.
-//
-// This is a floor, not a guarantee, and the limit is worth stating: object-ops
-// on a context are missed until its first preload call. API ordering bounds that
-// — post_send needs a QP, a QP needs a PD, and both ibv_alloc_pd and
-// ibv_create_qp are preload doors — so payload cannot precede installation, but
-// an early poll_cq on a CQ created before any PD can.
-void ibv::ensure_installed(ibv_context* ctx) {
-    if (!ctx)
+//  - the primary instrumentation mechanism. Calling install from every
+//    context-holding door was tried (d080fa4) and reverted: it is the right idea
+//    for the right reason, and the deterministic fix is to interpose the OPENING
+//    doors (mlx5dv_open_device et al) so every context is patched before any
+//    traffic, not to patch it at whatever door happens to arrive first.
+void ibv::remember_installed_ctx(const ibv_context* ctx) {
+    if (!ctx || !trace_mr_callers_enabled())
         return;
-    {
-        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
-        if (!g_installed_ctxs)
-            g_installed_ctxs = new std::set<const void*>();
-        if (!g_installed_ctxs->insert(ctx).second)
-            return;  // already instrumented
-    }
-    ibv::Profiler::instance().install(ctx);
+    std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+    if (!g_installed_ctxs)
+        g_installed_ctxs = new std::set<const void*>();
+    g_installed_ctxs->insert(ctx);
 }
 
 static void remember_mr(const ibv_mr* mr) {
@@ -982,10 +972,6 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     trace_mr_caller("dereg_mr", __builtin_return_address(0));
-    // The diagnostic must read the installed-set BEFORE ensure_installed writes
-    // to it, or every row reports installed=yes and the instrument answers its
-    // own question. That is the fourth time in this project a diagnostic has
-    // been blinded by a line placed above it for an unrelated reason.
     trace_unmatched_dereg(mr, __builtin_return_address(0));
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
