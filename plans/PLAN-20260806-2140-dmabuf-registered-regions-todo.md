@@ -1,8 +1,9 @@
 # PLAN — dmabuf-registered memory regions are invisible to the ibverbs provider
 
 - **Created:** 2026-08-06 21:40 +03
-- **Status:** TODO — cause identified from source and confirmed by the failure
-  pattern; the fix has one real design decision and was not rushed.
+- **Status:** PARTLY DONE. `ibv_reg_dmabuf_mr` is hooked (option A, with B's
+  capability — see below). It closed NVSHMEM's half and **did not** close
+  NCCL's; the residue is narrowed to registrations and is still open.
 - **Blocks:** `entity_close_accounted` on cases 02, 06, 07 (marked
   `expect_fail` with the evidence, MN5 job 44358674).
 - **Related:** `PLAN-20260806-1329-generic-memory-attribution` (the `MemObject`
@@ -112,3 +113,48 @@ for `MemObject` identity.
 - **Do not synthesise a base.** An unresolvable address is recorded as absent.
 - Verify with the counts above: unmatched closes should go to zero on cases 02,
   06 and 07, and the region count should rise by roughly the same amount.
+
+
+## What actually happened (2026-08-06)
+
+**Option A shipped, and B came free.** The plan called B blocked on the engine.
+That was wrong: the constraint "any provider may hook CUDA itself" is the answer,
+not the obstacle. The fd → address table moved to `core/dmabuf_registry.hpp` and
+**both** providers install it, each keeping its own copy populated by its own
+interception. Only legal because the dlsym registry now chains. So address
+recovery is fd-table-first (the only source that also yields the device), then
+`iova` when nonzero.
+
+**It closed NVSHMEM's half.** Case 07's symmetric heap went from *absent* to
+512 MB + 1 GB regions at `0x10020000000`/`0x10040000000` with `device=0`/`device=1`
+per rank. That also falsified case 07's `gpudirect=0`, which had been declared
+from a capture whose most important registrations were missing — the oracle was
+only as good as the coverage behind it.
+
+**It did not close NCCL's.** ~42 unmatched per rank against ~47 before, with only
+40 dmabuf regions across 8 ranks.
+
+**`EntityClose` gained `opener`** — the type_id of the record that should have
+created the subject — because "something closed that nothing opened" is not
+actionable. Job 44363299: **all 33 remaining unmatched closes are opener=100,
+`ib_mem_region`.** Queue pairs are fully accounted for. The residue is a
+registration path.
+
+### What the residue is NOT
+
+- **Not `mlx5dv_reg_dmabuf_mr`** — at least not on case 02, which runs
+  `providers: ['ib']`, so that interposer is not loaded and hooking it cannot
+  move this board.
+- **Not queue-pair creation** — `opener` says so directly.
+
+### Next instrument, before any hook
+
+Our `dlsym` interposer sees every lookup, and NCCL resolves its `ibv_*` entry
+points that way (`nccl src/misc/ibvsymbols.cc`). A diagnostic that logs which
+**registration** symbols are resolved gives the candidate set definitively and
+costs nothing.
+
+Resolution is not invocation — that is exactly what cost case 08 a week — so
+this narrows the set rather than naming the door. But going from "some
+registration path" to "one of these three symbols" is worth one run, and it is
+cheaper than adding a hook per guess.
