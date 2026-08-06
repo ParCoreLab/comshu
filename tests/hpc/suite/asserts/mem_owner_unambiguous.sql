@@ -9,13 +9,23 @@
 --
 -- Two failures, deliberately labelled apart because they mean different things:
 --
---   ambiguous_refs > 0 — the address landed inside more than one object. This is
---   the predicted failure of the shared-vocabulary design: any provider may hook
---   CUDA itself, so two of them can observe one allocation, and hooking both
---   ibv_reg_mr and ibv_reg_mr_iova2 already did exactly this shape to case 01 —
---   same mr, same base, same lkey, every region twice. The reader merges
---   emitters that agree on (base, size); what reaches here is two objects with
---   DIFFERENT extents claiming one address, which no merge can reconcile.
+--   ambiguous_refs > 0 — the address landed inside two objects whose ranges
+--   PARTIALLY OVERLAP, i.e. neither contains the other. No rule picks a winner
+--   without inventing one. This is the predicted failure of the
+--   shared-vocabulary design: any provider may hook CUDA itself, so two of them
+--   can observe one allocation, and hooking both ibv_reg_mr and
+--   ibv_reg_mr_iova2 already did this shape to case 01 — same mr, same base,
+--   same lkey, every region twice.
+--
+--   NESTED ranges are explicitly NOT this. A containment chain resolves to the
+--   innermost object, the way the innermost enclosing scope names a variable,
+--   and is counted in nested_refs instead. This assertion originally failed on
+--   those too and went red on a correct capture (MN5 44348796): NCCL registers
+--   co-terminal sub-ranges of one buffer — 0x2374f70+4448, 0x23753c0+3344,
+--   0x2375810+2240, 0x2375c60+1136, all ending at 0x23760D0. Ordinary allocator
+--   behaviour. The fix was in the resolution rule, not in weakening the check:
+--   partial overlap still fails, and nothing was made permissible that was not
+--   already correct.
 --
 --   devices > 1 — the emitters agree the buffer exists and disagree about which
 --   GPU owns it. That is a finding, not a tie to break: the reader prints the

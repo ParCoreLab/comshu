@@ -91,6 +91,19 @@ PCOMM_RECORD(InternString, RecordKind::Artifact, 512, "intern_string") {
 // containment is only sound within a lifetime — and the id map should read that
 // way.
 PCOMM_RECORD(MemObject, RecordKind::Entity, 520, "mem_object") {
+    // PROVIDER-LOCAL. Not a cross-provider identity, despite the name — do not
+    // join or deduplicate on it. ibverbs and mlx5dv intern it on the base
+    // address (InternDomain::Pointer); gpumem mints its own dense counter in
+    // AllocRegistry::add (`m_allocs.size() + 1`), which never touches the intern
+    // table. Both are dense 1-based uint32, so gpumem's object 3 and an interned
+    // pointer handle 3 are the same number naming different buffers, and merging
+    // on it would fabricate a device disagreement out of a collision.
+    //
+    // `range` is the fact every emitter independently agrees on, so that is what
+    // pcomm-read merges by. Making this a real shared identity is worth doing —
+    // it would let a GpuAccess resolve to a region ibverbs registered, which
+    // today is impossible — but it is a change to all three emitters, not a
+    // relabelling of this field.
     Handle   id;
     Handle   name;  // interned symbol/type name
     MemRange range;

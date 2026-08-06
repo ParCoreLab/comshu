@@ -466,7 +466,7 @@ struct CsvAgg {
         core::DeviceId           lowest_device{0xFFFF};
         std::set<core::DeviceId> devices;  // what the emitters each claimed
         long                     emitters{0};
-        long                     refs{0}, ambiguous_refs{0};
+        long                     refs{0}, ambiguous_refs{0}, nested_refs{0};
     };
     // rank -> (base, size) -> merged object.
     std::map<int, std::map<std::pair<std::uint64_t, std::uint64_t>, MemObj>> objects;
@@ -539,11 +539,17 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
 //
 // Two things this reports rather than resolves:
 //
-//   ambiguous_refs — references that landed inside MORE THAN ONE object. The
-//   count is added to EVERY candidate, so the report names all of them; picking
-//   one would be inventing the answer. Nested ranges are legitimate (NVSHMEM
-//   registers its heap and then sub-ranges of it), which is why this is counted
-//   per referenced address rather than asserted as non-overlap over all objects.
+//   ambiguous_refs — references that landed inside more than one object whose
+//   ranges PARTIALLY OVERLAP, i.e. neither contains the other. The count is
+//   added to every candidate, so the report names all of them; picking one there
+//   would be inventing the answer.
+//
+//   nested_refs — references resolved to the innermost of a containment chain.
+//   Reported rather than silent because an implicit choice is still a choice,
+//   but it is not a finding: registering sub-ranges of a buffer is ordinary.
+//   These two started as one counter, and the conflation made case 02 red on a
+//   correct capture (MN5 44348796) — NCCL's co-terminal sub-ranges are nested,
+//   not ambiguous.
 //
 //   devices — how many DISTINCT device ordinals the emitters claimed for one
 //   buffer. Two providers observing the same allocation is expected by design
@@ -567,7 +573,8 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
         }
 
     std::FILE* f = std::fopen((outdir / "mem_owner.csv").c_str(), "w");
-    std::fputs("rank,source,base,size,device,devices,emitters,refs,ambiguous_refs\n", f);
+    std::fputs("rank,source,base,size,device,devices,emitters,refs,ambiguous_refs,nested_refs\n",
+               f);
 
     // (rank, source-name, address -> refs)
     const std::pair<const char*, const std::map<int, std::unordered_map<std::uint64_t, long>>*>
@@ -599,6 +606,48 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
                     objs[last].refs += refs;
                     continue;
                 }
+
+                // More than one object contains this address. Two cases, and
+                // conflating them is what made case 02 red on a correct capture.
+                //
+                // NESTED — the candidates form a containment chain, so the
+                // smallest sits entirely inside every other one. There is
+                // nothing to invent here: the innermost object IS the answer,
+                // the way the innermost enclosing scope names a variable.
+                // Measured on MN5 job 44348796, NCCL registers co-terminal
+                // sub-ranges of one buffer — 0x2374f70+4448, 0x23753c0+3344,
+                // 0x2375810+2240, 0x2375c60+1136, every one of them ending at
+                // 0x23760D0. That is ordinary allocator behaviour and a board
+                // must not go red for it.
+                //
+                // PARTIAL OVERLAP — two candidates where neither contains the
+                // other. No rule picks a winner without inventing one, so every
+                // candidate is charged and the row is flagged. This is the case
+                // the shared-vocabulary design actually predicted, and it stays
+                // a finding.
+                // Sentinel rather than 0: objs[0] need not be a candidate at
+                // all, and seeding with it would compare against a range that
+                // does not contain this address.
+                std::size_t inner = objs.size();
+                for (std::size_t i = 0; i < objs.size(); ++i)
+                    if (objs[i].base <= addr && addr - objs[i].base < objs[i].size &&
+                        (inner == objs.size() || objs[i].size < objs[inner].size))
+                        inner = i;
+
+                const auto& in_obj = objs[inner];
+                bool        chain = true;
+                for (std::size_t i = 0; i < objs.size() && chain; ++i) {
+                    if (i == inner || !(objs[i].base <= addr && addr - objs[i].base < objs[i].size))
+                        continue;
+                    chain = objs[i].base <= in_obj.base &&
+                            in_obj.base + in_obj.size <= objs[i].base + objs[i].size;
+                }
+
+                if (chain) {
+                    objs[inner].refs += refs;
+                    objs[inner].nested_refs += refs;
+                    continue;
+                }
                 for (auto& o : objs)
                     if (o.base <= addr && addr - o.base < o.size) {
                         o.refs += refs;
@@ -609,13 +658,13 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
             for (const auto& o : objs) {
                 if (o.refs == 0)
                     continue;
-                std::fprintf(f, "%d,%s,0x%llx,%llu,%u,%zu,%ld,%ld,%ld\n", rank, source,
+                std::fprintf(f, "%d,%s,0x%llx,%llu,%u,%zu,%ld,%ld,%ld,%ld\n", rank, source,
                              (unsigned long long)o.base, (unsigned long long)o.size,
                              o.lowest_device, o.devices.size(), o.emitters, o.refs,
-                             o.ambiguous_refs);
+                             o.ambiguous_refs, o.nested_refs);
             }
             if (unresolved)
-                std::fprintf(f, "%d,%s,none,0,65535,0,0,%ld,0\n", rank, source, unresolved);
+                std::fprintf(f, "%d,%s,none,0,65535,0,0,%ld,0,0\n", rank, source, unresolved);
         }
     }
     std::fclose(f);
