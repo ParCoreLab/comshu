@@ -11,6 +11,8 @@
 #include <cstdlib>
 
 #include "pcomm/core/ids.hpp"
+#include "pcomm/core/mem_attr.hpp"
+#include "pcomm/core/records.hpp"
 #include "pcomm/provider/provider.hpp"
 #include "pcomm/rec/intern_table.hpp"
 #include "pcomm/engine_abi.h"
@@ -392,6 +394,38 @@ Profiler::Profiler() {
                                      mr->lkey,
                                      mr->rkey,
                                      static_cast<std::uint32_t>(access)});
+
+        // ...and the buffer it registered, attributed to its owning device.
+        //
+        // Deliberately a second record rather than a `device` column on
+        // IbMemRegion. Attribution lives in ONE record type; smearing it across
+        // every provider's entity is how you end up with three tables that
+        // disagree about the same address. The join is
+        // ib_mem_region.base -> mem_object.range.
+        //
+        // Until now the oldest and largest part of the capture could not say
+        // whether a registered buffer was GPU or host memory: case 07 registers
+        // NVSHMEM's symmetric heap — device memory moved by GPUDirect RDMA —
+        // and nothing on disk said so. The only producer of mem_object was
+        // gpumem, which learns it through NVBit, i.e. by instrumenting every
+        // global memory instruction for a fact one driver call already knows.
+        //
+        // MemObject is 520, in the range the engine declares for itself, so a
+        // provider that owns 100-199 may emit it without writing outside a
+        // declared range. That is what step 2 of the plan bought.
+        //
+        // Interned on the base address in InternDomain::Pointer, which is the
+        // dedup key: two providers that both see this buffer mint the same id,
+        // so the duplicate is detectable and mergeable instead of doubling a
+        // count — the shape that hooking both ibv_reg_mr and ibv_reg_mr_iova2
+        // produced in case 01.
+        rec().record(rec().now_instant(), pcomm::core::records::MemObject{
+                                              {},
+                                              {},
+                                              h(addr),
+                                              pcomm::core::kNullHandle,
+                                              {reinterpret_cast<std::uint64_t>(addr), length},
+                                              pcomm::core::device_of(addr)});
     });
 
     // create_qp -> queue-pair endpoint entity.
