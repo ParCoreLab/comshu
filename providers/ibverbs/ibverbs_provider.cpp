@@ -23,8 +23,13 @@
 #include "ib_records.hpp"
 #include "wr_builder.hpp"
 
+#include <cstring>
 #include <mutex>
+#include <set>
+#include <string>
 #include <unordered_map>
+
+#include <dlfcn.h>  // dladdr, for the MR caller diagnostic at the bottom
 
 namespace ibv {
 namespace rr = pcomm::providers::ibverbs::records;
@@ -670,12 +675,54 @@ extern "C" int ibv_destroy_qp(ibv_qp* qp) {
 extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
     return ibv::Profiler::invoke_preload<ibv::modify_qp_tag>(qp, attr, mask);
 }
+// DIAGNOSTIC, gated on PCOMM_TRACE_MR_CALLERS=1 — which LIBRARY calls each
+// registration door?
+//
+// entity_close_accounted reports 33 closes per rank naming regions nothing
+// opened, all opener=ib_mem_region. Both registration hooks record their region
+// unconditionally on success, so an unmatched close means the registration never
+// entered this file at all — while the matching ibv_dereg_mr did.
+//
+// The search for the missing door assumed NCCL, on the strength of its source
+// resolving ibv_* through dlvsym. Job 44368260 killed that: dlvsym is entered on
+// all 8 ranks and never once with an ibv_* name, and neither is dlsym. So
+// nothing in that process resolves ibverbs dynamically, and the caller is
+// somebody nobody has named yet — OpenMPI/UCX being the obvious unexamined
+// occupant of a run everyone has been reading as pure NCCL.
+//
+// Comparing the caller set of dereg against the caller set of the two reg doors
+// answers that directly: a library that appears only under dereg registers by a
+// path we do not hook. This reports the CALLER, which is what neither the symbol
+// tools nor the resolution trace could give.
+//
+// Must be called from the interposer itself: __builtin_return_address(0) means
+// the caller of the frame it appears in, so in a helper it names this file.
+static void trace_mr_caller(const char* door, void* ret_addr) {
+    static const bool on = [] {
+        const char* v = std::getenv("PCOMM_TRACE_MR_CALLERS");
+        return v && *v && std::strcmp(v, "0") != 0;
+    }();
+    if (!on)
+        return;
+    Dl_info info{};
+    const char* who = (dladdr(ret_addr, &info) && info.dli_fname) ? info.dli_fname : "?";
+    static std::mutex            m;
+    std::lock_guard<std::mutex>  lk(m);
+    static std::set<std::string> seen;
+    if (!seen.insert(std::string(door) + "|" + who).second)
+        return;
+    std::fprintf(stderr, "[pcomm-mrcaller] %-20s <- %s\n", door, who);
+    std::fflush(stderr);
+}
+
 extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
                                      int fd, int access) {
+    trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
     return ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
                                                                  access);
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
+    trace_mr_caller("dereg_mr", __builtin_return_address(0));
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
 
@@ -685,6 +732,7 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
 // The single registration hook: every path funnels here. See ib_hooks.hpp.
 extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint64_t iova,
                                     unsigned int access) {
+    trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));
     return ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);
 }
 
