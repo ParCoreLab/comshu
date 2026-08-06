@@ -39,6 +39,7 @@
 #include "pcomm/tracer.hpp"
 
 #include "mlx5_event_source.hpp"
+#include "cuda_dmabuf.hpp"
 #include "mlx5_records.hpp"
 
 namespace mlx5 {
@@ -110,8 +111,30 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
     if (!out)
         return;
     const bool by_dmabuf = dmabuf_fd >= 0;
-    UmemInfo   info{reinterpret_cast<std::uint64_t>(addr), size,
-                  by_dmabuf ? kUnknownDevice : pcomm::core::device_of(addr),
+
+    // Under dmabuf, `addr` is an OFFSET into the descriptor and the Mlx5Umem row
+    // keeps it that way. umem_binding_as_configured fails a by_dmabuf row whose
+    // address is nonzero, precisely to catch an offset being reported as a
+    // pointer, and that check stays load-bearing — so nothing here rewrites it.
+    //
+    // What the descriptor can NOW yield is the range it was exported from:
+    // NVSHMEM called cuMemGetHandleForAddressRange(&fd, dptr, size, ...) one
+    // step earlier and dmabuf::lookup carries that here. It feeds two things
+    // that were previously impossible, neither of which is the umem's address:
+    //
+    //   - the owning device, which gpu_driven otherwise has to infer from the
+    //     binding alone (the heuristic that made case 09's gate circular);
+    //   - a MemObject with a real range, so a dmabuf buffer becomes nameable.
+    //
+    // If the conversion was not observed, both stay unknown. That is the answer
+    // this provider gave for every dmabuf umem until now, so a miss is a
+    // regression to the previous behaviour rather than a new fiction.
+    dmabuf::Range dmabuf_range{};
+    const bool    resolved = by_dmabuf && dmabuf::lookup(dmabuf_fd, &dmabuf_range);
+
+    UmemInfo info{reinterpret_cast<std::uint64_t>(addr), size,
+                  by_dmabuf ? (resolved ? dmabuf_range.device : kUnknownDevice)
+                            : pcomm::core::device_of(addr),
                   by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress, dmabuf_fd};
     remember_umem(out->umem_id, info);
     rec().record(pcomm::core::Temporal::none(),
@@ -126,28 +149,39 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
                               static_cast<std::uint8_t>(info.binding),
                               static_cast<std::uint8_t>(entry)});
 
-    // ...and the buffer itself, in the shared vocabulary, for the by_addr
-    // binding ONLY.
+    // ...and the buffer itself, in the shared vocabulary.
     //
-    // Under by_dmabuf there is nothing here to describe: the umem carries
-    // addr = 0x0 and a file descriptor, so a MemObject would have to invent a
-    // range. Emitting one with base 0 and this size would put a fiction in the
-    // capture that range containment would then resolve real addresses against
-    // — worse than the missing row, and unrecoverable afterwards. So: nothing.
+    // by_addr: the umem's own address is the buffer's address.
     //
-    // This is the same gap things-to-circle-back-to.md records as "gpu_driven
-    // under dmabuf is still a heuristic", and it closes the same way, via
-    // fd -> GPU VA (cuMemGetHandleForAddressRange through smart_dlsym). That is
-    // tracked in the IBGDA plan, not here.
+    // by_dmabuf: only once the export was observed. The buffer's address is the
+    // exported range's base PLUS the umem's offset — using the range base alone
+    // would put every sub-range on top of the first, and case 09 carves three
+    // queue pairs out of one 327680-byte buffer at offsets 0x0, 0x10000 and
+    // 0x20000, so they would collapse into one object.
     //
-    // Interned on the base address, in the same domain ibverbs and gpumem use,
-    // so a buffer seen by two providers mints one id rather than two rows
-    // nobody can tell apart.
-    if (!by_dmabuf)
+    // Unresolved dmabuf still emits NOTHING. A MemObject with base 0 and this
+    // size would be a fiction that range containment then resolves real
+    // addresses against — worse than a missing row, and unrecoverable after the
+    // fact.
+    //
+    // Interned on the resulting base, in the same domain ibverbs and gpumem use,
+    // so a buffer seen by two providers mints one id rather than two rows nobody
+    // can tell apart.
+    if (!by_dmabuf) {
         rec().record(
             rec().now_instant(),
             pcomm::core::records::MemObject{
                 {}, {}, h(addr), pcomm::core::kNullHandle, {info.addr, info.size}, info.device});
+    } else if (resolved) {
+        const std::uint64_t base = dmabuf_range.base + reinterpret_cast<std::uint64_t>(addr);
+        rec().record(rec().now_instant(),
+                     pcomm::core::records::MemObject{{},
+                                                     {},
+                                                     h(reinterpret_cast<const void*>(base)),
+                                                     pcomm::core::kNullHandle,
+                                                     {base, info.size},
+                                                     info.device});
+    }
 }
 
 // Our own port's LID, so (src_lid, qp_num) names this queue pair uniquely.
@@ -263,6 +297,16 @@ static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
 }
 
 Profiler::Profiler() {
+    // Watch for the dmabuf export BEFORE anything else, because it happens
+    // before the registration that needs it. NVSHMEM resolves CUDA lazily, so
+    // this only has to be registered before its first cuGetProcAddress, not
+    // before CUDA loads.
+    //
+    // Registering costs nothing on a host with no CUDA: the symbols are simply
+    // never resolved, the callbacks never run, and every dmabuf umem reports the
+    // unknown device it reported before.
+    dmabuf::install();
+
     // Bring up sink + recorder. `Tracer::instance()` alone was not enough and
     // failed in the most misleading way available: every hook fired (LD_DEBUG
     // confirmed nvshmem_transport_ibgda.so binding to this .so for umem_reg_ex,
