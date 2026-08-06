@@ -192,6 +192,36 @@ says directly whether the two new trampolines are entered. Entered-and-recording
 -nothing and never-entered are different bugs, and the entry trace already
 exists for exactly this question — it is what settled case 08.
 
+### Round 4 (2026-08-07): the trampolines are never entered
+
+Job 44369381, `PCOMM_TRACE_HOOKS=1`: **neither `reg_dm_mr` nor `alloc_null_mr`
+is entered.** Not once, on the workload that deregisters 474 memoryless MRs. The
+trace itself is healthy — 11 doors report, including both existing object-ops
+hooks (`post_send`, `poll_cq`), so the object-ops mechanism works.
+
+So the DM/null-MR diagnosis was **wrong, or at least not the whole story**: those
+doors exist, have the shape I described, and are not what UCX calls. The hooks
+are correct and inert, exactly like the legacy `ibv_reg_mr` hook one round
+earlier. Two rounds of "the right-looking door that nothing goes through" is a
+pattern worth naming: an unhooked door that *could* explain the evidence is not
+the door that *does*, and only entry can tell them apart.
+
+**The control was weak and that should be recorded.** `create_qp_ex` also reports
+0 here, so it did not prove the instrument. It is the right control on case 08
+(perftest), not on this workload, where creation goes through `ibv_create_qp` —
+which does report. The 11 reporting doors are what makes the reading safe; had
+the trace printed nothing, this result would have meant nothing.
+
+**Untested lead, flagged as a hypothesis and not a finding:**
+`libuct_ib_mlx5.so.0` references **`mlx5dv_open_device`**, and this provider
+installs object-ops only from `ibv_open_device`. A context opened the other way
+is never patched, so *every* object-ops hook is blind on it — `post_send` and
+`poll_cq` included, which would be a much larger gap than the closes. That is
+checkable directly: trace entry to `mlx5dv_open_device`, and compare the
+`ibv_context*` of an unmatched mr against the contexts we installed into. Note
+it does not explain the 355 closes from `libuct_ib.so.0`, which references
+`ibv_open_device` — so it is at most half an answer, and possibly none of it.
+
 ### What is still open
 
 Hooking legacy `ibv_reg_mr` is the fix, but not unconditionally: where the
