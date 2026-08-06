@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -267,7 +268,6 @@ template<> struct Table<ibr::IbPollCq> {
     }
 };
 
-
 // --- mlx5dv/DEVX (200-299) --------------------------------------------------
 // The tables that make a GPU-initiated run queryable at all. Under IBGDA the
 // ib_* tables above are empty, so these are not a supplement to them — they are
@@ -294,8 +294,8 @@ template<> struct Table<mxr::Mlx5Umem> {
                      (unsigned long long)s.temporal.a.ticks, s.payload.umem,
                      (unsigned long long)s.payload.range.base,
                      (unsigned long long)s.payload.range.size, s.payload.umem_id, s.payload.access,
-                     s.payload.dmabuf_fd, s.payload.device,
-                     umem_binding_name(s.payload.binding), umem_entry_name(s.payload.entry));
+                     s.payload.dmabuf_fd, s.payload.device, umem_binding_name(s.payload.binding),
+                     umem_entry_name(s.payload.entry));
     }
 };
 
@@ -312,9 +312,10 @@ template<> struct Table<mxr::Mlx5Uar> {
 template<> struct Table<mxr::Mlx5DevxCmd> {
     static constexpr const char* name = "mlx5_devx_cmd";
     static constexpr const char* cols = "ticks,obj,opcode,decoded";
-    static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxCmd>& s, const rec::InternDictionary&) {
+    static void                  row(std::FILE* f, const Stamped<mxr::Mlx5DevxCmd>& s,
+                                     const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,0x%x,%u", (unsigned long long)s.temporal.a.ticks, s.payload.obj,
-                     s.payload.opcode, s.payload.decoded);
+                                      s.payload.opcode, s.payload.decoded);
     }
 };
 
@@ -323,10 +324,11 @@ template<> struct Table<mxr::Mlx5DevxQp> {
     static constexpr const char* cols =
         "ticks,obj,sq_base,qp_num,wq_umem_id,log_sq_size,device,service_type,gpu_driven";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxQp>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,0x%llx,%u,%u,%u,%u,0x%x,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.obj, (unsigned long long)s.payload.sq_base, s.payload.qp_num,
-                     s.payload.wq_umem_id, s.payload.log_sq_size, s.payload.device,
-                     s.payload.service_type, s.payload.gpu_driven);
+        std::fprintf(f, "%llu,%u,0x%llx,%u,%u,%u,%u,0x%x,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.obj,
+                     (unsigned long long)s.payload.sq_base, s.payload.qp_num, s.payload.wq_umem_id,
+                     s.payload.log_sq_size, s.payload.device, s.payload.service_type,
+                     s.payload.gpu_driven);
     }
 };
 
@@ -343,24 +345,23 @@ template<> struct Table<mxr::Mlx5DevxQpConnect> {
     }
 };
 
-
 template<> struct Table<mxr::Mlx5QueuePair> {
     static constexpr const char* name = "mlx5_queue_pair";
     static constexpr const char* cols = "ticks,qp,pd,qp_num,qp_type";
-    static void row(std::FILE* f, const Stamped<mxr::Mlx5QueuePair>& s, const rec::InternDictionary&) {
+    static void                  row(std::FILE* f, const Stamped<mxr::Mlx5QueuePair>& s,
+                                     const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.qp,
-                     s.payload.pd, s.payload.qp_num, s.payload.qp_type);
+                                      s.payload.pd, s.payload.qp_num, s.payload.qp_type);
     }
 };
 
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
-using TableRecords =
-    std::tuple<GpuAccess, MemObject, SourceLine, ClockAnchor, Attribution, ibr::IbQueuePair,
-               ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion,
-               mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
-               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair>;
+using TableRecords = std::tuple<GpuAccess, MemObject, SourceLine, ClockAnchor, Attribution,
+                                ibr::IbQueuePair, ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq,
+                                ibr::IbMemRegion, mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd,
+                                mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair>;
 
 template<typename Tuple, typename F, std::size_t... Is>
 void for_each_type_impl(F&& f, std::index_sequence<Is...>) {
@@ -448,12 +449,55 @@ struct CsvAgg {
     std::map<std::pair<int, std::uint32_t>, std::pair<long, long>>
                 send_by_qp;  // (rank,qp_num)->(sends,bytes)
     std::size_t n_access = 0, n_send = 0;
+
+    // --- memory attribution -------------------------------------------------
+    //
+    // Merged by (rank, base, size), which is the buffer's identity. NOT by
+    // MemObject.id, and that deviates from the plan for a measured reason:
+    // ibverbs and mlx5dv intern the id on the base address in
+    // InternDomain::Pointer, but gpumem mints its own dense counter
+    // (AllocRegistry::add), and intern handles are dense 1-based counters too.
+    // So gpumem's object 3 and an interned pointer handle 3 are the same
+    // uint32 meaning two different buffers, and merging on it would fabricate
+    // a device disagreement out of an id collision. The range is the fact all
+    // three emitters actually agree on.
+    struct MemObj {
+        std::uint64_t            base{0}, size{0};
+        core::DeviceId           lowest_device{0xFFFF};
+        std::set<core::DeviceId> devices;  // what the emitters each claimed
+        long                     emitters{0};
+        long                     refs{0}, ambiguous_refs{0};
+    };
+    // rank -> (base, size) -> merged object.
+    std::map<int, std::map<std::pair<std::uint64_t, std::uint64_t>, MemObj>> objects;
+    // rank -> address -> how many times it was referenced. Collected rather
+    // than resolved on the fly because the generic export loop reaches
+    // gpu_access before mem_object, so containment cannot be answered yet.
+    std::map<int, std::unordered_map<std::uint64_t, long>> access_addrs, region_bases;
 };
 
 template<core::Record R> void aggregate(CsvAgg&, const RankDir&, const Stamped<R>&) {}
 
-void aggregate(CsvAgg& a, const RankDir&, const Stamped<GpuAccess>&) {
+void aggregate(CsvAgg& a, const RankDir& r, const Stamped<GpuAccess>& s) {
     a.n_access++;
+    a.access_addrs[r.rank][s.payload.address]++;
+}
+
+void aggregate(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
+    auto& o = a.objects[r.rank][{s.payload.range.base, s.payload.range.size}];
+    o.base = s.payload.range.base;
+    o.size = s.payload.range.size;
+    o.devices.insert(s.payload.device);
+    o.lowest_device = *o.devices.begin();
+    o.emitters++;
+}
+
+// A region's base is a LOCAL address, so it can be resolved against this rank's
+// objects. ib_post_send deliberately contributes nothing: the only address it
+// carries is remote_addr, which lives in the PEER's address space — resolving
+// it here would be the qp_num mistake again, in the address domain.
+void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbMemRegion>& s) {
+    a.region_bases[r.rank][s.payload.range.base]++;
 }
 
 // NB IbQueuePair deliberately does NOT feed the owner map any more. It is
@@ -476,6 +520,105 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
     agg.first += 1;
     agg.second += s.payload.length;
     a.n_send++;
+}
+
+// Derived: which memory object owns an address, by range containment, SCOPED TO
+// THE RANK.
+//
+// The rank scope is not decoration. comm_edges learned the same lesson from
+// qp_num: it is HCA-local, so two ranks routinely draw the same one, and a
+// qp_num-keyed map resolved every colliding peer to whichever rank was scanned
+// last. Virtual addresses are worse — every rank's heap starts in the same
+// place — so a containment lookup by address alone would attribute one rank's
+// buffer to another's access as a matter of course.
+//
+// One row per (rank, source, object) that something actually referenced, plus a
+// row with base = none for references that resolved to nothing. Aggregated like
+// comm_edges rather than emitted per address, because gpu_access carries
+// ~200k addresses per rank and a per-address table is not a table anyone reads.
+//
+// Two things this reports rather than resolves:
+//
+//   ambiguous_refs — references that landed inside MORE THAN ONE object. The
+//   count is added to EVERY candidate, so the report names all of them; picking
+//   one would be inventing the answer. Nested ranges are legitimate (NVSHMEM
+//   registers its heap and then sub-ranges of it), which is why this is counted
+//   per referenced address rather than asserted as non-overlap over all objects.
+//
+//   devices — how many DISTINCT device ordinals the emitters claimed for one
+//   buffer. Two providers observing the same allocation is expected by design
+//   (any provider may hook CUDA itself); two providers DISAGREEING about which
+//   GPU owns it is a finding. `device` prints the lowest, and `devices > 1` is
+//   the flag that says the value is not to be trusted.
+void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
+    // Say it out loud, for every merged object and not only the referenced
+    // ones: a silent pick here is the failure this whole plan exists to stop.
+    for (const auto& [rank, objs] : agg.objects)
+        for (const auto& [_key, o] : objs) {
+            if (o.devices.size() < 2)
+                continue;
+            std::fprintf(stderr,
+                         "pcomm-read: rank %d: %ld emitters disagree on the device owning "
+                         "0x%llx+%llu:",
+                         rank, o.emitters, (unsigned long long)o.base, (unsigned long long)o.size);
+            for (auto d : o.devices)
+                std::fprintf(stderr, " %u", d);
+            std::fputs(" — mem_owner reports the lowest; do not trust it\n", stderr);
+        }
+
+    std::FILE* f = std::fopen((outdir / "mem_owner.csv").c_str(), "w");
+    std::fputs("rank,source,base,size,device,devices,emitters,refs,ambiguous_refs\n", f);
+
+    // (rank, source-name, address -> refs)
+    const std::pair<const char*, const std::map<int, std::unordered_map<std::uint64_t, long>>*>
+        sources[] = {{"gpu_access", &agg.access_addrs}, {"ib_mem_region", &agg.region_bases}};
+
+    for (const auto& [source, addrs_by_rank] : sources) {
+        for (const auto& [rank, addrs] : *addrs_by_rank) {
+            auto objs_it = agg.objects.find(rank);
+            // Copy the rank's objects: refs/ambiguous_refs are per (source,
+            // rank), so the merged rows must not accumulate across sources.
+            std::vector<CsvAgg::MemObj> objs;
+            if (objs_it != agg.objects.end())
+                for (const auto& [_key, o] : objs_it->second)
+                    objs.push_back(o);
+
+            long unresolved = 0;
+            for (const auto& [addr, refs] : addrs) {
+                std::size_t hits = 0, last = 0;
+                for (std::size_t i = 0; i < objs.size(); ++i)
+                    if (objs[i].base <= addr && addr - objs[i].base < objs[i].size) {
+                        ++hits;
+                        last = i;
+                    }
+                if (hits == 0) {
+                    unresolved += refs;
+                    continue;
+                }
+                if (hits == 1) {
+                    objs[last].refs += refs;
+                    continue;
+                }
+                for (auto& o : objs)
+                    if (o.base <= addr && addr - o.base < o.size) {
+                        o.refs += refs;
+                        o.ambiguous_refs += refs;
+                    }
+            }
+
+            for (const auto& o : objs) {
+                if (o.refs == 0)
+                    continue;
+                std::fprintf(f, "%d,%s,0x%llx,%llu,%u,%zu,%ld,%ld,%ld\n", rank, source,
+                             (unsigned long long)o.base, (unsigned long long)o.size,
+                             o.lowest_device, o.devices.size(), o.emitters, o.refs,
+                             o.ambiguous_refs);
+            }
+            if (unresolved)
+                std::fprintf(f, "%d,%s,none,0,65535,0,0,%ld,0\n", rank, source, unresolved);
+        }
+    }
+    std::fclose(f);
 }
 
 int export_csv(const fs::path& root, const fs::path& outdir) {
@@ -547,11 +690,13 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
         std::fprintf(edges, "%d,%d,%ld,%ld\n", rk.first, rk.second, e.first, e.second);
     std::fclose(edges);
 
+    write_mem_owner(outdir, agg);
+
     for (const auto& [_, f] : files)
         std::fclose(f);
 
     std::printf("pcomm-read: %zu ranks, %zu gpu-accesses, %zu ib-sends -> %s/"
-                "{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv\n",
+                "{gpu_access,mem_object,source_line,clock_anchor,comm_edges,mem_owner,ib_*}.csv\n",
                 ranks.size(), agg.n_access, agg.n_send, outdir.c_str());
     return 0;
 }
