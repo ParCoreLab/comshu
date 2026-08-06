@@ -26,9 +26,9 @@ void* (*real_dlvsym)(void*, const char*, const char*) = nullptr;
 void* (*real_dlclose)(void*) = nullptr;
 
 // If you see an undebuggable floating point exception it's this
-std::unordered_map<std::string, CallbackType>* RegisteredSymbols{nullptr};
+std::unordered_map<std::string, std::vector<CallbackType>>* RegisteredSymbols{nullptr};
 
-inline void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
+void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
     if (!real_symbol) {
         return real_symbol;
     }
@@ -42,12 +42,27 @@ inline void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_
         return real_symbol;
     }
 
-    const auto& registered_callback = registered_handler->second;
-
-    // Callback does some work and returns an overridden fun
-    auto* new_fn = registered_callback(real_symbol, handle, symbol_name);
-
-    return new_fn;
+    // Walk the chain, each registrant wrapping the previous one. This is
+    // ordinary interposition stacking, not a merge: a registrant is handed the
+    // current front — what it must forward to in order to reach the real
+    // implementation — and returns the new front. So the last registrant is
+    // what the application receives, its replacement calls the one before it,
+    // and the first registrant's calls land on the real symbol.
+    void* fn = real_symbol;
+    for (const auto& callback : registered_handler->second) {
+        void* next = callback(fn, handle, symbol_name);
+        // A registrant that declines, or that fails to build a replacement,
+        // must not be able to blank the symbol. The previous code returned the
+        // callback's result unconditionally, so a null propagated to the
+        // application as a failed resolution — which is exactly how a probe of
+        // the mlx5dv interface once convinced NVSHMEM that UAR allocation had
+        // failed and made it disable its entire transport. Declining leaves the
+        // chain untouched.
+        if (next) {
+            fn = next;
+        }
+    }
+    return fn;
 }
 }  // namespace pcomm::smart_dlsym
 
@@ -82,7 +97,7 @@ static void __attribute__((constructor(0))) init() {
     }
 
     pcomm::smart_dlsym::RegisteredSymbols =
-        new std::unordered_map<std::string, pcomm::smart_dlsym::CallbackType>();
+        new std::unordered_map<std::string, std::vector<pcomm::smart_dlsym::CallbackType>>();
 }
 #pragma GCC diagnostic pop
 

@@ -13,11 +13,16 @@
 //     fires pre/post callbacks around it and returns the real result — the
 //     choke point every provider's interposers forward to, exercised here on
 //     libc's puts because this host has no vendor library;
-//  4. the ELF symbol resolver links and resolves a real libc export.
+//  4. the dlsym registry COMPOSES: several registrants may claim one symbol,
+//     each wrapping the previous, and a registrant that declines cannot blank
+//     the symbol;
+//  5. the ELF symbol resolver links and resolves a real libc export.
 
 #include <cassert>
 #include <cstdio>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include "pcomm/hook/CompositeHookManager.hpp"
 #include "pcomm/hook/dlsym/Dlsym.hpp"
@@ -139,7 +144,65 @@ int main() {
     assert(g_post_pf == 1 && "post callback fired exactly once");
     std::printf("preload: ret=%d pre=%d post=%d\n", pr, int(g_pre_pf), g_post_pf);
 
-    // 4. SmartDlsym runtime (SymbolResolver.cpp) links and resolves a real export.
+    // 4. The dlsym registry composes multiple registrants for ONE symbol.
+    //
+    // It used to throw on the second, which made "any provider may hook CUDA
+    // itself" unsatisfiable: NVSHMEM reaches every CUDA entry point through a
+    // single dlsym of cuGetProcAddress, so every interested provider must
+    // register that same name. Two providers meant an abort at load.
+    //
+    // What is checked here is the ordering contract, because a chain that runs
+    // in the wrong order still "works" on one registrant and is wrong the
+    // moment there are two: each registrant must be handed the PREVIOUS front
+    // (what it forwards to), and the application must receive the LAST one.
+    static std::vector<std::string> order;
+    static void*                    seen_by_second = nullptr;
+    void*                           first_ret = reinterpret_cast<void*>(0x1111);
+    void*                           second_ret = reinterpret_cast<void*>(0x2222);
+
+    pcomm::smart_dlsym::register_symbol(
+        "pcomm_chain_probe", [first_ret](void* next, void*, const char*) {
+            order.push_back("first");
+            assert(next != nullptr && "first registrant is handed the real symbol");
+            return first_ret;
+        });
+    pcomm::smart_dlsym::register_symbol("pcomm_chain_probe",
+                                        [second_ret](void* next, void*, const char*) {
+                                            order.push_back("second");
+                                            seen_by_second = next;
+                                            return second_ret;
+                                        });
+    // A third that declines: returning nullptr must not blank the symbol, which
+    // is how a null once reached NVSHMEM as a failed UAR allocation.
+    pcomm::smart_dlsym::register_symbol("pcomm_chain_probe", [](void*, void*, const char*) {
+        order.push_back("third");
+        return static_cast<void*>(nullptr);
+    });
+
+    {
+        const auto& chain = (*pcomm::smart_dlsym::RegisteredSymbols)["pcomm_chain_probe"];
+        assert(chain.size() == 3 && "all three registrants are kept, none rejected");
+
+        // The production path, not a reimplementation of it.
+        void* real = reinterpret_cast<void*>(0xdead);
+        void* fn = pcomm::smart_dlsym::on_symbol_load(real, nullptr, "pcomm_chain_probe");
+
+        assert(order.size() == 3 && order[0] == "first" && order[1] == "second" &&
+               order[2] == "third" && "registration order is innermost-first");
+        assert(seen_by_second == first_ret && "each registrant receives the previous front");
+        assert(fn == second_ret && "a declining registrant leaves the chain intact");
+
+        // An unregistered symbol passes through untouched, and a null real
+        // symbol stays null rather than being handed to registrants.
+        assert(pcomm::smart_dlsym::on_symbol_load(real, nullptr, "pcomm_unregistered") == real);
+        assert(pcomm::smart_dlsym::on_symbol_load(nullptr, nullptr, "pcomm_chain_probe") ==
+               nullptr);
+        assert(order.size() == 3 && "a null real symbol must not run the chain");
+
+        std::printf("dlsym chain: %zu registrants, front=%p\n", chain.size(), fn);
+    }
+
+    // 5. SmartDlsym runtime (SymbolResolver.cpp) links and resolves a real export.
     void* p = find_symbol_in_lib("libc", "puts");
     std::printf("find_symbol_in_lib(libc, puts) = %p\n", p);
     assert(p != nullptr);
