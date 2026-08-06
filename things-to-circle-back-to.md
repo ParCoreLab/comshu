@@ -912,9 +912,27 @@ Two general points, both of which have now cost time twice:
 - **A fallback that makes the common case right hides the general case being
   wrong.** Worth auditing the other discriminators for the same shape.
 
-## OPEN (2026-08-05): `gpu_driven` under dmabuf is still a heuristic
-Under by_dmabuf the umem address is 0, so there is nothing to ask CUDA about and
-`gpu_driven` falls back to the binding. Case 10 now verifies residency
-genuinely; case 09 still cannot. Closing it needs the same `fd → GPU VA` work
-(`cuMemGetHandleForAddressRange` through `smart_dlsym`) that the IBGDA data
-plane needs.
+## FIXED (2026-08-06): `gpu_driven` under dmabuf was a heuristic
+Under by_dmabuf the umem address is 0, so there was nothing to ask CUDA about
+and `gpu_driven` fell back to `binding == ByDmabuf`. Case 09's `ibgda_engaged`
+gate was therefore asserting the binding — which `umem_binding_as_configured`
+already asserts — and was unfalsifiable by any dmabuf case. That is *why* case
+10 had to exist before the wrong-CUDA-attribute bug could surface at all.
+
+Closed by intercepting the export: NVSHMEM converts a device pointer to a
+descriptor with `cuMemGetHandleForAddressRange(&fd, dptr, size, DMA_BUF_FD, 0)`
+before registering, so catching that call yields `fd → (dptr, size)`. Both
+resolution doors are hooked, because `LOAD_SYM` picks between
+`cuGetProcAddress` and a `dlsym` fallback at runtime
+(nvshmem-3.7.2 `cudawrap.cpp:38-45`). Verified on du04: `mlx5_umem.device`
+65535 → 0, `mem_object` populated with real GPU addresses, and `addr` correctly
+still `0x0`. The fallback is gone; `gpu_driven` now means GPU-resident, and an
+unobserved export reports false rather than assuming true.
+
+Two things NOT closed by it, both recorded in `cuda_dmabuf.hpp`:
+- **fd reuse.** A descriptor is unique only while open, exactly like an address.
+  A stale hit is possible in principle and has not been observed; the durable
+  fix is to key on the dmabuf inode (`fstat`), which is unverified.
+- **The registry is per-`.so`.** It lives in mlx5dv because that is its only
+  consumer. Sharing it across providers needs the engine — a static library
+  linked into two `.so`s gives two copies, not one.

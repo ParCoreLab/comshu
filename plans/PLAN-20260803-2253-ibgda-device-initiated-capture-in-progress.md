@@ -902,6 +902,25 @@ queues.** Under `ibgda`+dmabuf the umem carries `addr=0x0` and a descriptor, so
 `cuMemGetHandleForAddressRange` is intercepted through `smart_dlsym`. Nothing
 in the data plane can be located without it.
 
+> **DONE 2026-08-06.** `providers/mlx5dv/cuda_dmabuf.hpp` intercepts the export
+> through both doors (`cuGetProcAddress` and the `dlsym` fallback) and keeps an
+> `fd → (base, size, device)` table. Verified on du04: `mlx5_umem.device` went
+> 65535 → 0, `mem_object` is populated with real GPU addresses, and the umem's
+> `addr` correctly stays `0x0` — the resolved range feeds the device field and a
+> MemObject based at `range.base + offset`, it does NOT rewrite the umem row,
+> because `umem_binding_as_configured` fails a by_dmabuf row with a nonzero
+> address on purpose.
+>
+> It required the chained dlsym registry: `register_symbol` used to throw on a
+> second registrant, and every provider wanting CUDA must register the same
+> `cuGetProcAddress`.
+>
+> Also closed the `gpu_driven` heuristic — it no longer ORs in
+> `binding == ByDmabuf`, so case 09's gate tests residency rather than the
+> binding. **Still open:** fd reuse (a descriptor is unique only while open;
+> inode-keyed identity is the durable fix and is unverified), and the table is
+> per-`.so` — sharing it across providers needs the engine, not a header.
+
 ### Instrument now available for the open routing question (2026-08-05)
 
 Stage 3's open question — whether `cuGetExportTable` patching is *also* required,
