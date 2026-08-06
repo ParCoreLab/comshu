@@ -95,6 +95,10 @@ echo "=== UNMATCHED: closes of regions no hooked door opened ==="
 printf 'unmatched lines: %s\n' "$(grep -c 'pcomm-unmatched' "$OUT/run.log")"
 grep -h 'pcomm-unmatched' "$OUT/run.log" | sed 's/.*<- //' | sort | uniq -c | sort -rn
 
+echo "=== was the mr's CONTEXT one we installed into? ==="
+grep -h 'pcomm-unmatched' "$OUT/run.log" | grep -o 'installed=[a-zA-Z]*' | sort | uniq -c
+echo "  (installed=NO means the door to find OPENED the context, not registered the memory)"
+
 echo "=== their sizes — a 1GB region is a heap, a 4KB one is a control buffer ==="
 grep -h 'pcomm-unmatched' "$OUT/run.log" | grep -o 'len=[0-9]*' | sort -n -t= -k2 | uniq -c
 

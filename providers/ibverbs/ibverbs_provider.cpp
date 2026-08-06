@@ -53,6 +53,10 @@ using pcomm::rec::InternDomain;
 // once, and a shared counter would let one thread's outer call suppress
 // another's. This is the same per-thread discipline the flush path already
 // needs.
+// Defined with the other MR diagnostics at the bottom of the file, declared here
+// because the open_device callback above needs it.
+static void remember_installed_ctx(const ibv_context* ctx);
+
 static int& reg_mr_depth() noexcept {
     static thread_local int depth = 0;
     return depth;
@@ -410,8 +414,10 @@ Profiler::Profiler() {
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>([](ibv_context* ctx, ibv_device*, auto...) {
-        if (ctx)
+        if (ctx) {
             instance().install(ctx);
+            remember_installed_ctx(ctx);
+        }
     });
 
     // reg_mr_iova2 -> the same memory-region entity. `iova` is the virtual
@@ -860,6 +866,28 @@ static void trace_mr_caller(const char* door, void* ret_addr) {
 static std::mutex             g_known_mr_mutex;
 static std::set<const void*>* g_known_mrs = nullptr;  // leaked: outlives atexit
 
+// Which ibv_contexts we installed object-ops into, i.e. those that came through
+// ibv_open_device.
+//
+// Object-ops hooks are per-context: install() patches slots inside one
+// ibv_context, so a context opened by a door we do not hook is invisible to
+// EVERY object-ops hook at once — post_send and poll_cq included, which would be
+// a far larger gap than the unmatched closes that led here. libuct_ib_mlx5.so.0
+// references mlx5dv_open_device, and this provider installs only from
+// ibv_open_device, so that gap is possible; whether it is real is what this
+// measures. An unmatched mr whose context we never installed into points at the
+// opening door, not at the registration door.
+static std::set<const void*>* g_installed_ctxs = nullptr;
+
+static void remember_installed_ctx(const ibv_context* ctx) {
+    if (!ctx || !trace_mr_callers_enabled())
+        return;
+    std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+    if (!g_installed_ctxs)
+        g_installed_ctxs = new std::set<const void*>();
+    g_installed_ctxs->insert(ctx);
+}
+
 static void remember_mr(const ibv_mr* mr) {
     if (!mr || !trace_mr_callers_enabled())
         return;
@@ -887,8 +915,18 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
     const bool  ok = dladdr(ret_addr, &info) != 0;
     const char* who = (ok && info.dli_fname) ? info.dli_fname : "?";
     const char* fn = (ok && info.dli_sname) ? info.dli_sname : "?";
-    std::fprintf(stderr, "[pcomm-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u <- %s in %s\n",
-                 static_cast<const void*>(mr), mr->addr, mr->length, mr->lkey, fn, who);
+    // Was this mr's context one we installed into? If not, the door to find is
+    // the one that OPENED the context, not the one that registered the memory.
+    bool installed = false;
+    {
+        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        installed = g_installed_ctxs && mr->context && g_installed_ctxs->count(mr->context);
+    }
+    std::fprintf(stderr,
+                 "[pcomm-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u ctx=%p installed=%s <- %s "
+                 "in %s\n",
+                 static_cast<const void*>(mr), mr->addr, mr->length, mr->lkey,
+                 static_cast<const void*>(mr->context), installed ? "yes" : "NO", fn, who);
     std::fflush(stderr);
 }
 
