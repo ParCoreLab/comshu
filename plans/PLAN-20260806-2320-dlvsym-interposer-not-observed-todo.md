@@ -222,6 +222,50 @@ checkable directly: trace entry to `mlx5dv_open_device`, and compare the
 it does not explain the 355 closes from `libuct_ib.so.0`, which references
 `ibv_open_device` — so it is at most half an answer, and possibly none of it.
 
+### Round 5 (2026-08-07): ANSWERED — the context was never installed into
+
+Job 44369505. **262 unmatched closes, and every single one is `installed=NO`.**
+The mr's `ibv_context` is one this provider never installed object-ops into.
+
+So the door to find was never a registration door at all. It is the door that
+**opened the context**. That is why six rounds of registration hypotheses all
+died: they were answers to the wrong question, and the two hooks added along the
+way (legacy `ibv_reg_mr`, `reg_dm_mr`/`alloc_null_mr`) are correct and inert
+because nothing was wrong with registration.
+
+It also fits the caller evidence that looked contradictory: `libuct_ib.so.0`
+closes these and references `ibv_open_device`, while `libuct_ib_mlx5.so.0`
+references `mlx5dv_open_device`. UCX's mlx5 layer opens the device and its
+generic IB layer registers on it, so the *closing* library is not the *opening*
+one — which is exactly the confusion that made "dereg-only library" look like a
+missing registration door two rounds ago.
+
+**This is bigger than the closes.** Object-ops hooks are per-context, so an
+uninstalled context is blind to `post_send` and `poll_cq` too. Every send on such
+a context is missing from the capture, silently, with no error and no empty
+table.
+
+### The fix: install on first sight, not at the opening door
+
+Hooking `mlx5dv_open_device` would close *this* instance and leave the class
+open — the next opening door (`rdma_create_id`, a future `mlx5dv_open_device_ex`,
+a vendor path nobody has read yet) fails the same way, and this plan has already
+spent two rounds on doors that were plausible and untaken.
+
+Instead: **`ensure_installed(ctx)` from every hook that already holds a
+context** — `alloc_pd(ctx)`, `reg_mr(pd->context)`, `create_qp(pd->context)`,
+`modify_qp(qp->context)`, `dereg_mr(mr->context)` — idempotent behind the set
+this diagnostic already builds. A context becomes instrumented the first time it
+is seen through any door, whatever opened it.
+
+Cost: object-ops on a context are missed until its first preload call, which for
+these MRs is the dereg itself. That is strictly better than never, and it is
+honest about being a floor rather than a guarantee.
+
+Also worth interposing `mlx5dv_open_device` in the mlx5dv provider afterwards —
+it makes the common case instrument at open time rather than first use — but as
+an optimisation on top of the general fix, not instead of it.
+
 ### What is still open
 
 Hooking legacy `ibv_reg_mr` is the fix, but not unconditionally: where the
