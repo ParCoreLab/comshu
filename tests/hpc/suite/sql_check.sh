@@ -102,7 +102,7 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # configured cannot be checked against either, which is exactly how hours went
 # into comparing two runs that were never the same experiment. 0 = by_addr,
 # 1 = by_dmabuf.
-PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes regions_per_rank umem_binding"
+PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes regions_per_rank umem_binding gpudirect"
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
 params_sql="$(meta_py <<'PY'
