@@ -46,9 +46,12 @@ std::unordered_map<std::string, std::vector<CallbackType>>* RegisteredSymbols{nu
 // search and never concludes it. A name appearing here is a candidate; proving
 // it is called still takes an entry trace.
 //
-// Its own positive control is built in: symbols we DO hook print as `hooked`,
-// so an output with no `hooked` lines means the diagnostic never ran rather
-// than "nothing was resolved".
+// POSITIVE CONTROL: any line at all means the diagnostic ran. An earlier
+// version of this comment claimed the control was the presence of a `hooked`
+// line, which is wrong and would have been read as a broken instrument on its
+// first use — job 44367535 printed 24 UNHOOKED lines and zero hooked ones,
+// because the application resolved CUDA through dlsym and ibverbs by some other
+// route. "No hooked lines" is a finding, not a malfunction.
 static bool trace_dlsym_enabled() {
     static const bool on = [] {
         const char* v = std::getenv("PCOMM_TRACE_DLSYM");
