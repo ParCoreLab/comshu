@@ -35,6 +35,29 @@ namespace ibv {
 namespace rr = pcomm::providers::ibverbs::records;
 using pcomm::rec::InternDomain;
 
+// How many legacy ibv_reg_mr calls this thread is inside.
+//
+// rdma-core MAY implement the legacy symbol over ibv_reg_mr_iova2, in which case
+// our interposers see one application call twice — that is what case 01 measured
+// when both were hooked, and why only iova2 was hooked for a year. But the
+// routing is conditional: MN5 job 44368331 found UCX registering through the
+// legacy symbol with iova2 never entered, which is where 33 unmatched closes per
+// rank were coming from. Neither "it always routes" nor "it never routes" is
+// safe to compile in.
+//
+// So the nesting is observed instead. Only the outermost registration records,
+// which makes the legacy hook the recorder when routing happens and the only
+// hook when it does not — one row either way.
+//
+// THREAD-LOCAL, not global: NCCL and UCX register from several proxy threads at
+// once, and a shared counter would let one thread's outer call suppress
+// another's. This is the same per-thread discipline the flush path already
+// needs.
+static int& reg_mr_depth() noexcept {
+    static thread_local int depth = 0;
+    return depth;
+}
+
 // Stateless proxy over the C ABI rather than a reference into the engine's
 // Recorder — same reason as gpumem: no C++ object layout on the .so boundary.
 static pcomm::rec::Recorder<>& rec() {
@@ -402,6 +425,10 @@ Profiler::Profiler() {
                                              std::uint64_t, unsigned int access, auto...) {
         if (!mr)
             return;
+        // Suppressed when this call is rdma-core's own, made from inside the
+        // legacy ibv_reg_mr we are already recording. See kRegMrDepth.
+        if (reg_mr_depth() > 0)
+            return;
         rec().record(pcomm::core::Temporal::none(),
                      rr::IbMemRegion{{},
                                      {},
@@ -445,6 +472,48 @@ Profiler::Profiler() {
                                               {reinterpret_cast<std::uint64_t>(addr), length},
                                               pcomm::core::device_of(addr)});
     });
+
+    // reg_mr -> the legacy registration door, and the same entity. Identical
+    // body to iova2 above, because a capture must not be able to tell which
+    // entry point registered a region — that is an accident of how the caller
+    // was compiled, not a fact about the transfer.
+    //
+    // Hooked as of 2026-08-07. It was deliberately left unhooked because
+    // rdma-core implements it over ibv_reg_mr_iova2, so hooking both recorded
+    // every region twice (case 01: one region per rank became two identical
+    // rows). That routing turned out to be conditional: MN5 job 44368331 named
+    // UCX's mlx5 transport calling ibv_dereg_mr with no hooked registration
+    // anywhere, referencing ibv_reg_mr@IBVERBS_1.1, and no libibverbs.so.1
+    // appeared as a caller of iova2 in that run at all. Those were the 33
+    // unmatched closes entity_close_accounted had been reporting per rank.
+    //
+    // The double-count is now prevented by observing the nesting rather than by
+    // declining to hook: when the routing does happen, the legacy hook records
+    // and reg_mr_iova2 above suppresses itself. Which rdma-core build is
+    // underneath stops mattering — both behaviours produce exactly one row.
+    this->register_post<reg_mr_tag>(
+        [](ibv_mr* mr, ibv_pd* pd, void* addr, size_t length, int access, auto...) {
+            if (!mr)
+                return;
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbMemRegion{{},
+                                         {},
+                                         h(mr),
+                                         h(pd),
+                                         {reinterpret_cast<std::uint64_t>(addr), length},
+                                         mr->lkey,
+                                         mr->rkey,
+                                         static_cast<std::uint32_t>(access),
+                                         -1});
+            rec().record(rec().now_instant(),
+                         pcomm::core::records::MemObject{
+                             {},
+                             {},
+                             h(addr),
+                             pcomm::core::kNullHandle,
+                             {reinterpret_cast<std::uint64_t>(addr), length},
+                             pcomm::core::device_of(addr)});
+        });
 
     // create_qp -> queue-pair endpoint entity.
     this->register_post<create_qp_tag>([](ibv_qp* qp, ibv_pd* pd, ibv_qp_init_attr* a, auto...) {
@@ -726,10 +795,27 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
 
-// NB there is deliberately no ibv_reg_mr interposer: rdma-core implements it
-// over ibv_reg_mr_iova2, so hooking both records every registration twice.
-// symbol the ABI actually exports.
-// The single registration hook: every path funnels here. See ib_hooks.hpp.
+// The legacy registration door. The depth guard must wrap invoke_preload and
+// not just the real call: the post callback runs inside it, and rdma-core's
+// internal hop to iova2 (when it makes one) happens inside it too, so both must
+// see the same nonzero depth. See reg_mr_depth().
+// verbs.h defines ibv_reg_mr as a MACRO over a static inline that picks between
+// the legacy symbol and iova2 by inspecting the access flags. Without this undef
+// the definition below expands into that macro and does not compile — and the
+// macro is also why "hook ibv_reg_mr" was never as simple as adding a name.
+#undef ibv_reg_mr
+extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
+    trace_mr_caller("reg_mr", __builtin_return_address(0));
+    struct Depth {
+        Depth() noexcept { ++ibv::reg_mr_depth(); }
+        ~Depth() noexcept { --ibv::reg_mr_depth(); }
+    } guard;
+    return ibv::Profiler::invoke_preload<ibv::reg_mr_tag>(pd, addr, length, access);
+}
+
+// The iova2 door. Reached directly by callers whose access flags are not a
+// compile-time constant, and indirectly from the legacy symbol above on
+// rdma-core builds that route — where the depth guard makes it record nothing.
 extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint64_t iova,
                                     unsigned int access) {
     trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));

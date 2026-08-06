@@ -57,12 +57,24 @@ DEFINE_PRELOAD_HOOK(ibv, open_device, "ibv_open_device", ibv_context*, ibv_devic
 // lands on ours too. Case 01 went from one region per rank to two identical
 // rows — same mr, same base, same lkey.
 //
-// So only iova2 is hooked. Both application-visible paths reach it, which cases
-// 01 and 06 (legacy branch) and 08 (iova2 branch) all assert. If a future
-// rdma-core ever stops routing the legacy symbol through iova2, those cases go
-// red rather than quietly losing registrations.
+// That routing is CONDITIONAL, and reading it as universal cost this project a
+// long hunt. MN5 job 44368331 traced the CALLER of every registration door:
+// UCX's mlx5 transport (libuct_ib_mlx5.so.0) called ibv_dereg_mr and never any
+// hooked registration door, and it references ibv_reg_mr@IBVERBS_1.1 — the
+// legacy symbol. No libibverbs.so.1 appeared as a caller of iova2 in that run,
+// so in that process the legacy symbol did NOT route through it. Those closes
+// were the 33 unmatched rows entity_close_accounted had been reporting.
+//
+// So both are hooked, and the double-count is prevented directly instead of by
+// declining to hook: a thread-local depth guard (kRegMrDepth in the provider)
+// makes the LEGACY hook the recorder and suppresses the nested iova2 callback
+// when the routing does happen. Nesting is a fact observable at run time; which
+// rdma-core build you are on is not.
 DEFINE_PRELOAD_HOOK(ibv, reg_mr_iova2, "ibv_reg_mr_iova2", ibv_mr*, ibv_pd*, void*, size_t,
                     uint64_t, unsigned int);
+// The legacy registration symbol. Four arguments, not six: no iova (it is
+// implicitly addr) and access is a plain int.
+DEFINE_PRELOAD_HOOK(ibv, reg_mr, "ibv_reg_mr", ibv_mr*, ibv_pd*, void*, size_t, int);
 // The dmabuf registration door, and it was invisible until entity_close_accounted
 // found it: closes naming regions nothing created, ~47 of 290 per rank on case
 // 02 (MN5 44358674). NCCL calls it (nccl src/transport/net_ib/reg.cc:35) and so
