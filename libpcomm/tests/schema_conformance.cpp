@@ -236,9 +236,11 @@ int main() {
         c.payload.rkey = 6;
         c.payload.access = 7;
         c.payload.dmabuf_fd = -1;
+        c.payload.origin = static_cast<std::uint8_t>(ir::IbRegionOrigin::RegMr);
         fb::IbMemRegion f(
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x10), fb::TimePoint(1, 0x20), 0),
-            1, 2, fb::MemRange(0x3000, 0x4000), 5, 6, 7, -1);
+            1, 2, fb::MemRange(0x3000, 0x4000), 5, 6, 7, -1,
+            static_cast<uint8_t>(ir::IbRegionOrigin::RegMr));
         expect_identical("IbMemRegion", &c, &f, sizeof(c));
     }
     {

@@ -86,6 +86,21 @@ DEFINE_PRELOAD_HOOK(ibv, reg_mr, "ibv_reg_mr", ibv_mr*, ibv_pd*, void*, size_t, 
 // (verbs.h:2632), so a plain preload hook reaches it.
 DEFINE_PRELOAD_HOOK(ibv, reg_dmabuf_mr, "ibv_reg_dmabuf_mr", ibv_mr*, ibv_pd*, uint64_t, size_t,
                     uint64_t, int, int);
+// The two MEMORYLESS registration doors, and neither is a symbol. Both are
+// `static inline` over verbs_context function pointers (verbs.h:2807, 2830), so
+// no ELF reference names them, no dlsym resolves them, and every instrument that
+// answers questions about symbols reports nothing — the ibv_create_qp_ex shape
+// exactly, which cost case 08 a week.
+//
+// Found by following the mr rather than the symbol (MN5 job 44368870): 474
+// closes per run of regions nothing opened, all addr=NULL, in two populations —
+// 355 at 32 bytes from uct_ib_dereg_mr, 120 at 2048 from
+// uct_rc_mlx5_iface_common_dm_cleanup. DM is the NIC's own memory, so those
+// regions have no host address and `range.base` is 0 truthfully rather than for
+// want of resolving it. IbMemRegion.origin is what says which.
+DEFINE_OBJECT_OPS_HOOK(ibv, reg_dm_mr, "ibv_reg_dm_mr", ibv_mr*, ibv_pd*, ibv_dm*, uint64_t,
+                       size_t, unsigned int);
+DEFINE_OBJECT_OPS_HOOK(ibv, alloc_null_mr, "ibv_alloc_null_mr", ibv_mr*, ibv_pd*);
 DEFINE_PRELOAD_HOOK(ibv, dereg_mr, "ibv_dereg_mr", int, ibv_mr*);
 DEFINE_PRELOAD_HOOK(ibv, alloc_pd, "ibv_alloc_pd", ibv_pd*, ibv_context*);
 DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_init_attr*);

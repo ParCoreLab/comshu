@@ -38,7 +38,7 @@ inline constexpr std::uint16_t kStreamFormatVersion = 1;
 // collapsed, so prose edits do not churn it but any declaration change does.
 // tools/schema_check.py recomputes this and fails the build when it drifts —
 // keeping it correct is not left to whoever edits the schema remembering to.
-inline constexpr std::uint64_t kSchemaHash = 0x3CE8DBC7594398C9ull;
+inline constexpr std::uint64_t kSchemaHash = 0x854F3172681EA24Cull;
 
 // Layout is fixed by pcomm.fbs. The padding is explicit and zero-initialised
 // for the same reason core/time.hpp spells its padding out: an implicit hole

@@ -219,16 +219,34 @@ template<> struct Table<Attribution> {
     }
 };
 
+// Names for IbMemRegion.origin. A region's door decides whether a missing
+// address is a defect or a fact about the memory: DM lives on the NIC and a
+// null MR has no memory at all, so neither can ever have a host address.
+static const char* ib_region_origin_name(std::uint8_t raw) {
+    switch (static_cast<ibr::IbRegionOrigin>(raw)) {
+    case ibr::IbRegionOrigin::RegMr: return "reg_mr";
+    case ibr::IbRegionOrigin::Dmabuf: return "dmabuf";
+    case ibr::IbRegionOrigin::DeviceMemory: return "device_memory";
+    case ibr::IbRegionOrigin::NullMr: return "null_mr";
+    case ibr::IbRegionOrigin::Unknown: break;
+    }
+    return "unknown";
+}
+
 template<> struct Table<ibr::IbMemRegion> {
     static constexpr const char* name = "ib_mem_region";
-    static constexpr const char* cols = "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd";
+    static constexpr const char* cols =
+        "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd,origin";
     static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s,
                                      const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d",
-                                      (unsigned long long)s.temporal.a.ticks, s.payload.mr, s.payload.pd,
-                                      (unsigned long long)s.payload.range.base,
-                                      (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
-                                      s.payload.access, s.payload.dmabuf_fd);
+        // origin as a NAME, not the raw enumerator: an assertion that has to
+        // spell `origin = 3` encodes a number nobody can check against the
+        // header, which is how umem_binding earned its own string column.
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d,%s",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.mr, s.payload.pd,
+                     (unsigned long long)s.payload.range.base,
+                     (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
+                     s.payload.access, s.payload.dmabuf_fd, ib_region_origin_name(s.payload.origin));
     }
 };
 

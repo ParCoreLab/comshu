@@ -11,7 +11,7 @@ class IbMemRegion(object):
 
     @classmethod
     def SizeOf(cls):
-        return 88
+        return 96
 
     # IbMemRegion
     def Init(self, buf, pos):
@@ -39,9 +39,13 @@ class IbMemRegion(object):
     def Access(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # IbMemRegion
     def DmabufFd(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    # IbMemRegion
+    def Origin(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
 
-def CreateIbMemRegion(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, mr, pd, range_base, range_size, lkey, rkey, access, dmabufFd):
-    builder.Prep(8, 88)
+def CreateIbMemRegion(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, mr, pd, range_base, range_size, lkey, rkey, access, dmabufFd, origin):
+    builder.Prep(8, 96)
+    builder.Pad(7)
+    builder.PrependUint8(origin)
     builder.PrependInt32(dmabufFd)
     builder.PrependUint32(access)
     builder.PrependUint32(rkey)

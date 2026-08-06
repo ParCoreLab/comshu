@@ -19,6 +19,15 @@ using core::MemRange;
 using core::RecordKind;
 
 // ENTITY — a registered memory region (ibv_reg_mr), lifetime [reg, dereg).
+// Which entry point produced a region. Values are pinned: they go on disk.
+enum class IbRegionOrigin : std::uint8_t {
+    Unknown = 0,
+    RegMr = 1,        // ibv_reg_mr / ibv_reg_mr_iova2 — has a host address
+    Dmabuf = 2,       // ibv_reg_dmabuf_mr — address recoverable only sometimes
+    DeviceMemory = 3, // ibv_reg_dm_mr — on-NIC memory, NO host address exists
+    NullMr = 4,       // ibv_alloc_null_mr — no memory at all, by definition
+};
+
 PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
     Handle        mr;     // interned ibv_mr*
     Handle        pd;     // interned ibv_pd*
@@ -34,6 +43,23 @@ PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
     // (gin_host_gdaki.cc:131). registration_has_object exempts a row with no
     // resolvable address rather than us inventing one.
     std::int32_t dmabuf_fd;
+    // WHICH DOOR registered this region. Not decoration: it is what lets an
+    // assertion tell "we could not resolve this address" from "this region has
+    // no host address by construction", which base=0 alone cannot say.
+    //
+    // Earned by measurement. 474 closes per run named regions nothing opened,
+    // all with addr=NULL — 355 at 32 bytes from uct_ib_dereg_mr and 120 at 2048
+    // from uct_rc_mlx5_iface_common_dm_cleanup (MN5 job 44368870). DM is
+    // DEVICE memory: it lives on the NIC, so a host address does not exist for
+    // it and never will. Neither door appears in any library's ELF because both
+    // ibv_reg_dm_mr and ibv_alloc_null_mr are `static inline` over
+    // verbs_context function pointers (verbs.h:2807, 2830) — the same shape as
+    // ibv_create_qp_ex, which cost case 08 a week for the same reason.
+    // Stored as the underlying uint8, like Mlx5Umem::binding: a record field's
+    // type is part of the on-disk format, and the schema checker only maps
+    // scalars and shared vocabulary — a provider-local enum is neither. The
+    // enum above is still what call sites use; pcomm-read renders the name.
+    std::uint8_t origin;
 };
 
 // ENTITY — a queue-pair endpoint (ibv_create_qp), lifetime [create, destroy).

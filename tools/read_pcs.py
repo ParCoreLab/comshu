@@ -178,7 +178,7 @@ def golden(case_dir, name):
 
 def main():
     capture = Path(sys.argv[1]) if len(sys.argv) > 1 else \
-        ROOT / "tests/data/ib_pingpong-44025406"
+        ROOT / "tests/data/ib_pingpong-44368973"
     case_dir = ROOT / "tests/hpc/cases/01_ib_pingpong"
     if not capture.exists():
         raise SystemExit(f"no capture at {capture}")

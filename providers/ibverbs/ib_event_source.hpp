@@ -20,11 +20,11 @@ template<typename Derived>
 class IbverbsEventSource
     : public pcomm::hook::CompositeHookManager<
           Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, poll_cq_tag,
-          create_qp_ex_tag, open_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag,
+          create_qp_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag,
           create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag> {
     using Base = pcomm::hook::CompositeHookManager<
         Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, poll_cq_tag,
-        create_qp_ex_tag, open_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag,
+        create_qp_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag,
         create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag>;
 
 public:
@@ -39,7 +39,17 @@ public:
         if constexpr (std::is_same_v<Tag, post_send_tag>) {
             return ctx->ops.post_send;
         } else if constexpr (std::is_same_v<Tag, create_qp_ex_tag>) {
-            return create_qp_ex_slot(ctx);
+            return vctx_slot(ctx, &verbs_context::create_qp_ex,
+                             offsetof(verbs_context, create_qp_ex), "create_qp_ex",
+                             m_create_qp_ex_sink, m_create_qp_ex_warned);
+        } else if constexpr (std::is_same_v<Tag, reg_dm_mr_tag>) {
+            return vctx_slot(ctx, &verbs_context::reg_dm_mr,
+                             offsetof(verbs_context, reg_dm_mr), "reg_dm_mr", m_reg_dm_mr_sink,
+                             m_reg_dm_mr_warned);
+        } else if constexpr (std::is_same_v<Tag, alloc_null_mr_tag>) {
+            return vctx_slot(ctx, &verbs_context::alloc_null_mr,
+                             offsetof(verbs_context, alloc_null_mr), "alloc_null_mr",
+                             m_alloc_null_mr_sink, m_alloc_null_mr_warned);
         } else {  // poll_cq_tag
             return ctx->ops.poll_cq;
         }
@@ -50,6 +60,8 @@ protected:
 
 private:
     using CreateQpExFn = ibv_qp* (*)(ibv_context*, ibv_qp_init_attr_ex*);
+    using RegDmMrFn = ibv_mr* (*)(ibv_pd*, ibv_dm*, uint64_t, size_t, unsigned int);
+    using AllocNullMrFn = ibv_mr* (*)(ibv_pd*);
 
     // Reproduces the two guards verbs_get_ctx_op applies before calling this
     // slot (verbs.h:2230), because patching it when either fails is worse than
@@ -69,27 +81,34 @@ private:
     // When either guard fails the tag is pointed at an inert sink, so install()
     // patches a slot nothing dispatches through, and the reason is printed once
     // rather than left as an empty table.
-    CreateQpExFn& create_qp_ex_slot(ibv_context* ctx) const noexcept {
+    // Generalised from create_qp_ex_slot when reg_dm_mr and alloc_null_mr turned
+    // out to be the same shape of door. Every verbs_context slot needs the same
+    // two guards, and getting either wrong is worse than not capturing.
+    template<typename Fn>
+    Fn& vctx_slot(ibv_context* ctx, Fn verbs_context::*slot, std::size_t slot_offset,
+                  const char* what, Fn& sink, bool& warned) const noexcept {
         verbs_context* vctx = verbs_get_ctx(ctx);
-        const bool     usable = vctx != nullptr &&
-                            vctx->sz >= sizeof(*vctx) - offsetof(verbs_context, create_qp_ex) &&
-                            vctx->create_qp_ex != nullptr;
-
+        const bool     usable = vctx != nullptr && vctx->sz >= sizeof(*vctx) - slot_offset &&
+                            (vctx->*slot) != nullptr;
         if (!usable) {
-            static bool warned = false;
             if (!warned) {
                 warned = true;
                 std::fprintf(stderr,
-                             "[pcomm] ibverbs: no usable verbs_context::create_qp_ex on this "
-                             "device; extended queue-pair creation will not be recorded "
-                             "(ibv_create_qp is still hooked)\n");
+                             "[pcomm] ibverbs: no usable verbs_context::%s on this device; "
+                             "calls through it will not be recorded\n",
+                             what);
             }
-            return m_create_qp_ex_sink;
+            return sink;
         }
-        return vctx->create_qp_ex;
+        return vctx->*slot;
     }
 
-    mutable CreateQpExFn m_create_qp_ex_sink{nullptr};
+    mutable CreateQpExFn   m_create_qp_ex_sink{nullptr};
+    mutable RegDmMrFn      m_reg_dm_mr_sink{nullptr};
+    mutable AllocNullMrFn  m_alloc_null_mr_sink{nullptr};
+    mutable bool           m_create_qp_ex_warned{false};
+    mutable bool           m_reg_dm_mr_warned{false};
+    mutable bool           m_alloc_null_mr_warned{false};
 };
 
 // The provider singleton; template instantiated once in ibverbs_provider.cpp.

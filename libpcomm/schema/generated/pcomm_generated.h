@@ -857,6 +857,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
   uint32_t rkey_;
   uint32_t access_;
   int32_t dmabuf_fd_;
+  uint8_t origin_;
+  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
 
  public:
   IbMemRegion()
@@ -867,9 +869,16 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
         lkey_(0),
         rkey_(0),
         access_(0),
-        dmabuf_fd_(0) {
+        dmabuf_fd_(0),
+        origin_(0),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
   }
-  IbMemRegion(const pcomm::fb::Temporal &_temporal, uint32_t _mr, uint32_t _pd, const pcomm::fb::MemRange &_range, uint32_t _lkey, uint32_t _rkey, uint32_t _access, int32_t _dmabuf_fd)
+  IbMemRegion(const pcomm::fb::Temporal &_temporal, uint32_t _mr, uint32_t _pd, const pcomm::fb::MemRange &_range, uint32_t _lkey, uint32_t _rkey, uint32_t _access, int32_t _dmabuf_fd, uint8_t _origin)
       : temporal_(_temporal),
         mr_(::flatbuffers::EndianScalar(_mr)),
         pd_(::flatbuffers::EndianScalar(_pd)),
@@ -877,7 +886,14 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
         lkey_(::flatbuffers::EndianScalar(_lkey)),
         rkey_(::flatbuffers::EndianScalar(_rkey)),
         access_(::flatbuffers::EndianScalar(_access)),
-        dmabuf_fd_(::flatbuffers::EndianScalar(_dmabuf_fd)) {
+        dmabuf_fd_(::flatbuffers::EndianScalar(_dmabuf_fd)),
+        origin_(::flatbuffers::EndianScalar(_origin)),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -903,8 +919,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
   int32_t dmabuf_fd() const {
     return ::flatbuffers::EndianScalar(dmabuf_fd_);
   }
+  uint8_t origin() const {
+    return ::flatbuffers::EndianScalar(origin_);
+  }
 };
-FLATBUFFERS_STRUCT_END(IbMemRegion, 88);
+FLATBUFFERS_STRUCT_END(IbMemRegion, 96);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbQueuePair FLATBUFFERS_FINAL_CLASS {
  private:

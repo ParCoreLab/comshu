@@ -438,7 +438,8 @@ Profiler::Profiler() {
                                      mr->lkey,
                                      mr->rkey,
                                      static_cast<std::uint32_t>(access),
-                                     -1});
+                                     -1,
+                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
 
         // ...and the buffer it registered, attributed to its owning device.
         //
@@ -504,7 +505,8 @@ Profiler::Profiler() {
                                          mr->lkey,
                                          mr->rkey,
                                          static_cast<std::uint32_t>(access),
-                                         -1});
+                                         -1,
+                                         static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
             rec().record(rec().now_instant(),
                          pcomm::core::records::MemObject{
                              {},
@@ -514,6 +516,53 @@ Profiler::Profiler() {
                              {reinterpret_cast<std::uint64_t>(addr), length},
                              pcomm::core::device_of(addr)});
         });
+
+    // reg_dm_mr / alloc_null_mr -> the two MEMORYLESS registration doors.
+    //
+    // `range.base` is 0 here and that is the truth, not a failure to resolve.
+    // Device memory lives on the NIC and a null MR has no memory at all, so no
+    // host address exists for either — which is precisely why they carry an
+    // `origin` and why registration_has_object exempts them by it rather than by
+    // base=0, a condition an ordinary broken registration also satisfies.
+    //
+    // No MemObject for the same reason the dmabuf path withholds one: an object
+    // at base 0 is a fiction that range containment then resolves real addresses
+    // against.
+    //
+    // `length` comes from the returned mr, not the argument, so alloc_null_mr —
+    // which has no length argument — is described by the same code.
+    this->register_post<reg_dm_mr_tag>(
+        [](ibv_mr* mr, ibv_pd* pd, ibv_dm*, std::uint64_t, std::size_t, unsigned int access,
+           auto...) {
+            if (!mr)
+                return;
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbMemRegion{{},
+                                         {},
+                                         h(mr),
+                                         h(pd),
+                                         {0, mr->length},
+                                         mr->lkey,
+                                         mr->rkey,
+                                         static_cast<std::uint32_t>(access),
+                                         -1,
+                                         static_cast<std::uint8_t>(rr::IbRegionOrigin::DeviceMemory)});
+        });
+    this->register_post<alloc_null_mr_tag>([](ibv_mr* mr, ibv_pd* pd, auto...) {
+        if (!mr)
+            return;
+        rec().record(pcomm::core::Temporal::none(),
+                     rr::IbMemRegion{{},
+                                     {},
+                                     h(mr),
+                                     h(pd),
+                                     {0, mr->length},
+                                     mr->lkey,
+                                     mr->rkey,
+                                     0,
+                                     -1,
+                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::NullMr)});
+    });
 
     // create_qp -> queue-pair endpoint entity.
     this->register_post<create_qp_tag>([](ibv_qp* qp, ibv_pd* pd, ibv_qp_init_attr* a, auto...) {
@@ -589,7 +638,8 @@ Profiler::Profiler() {
                                      mr->lkey,
                                      mr->rkey,
                                      static_cast<std::uint32_t>(access),
-                                     fd});
+                                     fd,
+                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::Dmabuf)});
 
         if (base)
             rec().record(rec().now_instant(),

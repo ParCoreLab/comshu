@@ -17,7 +17,20 @@
 --
 -- Names no rank, no address and no count.
 --
--- ONE EXEMPTION, named explicitly rather than folded into the clause below: a
+-- TWO EXEMPTIONS, both named explicitly rather than folded into the clause
+-- below, and both keyed on `origin` — which door registered the region — rather
+-- than on base=0, which an ordinary broken registration also satisfies.
+--
+-- SECOND EXEMPTION: a region with no host address BY CONSTRUCTION.
+-- origin='device_memory' is ibv_reg_dm_mr, where the memory lives on the NIC,
+-- and origin='null_mr' is ibv_alloc_null_mr, which has no memory at all. For
+-- these, base=0 is the truth and not a failure to resolve, so requiring a
+-- mem_object would require inventing one. Found by MN5 job 44368870: 474 closes
+-- per run named regions nothing opened, all addr=NULL, because both doors are
+-- `static inline` over verbs_context function pointers and no symbol tool could
+-- ever name them.
+--
+-- FIRST EXEMPTION, named explicitly rather than folded into the clause below: a
 -- dmabuf-registered region (dmabuf_fd >= 0) whose address could not be
 -- recovered. Such a region has no host address of its own — whether one exists
 -- depends on the caller, and NCCL demonstrates both cases in one codebase,
@@ -31,6 +44,7 @@
 SELECT 'registered region with no mem_object' AS problem, r.rank, r.base, r.size, r.lkey
 FROM ib_mem_region r
 WHERE NOT (r.base = '0x0' AND CAST(r.dmabuf_fd AS INTEGER) >= 0)
+  AND r.origin NOT IN ('device_memory', 'null_mr')
   AND NOT EXISTS (
   SELECT 1 FROM mem_object m
   WHERE m.rank = r.rank AND m.base = r.base AND m.size = r.size

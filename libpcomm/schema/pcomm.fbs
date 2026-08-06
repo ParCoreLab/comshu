@@ -216,6 +216,7 @@ struct IbMemRegion {
   rkey:uint32;
   access:uint32;
   dmabuf_fd:int32;     // -1 unless registered via ibv_reg_dmabuf_mr
+  origin:uint8;        // IbRegionOrigin: which door registered it
 }
 
 // type 102, Entity. A queue-pair endpoint, lifetime [create, destroy).
