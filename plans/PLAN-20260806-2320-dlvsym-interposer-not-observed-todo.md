@@ -89,6 +89,52 @@ this probe already mis-stated its own control once.
 - Whatever the answer, it likely affects `dlsym` too — the two share
   `on_symbol_load` — so re-verify both boards, not just the failing case.
 
+## RESOLVED (2026-08-06, jobs 44368260 + 44368331)
+
+**Our `dlvsym` works.** Job 44368260: it is entered on all 8 ranks (first symbol
+`pipe2`), and **never once with an `ibv_*` name** — and neither is `dlsym`.
+Nothing in that process resolves ibverbs dynamically at all. So the premise that
+started this hunt was wrong: NCCL's `dlvsym`-based `ibvsymbols.cc` is not the
+path being taken here, and the sixth hypothesis would have been wrong too.
+
+The question was never "which symbol". It was **"which caller"**, which no symbol
+tool and no resolution trace can answer. `PCOMM_TRACE_MR_CALLERS=1` (dladdr on
+`__builtin_return_address(0)` in the three MR interposers) answered it in one job:
+
+| door | callers |
+|---|---|
+| `reg_mr_iova2` | `libnccl-net.so`, `libuct_ib.so.0`, `hmca_mcast_vmc.so` |
+| `reg_dmabuf_mr` | `libnccl-net.so`, `libuct_ib.so.0` |
+| `dereg_mr` | the above **plus `libuct_ib_mlx5.so.0`** |
+
+**`libuct_ib_mlx5.so.0` is DEREG-ONLY.** It is UCX's mlx5 transport, and it
+references `ibv_reg_mr@IBVERBS_1.1` — the legacy symbol
+`ibverbs_provider.cpp` deliberately does **not** interpose — plus
+`mlx5dv_devx_umem_reg`, which case 02 cannot see because it runs
+`providers: ['ib']`.
+
+Two corrections to things this project believed:
+
+1. **The traffic was never pure NCCL.** Case 02 has been read as NCCL throughout;
+   NCCL reaches IB through `libnccl-net.so` (the HPCX rdma-sharp plugin, not
+   libnccl itself), and **UCX and hcoll register memory in the same process**.
+   The 33 unmatched closes never had to come from the library being watched.
+2. **Legacy `ibv_reg_mr` does not always route through `ibv_reg_mr_iova2`.** The
+   no-legacy-hook decision rests on a case-01 measurement that it does. No
+   `libibverbs.so.1` appears as a caller of `reg_mr_iova2` in this run, so here
+   it did not. The comment at `ib_hooks.hpp:54` states the double-count as
+   general; it is conditional, and the condition is unknown.
+
+### What is still open
+
+Hooking legacy `ibv_reg_mr` is the fix, but not unconditionally: where the
+routing *does* happen it double-counts, which is what cases 01/06 measured. A
+thread-local depth flag makes it exact — record in the legacy hook only when the
+inner `iova2` hook did not fire for the same call — and costs nothing.
+
+Do that before assuming either behaviour is universal. And re-run case 06/07 (a
+`devx` board) to see whether `mlx5dv_devx_umem_reg` is a second dereg-only door.
+
 ## Why this matters beyond the 33 closes
 
 If our `dlvsym` is not interposing, then **every symbol any application resolves
