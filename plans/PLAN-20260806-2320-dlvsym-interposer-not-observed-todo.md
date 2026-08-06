@@ -157,6 +157,41 @@ assertion.
 references. Case 02 cannot see it — `providers: ['ib']` means that interposer is
 not even loaded — so this needs a devx-enabled run, not another case-02 job.
 
+### Round 3 (2026-08-07): the doors are named, hooked, and not yet firing
+
+Following the individual mr instead of the library (job 44368870) split the
+unmatched closes into two clean populations, both `addr=NULL`:
+
+| n | size | closed by |
+|---|---|---|
+| 355 | 32 B | `uct_ib_dereg_mr` (libuct_ib.so.0) |
+| 120 | 2048 B | `uct_rc_mlx5_iface_common_dm_cleanup` (libuct_ib_mlx5.so.0) |
+
+`DM` is **device memory** — the NIC's own. `ibv_reg_dm_mr` and
+`ibv_alloc_null_mr` are `static inline` over **`verbs_context` function
+pointers** (verbs.h:2807, 2830), so no ELF reference names them and no `dlsym`
+resolves them. That is the `ibv_create_qp_ex` shape exactly. Every instrument
+that answers questions about symbols was always going to report nothing here,
+which is why six hypotheses died before one that followed the object.
+
+**Shipped:** both doors hooked as object-ops on their `verbs_context` slots
+(generalising `create_qp_ex_slot`), `IbMemRegion.origin` through all five schema
+artifacts, `registration_has_object` exempting memoryless regions by origin
+rather than by `base=0`. Board is GREEN: 7 PASS, 4 SKIP, and the fixture capture
+was refreshed because the stride change broke it loudly, as designed.
+
+**Not yet working, and this is the open item.** Case 02 records **zero**
+`device_memory` or `null_mr` regions — origins are 974 `reg_mr` + 40 `dmabuf` —
+and no "no usable verbs_context" warning was printed either. So the slots were
+considered usable and the trampolines were never dispatched through, on the same
+workload where the probe sees 474 memoryless deregs. Unmatched closes are
+unchanged (283 → 309 on case 02, noise).
+
+Next measurement, and NOT another hypothesis: `PCOMM_TRACE_HOOKS=1` on the probe
+says directly whether the two new trampolines are entered. Entered-and-recording
+-nothing and never-entered are different bugs, and the entry trace already
+exists for exactly this question — it is what settled case 08.
+
 ### What is still open
 
 Hooking legacy `ibv_reg_mr` is the fix, but not unconditionally: where the
