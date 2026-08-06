@@ -266,6 +266,46 @@ Also worth interposing `mlx5dv_open_device` in the mlx5dv provider afterwards �
 it makes the common case instrument at open time rather than first use — but as
 an optimisation on top of the general fix, not instead of it.
 
+### Round 6 (2026-08-07): the fix works, and the board is RED because it is nondeterministic
+
+`ensure_installed` landed. It works, measurably:
+
+- `ibv_reg_dm_mr` is **entered 219 times** in a run where it was entered zero
+  (job 44370021), so the DM door now dispatches.
+- Case 02 gained real traffic that was previously invisible: `2240 rdma_write`
+  + `1120 rdma_write_imm` on ranks 2 and 6. The golden diff is **purely
+  additive** — no existing row changed — so this is recovered capture, not
+  double counting.
+
+**But only ranks 2 and 6 gained it**, and all 8 run identical code.
+`symmetric_participation` (case 02) and `ib_setup_symmetric` (case 06) both fire.
+That is the floor's weakness, measured rather than argued: installation happens
+at whichever door touches a context first, and that ordering varies per rank, so
+the capture is now **nondeterministic across ranks**.
+
+The assertions caught it immediately, which is the system working — an
+asymmetry assertion exists precisely because identical ranks must produce
+comparable captures.
+
+**Board is RED: 02, 06, 07 fail.** 07's are golden diffs from the same cause.
+
+**Do not re-pin the goldens.** They would bake the nondeterminism in, and the
+next run would move again. The goldens are not wrong; the capture is unstable.
+
+### What has to happen next
+
+Installation must be deterministic — every context instrumented before any
+traffic, not on first sight of one. That means interposing the OPENING doors
+after all: `mlx5dv_open_device` (referenced by libuct_ib_mlx5) in the mlx5dv
+provider, and auditing what else opens a context. `ensure_installed` stays as the
+backstop for doors nobody has enumerated, because it is what turns "invisible"
+into "late", but it cannot be the primary mechanism.
+
+Open question to settle first: whether to hold this on a branch until the
+deterministic half lands, or keep it on main with the three assertions marked
+`expect_fail` carrying this evidence. Leaving main red and unmarked is the one
+option that is not acceptable.
+
 ### What is still open
 
 Hooking legacy `ibv_reg_mr` is the fix, but not unconditionally: where the
