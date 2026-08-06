@@ -250,8 +250,25 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
     // workload that made no connections.
     UmemInfo   wq{};
     const bool known = lookup_umem(wq_umem_id, &wq);
-    const bool gpu_driven =
-        known && (wq.device != kUnknownDevice || wq.binding == UmemBinding::ByDmabuf);
+
+    // GPU residency, and nothing else. This used to read
+    //
+    //     known && (wq.device != kUnknownDevice || wq.binding == ByDmabuf)
+    //
+    // because under dmabuf there was no address to ask CUDA about, so "it
+    // arrived as a dmabuf" stood in for "it is on a GPU". That made case 09's
+    // ibgda_engaged gate circular: the gate whose comment claims it proves the
+    // GPU can write the send queue was in fact asserting the binding, which
+    // umem_binding_as_configured already asserts separately. No by_dmabuf case
+    // could ever have falsified it.
+    //
+    // dmabuf umems now carry a real device ordinal, recovered from the export
+    // call, so the fallback is no longer load-bearing and is gone. The cost is
+    // deliberate: if the export is not observed, this reports false rather than
+    // true, and ibgda_engaged fails. That is the honest answer — we could not
+    // establish GPU residency — and a red board saying so is worth more than a
+    // green one that assumed it.
+    const bool gpu_driven = known && wq.device != kUnknownDevice;
 
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5DevxQp{{},
