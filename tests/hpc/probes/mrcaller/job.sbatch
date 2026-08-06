@@ -85,5 +85,20 @@ awk '/pcomm-mrcaller/ {door=$2; who=$4; if (door=="dereg_mr") d[who]=1; else r[w
           if (n==0) print "  (none — every deregistering library also registers through a hooked door)"}' \
   "$OUT/run.log"
 
+# The narrowed question. The per-door table above cannot tell "registered by a
+# different library" from "registered through a door we do not hook"; following
+# the individual mr can, and job 44368667 showed why that distinction matters —
+# libuct_ib_mlx5 looked like the missing door and is very likely just closing
+# what libuct_ib opened.
+echo "=== UNMATCHED: closes of regions no hooked door opened ==="
+printf 'unmatched lines: %s\n' "$(grep -c 'pcomm-unmatched' "$OUT/run.log")"
+grep -h 'pcomm-unmatched' "$OUT/run.log" | awk '{print $NF}' | sort | uniq -c | sort -rn
+
+echo "=== their sizes — a 1GB region is a heap, a 4KB one is a control buffer ==="
+grep -h 'pcomm-unmatched' "$OUT/run.log" | grep -o 'len=[0-9]*' | sort -n -t= -k2 | uniq -c
+
+echo "=== first few in full ==="
+grep -h 'pcomm-unmatched' "$OUT/run.log" | head -10
+
 echo "=== dlsym/dlvsym entry, for continuity with job 44368260 ==="
 grep -h 'pcomm-entry' "$OUT/run.log" | grep -v 'first entry' | sort -u

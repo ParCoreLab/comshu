@@ -766,12 +766,16 @@ extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
 //
 // Must be called from the interposer itself: __builtin_return_address(0) means
 // the caller of the frame it appears in, so in a helper it names this file.
-static void trace_mr_caller(const char* door, void* ret_addr) {
+static bool trace_mr_callers_enabled() {
     static const bool on = [] {
         const char* v = std::getenv("PCOMM_TRACE_MR_CALLERS");
         return v && *v && std::strcmp(v, "0") != 0;
     }();
-    if (!on)
+    return on;
+}
+
+static void trace_mr_caller(const char* door, void* ret_addr) {
+    if (!trace_mr_callers_enabled())
         return;
     Dl_info info{};
     const char* who = (dladdr(ret_addr, &info) && info.dli_fname) ? info.dli_fname : "?";
@@ -784,14 +788,63 @@ static void trace_mr_caller(const char* door, void* ret_addr) {
     std::fflush(stderr);
 }
 
+// The same diagnostic, narrowed from "who calls this door" to "who closes a
+// region we never saw opened" — which is the actual question, and one the
+// per-door caller table above could not answer.
+//
+// That table showed libuct_ib_mlx5.so.0 calling only dereg_mr, and I read it as
+// naming the missing door. It does not: that library also references
+// ibv_reg_mr_iova2 and calls neither reg door, so the MRs it deregisters were
+// very likely registered by libuct_ib.so.0, which does register through a hooked
+// door. A per-library summary cannot distinguish "registered elsewhere" from
+// "registered through a door we do not hook"; only following the individual mr
+// can.
+//
+// So every registration door records its ibv_mr* here, and dereg reports the
+// ones that are absent, with the caller AND the buffer. Size matters: a 1 GB
+// unmatched region is a symmetric heap and a 4 KB one is a control buffer, and
+// they imply different missing doors.
+//
+// Deliberately not the capture's own bookkeeping — this set is diagnostic-only
+// and never consulted by a record path, so it cannot change what is captured.
+static std::mutex             g_known_mr_mutex;
+static std::set<const void*>* g_known_mrs = nullptr;  // leaked: outlives atexit
+
+static void remember_mr(const ibv_mr* mr) {
+    if (!mr || !trace_mr_callers_enabled())
+        return;
+    std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+    if (!g_known_mrs)
+        g_known_mrs = new std::set<const void*>();
+    g_known_mrs->insert(mr);
+}
+
+static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
+    if (!mr || !trace_mr_callers_enabled())
+        return;
+    {
+        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        if (g_known_mrs && g_known_mrs->count(mr))
+            return;  // opened through a door we hook — nothing to report
+    }
+    Dl_info info{};
+    const char* who = (dladdr(ret_addr, &info) && info.dli_fname) ? info.dli_fname : "?";
+    std::fprintf(stderr, "[pcomm-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u <- %s\n",
+                 static_cast<const void*>(mr), mr->addr, mr->length, mr->lkey, who);
+    std::fflush(stderr);
+}
+
 extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
                                      int fd, int access) {
     trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
-    return ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
-                                                                 access);
+    auto* mr = ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
+                                                                     access);
+    remember_mr(mr);
+    return mr;
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     trace_mr_caller("dereg_mr", __builtin_return_address(0));
+    trace_unmatched_dereg(mr, __builtin_return_address(0));
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
 
@@ -810,7 +863,9 @@ extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access)
         Depth() noexcept { ++ibv::reg_mr_depth(); }
         ~Depth() noexcept { --ibv::reg_mr_depth(); }
     } guard;
-    return ibv::Profiler::invoke_preload<ibv::reg_mr_tag>(pd, addr, length, access);
+    auto* mr = ibv::Profiler::invoke_preload<ibv::reg_mr_tag>(pd, addr, length, access);
+    remember_mr(mr);
+    return mr;
 }
 
 // The iova2 door. Reached directly by callers whose access flags are not a
@@ -819,7 +874,9 @@ extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access)
 extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint64_t iova,
                                     unsigned int access) {
     trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));
-    return ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);
+    auto* mr = ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);
+    remember_mr(mr);
+    return mr;
 }
 
 // --- provider registration + lifecycle ---------------------------------------
