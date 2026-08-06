@@ -32,6 +32,7 @@
 
 #include "pcomm/core/ids.hpp"
 #include "pcomm/core/mem_attr.hpp"
+#include "pcomm/core/records.hpp"
 #include "pcomm/engine_abi.h"
 #include "pcomm/provider/provider.hpp"
 #include "pcomm/rec/intern_table.hpp"
@@ -124,6 +125,29 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
                               info.device,
                               static_cast<std::uint8_t>(info.binding),
                               static_cast<std::uint8_t>(entry)});
+
+    // ...and the buffer itself, in the shared vocabulary, for the by_addr
+    // binding ONLY.
+    //
+    // Under by_dmabuf there is nothing here to describe: the umem carries
+    // addr = 0x0 and a file descriptor, so a MemObject would have to invent a
+    // range. Emitting one with base 0 and this size would put a fiction in the
+    // capture that range containment would then resolve real addresses against
+    // — worse than the missing row, and unrecoverable afterwards. So: nothing.
+    //
+    // This is the same gap things-to-circle-back-to.md records as "gpu_driven
+    // under dmabuf is still a heuristic", and it closes the same way, via
+    // fd -> GPU VA (cuMemGetHandleForAddressRange through smart_dlsym). That is
+    // tracked in the IBGDA plan, not here.
+    //
+    // Interned on the base address, in the same domain ibverbs and gpumem use,
+    // so a buffer seen by two providers mints one id rather than two rows
+    // nobody can tell apart.
+    if (!by_dmabuf)
+        rec().record(
+            rec().now_instant(),
+            pcomm::core::records::MemObject{
+                {}, {}, h(addr), pcomm::core::kNullHandle, {info.addr, info.size}, info.device});
 }
 
 // Our own port's LID, so (src_lid, qp_num) names this queue pair uniquely.
