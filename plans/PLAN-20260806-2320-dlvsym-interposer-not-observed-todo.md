@@ -125,6 +125,38 @@ Two corrections to things this project believed:
    it did not. The comment at `ib_hooks.hpp:54` states the double-count as
    general; it is conditional, and the condition is unknown.
 
+### Round 2 (2026-08-07): the legacy hook is correct and changed nothing
+
+`ibv_reg_mr` is now hooked, with a thread-local depth guard so the nested
+`iova2` call cannot double-count. It is the right change and it did **not**
+close the gap:
+
+- **Case 02 is byte-identical across it** — 1013 regions, 2333 closes, the same
+  11 reported rows. On this rdma-core the legacy symbol *does* route through
+  `iova2`, so those registrations were already captured; the guard just moved
+  which hook records them.
+- **Job 44368667**: legacy `reg_mr` is called only by hcoll
+  (`hmca_mcast_vmc.so`). **`libuct_ib_mlx5.so.0` is still dereg-only** — it
+  references `ibv_reg_mr@IBVERBS_1.1` but does not call it here. Referencing a
+  symbol is not calling it, which is the case-08 lesson arriving for the third
+  time, now on the ELF side.
+
+So the hook buys robustness against an rdma-core that does not route (UCX's
+reference proves that path exists) and buys nothing on this board. Keeping it,
+labelled as such, rather than pretending it was the fix.
+
+**A bookkeeping error, caught by the same assertion.** Case 07's `expect_fail`
+marker was dropped in c5fda14 because job 44363299's board read `8 PASS + 3
+SKIP` — but 07 was PASS *because* the marker made the failure expected; that
+job's log says `[xfail] entity_close_accounted` outright. Re-running today's SQL
+against that same capture reproduces the failure, which is how this surfaced.
+The marker is restored. A green board with an xfail on it is not a green
+assertion.
+
+**Next candidate:** `mlx5dv_devx_umem_reg`, which `libuct_ib_mlx5` also
+references. Case 02 cannot see it — `providers: ['ib']` means that interposer is
+not even loaded — so this needs a devx-enabled run, not another case-02 job.
+
 ### What is still open
 
 Hooking legacy `ibv_reg_mr` is the fix, but not unconditionally: where the
