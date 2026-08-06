@@ -158,3 +158,55 @@ Resolution is not invocation — that is exactly what cost case 08 a week — so
 this narrows the set rather than naming the door. But going from "some
 registration path" to "one of these three symbols" is worth one run, and it is
 cheaper than adding a hook per guess.
+
+
+## Round 3 (2026-08-06 late): NCCL uses dlvsym, and four facts do not fit
+
+Reading the source rather than the binary, which is what `reference/` is for:
+NCCL does **not** resolve ibverbs with `dlsym`. `src/misc/ibvsymbols.cc` has two
+build modes; the SDK build on MN5 is the dynamic one, and it uses **`dlvsym`
+with an explicit version**:
+
+```c
+#define IBVERBS_VERSION "IBVERBS_1.1"
+tmp = dlvsym(handle, symbol, IBVERBS_VERSION);
+LOAD_SYM_VERSION(ibvhandle, "ibv_reg_mr_iova2",  ..., "IBVERBS_1.8");
+LOAD_SYM_VERSION(ibvhandle, "ibv_reg_dmabuf_mr", ..., "IBVERBS_1.12");
+```
+
+Confirmed against the library case 02 actually loads (the HPC-SDK one, NOT
+/lib64/libnccl.so.2 — checking the wrong artifact cost a round): no UND `ibv_*`,
+and it references both `dlsym` and `dlvsym`.
+
+### The standing contradiction
+
+All four of these are established, and they are inconsistent:
+
+1. NCCL resolves `ibv_*` through `dlvsym` (source + ELF).
+2. Our `dlvsym` **is** exported by `libpcomm_engine.so` and routes through
+   `on_symbol_load` (readelf + the interposer body).
+3. `RegisteredSymbols` **is** shared — the provider's symbol is UND and binds to
+   the engine's definition, so the interposer sees the provider's registrations.
+4. Job 44367535 traced **zero** `ibv_*` lookups, while that same run captured
+   `ib_mem_region` on all 8 ranks and 26880 sends, so the hooks did fire.
+
+Four hypotheses died getting here: a dlsym-hidden symbol, direct linking, a
+split registry, and the wrong NCCL. Do not add a fifth from the armchair.
+
+### The cheap test that discriminates next
+
+`on_symbol_load` returns early when `real_symbol` is null, **before** the trace:
+
+```cpp
+if (!real_symbol) return real_symbol;   // trace never runs
+```
+
+A versioned lookup that does not match — `"IBVERBS_1.12"` for
+`ibv_reg_dmabuf_mr` on a libibverbs that predates it — returns null and is
+therefore invisible to the diagnostic. Moving the trace above that return costs
+one line and distinguishes "never looked up" from "looked up and failed", which
+is exactly the ambiguity now blocking the search.
+
+Note the shape: this is the third time in this project a diagnostic could not
+see the thing it was pointed at because of an early return placed for a
+different reason.
