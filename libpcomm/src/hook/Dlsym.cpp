@@ -68,6 +68,50 @@ static bool trace_dlsym_interesting(const char* s) {
            std::strncmp(s, "cuGetProc", 9) == 0;
 }
 
+// ENTRY trace, distinct from the resolution trace below. Called as the FIRST
+// statement of dlsym/dlvsym, above init() and above every guard, because the
+// question it answers is "is this interposer entered at all" and any guard
+// placed above it answers a different one.
+//
+// It exists because four facts are established and inconsistent: NCCL resolves
+// ibv_* through dlvsym (source + ELF), our dlvsym is exported and routes to
+// on_symbol_load (readelf + the body), RegisteredSymbols is shared (the
+// provider's symbol is UND), and job 44367535 traced zero ibv_* lookups on a
+// run whose ibverbs hooks demonstrably fired. Five hypotheses died explaining
+// that; this measures instead of guessing.
+//
+// POSITIVE CONTROL: the `<first entry>` line, printed once per function for
+// whatever symbol arrives first, interesting or not. dlsym's line proves the
+// instrument works. If dlsym prints it and dlvsym never does, our dlvsym is not
+// being entered and the question becomes one about resolution — which is when
+// LD_DEBUG finally becomes the right tool, because it would finally be a
+// resolution question. If both print and only dlsym shows ibv_* names, the loss
+// is downstream in on_symbol_load, whose null-check sits above its trace.
+static void trace_dlsym_entry(const char* fn, const char* symbol_name, const char* version) {
+    if (!trace_dlsym_enabled())
+        return;
+    static std::mutex           m;
+    std::lock_guard<std::mutex> lk(m);
+
+    static std::set<std::string> first_entry;
+    if (first_entry.insert(fn).second) {
+        std::fprintf(stderr, "[pcomm-entry] %s <first entry> sym=%s\n", fn,
+                     symbol_name ? symbol_name : "(null)");
+        std::fflush(stderr);
+    }
+
+    if (!symbol_name || !trace_dlsym_interesting(symbol_name))
+        return;
+    // Keyed by function too: dlsym and dlvsym must not suppress each other's
+    // line for the same symbol, since which one saw it is the whole question.
+    static std::set<std::string> seen;
+    if (!seen.insert(std::string(fn) + ":" + symbol_name).second)
+        return;
+    std::fprintf(stderr, "[pcomm-entry] %-7s %-32s ver=%s\n", fn, symbol_name,
+                 version ? version : "-");
+    std::fflush(stderr);
+}
+
 static void trace_dlsym_lookup(const char* symbol_name, bool hooked) {
     if (!trace_dlsym_enabled() || !symbol_name || !trace_dlsym_interesting(symbol_name))
         return;
@@ -175,6 +219,7 @@ static void log_dlsym(const char* symbol, void* caller, void* result, void* glib
 }
 
 extern "C" void* dlsym(void* handle, const char* symbol) {
+    pcomm::smart_dlsym::trace_dlsym_entry("dlsym", symbol, nullptr);  // FIRST. Before init(), before anything.
     if (!pcomm::smart_dlsym::real_dlsym) {
         init();
     }
@@ -204,6 +249,7 @@ extern "C" void* dlsym(void* handle, const char* symbol) {
 }
 
 extern "C" void* dlvsym(void* handle, const char* symbol, const char* version) {
+    pcomm::smart_dlsym::trace_dlsym_entry("dlvsym", symbol, version);  // FIRST. Before init(), before anything.
     if (!pcomm::smart_dlsym::real_dlvsym) {
         init();
     }
