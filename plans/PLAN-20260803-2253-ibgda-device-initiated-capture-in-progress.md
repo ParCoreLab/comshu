@@ -605,11 +605,33 @@ LOAD_SYM(table, cuMemGetHandleForAddressRange, 11070, , 1);         // cudawrap.
 LOAD_SYM(table, cuGetExportTable,              3000,  , 1);         // cudawrap.cpp:92
 ```
 
-NVSHMEM performs **exactly one `dlsym`** — for `cuGetProcAddress` — and obtains
-everything else through it, `cuGetExportTable` included. So for this application,
-interposing that single lookup yields control of every CUDA entry point it uses,
-and no export-table *patcher* is needed to reach the dmabuf export. pcomm
-already interposes `dlsym`, so the mechanism exists today.
+`LOAD_SYM` has **two paths**, chosen at runtime, and an earlier revision of this
+section said "exactly one dlsym", which was wrong:
+
+```c
+if (table->pfn_cuGetProcAddress) {
+    res = table->pfn_cuGetProcAddress(#symbol, &table->pfn_##symbol, version, 0);
+} else {
+    table->pfn_##symbol = dlsym(cudaLib, #symbol #sym_suffix);   // fallback
+}
+```
+
+`cuInit` (:134) and `cuGetProcAddress` (:147) are resolved by direct `dlsym`;
+every *other* entry point — `cuMemGetHandleForAddressRange` and
+`cuGetExportTable` among them — goes through `cuGetProcAddress` when it
+resolved, and falls back to `dlsym(cudaLib, name)` when it did not.
+
+Both doors are interceptable, and covering both is what makes this robust rather
+than version-lucky:
+
+- the **primary** path, by registering `cuGetProcAddress` in the (now chained)
+  dlsym registry and substituting the `pfn` it hands back;
+- the **fallback** path, by registering `cuMemGetHandleForAddressRange`
+  directly — free, because `dlsym` is already interposed.
+
+No export-table *patcher* is needed to reach the dmabuf export. Note also that
+NVSHMEM `dlsym`s the plain `"cuGetProcAddress"` as a literal string (:147), not
+the `_v2` name, so that is the name to register.
 
 Two things this does NOT say, because the distinction is what the earlier
 retraction was about:
