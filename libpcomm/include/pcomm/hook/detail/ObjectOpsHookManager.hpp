@@ -14,8 +14,28 @@
 
 namespace pcomm::hook::detail {
 // ================================================================
-// Maximum number of object-ops contexts we can track per Tag
-static constexpr size_t MAX_OBJECT_OPS_SLOTS = 256;
+// Maximum number of object-ops slots. One slot is consumed per (object-ops TAG,
+// context), not per context — so with N tags this holds MAX/N contexts.
+//
+// 256 was chosen when the comment below read "hopefully no one has 257 NICs in
+// one node", i.e. assuming one context per NIC. That assumption is wrong on real
+// applications: MN5 job 44369505 saw 159 distinct ibv_contexts across 8 ranks —
+// ~20 per rank — because UCX opens a context per device per worker. With five
+// object-ops tags that is ~100 slots against a ceiling of 256, the same order of
+// magnitude as the limit rather than comfortably below it.
+// 1024, not more: InvokeObjectOpsTable instantiates ONE trampoline per slot per
+// tag (the slot index is a template parameter, since the trampoline has no
+// argument to carry it), so the ceiling is paid in generated code — 5 tags x
+// 1024 = ~5k functions, against ~1.3k before. 4096 was tried first and rejected
+// for that reason, not because it was insufficient.
+//
+// 1024 is ~10x the ~100 slots that job measured, and the overflow path below is
+// now survivable, so being wrong here costs capture rather than the run.
+static constexpr size_t MAX_OBJECT_OPS_SLOTS = 1024;
+
+// Returned when the table is full. Instrumentation stops; the application does
+// not.
+static constexpr size_t kNoObjectOpsSlot = static_cast<size_t>(-1);
 
 // ================================================================
 // Slot-based storage for context pointers to avoid find() for each op
@@ -27,13 +47,32 @@ template<typename Context> struct ContextSlots {
     static inline std::array<Context*, MAX_OBJECT_OPS_SLOTS> slots{};
     static inline std::atomic<size_t>                        next_slot{0};
 
+    // Running out of slots must DEGRADE, not abort.
+    //
+    // This used to std::abort(). That turns "more contexts than we sized for"
+    // — a fact about the application, which a tracing tool does not get to
+    // veto — into a crash of the traced program, and it would fire precisely on
+    // the large real runs the tool exists to observe. Silent under-capture is
+    // bad; killing the application is worse, and unlike under-capture it is not
+    // recoverable by re-reading the board.
+    //
+    // So the caller gets kNoObjectOpsSlot and leaves that context uninstrumented
+    // — the same state it was in a moment earlier — and the warning says which
+    // capability was lost, once, rather than per call.
     static size_t allocate(Context* ctx) {
         auto slot = next_slot.fetch_add(1, std::memory_order_relaxed);
 
-        // Hopefully no one has 257 NICs in one node...
         if (slot >= MAX_OBJECT_OPS_SLOTS) {
-            std::cerr << "Too many object-ops contexts. This shouldn't happen!" << std::endl;
-            std::abort();
+            static std::atomic<bool> warned{false};
+            if (!warned.exchange(true)) {
+                std::cerr << "[pcomm] object-ops slot table full (" << MAX_OBJECT_OPS_SLOTS
+                          << "); further contexts will not be instrumented. Object-ops records "
+                             "(post_send, poll_cq) will be missing for them.\n";
+            }
+            // Do not let the counter run away: it is only ever compared against
+            // the ceiling, and an unbounded fetch_add would wrap eventually.
+            next_slot.store(MAX_OBJECT_OPS_SLOTS, std::memory_order_relaxed);
+            return kNoObjectOpsSlot;
         }
 
         slots[slot] = ctx;

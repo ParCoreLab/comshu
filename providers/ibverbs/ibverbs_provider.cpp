@@ -53,9 +53,10 @@ using pcomm::rec::InternDomain;
 // once, and a shared counter would let one thread's outer call suppress
 // another's. This is the same per-thread discipline the flush path already
 // needs.
-// Defined with the other MR diagnostics at the bottom of the file, declared here
-// because the open_device callback above needs it.
-static void remember_installed_ctx(const ibv_context* ctx);
+// Instrument this context if it has not been instrumented yet. Defined at the
+// bottom with the other context machinery; declared here because the callbacks
+// above need it.
+static void ensure_installed(ibv_context* ctx);
 
 static int& reg_mr_depth() noexcept {
     static thread_local int depth = 0;
@@ -414,10 +415,7 @@ Profiler::Profiler() {
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>([](ibv_context* ctx, ibv_device*, auto...) {
-        if (ctx) {
-            instance().install(ctx);
-            remember_installed_ctx(ctx);
-        }
+        ensure_installed(ctx);
     });
 
     // reg_mr_iova2 -> the same memory-region entity. `iova` is the virtual
@@ -782,22 +780,27 @@ extern "C" ibv_context* ibv_open_device(ibv_device* device) {
     return ibv::Profiler::invoke_preload<ibv::open_device_tag>(device);
 }
 extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
+    ibv::ensure_installed(context);
     return ibv::Profiler::invoke_preload<ibv::alloc_pd_tag>(context);
 }
 // Interposing this is what makes the new work-request API visible at all: it is
 // where a qp_ex first reaches the application, and the wr_* calls that follow
 // are static inline wrappers no interposer can reach.
 extern "C" ibv_qp_ex* ibv_qp_to_qp_ex(ibv_qp* qp) {
+    if (qp) ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::qp_to_qp_ex_tag>(qp);
 }
 
 extern "C" ibv_qp* ibv_create_qp(ibv_pd* pd, ibv_qp_init_attr* attr) {
+    if (pd) ibv::ensure_installed(pd->context);
     return ibv::Profiler::invoke_preload<ibv::create_qp_tag>(pd, attr);
 }
 extern "C" int ibv_destroy_qp(ibv_qp* qp) {
+    if (qp) ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::destroy_qp_tag>(qp);
 }
 extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
+    if (qp) ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::modify_qp_tag>(qp, attr, mask);
 }
 // DIAGNOSTIC, gated on PCOMM_TRACE_MR_CALLERS=1 — which LIBRARY calls each
@@ -879,13 +882,38 @@ static std::set<const void*>* g_known_mrs = nullptr;  // leaked: outlives atexit
 // opening door, not at the registration door.
 static std::set<const void*>* g_installed_ctxs = nullptr;
 
-static void remember_installed_ctx(const ibv_context* ctx) {
-    if (!ctx || !trace_mr_callers_enabled())
+// INSTALL ON FIRST SIGHT, not at the opening door.
+//
+// Object-ops hooks live inside one ibv_context, so a context opened through a
+// door we do not interpose is invisible to every one of them at once —
+// post_send and poll_cq included. MN5 job 44369505 measured that: 262 unmatched
+// closes, every one of them `installed=NO`, on contexts UCX opened by a route
+// this provider never saw. The unmatched closes were the visible symptom; the
+// missing sends on those contexts were the real cost.
+//
+// Hooking mlx5dv_open_device would fix that instance and leave the class open:
+// the next opening door (rdma_create_id, an _ex variant, a vendor path) fails
+// identically, and this hunt already spent two rounds hooking doors that were
+// plausible and untaken. So instead every interposer that already holds a
+// context hands it here, and a context becomes instrumented the first time it is
+// seen through ANY door.
+//
+// This is a floor, not a guarantee, and the limit is worth stating: object-ops
+// on a context are missed until its first preload call. API ordering bounds that
+// — post_send needs a QP, a QP needs a PD, and both ibv_alloc_pd and
+// ibv_create_qp are preload doors — so payload cannot precede installation, but
+// an early poll_cq on a CQ created before any PD can.
+void ibv::ensure_installed(ibv_context* ctx) {
+    if (!ctx)
         return;
-    std::lock_guard<std::mutex> lk(g_known_mr_mutex);
-    if (!g_installed_ctxs)
-        g_installed_ctxs = new std::set<const void*>();
-    g_installed_ctxs->insert(ctx);
+    {
+        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        if (!g_installed_ctxs)
+            g_installed_ctxs = new std::set<const void*>();
+        if (!g_installed_ctxs->insert(ctx).second)
+            return;  // already instrumented
+    }
+    ibv::Profiler::instance().install(ctx);
 }
 
 static void remember_mr(const ibv_mr* mr) {
@@ -933,6 +961,7 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
 extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
                                      int fd, int access) {
     trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
+    if (pd) ibv::ensure_installed(pd->context);
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
                                                                      access);
     remember_mr(mr);
@@ -940,7 +969,13 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     trace_mr_caller("dereg_mr", __builtin_return_address(0));
+    // The diagnostic must read the installed-set BEFORE ensure_installed writes
+    // to it, or every row reports installed=yes and the instrument answers its
+    // own question. That is the fourth time in this project a diagnostic has
+    // been blinded by a line placed above it for an unrelated reason.
     trace_unmatched_dereg(mr, __builtin_return_address(0));
+    if (mr)
+        ibv::ensure_installed(mr->context);
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
 
@@ -955,6 +990,7 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
 #undef ibv_reg_mr
 extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
     trace_mr_caller("reg_mr", __builtin_return_address(0));
+    if (pd) ibv::ensure_installed(pd->context);
     struct Depth {
         Depth() noexcept { ++ibv::reg_mr_depth(); }
         ~Depth() noexcept { --ibv::reg_mr_depth(); }
@@ -970,6 +1006,7 @@ extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access)
 extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint64_t iova,
                                     unsigned int access) {
     trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));
+    if (pd) ibv::ensure_installed(pd->context);
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);
     remember_mr(mr);
     return mr;

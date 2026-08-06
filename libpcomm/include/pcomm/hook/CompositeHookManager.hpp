@@ -380,6 +380,14 @@ private:
 
             // Allocate a slot and store context there
             size_t slot = ContextSlots::allocate(ctx);
+            // Table full. Leave the op pointing at the real implementation: an
+            // uninstrumented context is a gap in the capture, whereas patching
+            // with no slot behind it would dispatch through a trampoline whose
+            // context lookup is null — a crash in the application, caused by the
+            // tracer, on the largest runs.
+            if (slot == detail::kNoObjectOpsSlot) {
+                return;
+            }
 
             // Get the pre-instantiated function pointer for this slot
             using FuncPtr = typename HookTrait<Tag>::FuncPtr;
