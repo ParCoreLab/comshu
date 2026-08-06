@@ -19,12 +19,10 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
 
-#include <dlfcn.h>
 #include <endian.h>
 
 #include <infiniband/mlx5dv.h>
@@ -33,6 +31,7 @@
 #include <mlx5/mlx5_ifc.h>
 
 #include "pcomm/core/ids.hpp"
+#include "pcomm/core/mem_attr.hpp"
 #include "pcomm/engine_abi.h"
 #include "pcomm/provider/provider.hpp"
 #include "pcomm/rec/intern_table.hpp"
@@ -59,101 +58,15 @@ static pcomm::core::Handle h(const void* p) {
 
 // --- optional CUDA ---------------------------------------------------------
 //
-// Resolved at runtime rather than linked. This provider must build and run on a
-// host with no CUDA at all (MN5's core configuration does exactly that), and a
-// DEVX capture without device attribution is still a useful capture. If the
-// driver is absent every buffer is simply reported as kUnknownDevice, which is
-// a distinct value from "device 0" on purpose.
-namespace cuda {
-
-using PtrAttrFn = int (*)(void*, int, unsigned long long);
-constexpr int kAttrMemoryType = 2;     // CU_POINTER_ATTRIBUTE_MEMORY_TYPE
-constexpr int kAttrDeviceOrdinal = 9;  // CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL
-constexpr int kMemoryTypeDevice = 2;   // CU_MEMORYTYPE_DEVICE
-
-// These are hand-copied from cuda.h because this provider deliberately does not
-// link CUDA (see resolve() below), which means the compiler cannot check them.
-// kAttrDeviceOrdinal was 4 — that is CU_POINTER_ATTRIBUTE_HOST_POINTER, and
-// asking for the host pointer of device memory fails, so device_of returned
-// kUnknownDevice for every GPU buffer it was ever given.
+// Device attribution is core::device_of (core/mem_attr.hpp), not a copy here.
+// It moved out when ibverbs needed the same answer: the constants it depends on
+// are hand-copied from cuda.h and unchecked by any compiler, and one of them
+// was wrong for this provider's entire life. One copy, one place to be wrong.
 //
-// It survived because nothing downstream could tell. gpu_driven ORs in
-// `binding == ByDmabuf`, so case 09 came out right without consulting CUDA at
-// all; only case 10, whose by_addr binding has no such fallback, could fail.
-// Two wrong guesses preceded the answer here as well, and what settled it was
-// printing the actual return code and type at the call site: rc=0 type=2 said
-// plainly that CUDA had resolved, the call had worked, and the buffer WAS
-// device memory — which left only the second query.
-
-// RTLD_NOLOAD on purpose: this must never *load* libcuda into a process that
-// did not already have it, only borrow it from one that did.
-//
-// The result is cached once RESOLVED, and deliberately not cached when it is
-// not. The previous version latched on first call — `static fn = [...]()` runs
-// exactly once — so a single early miss would make attribution permanently
-// dead. That is a real defect and this is a real fix.
-//
-// It is NOT, however, the explanation for device=65535 on du04. That was the
-// hypothesis this change was made to test, and the test refused it: every umem
-// in cases 09 and 10 still reports kUnknownDevice with the latch removed. The
-// cause is still open — see the plan — and the honest reading of that is that
-// the latch and the attribution failure are two separate things, one of which
-// is now fixed.
-//
-// Why it went unnoticed for so long is the more useful part: gpu_driven ORs in
-// `binding == ByDmabuf`, so under DMABUF the answer comes out right without
-// consulting CUDA at all, and case 09's engagement gate has never actually
-// tested GPU residency. Case 10, which has no such fallback, is what exposed
-// it.
-static PtrAttrFn resolve() {
-    static PtrAttrFn cached = nullptr;
-    if (cached)
-        return cached;
-    void* lib = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_NOLOAD);
-    if (!lib)
-        return nullptr;
-    cached = reinterpret_cast<PtrAttrFn>(dlsym(lib, "cuPointerGetAttribute"));
-    return cached;
-}
-
-// PROBE, gated on PCOMM_TRACE_HOOKS=1 — prints the FIRST attribution attempt
-// only. Three outcomes look identical from the capture (device=65535) and imply
-// completely different work, so guessing between them is what this exists to
-// stop: the symbol never resolved, the CUDA call failed, or the call succeeded
-// and the buffer is genuinely host memory.
-static void trace_attr(const char* stage, int rc, unsigned int type) {
-    static bool first = true;
-    if (!first)
-        return;
-    const char* on = std::getenv("PCOMM_TRACE_HOOKS");
-    if (!on || !*on || std::strcmp(on, "0") == 0)
-        return;
-    first = false;
-    std::fprintf(stderr, "[pcomm-trace] device_of: stage=%s rc=%d type=%u\n", stage, rc, type);
-    std::fflush(stderr);
-}
-
-// Owning device of a host-visible address, or kUnknownDevice.
-static pcomm::core::DeviceId device_of(const void* addr) {
-    auto* fn = resolve();
-    if (!fn || !addr) {
-        trace_attr(fn ? "null-addr" : "unresolved", -1, 0);
-        return kUnknownDevice;
-    }
-    unsigned int type = 0;
-    const int    rc = fn(&type, kAttrMemoryType, reinterpret_cast<unsigned long long>(addr));
-    trace_attr("called", rc, type);
-    if (rc != 0)
-        return kUnknownDevice;  // not a CUDA pointer: host memory
-    if (static_cast<int>(type) != kMemoryTypeDevice)
-        return kUnknownDevice;
-    int ordinal = -1;
-    if (fn(&ordinal, kAttrDeviceOrdinal, reinterpret_cast<unsigned long long>(addr)) != 0)
-        return kUnknownDevice;
-    return static_cast<pcomm::core::DeviceId>(ordinal);
-}
-
-}  // namespace cuda
+// Resolved at runtime rather than linked, so this provider still builds and
+// runs on a host with no CUDA at all (MN5's core configuration does exactly
+// that) and reports kUnknownDevice there — a distinct value from "device 0" on
+// purpose.
 
 // --- umem registry ---------------------------------------------------------
 //
@@ -197,7 +110,7 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
         return;
     const bool by_dmabuf = dmabuf_fd >= 0;
     UmemInfo   info{reinterpret_cast<std::uint64_t>(addr), size,
-                  by_dmabuf ? kUnknownDevice : cuda::device_of(addr),
+                  by_dmabuf ? kUnknownDevice : pcomm::core::device_of(addr),
                   by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress, dmabuf_fd};
     remember_umem(out->umem_id, info);
     rec().record(pcomm::core::Temporal::none(),

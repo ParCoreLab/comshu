@@ -24,10 +24,10 @@ using core::Handle;
 using core::MemRange;
 using core::RecordKind;
 
-// A device ordinal we could not determine. Not 0 — 0 is a real GPU, and the
-// whole failure family this tree keeps hitting is a plausible value standing in
-// for a missing one.
-inline constexpr DeviceId kUnknownDevice = 0xFFFF;
+// A device ordinal we could not determine. Declared in core/vocab.hpp beside
+// DeviceId since ibverbs answers the same question; re-exported here so the
+// records below still read as they did.
+using core::kUnknownDevice;
 
 // How a buffer was handed to the NIC. This is not bookkeeping: it decides
 // whether the buffer's *address* means anything.
@@ -54,9 +54,9 @@ enum class UmemEntry : std::uint8_t { Reg = 0, RegEx = 1 };
 
 // ENTITY — a buffer handed to the NIC via DEVX, lifetime [reg, dereg).
 PCOMM_RECORD(Mlx5Umem, RecordKind::Entity, 200, "mlx5_umem") {
-    Handle        umem;      // interned mlx5dv_devx_umem*
-    MemRange      range;     // addr + size; addr is 0 for a dmabuf binding
-    std::uint32_t umem_id;   // what the DEVX command buffers refer to it by
+    Handle        umem;     // interned mlx5dv_devx_umem*
+    MemRange      range;    // addr + size; addr is 0 for a dmabuf binding
+    std::uint32_t umem_id;  // what the DEVX command buffers refer to it by
     std::uint32_t access;
     std::int32_t  dmabuf_fd;  // -1 unless binding == ByDmabuf
     DeviceId      device;     // owning GPU, or kUnknownDevice
@@ -83,8 +83,8 @@ PCOMM_RECORD(Mlx5Uar, RecordKind::Entity, 202, "mlx5_uar") {
 // internals must fail *loudly* there. A capture that quietly omits the command
 // that created the queue pairs is indistinguishable from a run that made none.
 PCOMM_RECORD(Mlx5DevxCmd, RecordKind::Event, 204, "mlx5_devx_cmd") {
-    Handle        obj;     // interned mlx5dv_devx_obj*, 0 if the call failed
-    std::uint32_t opcode;  // MLX5_CMD_OP_*
+    Handle        obj;      // interned mlx5dv_devx_obj*, 0 if the call failed
+    std::uint32_t opcode;   // MLX5_CMD_OP_*
     std::uint8_t  decoded;  // 1 if a typed record was also emitted for this
 };
 
@@ -95,12 +95,12 @@ PCOMM_RECORD(Mlx5DevxCmd, RecordKind::Event, 204, "mlx5_devx_cmd") {
 // QP and its doorbells come from the GPU; when it is not, the queue pair is
 // CPU-side and cannot produce one.
 PCOMM_RECORD(Mlx5DevxQp, RecordKind::Entity, 206, "mlx5_devx_qp") {
-    Handle        obj;          // interned mlx5dv_devx_obj*
-    std::uint64_t sq_base;      // WQ umem address + wq_umem_offset
+    Handle        obj;      // interned mlx5dv_devx_obj*
+    std::uint64_t sq_base;  // WQ umem address + wq_umem_offset
     std::uint32_t qp_num;
-    std::uint32_t wq_umem_id;   // joins to Mlx5Umem.umem_id
-    std::uint32_t log_sq_size;  // WQEs = 1 << log_sq_size
-    DeviceId      device;       // owning GPU of the WQ buffer, or kUnknownDevice
+    std::uint32_t wq_umem_id;    // joins to Mlx5Umem.umem_id
+    std::uint32_t log_sq_size;   // WQEs = 1 << log_sq_size
+    DeviceId      device;        // owning GPU of the WQ buffer, or kUnknownDevice
     std::uint8_t  service_type;  // mlx5 transport service type (0x5 = DCI)
     std::uint8_t  gpu_driven;    // 1 if the WQ buffer is GPU-resident
 };
@@ -137,8 +137,8 @@ PCOMM_RECORD(Mlx5DevxQpConnect, RecordKind::Event, 208, "mlx5_devx_qp_connect") 
 // entity is emitted here rather than as an IbQueuePair because a provider may
 // only write inside its declared id range, which the engine now enforces.
 PCOMM_RECORD(Mlx5QueuePair, RecordKind::Entity, 210, "mlx5_queue_pair") {
-    Handle        qp;      // interned ibv_qp*
-    Handle        pd;      // interned ibv_pd*
+    Handle        qp;  // interned ibv_qp*
+    Handle        pd;  // interned ibv_pd*
     std::uint32_t qp_num;
     std::uint8_t  qp_type;
 };
