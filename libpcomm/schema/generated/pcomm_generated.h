@@ -46,9 +46,21 @@ struct IbMemRegion;
 
 struct IbQueuePair;
 
+struct IbCompletionQueue;
+
 struct IbModifyQp;
 
+struct IbSharedRecvQueue;
+
 struct IbPostSend;
+
+struct IbPostRecv;
+
+struct IbAddressHandle;
+
+struct IbDevice;
+
+struct IbReqNotifyCq;
 
 struct IbPollCq;
 
@@ -975,6 +987,68 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbQueuePair FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(IbQueuePair, 64);
 
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbCompletionQueue FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t cq_;
+  uint32_t context_;
+  uint32_t channel_;
+  uint32_t cqe_;
+  uint32_t comp_vector_;
+  uint8_t origin_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  IbCompletionQueue()
+      : temporal_(),
+        cq_(0),
+        context_(0),
+        channel_(0),
+        cqe_(0),
+        comp_vector_(0),
+        origin_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  IbCompletionQueue(const pcomm::fb::Temporal &_temporal, uint32_t _cq, uint32_t _context, uint32_t _channel, uint32_t _cqe, uint32_t _comp_vector, uint8_t _origin)
+      : temporal_(_temporal),
+        cq_(::flatbuffers::EndianScalar(_cq)),
+        context_(::flatbuffers::EndianScalar(_context)),
+        channel_(::flatbuffers::EndianScalar(_channel)),
+        cqe_(::flatbuffers::EndianScalar(_cqe)),
+        comp_vector_(::flatbuffers::EndianScalar(_comp_vector)),
+        origin_(::flatbuffers::EndianScalar(_origin)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t cq() const {
+    return ::flatbuffers::EndianScalar(cq_);
+  }
+  uint32_t context() const {
+    return ::flatbuffers::EndianScalar(context_);
+  }
+  uint32_t channel() const {
+    return ::flatbuffers::EndianScalar(channel_);
+  }
+  uint32_t cqe() const {
+    return ::flatbuffers::EndianScalar(cqe_);
+  }
+  uint32_t comp_vector() const {
+    return ::flatbuffers::EndianScalar(comp_vector_);
+  }
+  uint8_t origin() const {
+    return ::flatbuffers::EndianScalar(origin_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbCompletionQueue, 72);
+
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
  private:
   pcomm::fb::Temporal temporal_;
@@ -1036,6 +1110,58 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(IbModifyQp, 72);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbSharedRecvQueue FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t srq_;
+  uint32_t pd_;
+  uint32_t max_wr_;
+  uint32_t max_sge_;
+  uint32_t srq_limit_;
+  int32_t padding0__;
+
+ public:
+  IbSharedRecvQueue()
+      : temporal_(),
+        srq_(0),
+        pd_(0),
+        max_wr_(0),
+        max_sge_(0),
+        srq_limit_(0),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  IbSharedRecvQueue(const pcomm::fb::Temporal &_temporal, uint32_t _srq, uint32_t _pd, uint32_t _max_wr, uint32_t _max_sge, uint32_t _srq_limit)
+      : temporal_(_temporal),
+        srq_(::flatbuffers::EndianScalar(_srq)),
+        pd_(::flatbuffers::EndianScalar(_pd)),
+        max_wr_(::flatbuffers::EndianScalar(_max_wr)),
+        max_sge_(::flatbuffers::EndianScalar(_max_sge)),
+        srq_limit_(::flatbuffers::EndianScalar(_srq_limit)),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t srq() const {
+    return ::flatbuffers::EndianScalar(srq_);
+  }
+  uint32_t pd() const {
+    return ::flatbuffers::EndianScalar(pd_);
+  }
+  uint32_t max_wr() const {
+    return ::flatbuffers::EndianScalar(max_wr_);
+  }
+  uint32_t max_sge() const {
+    return ::flatbuffers::EndianScalar(max_sge_);
+  }
+  uint32_t srq_limit() const {
+    return ::flatbuffers::EndianScalar(srq_limit_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbSharedRecvQueue, 72);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSend FLATBUFFERS_FINAL_CLASS {
  private:
@@ -1111,6 +1237,287 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSend FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(IbPostSend, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostRecv FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t subject_;
+  int32_t padding0__;
+  uint64_t wr_id_;
+  uint64_t addr_;
+  uint32_t lkey_;
+  uint32_t length_;
+  uint32_t qp_num_;
+  uint8_t num_sge_;
+  uint8_t origin_;
+  int16_t padding1__;
+
+ public:
+  IbPostRecv()
+      : temporal_(),
+        subject_(0),
+        padding0__(0),
+        wr_id_(0),
+        addr_(0),
+        lkey_(0),
+        length_(0),
+        qp_num_(0),
+        num_sge_(0),
+        origin_(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  IbPostRecv(const pcomm::fb::Temporal &_temporal, uint32_t _subject, uint64_t _wr_id, uint64_t _addr, uint32_t _lkey, uint32_t _length, uint32_t _qp_num, uint8_t _num_sge, uint8_t _origin)
+      : temporal_(_temporal),
+        subject_(::flatbuffers::EndianScalar(_subject)),
+        padding0__(0),
+        wr_id_(::flatbuffers::EndianScalar(_wr_id)),
+        addr_(::flatbuffers::EndianScalar(_addr)),
+        lkey_(::flatbuffers::EndianScalar(_lkey)),
+        length_(::flatbuffers::EndianScalar(_length)),
+        qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        num_sge_(::flatbuffers::EndianScalar(_num_sge)),
+        origin_(::flatbuffers::EndianScalar(_origin)),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t subject() const {
+    return ::flatbuffers::EndianScalar(subject_);
+  }
+  uint64_t wr_id() const {
+    return ::flatbuffers::EndianScalar(wr_id_);
+  }
+  uint64_t addr() const {
+    return ::flatbuffers::EndianScalar(addr_);
+  }
+  uint32_t lkey() const {
+    return ::flatbuffers::EndianScalar(lkey_);
+  }
+  uint32_t length() const {
+    return ::flatbuffers::EndianScalar(length_);
+  }
+  uint32_t qp_num() const {
+    return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint8_t num_sge() const {
+    return ::flatbuffers::EndianScalar(num_sge_);
+  }
+  uint8_t origin() const {
+    return ::flatbuffers::EndianScalar(origin_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbPostRecv, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbAddressHandle FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t ah_;
+  uint32_t pd_;
+  uint64_t dgid_prefix_;
+  uint64_t dgid_iface_;
+  uint32_t flow_label_;
+  uint32_t dlid_;
+  uint8_t sl_;
+  uint8_t port_num_;
+  uint8_t is_global_;
+  uint8_t sgid_index_;
+  uint8_t hop_limit_;
+  uint8_t traffic_class_;
+  int16_t padding0__;
+
+ public:
+  IbAddressHandle()
+      : temporal_(),
+        ah_(0),
+        pd_(0),
+        dgid_prefix_(0),
+        dgid_iface_(0),
+        flow_label_(0),
+        dlid_(0),
+        sl_(0),
+        port_num_(0),
+        is_global_(0),
+        sgid_index_(0),
+        hop_limit_(0),
+        traffic_class_(0),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  IbAddressHandle(const pcomm::fb::Temporal &_temporal, uint32_t _ah, uint32_t _pd, uint64_t _dgid_prefix, uint64_t _dgid_iface, uint32_t _flow_label, uint32_t _dlid, uint8_t _sl, uint8_t _port_num, uint8_t _is_global, uint8_t _sgid_index, uint8_t _hop_limit, uint8_t _traffic_class)
+      : temporal_(_temporal),
+        ah_(::flatbuffers::EndianScalar(_ah)),
+        pd_(::flatbuffers::EndianScalar(_pd)),
+        dgid_prefix_(::flatbuffers::EndianScalar(_dgid_prefix)),
+        dgid_iface_(::flatbuffers::EndianScalar(_dgid_iface)),
+        flow_label_(::flatbuffers::EndianScalar(_flow_label)),
+        dlid_(::flatbuffers::EndianScalar(_dlid)),
+        sl_(::flatbuffers::EndianScalar(_sl)),
+        port_num_(::flatbuffers::EndianScalar(_port_num)),
+        is_global_(::flatbuffers::EndianScalar(_is_global)),
+        sgid_index_(::flatbuffers::EndianScalar(_sgid_index)),
+        hop_limit_(::flatbuffers::EndianScalar(_hop_limit)),
+        traffic_class_(::flatbuffers::EndianScalar(_traffic_class)),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t ah() const {
+    return ::flatbuffers::EndianScalar(ah_);
+  }
+  uint32_t pd() const {
+    return ::flatbuffers::EndianScalar(pd_);
+  }
+  uint64_t dgid_prefix() const {
+    return ::flatbuffers::EndianScalar(dgid_prefix_);
+  }
+  uint64_t dgid_iface() const {
+    return ::flatbuffers::EndianScalar(dgid_iface_);
+  }
+  uint32_t flow_label() const {
+    return ::flatbuffers::EndianScalar(flow_label_);
+  }
+  uint32_t dlid() const {
+    return ::flatbuffers::EndianScalar(dlid_);
+  }
+  uint8_t sl() const {
+    return ::flatbuffers::EndianScalar(sl_);
+  }
+  uint8_t port_num() const {
+    return ::flatbuffers::EndianScalar(port_num_);
+  }
+  uint8_t is_global() const {
+    return ::flatbuffers::EndianScalar(is_global_);
+  }
+  uint8_t sgid_index() const {
+    return ::flatbuffers::EndianScalar(sgid_index_);
+  }
+  uint8_t hop_limit() const {
+    return ::flatbuffers::EndianScalar(hop_limit_);
+  }
+  uint8_t traffic_class() const {
+    return ::flatbuffers::EndianScalar(traffic_class_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbAddressHandle, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbDevice FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t context_;
+  uint32_t fw_ver_;
+  uint64_t node_guid_;
+  uint64_t sys_image_guid_;
+  uint32_t vendor_id_;
+  uint32_t vendor_part_id_;
+  uint32_t hw_ver_;
+  uint8_t phys_port_cnt_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  IbDevice()
+      : temporal_(),
+        context_(0),
+        fw_ver_(0),
+        node_guid_(0),
+        sys_image_guid_(0),
+        vendor_id_(0),
+        vendor_part_id_(0),
+        hw_ver_(0),
+        phys_port_cnt_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  IbDevice(const pcomm::fb::Temporal &_temporal, uint32_t _context, uint32_t _fw_ver, uint64_t _node_guid, uint64_t _sys_image_guid, uint32_t _vendor_id, uint32_t _vendor_part_id, uint32_t _hw_ver, uint8_t _phys_port_cnt)
+      : temporal_(_temporal),
+        context_(::flatbuffers::EndianScalar(_context)),
+        fw_ver_(::flatbuffers::EndianScalar(_fw_ver)),
+        node_guid_(::flatbuffers::EndianScalar(_node_guid)),
+        sys_image_guid_(::flatbuffers::EndianScalar(_sys_image_guid)),
+        vendor_id_(::flatbuffers::EndianScalar(_vendor_id)),
+        vendor_part_id_(::flatbuffers::EndianScalar(_vendor_part_id)),
+        hw_ver_(::flatbuffers::EndianScalar(_hw_ver)),
+        phys_port_cnt_(::flatbuffers::EndianScalar(_phys_port_cnt)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t context() const {
+    return ::flatbuffers::EndianScalar(context_);
+  }
+  uint32_t fw_ver() const {
+    return ::flatbuffers::EndianScalar(fw_ver_);
+  }
+  uint64_t node_guid() const {
+    return ::flatbuffers::EndianScalar(node_guid_);
+  }
+  uint64_t sys_image_guid() const {
+    return ::flatbuffers::EndianScalar(sys_image_guid_);
+  }
+  uint32_t vendor_id() const {
+    return ::flatbuffers::EndianScalar(vendor_id_);
+  }
+  uint32_t vendor_part_id() const {
+    return ::flatbuffers::EndianScalar(vendor_part_id_);
+  }
+  uint32_t hw_ver() const {
+    return ::flatbuffers::EndianScalar(hw_ver_);
+  }
+  uint8_t phys_port_cnt() const {
+    return ::flatbuffers::EndianScalar(phys_port_cnt_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbDevice, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbReqNotifyCq FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t cq_;
+  uint8_t solicited_only_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  IbReqNotifyCq()
+      : temporal_(),
+        cq_(0),
+        solicited_only_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  IbReqNotifyCq(const pcomm::fb::Temporal &_temporal, uint32_t _cq, uint8_t _solicited_only)
+      : temporal_(_temporal),
+        cq_(::flatbuffers::EndianScalar(_cq)),
+        solicited_only_(::flatbuffers::EndianScalar(_solicited_only)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t cq() const {
+    return ::flatbuffers::EndianScalar(cq_);
+  }
+  uint8_t solicited_only() const {
+    return ::flatbuffers::EndianScalar(solicited_only_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbReqNotifyCq, 56);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPollCq FLATBUFFERS_FINAL_CLASS {
  private:

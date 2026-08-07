@@ -12,6 +12,15 @@
 
 // --- object-ops hooks (installed by replacing ibv_context->ops.X) ------------
 DEFINE_OBJECT_OPS_HOOK(ibv, post_send, "ibv_post_send", int, ibv_qp*, ibv_send_wr*, ibv_send_wr**);
+// The other half of the wire, and until now the half pcomm never saw. Same
+// shape as post_send — a linked list of fully-formed work requests, so one
+// hooked call sees the whole chain — and the same ibv_context->ops slot family.
+//
+// There is no receive counterpart to the ibv_wr_* builder API that made sends
+// invisible on perftest: every ibv_wr_* entry point is a SEND opcode, so a
+// receive has exactly one door and this is it. That is why post_recv needs no
+// equivalent of the qp_to_qp_ex pointer-patching that post_send required.
+DEFINE_OBJECT_OPS_HOOK(ibv, post_recv, "ibv_post_recv", int, ibv_qp*, ibv_recv_wr*, ibv_recv_wr**);
 // Extended queue-pair creation. This is an object-ops hook and not a preload
 // hook because **there is no exported ibv_create_qp_ex symbol to preload**:
 //
@@ -33,6 +42,43 @@ DEFINE_OBJECT_OPS_HOOK(ibv, post_send, "ibv_post_send", int, ibv_qp*, ibv_send_w
 // through an exported symbol.
 DEFINE_OBJECT_OPS_HOOK(ibv, create_qp_ex, "ibv_create_qp_ex", ibv_qp*, ibv_context*,
                        ibv_qp_init_attr_ex*);
+// Extended completion-queue creation, and an object-ops hook for exactly the
+// reason create_qp_ex above is one — checked, not assumed:
+//
+//   $ readelf --dyn-syms libibverbs.so.1 | grep -o 'ibv_create_cq[a-z_]*'
+//     ibv_create_cq
+//
+// ibv_create_cq_ex is a static inline over verbs_context::create_cq_ex
+// (verbs.h), so the exported ibv_create_cq is NOT the only door to a CQ, and
+// hooking only it would have left ib_completion_queue with the same hole
+// ib_queue_pair had in case 08 — an entity referenced by events that nothing
+// created. Hooking both doors costs one vctx_slot line and removes the need to
+// be right about which one an application compiled against.
+//
+// Returns ibv_cq_ex*, whose layout starts with ibv_cq's exactly — verbs.h makes
+// ibv_cq_ex_to_cq a plain cast — so the same pointer interns to the same Handle
+// whichever door created it, and IbPollCq.cq joins either way.
+DEFINE_OBJECT_OPS_HOOK(ibv, create_cq_ex, "ibv_create_cq_ex", ibv_cq_ex*, ibv_context*,
+                       ibv_cq_init_attr_ex*);
+// The shared-receive-queue receive door. An object-ops hook whose first argument
+// is an ibv_srq* rather than an ibv_qp* — which matters for SigmaTrace, whose
+// get_object_from_args must resolve the context from that argument
+// (IbverbsEventSource.hpp:97), and does NOT matter here: pcomm's object-ops
+// trampolines carry their context in a per-context slot allocated at install
+// time, so the argument types are never inspected to find it.
+DEFINE_OBJECT_OPS_HOOK(ibv, post_srq_recv, "ibv_post_srq_recv", int, ibv_srq*, ibv_recv_wr*,
+                       ibv_recv_wr**);
+// Extended SRQ creation, and the door that actually justifies the "an SRQ can
+// exist before any PD" argument: ibv_create_srq takes a *pd* and therefore
+// cannot precede one, while ibv_create_srq_ex takes a *context* and can. Like
+// create_cq_ex and create_qp_ex it is a verbs_context slot with no exported
+// symbol, so this is its only door.
+DEFINE_OBJECT_OPS_HOOK(ibv, create_srq_ex, "ibv_create_srq_ex", ibv_srq*, ibv_context*,
+                       ibv_srq_init_attr_ex*);
+// Arming a CQ for a completion notification. An ibv_context->ops slot like
+// poll_cq, and the counterpart to it: together they say whether an application
+// is spinning or sleeping.
+DEFINE_OBJECT_OPS_HOOK(ibv, req_notify_cq, "ibv_req_notify_cq", int, ibv_cq*, int);
 DEFINE_OBJECT_OPS_HOOK_PRED(
     ibv, poll_cq, "ibv_poll_cq",
     [](int out_ret, ibv_cq*, int, ibv_wc*) {
@@ -109,7 +155,7 @@ DEFINE_OBJECT_OPS_HOOK(ibv, reg_dm_mr, "ibv_reg_dm_mr", ibv_mr*, ibv_pd*, ibv_dm
 DEFINE_OBJECT_OPS_HOOK(ibv, alloc_null_mr, "ibv_alloc_null_mr", ibv_mr*, ibv_pd*);
 DEFINE_PRELOAD_HOOK(ibv, dereg_mr, "ibv_dereg_mr", int, ibv_mr*);
 DEFINE_PRELOAD_HOOK(ibv, alloc_pd, "ibv_alloc_pd", ibv_pd*, ibv_context*);
-// Hooked for COVERAGE, not for a record: nothing registers a callback on it.
+// Hooked for COVERAGE first, and now for a record as well.
 //
 // Object-ops hooks live inside an ibv_context, and a context is instrumented at
 // its first call through a hooked door. Job 44396249 measured which door that
@@ -121,8 +167,41 @@ DEFINE_PRELOAD_HOOK(ibv, alloc_pd, "ibv_alloc_pd", ibv_pd*, ibv_context*);
 // from a PD. This is that exception's door, and interposing it is what turns
 // "ordering says nothing can be lost" into something measured: if a context
 // ever installs at door=create_cq, a CQ existed on it before any PD did.
+// ...and, as of this change, for a record too: ib_completion_queue. The
+// coverage argument above is why the hook was here first, but a door held open
+// for a record nobody wrote is the failure mode this provider has spent a week
+// paying down — IbPollCq.cq had no entity to join to for as long as ib_poll_cq
+// has existed.
 DEFINE_PRELOAD_HOOK(ibv, create_cq, "ibv_create_cq", ibv_cq*, ibv_context*, int, void*,
                     ibv_comp_channel*, int);
+// The CQ's other end. Same argument as close_device and dereg_mr: without it a
+// destroyed CQ stays "live" forever in the capture, and since the allocator
+// reuses the address, the next CQ at that address is indistinguishable from it.
+// It is also what puts CQs under suite/asserts/entity_close_accounted.sql,
+// which is the assertion that has found every missing door so far.
+DEFINE_PRELOAD_HOOK(ibv, destroy_cq, "ibv_destroy_cq", int, ibv_cq*);
+// The classic SRQ doors. Both ARE exported symbols (checked with readelf, unlike
+// their _ex cousin above), so a plain preload hook reaches them.
+// The UD addressing doors. Both exported (checked with readelf).
+DEFINE_PRELOAD_HOOK(ibv, create_ah, "ibv_create_ah", ibv_ah*, ibv_pd*, ibv_ah_attr*);
+DEFINE_PRELOAD_HOOK(ibv, destroy_ah, "ibv_destroy_ah", int, ibv_ah*);
+// Hooked as an INSTALL DOOR only, and deliberately without a callback — which
+// is the one case this provider allows it, the same standing create_cq had
+// before it earned a record. ibv_query_device takes a context, so it can be a
+// context's first call through anything we interpose.
+//
+// The ib_device record it might have carried is emitted from ensure_installed
+// instead, because a row that exists only when the application chooses to ask
+// is a row that is usually absent. See IbDevice in ib_records.hpp.
+//
+// ibv_get_device_guid is NOT hooked, though SigmaTrace hooks it. It takes an
+// ibv_device* rather than a context, so it is useless as an install door, and
+// the guid it returns is already node_guid in the device_attr ib_device
+// carries — so the hook would cost a dlsym chain and add nothing. That is the
+// same test the five silent SigmaTrace doors failed.
+DEFINE_PRELOAD_HOOK(ibv, query_device, "ibv_query_device", int, ibv_context*, ibv_device_attr*);
+DEFINE_PRELOAD_HOOK(ibv, create_srq, "ibv_create_srq", ibv_srq*, ibv_pd*, ibv_srq_init_attr*);
+DEFINE_PRELOAD_HOOK(ibv, destroy_srq, "ibv_destroy_srq", int, ibv_srq*);
 DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_init_attr*);
 // The conversion an application must call to obtain the new work-request API,
 // and therefore the one place the wr_* function pointers can be patched: the

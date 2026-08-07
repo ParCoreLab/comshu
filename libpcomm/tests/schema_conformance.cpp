@@ -43,8 +43,14 @@ PCOMM_SCHEMA_MATCH(cr::InternKey, fb::InternKey);
 PCOMM_SCHEMA_MATCH(cr::InternString, fb::InternString);
 PCOMM_SCHEMA_MATCH(ir::IbMemRegion, fb::IbMemRegion);
 PCOMM_SCHEMA_MATCH(ir::IbQueuePair, fb::IbQueuePair);
+PCOMM_SCHEMA_MATCH(ir::IbCompletionQueue, fb::IbCompletionQueue);
 PCOMM_SCHEMA_MATCH(ir::IbModifyQp, fb::IbModifyQp);
 PCOMM_SCHEMA_MATCH(ir::IbPostSend, fb::IbPostSend);
+PCOMM_SCHEMA_MATCH(ir::IbSharedRecvQueue, fb::IbSharedRecvQueue);
+PCOMM_SCHEMA_MATCH(ir::IbPostRecv, fb::IbPostRecv);
+PCOMM_SCHEMA_MATCH(ir::IbAddressHandle, fb::IbAddressHandle);
+PCOMM_SCHEMA_MATCH(ir::IbDevice, fb::IbDevice);
+PCOMM_SCHEMA_MATCH(ir::IbReqNotifyCq, fb::IbReqNotifyCq);
 PCOMM_SCHEMA_MATCH(ir::IbPollCq, fb::IbPollCq);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Umem, fb::Mlx5Umem);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Uar, fb::Mlx5Uar);
@@ -256,6 +262,20 @@ int main() {
         expect_identical("IbQueuePair", &c, &f, sizeof(c));
     }
     {
+        Stamped<ir::IbCompletionQueue> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.cq = 13;
+        c.payload.context = 14;
+        c.payload.channel = 15;
+        c.payload.cqe = 0x101;
+        c.payload.comp_vector = 2;
+        c.payload.origin = static_cast<uint8_t>(ir::IbCqOrigin::CreateCqEx);
+        fb::IbCompletionQueue f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 13, 14,
+            15, 0x101, 2, static_cast<uint8_t>(ir::IbCqOrigin::CreateCqEx));
+        expect_identical("IbCompletionQueue", &c, &f, sizeof(c));
+    }
+    {
         Stamped<ir::IbModifyQp> c{};
         c.temporal = pcomm::core::Temporal::instant({1, 0x50});
         c.payload.qp = 21;
@@ -268,6 +288,82 @@ int main() {
             fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(1, 0x50), fb::TimePoint(0, 0), 0), 21,
             0x1EFFD, 0x1EFFC, 0xA93, 0x1F0E, 3);
         expect_identical("IbModifyQp", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbSharedRecvQueue> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.srq = 51;
+        c.payload.pd = 52;
+        c.payload.max_wr = 0x200;
+        c.payload.max_sge = 4;
+        c.payload.srq_limit = 0x10;
+        fb::IbSharedRecvQueue f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 51, 52,
+            0x200, 4, 0x10);
+        expect_identical("IbSharedRecvQueue", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbPostRecv> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x80}, {1, 0x90});
+        c.payload.subject = 41;
+        c.payload.wr_id = 0xCAFEBABE;
+        c.payload.addr = 0x7F0000112233;
+        c.payload.lkey = 0x2B;
+        c.payload.length = 8192;
+        c.payload.qp_num = 0x1EFFB;
+        c.payload.num_sge = 1;
+        c.payload.origin = static_cast<uint8_t>(ir::IbRecvOrigin::QueuePair);
+        fb::IbPostRecv f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x80), fb::TimePoint(1, 0x90), 0),
+            41, 0xCAFEBABE, 0x7F0000112233, 0x2B, 8192, 0x1EFFB, 1,
+            static_cast<uint8_t>(ir::IbRecvOrigin::QueuePair));
+        expect_identical("IbPostRecv", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbAddressHandle> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.ah = 71;
+        c.payload.pd = 72;
+        c.payload.dgid_prefix = 0xFE80000000000000ull;
+        c.payload.dgid_iface = 0x0002C90300ABCDEFull;
+        c.payload.flow_label = 0x12345;
+        c.payload.dlid = 0xA93;
+        c.payload.sl = 3;
+        c.payload.port_num = 1;
+        c.payload.is_global = 1;
+        c.payload.sgid_index = 5;
+        c.payload.hop_limit = 64;
+        c.payload.traffic_class = 7;
+        fb::IbAddressHandle f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 71, 72,
+            0xFE80000000000000ull, 0x0002C90300ABCDEFull, 0x12345, 0xA93, 3, 1, 1, 5, 64, 7);
+        expect_identical("IbAddressHandle", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbDevice> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.context = 81;
+        c.payload.fw_ver = 82;
+        c.payload.node_guid = 0x0002C90300ABCDEFull;
+        c.payload.sys_image_guid = 0x0002C90300ABCDF0ull;
+        c.payload.vendor_id = 0x02C9;
+        c.payload.vendor_part_id = 4123;
+        c.payload.hw_ver = 0;
+        c.payload.phys_port_cnt = 1;
+        fb::IbDevice f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 81, 82,
+            0x0002C90300ABCDEFull, 0x0002C90300ABCDF0ull, 0x02C9, 4123, 0, 1);
+        expect_identical("IbDevice", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbReqNotifyCq> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0xA0}, {1, 0xB0});
+        c.payload.cq = 61;
+        c.payload.solicited_only = 1;
+        fb::IbReqNotifyCq f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xA0), fb::TimePoint(1, 0xB0), 0),
+            61, 1);
+        expect_identical("IbReqNotifyCq", &c, &f, sizeof(c));
     }
     {
         Stamped<ir::IbPollCq> c{};

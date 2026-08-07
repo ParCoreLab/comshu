@@ -262,6 +262,31 @@ template<> struct Table<ibr::IbQueuePair> {
     }
 };
 
+// Names for IbCompletionQueue.origin. A raw 1/2 in a CSV is a value nobody
+// checks; these are what let an assertion say "no CQ arrived through the
+// extended door" in words.
+static const char* ib_cq_origin_name(std::uint8_t raw) {
+    switch (static_cast<ibr::IbCqOrigin>(raw)) {
+    case ibr::IbCqOrigin::CreateCq: return "create_cq";
+    case ibr::IbCqOrigin::CreateCqEx: return "create_cq_ex";
+    case ibr::IbCqOrigin::Unknown: break;
+    }
+    return "unknown";
+}
+
+// The entity ib_poll_cq.cq joins to. `channel` is 0 when the CQ carries no
+// completion channel, which is the same thing as "this CQ can only be polled".
+template<> struct Table<ibr::IbCompletionQueue> {
+    static constexpr const char* name = "ib_completion_queue";
+    static constexpr const char* cols = "ticks,cq,context,channel,cqe,comp_vector,origin";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbCompletionQueue>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.cq, s.payload.context, s.payload.channel, s.payload.cqe,
+                     s.payload.comp_vector, ib_cq_origin_name(s.payload.origin));
+    }
+};
+
 template<> struct Table<ibr::IbModifyQp> {
     static constexpr const char* name = "ib_modify_qp";
     static constexpr const char* cols = "ticks,qp,qp_num,dest_qp_num,dest_lid,src_lid,state";
@@ -282,6 +307,92 @@ template<> struct Table<ibr::IbPostSend> {
                      (unsigned long long)s.payload.wr_id, (unsigned long long)s.payload.remote_addr,
                      s.payload.rkey, s.payload.length, s.payload.qp_num,
                      wr_opcode_name(s.payload.opcode).c_str(), s.payload.num_sge);
+    }
+};
+
+// The entity IbPostRecv rows of origin 'srq' join to.
+template<> struct Table<ibr::IbSharedRecvQueue> {
+    static constexpr const char* name = "ib_shared_recv_queue";
+    static constexpr const char* cols = "ticks,srq,pd,max_wr,max_sge,srq_limit";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbSharedRecvQueue>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.srq, s.payload.pd, s.payload.max_wr, s.payload.max_sge,
+                     s.payload.srq_limit);
+    }
+};
+
+// Names for IbPostRecv.origin, for the same reason IbMemRegion.origin has them:
+// an assertion that has to spell `origin = 2` encodes a number nobody can check
+// against the header.
+static const char* ib_recv_origin_name(std::uint8_t raw) {
+    switch (static_cast<ibr::IbRecvOrigin>(raw)) {
+    case ibr::IbRecvOrigin::QueuePair: return "qp";
+    case ibr::IbRecvOrigin::SharedRecvQueue: return "srq";
+    case ibr::IbRecvOrigin::Unknown: break;
+    }
+    return "unknown";
+}
+
+// The receive side. `addr`/`lkey` are the first sge's — what resolves the
+// buffer to an ib_mem_region, and what makes wr_id on a recv completion join to
+// something.
+template<> struct Table<ibr::IbPostRecv> {
+    static constexpr const char* name = "ib_post_recv";
+    static constexpr const char* cols =
+        "ticks,subject,wr_id,addr,lkey,length,qp_num,num_sge,origin";
+    static void row(std::FILE* f, const Stamped<ibr::IbPostRecv>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%llu,0x%llx,%u,%u,%u,%u,%s",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.subject,
+                     (unsigned long long)s.payload.wr_id, (unsigned long long)s.payload.addr,
+                     s.payload.lkey, s.payload.length, s.payload.qp_num, s.payload.num_sge,
+                     ib_recv_origin_name(s.payload.origin));
+    }
+};
+
+// The UD destination. Without this table a UD workload contributes nothing to
+// comm_edges, however much traffic it moves.
+template<> struct Table<ibr::IbAddressHandle> {
+    static constexpr const char* name = "ib_address_handle";
+    static constexpr const char* cols =
+        "ticks,ah,pd,dgid_prefix,dgid_iface,flow_label,dlid,sl,port_num,is_global,sgid_index,"
+        "hop_limit,traffic_class";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbAddressHandle>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,0x%llx,0x%llx,%u,%u,%u,%u,%u,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.ah, s.payload.pd,
+                     (unsigned long long)s.payload.dgid_prefix,
+                     (unsigned long long)s.payload.dgid_iface, s.payload.flow_label, s.payload.dlid,
+                     s.payload.sl, s.payload.port_num, s.payload.is_global, s.payload.sgid_index,
+                     s.payload.hop_limit, s.payload.traffic_class);
+    }
+};
+
+// One row per ibv_context. node_guid is what lets two ranks on different nodes
+// be joined by device rather than by LID.
+template<> struct Table<ibr::IbDevice> {
+    static constexpr const char* name = "ib_device";
+    static constexpr const char* cols =
+        "ticks,context,fw_ver,node_guid,sys_image_guid,vendor_id,vendor_part_id,hw_ver,"
+        "phys_port_cnt";
+    static void row(std::FILE* f, const Stamped<ibr::IbDevice>& s, const rec::InternDictionary& in) {
+        std::fprintf(f, "%llu,%u,%s,0x%llx,0x%llx,0x%x,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.context,
+                     in.str(s.payload.fw_ver), (unsigned long long)s.payload.node_guid,
+                     (unsigned long long)s.payload.sys_image_guid, s.payload.vendor_id,
+                     s.payload.vendor_part_id, s.payload.hw_ver, s.payload.phys_port_cnt);
+    }
+};
+
+// The counterpart to ib_poll_cq: this CQ was armed, so the thread that owns it
+// is sleeping rather than spinning.
+template<> struct Table<ibr::IbReqNotifyCq> {
+    static constexpr const char* name = "ib_req_notify_cq";
+    static constexpr const char* cols = "ticks,cq,solicited_only";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbReqNotifyCq>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.cq,
+                     s.payload.solicited_only);
     }
 };
 
@@ -388,7 +499,8 @@ template<> struct Table<mxr::Mlx5QueuePair> {
 // naming it here — the compiler refuses one without the other.
 using TableRecords =
     std::tuple<GpuAccess, MemObject, EntityClose, SourceLine, ClockAnchor, Attribution,
-               ibr::IbQueuePair, ibr::IbModifyQp, ibr::IbPostSend, ibr::IbPollCq, ibr::IbMemRegion,
+               ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend,
+               ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
                mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair>;
 

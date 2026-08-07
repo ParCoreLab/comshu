@@ -20,6 +20,12 @@
   global:
     ibv_alloc_pd;
     ibv_create_cq;
+    ibv_destroy_cq;
+    ibv_create_srq;
+    ibv_destroy_srq;
+    ibv_create_ah;
+    ibv_destroy_ah;
+    ibv_query_device;
     ibv_create_qp;
     ibv_reg_dmabuf_mr;
     ibv_dereg_mr;

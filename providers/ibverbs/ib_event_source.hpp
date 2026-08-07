@@ -19,12 +19,12 @@ constexpr std::string_view LibPath{"libibverbs.so"};
 template<typename Derived>
 class IbverbsEventSource
     : public pcomm::hook::CompositeHookManager<
-          Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, poll_cq_tag,
-          create_qp_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag, create_cq_tag,
+          Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag, post_srq_recv_tag, req_notify_cq_tag, poll_cq_tag,
+          create_qp_ex_tag, create_cq_ex_tag, create_srq_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag, create_cq_tag, destroy_cq_tag, create_srq_tag, destroy_srq_tag, create_ah_tag, destroy_ah_tag, query_device_tag,
           create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag> {
     using Base = pcomm::hook::CompositeHookManager<
-        Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, poll_cq_tag,
-        create_qp_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag, create_cq_tag,
+        Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag, post_srq_recv_tag, req_notify_cq_tag, poll_cq_tag,
+        create_qp_ex_tag, create_cq_ex_tag, create_srq_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag, create_cq_tag, destroy_cq_tag, create_srq_tag, destroy_srq_tag, create_ah_tag, destroy_ah_tag, query_device_tag,
         create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag>;
 
 public:
@@ -32,16 +32,31 @@ public:
 
     static void* GetLibHandle() noexcept { return nullptr; }
 
-    // Which function-pointer slot backs each object-ops tag. post_send and
-    // poll_cq live in ibv_context->ops; create_qp_ex lives one struct out, in
-    // the verbs_context that ibv_context is embedded in.
+    // Which function-pointer slot backs each object-ops tag. post_send,
+    // post_recv and poll_cq live in ibv_context->ops; the *_ex slots live one
+    // struct out, in the verbs_context that ibv_context is embedded in, and go
+    // through vctx_slot for the two guards that door needs.
     template<pcomm::hook::ValidCallbackTag Tag> auto& get_op(ibv_context* ctx) const noexcept {
         if constexpr (std::is_same_v<Tag, post_send_tag>) {
             return ctx->ops.post_send;
+        } else if constexpr (std::is_same_v<Tag, post_recv_tag>) {
+            return ctx->ops.post_recv;
+        } else if constexpr (std::is_same_v<Tag, post_srq_recv_tag>) {
+            return ctx->ops.post_srq_recv;
+        } else if constexpr (std::is_same_v<Tag, req_notify_cq_tag>) {
+            return ctx->ops.req_notify_cq;
         } else if constexpr (std::is_same_v<Tag, create_qp_ex_tag>) {
             return vctx_slot(ctx, &verbs_context::create_qp_ex,
                              offsetof(verbs_context, create_qp_ex), "create_qp_ex",
                              m_create_qp_ex_sink, m_create_qp_ex_warned);
+        } else if constexpr (std::is_same_v<Tag, create_cq_ex_tag>) {
+            return vctx_slot(ctx, &verbs_context::create_cq_ex,
+                             offsetof(verbs_context, create_cq_ex), "create_cq_ex",
+                             m_create_cq_ex_sink, m_create_cq_ex_warned);
+        } else if constexpr (std::is_same_v<Tag, create_srq_ex_tag>) {
+            return vctx_slot(ctx, &verbs_context::create_srq_ex,
+                             offsetof(verbs_context, create_srq_ex), "create_srq_ex",
+                             m_create_srq_ex_sink, m_create_srq_ex_warned);
         } else if constexpr (std::is_same_v<Tag, reg_dm_mr_tag>) {
             return vctx_slot(ctx, &verbs_context::reg_dm_mr,
                              offsetof(verbs_context, reg_dm_mr), "reg_dm_mr", m_reg_dm_mr_sink,
@@ -60,6 +75,8 @@ protected:
 
 private:
     using CreateQpExFn = ibv_qp* (*)(ibv_context*, ibv_qp_init_attr_ex*);
+    using CreateCqExFn = ibv_cq_ex* (*)(ibv_context*, ibv_cq_init_attr_ex*);
+    using CreateSrqExFn = ibv_srq* (*)(ibv_context*, ibv_srq_init_attr_ex*);
     using RegDmMrFn = ibv_mr* (*)(ibv_pd*, ibv_dm*, uint64_t, size_t, unsigned int);
     using AllocNullMrFn = ibv_mr* (*)(ibv_pd*);
 
@@ -104,9 +121,13 @@ private:
     }
 
     mutable CreateQpExFn   m_create_qp_ex_sink{nullptr};
+    mutable CreateCqExFn   m_create_cq_ex_sink{nullptr};
+    mutable CreateSrqExFn  m_create_srq_ex_sink{nullptr};
     mutable RegDmMrFn      m_reg_dm_mr_sink{nullptr};
     mutable AllocNullMrFn  m_alloc_null_mr_sink{nullptr};
     mutable bool           m_create_qp_ex_warned{false};
+    mutable bool           m_create_cq_ex_warned{false};
+    mutable bool           m_create_srq_ex_warned{false};
     mutable bool           m_reg_dm_mr_warned{false};
     mutable bool           m_alloc_null_mr_warned{false};
 };

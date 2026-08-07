@@ -228,6 +228,20 @@ struct IbQueuePair {
   qp_type:uint8;
 }
 
+// type 104, Entity. A completion queue, lifetime [create, destroy). The entity
+// IbPollCq.cq has referenced since ib_poll_cq existed, and which nothing
+// created until now. Hangs off a CONTEXT rather than a PD — the one ibverbs
+// object that can exist before any protection domain does.
+struct IbCompletionQueue {
+  temporal:Temporal;
+  cq:uint32;
+  context:uint32;
+  channel:uint32;      // ibv_comp_channel*, 0 when the CQ has none
+  cqe:uint32;          // depth the device granted, not the depth requested
+  comp_vector:uint32;
+  origin:uint8;        // IbCqOrigin: which door created it
+}
+
 // type 106, Event. A QP state transition; ->RTR carries the remote endpoint,
 // which is what makes the connection topology recoverable.
 struct IbModifyQp {
@@ -238,6 +252,18 @@ struct IbModifyQp {
   dest_lid:uint32;
   src_lid:uint32;      // our own port's LID; (src_lid, qp_num) names a QP uniquely
   state:uint8;
+}
+
+// type 108, Entity. A shared receive queue, lifetime [create, destroy). The
+// entity IbPostRecv rows of origin `srq` name. Depths are the device's answers
+// (ibv_query_srq), not the caller's request.
+struct IbSharedRecvQueue {
+  temporal:Temporal;
+  srq:uint32;
+  pd:uint32;
+  max_wr:uint32;
+  max_sge:uint32;
+  srq_limit:uint32;
 }
 
 // type 110, Event. One posted work request. The network firehose.
@@ -251,6 +277,63 @@ struct IbPostSend {
   qp_num:uint32;
   opcode:uint8;
   num_sge:uint8;
+}
+
+// type 114, Event. One posted receive (ibv_post_recv / ibv_post_srq_recv).
+// addr/lkey are the first sge's, and they are what resolves the receive buffer
+// to an ib_mem_region — the question the capture could not answer at all before
+// this record existed.
+struct IbPostRecv {
+  temporal:Temporal;
+  subject:uint32;      // ibv_qp* or ibv_srq*, per origin
+  wr_id:uint64;
+  addr:uint64;         // first sge's addr; 0 when num_sge == 0
+  lkey:uint32;         // first sge's lkey; joins to IbMemRegion.lkey
+  length:uint32;       // total sg_list bytes — capacity offered, not bytes received
+  qp_num:uint32;       // 0 when origin is SharedRecvQueue
+  num_sge:uint8;
+  origin:uint8;        // IbRecvOrigin: which door posted it
+}
+
+// type 118, Entity. A UD address handle, lifetime [create, destroy). Carries
+// the destination a UD send is aimed at — which lives nowhere else in the API,
+// because UD's RTR transition names no peer the way RC's does.
+struct IbAddressHandle {
+  temporal:Temporal;
+  ah:uint32;
+  pd:uint32;
+  dgid_prefix:uint64;  // host order, like Mlx5DevxQpConnect
+  dgid_iface:uint64;
+  flow_label:uint32;
+  dlid:uint32;
+  sl:uint8;
+  port_num:uint8;
+  is_global:uint8;     // whether the GRH fields above mean anything
+  sgid_index:uint8;
+  hop_limit:uint8;
+  traffic_class:uint8;
+}
+
+// type 120, Entity. The HCA behind one ibv_context. node_guid is the globally
+// unique name a LID only approximates.
+struct IbDevice {
+  temporal:Temporal;
+  context:uint32;
+  fw_ver:uint32;         // interned string
+  node_guid:uint64;      // host order
+  sys_image_guid:uint64;
+  vendor_id:uint32;
+  vendor_part_id:uint32;
+  hw_ver:uint32;
+  phys_port_cnt:uint8;
+}
+
+// type 116, Event. A CQ armed for a completion notification. The only evidence
+// that an application sleeps on interrupts rather than spinning on poll_cq.
+struct IbReqNotifyCq {
+  temporal:Temporal;
+  cq:uint32;
+  solicited_only:uint8;
 }
 
 // type 112, Event. One completion drained from a CQ.

@@ -32,6 +32,7 @@
 #include <unordered_map>
 
 #include <dlfcn.h>  // dladdr, for the MR caller diagnostic at the bottom
+#include <endian.h>  // be64toh — GIDs and GUIDs are big-endian on the wire
 
 namespace ibv {
 namespace rr = pcomm::providers::ibverbs::records;
@@ -65,6 +66,12 @@ using pcomm::rec::InternDomain;
 // histogram dumped at unload is the only way to know it rather than argue it.
 static void ensure_installed(ibv_context* ctx, const char* door);
 static void forget_context(const ibv_context* ctx);
+// Emits the IbDevice row for a context. Called from ensure_installed, which is
+// the one place that runs exactly once per context whatever door it arrives at.
+static void record_device(ibv_context* ctx);
+// Diagnostics for the unmatched-CQ hunt; see their definitions at the bottom.
+static void remember_cq(const ibv_cq* cq);
+static void trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr);
 
 static int& reg_mr_depth() noexcept {
     static thread_local int depth = 0;
@@ -579,11 +586,133 @@ Profiler::Profiler() {
     // close_device -> the context is gone. Forget it, so the next context to be
     // handed the same address by the allocator is instrumented rather than
     // mistaken for this one. See forget_context.
+    // ...and the device entity's lifetime ends with it. Without this every
+    // ib_device row would be an entity opened and never closed, which is a case
+    // suite/asserts/entity_close_accounted.sql reports by design.
     this->register_post<close_device_tag>(
         [](int ret, ibv_context* ctx, auto...) {
-            if (ret == 0)
-                forget_context(ctx);
+            if (ret != 0)
+                return;
+            rec().record(rec().now_instant(),
+                         pcomm::core::records::EntityClose{
+                             {}, {}, h(ctx), rr::IbDevice::pcomm_type_id});
+            forget_context(ctx);
         });
+
+    // create_cq / create_cq_ex -> the completion-queue entity.
+    //
+    // Until this landed, IbPollCq.cq was an interned pointer joining to NOTHING:
+    // the oldest event table in the capture named a subject no record created.
+    // entity_close_accounted could not see it, because that assertion checks
+    // closes against opens and an event's subject is neither.
+    //
+    // Both doors record the same row. The extended one is not a variant to be
+    // told apart downstream — the same reasoning that gives IbMemRegion a single
+    // shape for reg_mr and reg_mr_iova2 — so nothing in the capture reveals
+    // which entry point the caller happened to compile against.
+    //
+    // `cqe` comes from the RETURNED cq, not from the argument: ibv_create_cq
+    // takes a minimum and the device grants at least that many, so the argument
+    // is a request and cq->cqe is the fact.
+    this->register_post<create_cq_tag>([](ibv_cq* cq, ibv_context* ctx, int, void*,
+                                          ibv_comp_channel* channel, int comp_vector, auto...) {
+        if (!cq)
+            return;
+        rec().record(pcomm::core::Temporal::none(),
+                     rr::IbCompletionQueue{{},
+                                           {},
+                                           h(cq),
+                                           h(ctx),
+                                           channel ? h(channel) : pcomm::core::Handle{},
+                                           static_cast<std::uint32_t>(cq->cqe),
+                                           static_cast<std::uint32_t>(comp_vector),
+                                           static_cast<std::uint8_t>(rr::IbCqOrigin::CreateCq)});
+        remember_cq(cq);
+    });
+
+    // The extended door. ibv_cq_ex starts with ibv_cq's exact layout (verbs.h
+    // makes ibv_cq_ex_to_cq a plain cast), so the returned pointer interns to
+    // the same Handle a poll on this CQ will produce, and the fields below are
+    // read through that cast rather than duplicated.
+    //
+    // comp_vector is a plain field of ibv_cq_init_attr_ex and needs no comp_mask
+    // check: the mask governs the OPTIONAL tail (flags, parent_domain), not the
+    // head. That distinction is the modify_qp lesson — reading a field the
+    // caller never set is reading their stack — so it is stated rather than
+    // assumed.
+    this->register_post<create_cq_ex_tag>(
+        [](ibv_cq_ex* cqx, ibv_context* ctx, ibv_cq_init_attr_ex* a, auto...) {
+            if (!cqx)
+                return;
+            ibv_cq* cq = ibv_cq_ex_to_cq(cqx);
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbCompletionQueue{{},
+                                               {},
+                                               h(cq),
+                                               h(ctx),
+                                               (a && a->channel) ? h(a->channel)
+                                                                 : pcomm::core::Handle{},
+                                               static_cast<std::uint32_t>(cq->cqe),
+                                               a ? a->comp_vector : 0u,
+                                               static_cast<std::uint8_t>(
+                                                   rr::IbCqOrigin::CreateCqEx)});
+            remember_cq(cq);
+        });
+
+    // destroy_cq -> the CQ's lifetime ended. Same success-only discipline as
+    // dereg_mr and destroy_qp: a destroy that failed closed nothing, and
+    // recording it would make a live CQ look freed.
+    this->register_post<destroy_cq_tag>([](int ret, ibv_cq* cq, auto...) {
+        if (ret != 0 || !cq)
+            return;
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
+                                              {}, {}, h(cq), rr::IbCompletionQueue::pcomm_type_id});
+    });
+
+    // create_ah -> the UD path's addressing object, and the only place in the
+    // API where a UD destination is named.
+    //
+    // An RC QP learns its peer at modify_qp->RTR and IbModifyQp records it. UD
+    // has no such transition — its RTR sets only state, pkey and qkey — so
+    // without this row a UD workload contributes nothing to comm_edges at all,
+    // however much traffic it moves.
+    //
+    // The GRH is read only when is_global says it was filled in. Same discipline
+    // as modify_qp's mask: a field the caller did not set is their stack, and
+    // this provider has already paid once for reading 240 of those per run.
+    this->register_post<create_ah_tag>([](ibv_ah* ah, ibv_pd* pd, ibv_ah_attr* a, auto...) {
+        if (!ah || !a)
+            return;
+        std::uint64_t prefix = 0, iface = 0;
+        if (a->is_global) {
+            std::memcpy(&prefix, &a->grh.dgid.raw[0], 8);
+            std::memcpy(&iface, &a->grh.dgid.raw[8], 8);
+            prefix = be64toh(prefix);
+            iface = be64toh(iface);
+        }
+        rec().record(pcomm::core::Temporal::none(),
+                     rr::IbAddressHandle{{},
+                                         {},
+                                         h(ah),
+                                         h(pd),
+                                         prefix,
+                                         iface,
+                                         a->is_global ? a->grh.flow_label : 0u,
+                                         static_cast<std::uint32_t>(a->dlid),
+                                         a->sl,
+                                         a->port_num,
+                                         a->is_global,
+                                         a->is_global ? a->grh.sgid_index : std::uint8_t{0},
+                                         a->is_global ? a->grh.hop_limit : std::uint8_t{0},
+                                         a->is_global ? a->grh.traffic_class : std::uint8_t{0}});
+    });
+
+    this->register_post<destroy_ah_tag>([](int ret, ibv_ah* ah, auto...) {
+        if (ret != 0 || !ah)
+            return;
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
+                                              {}, {}, h(ah), rr::IbAddressHandle::pcomm_type_id});
+    });
 
     // create_qp -> queue-pair endpoint entity.
     this->register_post<create_qp_tag>([](ibv_qp* qp, ibv_pd* pd, ibv_qp_init_attr* a, auto...) {
@@ -765,6 +894,164 @@ Profiler::Profiler() {
         }
     });
 
+    // post_recv -> one row per posted receive. The other half of the wire.
+    //
+    // Same chain walk as post_send above, because ibv_post_recv takes the same
+    // shape of linked list. What differs is what is kept: the FIRST sge's addr
+    // and lkey, which is the field SigmaTrace's handler does not have and the
+    // reason this record answers "which memory receives this" when its does not.
+    //
+    // `length` is the total over the sg_list — the capacity being offered, not
+    // the bytes that will arrive. How many actually land is byte_len on the
+    // completion, and the two differing is a legal short receive rather than a
+    // discrepancy.
+    //
+    // Success only, and for a sharper reason than post_send's: a failed
+    // ibv_post_recv posts NO buffer, so recording one would invent a receive
+    // that the hardware will never complete — and the assertion this record
+    // exists to support (every recv completion joins to a posted receive) would
+    // then be comparing against a receive that never happened.
+    this->register_post<post_recv_tag>([](int ret, ibv_qp* qp, ibv_recv_wr* wr, ibv_recv_wr**,
+                                          std::uint64_t t0, std::uint64_t t1) {
+        if (ret != 0 || !qp)
+            return;
+        const auto tspan = span(t0, t1);
+        for (; wr; wr = wr->next) {
+            // Establish that the list is readable BEFORE reading it. num_sge is
+            // a count, not a promise that sg_list is non-null, and this runs on
+            // every posted receive in the capture — a chain walk that trusts the
+            // count and then guards the pointer has the check in the wrong order
+            // and dereferences null on the way past it.
+            const bool    has_sge = wr->num_sge > 0 && wr->sg_list != nullptr;
+            std::uint32_t length = 0;
+            if (has_sge)
+                for (int i = 0; i < wr->num_sge; ++i)
+                    length += wr->sg_list[i].length;
+            rec().record(tspan,
+                         rr::IbPostRecv{{},
+                                        {},
+                                        h(qp),
+                                        wr->wr_id,
+                                        has_sge ? wr->sg_list[0].addr : 0u,
+                                        has_sge ? wr->sg_list[0].lkey : 0u,
+                                        length,
+                                        qp->qp_num,
+                                        static_cast<std::uint8_t>(wr->num_sge),
+                                        static_cast<std::uint8_t>(rr::IbRecvOrigin::QueuePair)});
+        }
+    });
+
+    // post_srq_recv -> the same IbPostRecv row, discriminated by origin.
+    //
+    // Deliberately NOT a second record type. A reader asking "what receives were
+    // posted" should not have to know which API posted them, exactly as it does
+    // not have to know whether a region came through reg_mr or reg_mr_iova2.
+    // `subject` is the SRQ here rather than a QP, and `qp_num` is 0 because an
+    // SRQ genuinely has none — the receive is not bound to an endpoint until the
+    // hardware picks one, which is the whole point of a shared receive queue.
+    //
+    // That is also the limit of what this row can claim: an SRQ receive cannot
+    // be joined to a completion by (qp, wr_id) the way a QP receive can, because
+    // the QP is only decided when the message lands. The recv-completion
+    // assertion scopes itself to origin='qp' for that reason, and says so.
+    this->register_post<post_srq_recv_tag>([](int ret, ibv_srq* srq, ibv_recv_wr* wr,
+                                              ibv_recv_wr**, std::uint64_t t0, std::uint64_t t1) {
+        if (ret != 0 || !srq)
+            return;
+        const auto tspan = span(t0, t1);
+        for (; wr; wr = wr->next) {
+            // Guard before read, as in post_recv above.
+            const bool    has_sge = wr->num_sge > 0 && wr->sg_list != nullptr;
+            std::uint32_t length = 0;
+            if (has_sge)
+                for (int i = 0; i < wr->num_sge; ++i)
+                    length += wr->sg_list[i].length;
+            rec().record(
+                tspan, rr::IbPostRecv{{},
+                                      {},
+                                      h(srq),
+                                      wr->wr_id,
+                                      has_sge ? wr->sg_list[0].addr : 0u,
+                                      has_sge ? wr->sg_list[0].lkey : 0u,
+                                      length,
+                                      0u,
+                                      static_cast<std::uint8_t>(wr->num_sge),
+                                      static_cast<std::uint8_t>(
+                                          rr::IbRecvOrigin::SharedRecvQueue)});
+        }
+    });
+
+    // create_srq / create_srq_ex -> the shared-receive-queue entity, so no
+    // IbPostRecv row of origin `srq` names an entity nothing created.
+    //
+    // The depths come from ibv_query_srq rather than from the caller's request,
+    // for the same reason IbCompletionQueue.cqe comes from cq->cqe: the argument
+    // is a minimum and the device's answer is the fact. Falling back to the
+    // request on failure keeps the row rather than the precision — an SRQ that
+    // exists and is described approximately is worth more than an entity the
+    // capture cannot see at all, which is the defect this whole stage removes.
+    //
+    // Calling back into libibverbs from a post callback is established here:
+    // local_lid() does exactly this with ibv_query_port on the modify_qp path.
+    // ibv_query_srq is not a door we interpose, so there is no recursion.
+    this->register_post<create_srq_tag>(
+        [](ibv_srq* srq, ibv_pd* pd, ibv_srq_init_attr* a, auto...) {
+            if (!srq)
+                return;
+            ibv_srq_attr q{};
+            const bool   ok = ibv_query_srq(srq, &q) == 0;
+            const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbSharedRecvQueue{
+                             {}, {}, h(srq), h(pd), s.max_wr, s.max_sge, s.srq_limit});
+        });
+
+    // The extended door. `pd` is comp_mask-gated here — the same discipline
+    // create_qp_ex needs, and for the same reason modify_qp reads nothing the
+    // mask does not name: a field the caller never set is their stack, not data.
+    this->register_post<create_srq_ex_tag>(
+        [](ibv_srq* srq, ibv_context*, ibv_srq_init_attr_ex* a, auto...) {
+            if (!srq)
+                return;
+            ibv_srq_attr q{};
+            const bool   ok = ibv_query_srq(srq, &q) == 0;
+            const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
+            const bool has_pd = a && (a->comp_mask & IBV_SRQ_INIT_ATTR_PD);
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbSharedRecvQueue{{},
+                                               {},
+                                               h(srq),
+                                               has_pd ? h(a->pd) : pcomm::core::Handle{},
+                                               s.max_wr,
+                                               s.max_sge,
+                                               s.srq_limit});
+        });
+
+    // destroy_srq -> the entity's lifetime ended. Success only, like every other
+    // close on this path.
+    this->register_post<destroy_srq_tag>([](int ret, ibv_srq* srq, auto...) {
+        if (ret != 0 || !srq)
+            return;
+        rec().record(rec().now_instant(),
+                     pcomm::core::records::EntityClose{
+                         {}, {}, h(srq), rr::IbSharedRecvQueue::pcomm_type_id});
+    });
+
+    // req_notify_cq -> the CQ was armed. The counterpart to poll_cq, and the
+    // only row that distinguishes an application sleeping on a completion
+    // channel from one spinning on an empty CQ.
+    //
+    // No predicate: unlike poll_cq there is no firehose to filter, because a CQ
+    // is armed once per batch rather than once per completion.
+    this->register_post<req_notify_cq_tag>(
+        [](int ret, ibv_cq* cq, int solicited_only, std::uint64_t t0, std::uint64_t t1) {
+            if (ret != 0 || !cq)
+                return;
+            rec().record(span(t0, t1),
+                         rr::IbReqNotifyCq{{}, {}, h(cq),
+                                           static_cast<std::uint8_t>(solicited_only ? 1 : 0)});
+        });
+
     // poll_cq -> one row per reaped completion (predicate skips empty polls).
     this->register_post<poll_cq_tag>(
         [](int ret, ibv_cq* cq, int, ibv_wc* wc, std::uint64_t t0, std::uint64_t t1) {
@@ -799,14 +1086,39 @@ extern "C" int ibv_close_device(ibv_context* context) {
 extern "C" ibv_context* ibv_open_device(ibv_device* device) {
     return ibv::Profiler::invoke_preload<ibv::open_device_tag>(device);
 }
-// Coverage only — see the create_cq hook in ib_hooks.hpp. A CQ is created from a
-// context, not from a PD, so this is the one door through which an object-op
-// (poll_cq) could reach a context we have not installed into yet.
+// Two jobs, and it had only the first for a long time. As COVERAGE: a CQ is
+// created from a context, not from a PD, so this is one of the doors through
+// which an object-op (poll_cq) could reach a context we have not installed into
+// yet. As a RECORD: it emits ib_completion_queue, the entity IbPollCq.cq had
+// been referencing since ib_poll_cq existed without anything creating it.
 extern "C" ibv_cq* ibv_create_cq(ibv_context* context, int cqe, void* cq_context,
                                  ibv_comp_channel* channel, int comp_vector) {
     ibv::ensure_installed(context, "create_cq");
     return ibv::Profiler::invoke_preload<ibv::create_cq_tag>(context, cqe, cq_context, channel,
                                                              comp_vector);
+}
+// The CQ's other end. ensure_installed here for the same reason create_cq has
+// it: a CQ hangs off a context rather than a PD, so this is one of the two doors
+// through which a context carrying only completion queues can first reach us.
+extern "C" int ibv_destroy_cq(ibv_cq* cq) {
+    if (cq)
+        ibv::ensure_installed(cq->context, "destroy_cq");
+    ibv::trace_unmatched_destroy_cq(cq, __builtin_return_address(0));
+    return ibv::Profiler::invoke_preload<ibv::destroy_cq_tag>(cq);
+}
+// The classic SRQ doors. ibv_create_srq takes a PD, so unlike create_cq it can
+// never be the first call on a context — the PD had to exist. It still calls
+// ensure_installed because doing so is free and the rule here is that every
+// interposer installs, rather than each one arguing about whether it needs to.
+extern "C" ibv_srq* ibv_create_srq(ibv_pd* pd, ibv_srq_init_attr* attr) {
+    if (pd)
+        ibv::ensure_installed(pd->context, "create_srq");
+    return ibv::Profiler::invoke_preload<ibv::create_srq_tag>(pd, attr);
+}
+extern "C" int ibv_destroy_srq(ibv_srq* srq) {
+    if (srq)
+        ibv::ensure_installed(srq->context, "destroy_srq");
+    return ibv::Profiler::invoke_preload<ibv::destroy_srq_tag>(srq);
 }
 extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
     ibv::ensure_installed(context, "alloc_pd");
@@ -835,6 +1147,23 @@ extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
     if (qp)
         ibv::ensure_installed(qp->context, "modify_qp");
     return ibv::Profiler::invoke_preload<ibv::modify_qp_tag>(qp, attr, mask);
+}
+// The UD addressing doors.
+extern "C" ibv_ah* ibv_create_ah(ibv_pd* pd, ibv_ah_attr* attr) {
+    if (pd)
+        ibv::ensure_installed(pd->context, "create_ah");
+    return ibv::Profiler::invoke_preload<ibv::create_ah_tag>(pd, attr);
+}
+extern "C" int ibv_destroy_ah(ibv_ah* ah) {
+    if (ah)
+        ibv::ensure_installed(ah->context, "destroy_ah");
+    return ibv::Profiler::invoke_preload<ibv::destroy_ah_tag>(ah);
+}
+// Install door only — the ib_device row is emitted from ensure_installed, not
+// from here. See the query_device hook in ib_hooks.hpp.
+extern "C" int ibv_query_device(ibv_context* context, ibv_device_attr* attr) {
+    ibv::ensure_installed(context, "query_device");
+    return ibv::Profiler::invoke_preload<ibv::query_device_tag>(context, attr);
 }
 // DIAGNOSTIC, gated on PCOMM_TRACE_MR_CALLERS=1 — which LIBRARY calls each
 // registration door?
@@ -956,6 +1285,43 @@ void ibv::ensure_installed(ibv_context* ctx, const char* door) {
         ++(*g_install_doors)[door ? door : "?"];
     }
     ibv::Profiler::instance().install(ctx);
+    record_device(ctx);
+}
+
+// The HCA behind this context, recorded once, here.
+//
+// This is the only spot in the provider that runs exactly once per context
+// whatever door the context arrives at — which is the whole reason the row is
+// emitted from here rather than from a hooked ibv_query_device. 48 of 73
+// contexts per rank first reach us at ibv_alloc_pd (job 44396249), so a fact
+// tied to any single API entry point is a fact most contexts never carry.
+//
+// We call ibv_query_device ourselves rather than waiting to observe someone
+// else's call. That is the same move local_lid() makes with ibv_query_port on
+// the modify_qp path: the fact is one call away and asking for it is cheaper
+// than hoping the application asks. ibv_query_device IS a door we interpose, so
+// this call re-enters our own interposer — harmless, because ensure_installed
+// has already inserted this ctx into g_installed_ctxs by the time we get here
+// and therefore returns immediately without recursing.
+//
+// A failed query still emits a row with zeroed identity: the context exists and
+// its events will name it, so an entity that is present-but-unidentified beats
+// one that is absent — the same bargain reg_dmabuf_mr strikes when it cannot
+// resolve an address.
+void ibv::record_device(ibv_context* ctx) {
+    ibv_device_attr a{};
+    const bool      ok = ibv_query_device(ctx, &a) == 0;
+    rec().record(pcomm::core::Temporal::none(),
+                 rr::IbDevice{{},
+                              {},
+                              h(ctx),
+                              rec().intern(InternDomain::String, ok ? a.fw_ver : ""),
+                              ok ? be64toh(a.node_guid) : 0ull,
+                              ok ? be64toh(a.sys_image_guid) : 0ull,
+                              ok ? a.vendor_id : 0u,
+                              ok ? a.vendor_part_id : 0u,
+                              ok ? a.hw_ver : 0u,
+                              ok ? a.phys_port_cnt : std::uint8_t{0}});
 }
 
 // DIAGNOSTIC, gated on PCOMM_TRACE_CTX_INSTALL=1. One line per door that ever
@@ -995,6 +1361,63 @@ void ibv::forget_context(const ibv_context* ctx) {
     std::lock_guard<std::mutex> lk(g_known_mr_mutex);
     if (g_installed_ctxs)
         g_installed_ctxs->erase(ctx);
+}
+
+// The CQ twin of remember_mr/trace_unmatched_dereg, and it exists because the
+// receive plan's stage 1 uncovered the same shape of hole one layer down:
+// ib_completion_queue closes EXACTLY 30 CQs per rank that nothing created, on
+// all 8 ranks of case 02 (NCCL) and all 8 of case 07 (NVSHMEM multinode) alike.
+// Two unrelated workloads producing an identical per-rank number is not a race
+// and not an install-window artifact — those vary — so it points at a creation
+// door nobody has named.
+//
+// IbCompletionQueue.origin narrows it from the capture side by saying which of
+// our two doors each recorded CQ came through. This narrows it from the process
+// side by naming the LIBRARY and FUNCTION that destroys a CQ we never saw
+// created, and whether that CQ's context was ever installed — which is exactly
+// the trio that settled the reg_mr hunt, where the per-door caller table alone
+// could not tell "created elsewhere" from "created through a door we do not
+// hook".
+//
+// Gated on PCOMM_TRACE_MR_CALLERS=1 like its sibling: same hunt, same switch.
+static std::set<const void*>* g_known_cqs = nullptr;  // leaked, like the rest
+
+void ibv::remember_cq(const ibv_cq* cq) {
+    if (!cq || !trace_mr_callers_enabled())
+        return;
+    std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+    if (!g_known_cqs)
+        g_known_cqs = new std::set<const void*>();
+    g_known_cqs->insert(cq);
+}
+
+void ibv::trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr) {
+    if (!cq || !trace_mr_callers_enabled())
+        return;
+    {
+        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        if (g_known_cqs && g_known_cqs->count(cq))
+            return;  // created through a door we hook — nothing to report
+    }
+    Dl_info     info{};
+    const bool  ok = dladdr(ret_addr, &info) != 0;
+    const char* who = (ok && info.dli_fname) ? info.dli_fname : "?";
+    const char* fn = (ok && info.dli_sname) ? info.dli_sname : "?";
+    bool        installed = false;
+    {
+        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        installed = g_installed_ctxs && cq->context && g_installed_ctxs->count(cq->context);
+    }
+    static std::mutex            m;
+    std::lock_guard<std::mutex>  lk(m);
+    static std::set<std::string> seen;
+    std::string key = std::string(fn) + "|" + who + "|" + (installed ? "y" : "n");
+    if (!seen.insert(key).second)
+        return;  // one line per distinct caller, not per CQ
+    std::fprintf(stderr, "[pcomm-unmatched] destroy_cq cq=%p cqe=%d ctx=%p installed=%s <- %s in %s\n",
+                 static_cast<const void*>(cq), cq->cqe, static_cast<const void*>(cq->context),
+                 installed ? "yes" : "NO", fn, who);
+    std::fflush(stderr);
 }
 
 static void remember_mr(const ibv_mr* mr) {
