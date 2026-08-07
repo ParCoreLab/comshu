@@ -25,6 +25,12 @@ set_target_properties(mlx5dv_trace PROPERTIES
   BUILD_RPATH "$ORIGIN/../../libpcomm"
   INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
 target_link_options(mlx5dv_trace PRIVATE -Wl,--enable-new-dtags)
+# A shared library links happily with undefined symbols and fails at RUNTIME, on
+# every rank, with "undefined symbol". That is exactly what a definition placed
+# outside the namespace its declaration lives in produces, and it cost a job:
+# the build printed a warning nobody was grepping for and reported success.
+# --no-undefined turns that into a link error on the dev box instead.
+target_link_options(mlx5dv_trace PRIVATE -Wl,--no-undefined)
 install(TARGETS mlx5dv_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
         COMPONENT mlx5dv)
 

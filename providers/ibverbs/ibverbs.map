@@ -24,6 +24,7 @@
     ibv_dereg_mr;
     ibv_destroy_qp;
     ibv_modify_qp;
+    ibv_close_device;
     ibv_open_device;
     ibv_qp_to_qp_ex;
     ibv_reg_mr;

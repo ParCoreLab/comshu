@@ -43,6 +43,12 @@ DEFINE_OBJECT_OPS_HOOK_PRED(
 
 // --- preload hooks (LD_PRELOAD / dlsym interposition) ------------------------
 DEFINE_PRELOAD_HOOK(ibv, open_device, "ibv_open_device", ibv_context*, ibv_device*);
+// The other end of a context's life, and the reason any set keyed on
+// ibv_context* needs one. Without it a closed context stays "known" forever,
+// and since the allocator reuses the address, the NEXT context at that address
+// is treated as already handled. That silently cost case 02 two of its eight
+// ranks (26880 sends -> 20160) until it was bisected against 055d18b.
+DEFINE_PRELOAD_HOOK(ibv, close_device, "ibv_close_device", int, ibv_context*);
 // Memory registration, hooked at the one place every path funnels through.
 //
 // verbs.h makes `ibv_reg_mr` a macro over a static inline that calls the legacy

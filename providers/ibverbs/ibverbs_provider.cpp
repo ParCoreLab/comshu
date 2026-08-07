@@ -53,10 +53,10 @@ using pcomm::rec::InternDomain;
 // once, and a shared counter would let one thread's outer call suppress
 // another's. This is the same per-thread discipline the flush path already
 // needs.
-// Diagnostic only — records which contexts we installed into, so an unmatched
-// dereg can say whether its context was ever instrumented. Defined at the bottom
-// with the other diagnostics; declared here because open_device needs it.
-static void remember_installed_ctx(const ibv_context* ctx);
+// Instrument a context if it is not already instrumented, and forget it when it
+// closes. Defined at the bottom; declared here because the callbacks need them.
+static void ensure_installed(ibv_context* ctx);
+static void forget_context(const ibv_context* ctx);
 
 static int& reg_mr_depth() noexcept {
     static thread_local int depth = 0;
@@ -415,19 +415,7 @@ Profiler::Profiler() {
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>([](ibv_context* ctx, ibv_device*, auto...) {
-        // ALWAYS install, never deduplicate on the context pointer.
-        //
-        // A short-lived dedup set here cost case 02 two of its eight ranks
-        // (26880 sends -> 20160, jobs 44370049/44370229/44370263, against
-        // 26880 at 055d18b). ibv_close_device frees the context and the
-        // allocator hands the same address back to the next open, so a set
-        // keyed on the pointer reports "already installed" for a context that
-        // is brand new and unpatched. It fails silently and only on the ranks
-        // whose allocator happens to recycle.
-        if (ctx) {
-            instance().install(ctx);
-            remember_installed_ctx(ctx);
-        }
+        ensure_installed(ctx);
     });
 
     // reg_mr_iova2 -> the same memory-region entity. `iova` is the virtual
@@ -579,6 +567,15 @@ Profiler::Profiler() {
                                      -1,
                                      static_cast<std::uint8_t>(rr::IbRegionOrigin::NullMr)});
     });
+
+    // close_device -> the context is gone. Forget it, so the next context to be
+    // handed the same address by the allocator is instrumented rather than
+    // mistaken for this one. See forget_context.
+    this->register_post<close_device_tag>(
+        [](int ret, ibv_context* ctx, auto...) {
+            if (ret == 0)
+                forget_context(ctx);
+        });
 
     // create_qp -> queue-pair endpoint entity.
     this->register_post<create_qp_tag>([](ibv_qp* qp, ibv_pd* pd, ibv_qp_init_attr* a, auto...) {
@@ -788,26 +785,36 @@ template class ibv::IbverbsEventSource<ibv::Profiler>;
 // Each forwards through invoke_preload<Tag>, which resolves the real symbol via
 // pcomm::smart_dlsym, calls it, and fires the registered pre/post callbacks.
 
+extern "C" int ibv_close_device(ibv_context* context) {
+    return ibv::Profiler::invoke_preload<ibv::close_device_tag>(context);
+}
 extern "C" ibv_context* ibv_open_device(ibv_device* device) {
     return ibv::Profiler::invoke_preload<ibv::open_device_tag>(device);
 }
 extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
+    ibv::ensure_installed(context);
     return ibv::Profiler::invoke_preload<ibv::alloc_pd_tag>(context);
 }
 // Interposing this is what makes the new work-request API visible at all: it is
 // where a qp_ex first reaches the application, and the wr_* calls that follow
 // are static inline wrappers no interposer can reach.
 extern "C" ibv_qp_ex* ibv_qp_to_qp_ex(ibv_qp* qp) {
+    if (qp)
+        ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::qp_to_qp_ex_tag>(qp);
 }
 
 extern "C" ibv_qp* ibv_create_qp(ibv_pd* pd, ibv_qp_init_attr* attr) {
+    if (pd)
+        ibv::ensure_installed(pd->context);
     return ibv::Profiler::invoke_preload<ibv::create_qp_tag>(pd, attr);
 }
 extern "C" int ibv_destroy_qp(ibv_qp* qp) {
     return ibv::Profiler::invoke_preload<ibv::destroy_qp_tag>(qp);
 }
 extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
+    if (qp)
+        ibv::ensure_installed(qp->context);
     return ibv::Profiler::invoke_preload<ibv::modify_qp_tag>(qp, attr, mask);
 }
 // DIAGNOSTIC, gated on PCOMM_TRACE_MR_CALLERS=1 — which LIBRARY calls each
@@ -889,35 +896,45 @@ static std::set<const void*>* g_known_mrs = nullptr;  // leaked: outlives atexit
 // opening door, not at the registration door.
 static std::set<const void*>* g_installed_ctxs = nullptr;
 
-// Which ibv_contexts we installed object-ops into. DIAGNOSTIC ONLY: nothing in
-// the capture path may branch on it — see below for what happened when it did.
+// Which ibv_contexts currently have object-ops installed.
 //
-// An unmatched dereg reports whether its mr's context was ever instrumented,
-// which is what identified the real gap (job 44369505: every unmatched close sat
-// on a context opened by a door we do not interpose, so ibv_reg_dm_mr's
-// object-ops trampoline was never installed there while ibv_dereg_mr, a preload
-// hook, still fired).
+// Object-ops hooks live INSIDE a context: install() patches function pointers in
+// one ibv_context, so a context we never install into is invisible to every one
+// of them at once — post_send and poll_cq included, not just the ibv_reg_dm_mr
+// that led here. Job 44369505 measured that: 262 unmatched closes, every one on
+// a context this provider had never seen.
 //
-// TWO THINGS THIS SET MUST NOT BECOME:
+// Two rules this set exists to get right, both learned the hard way:
 //
-//  - a gate on installation. Calling install only for contexts absent from it
-//    lost two of case 02's eight ranks, because ibv_close_device frees a context
-//    and the allocator reuses the address, so the set reports "already
-//    installed" for a new one. Silent, deterministic, and confined to whichever
-//    ranks recycle.
+//  1. It MUST have a lifecycle. Keyed on a pointer, with no removal, it reports
+//     "already installed" for a brand-new context that the allocator placed at a
+//     freed one's address. That cost case 02 two of eight ranks — 26880 sends to
+//     20160 — silently, and only on the ranks that happened to recycle. Hence
+//     forget_context on ibv_close_device.
 //
-//  - the primary instrumentation mechanism. Calling install from every
-//    context-holding door was tried (d080fa4) and reverted: it is the right idea
-//    for the right reason, and the deterministic fix is to interpose the OPENING
-//    doors (mlx5dv_open_device et al) so every context is patched before any
-//    traffic, not to patch it at whatever door happens to arrive first.
-void ibv::remember_installed_ctx(const ibv_context* ctx) {
-    if (!ctx || !trace_mr_callers_enabled())
+//  2. It must never make installation conditional on something OTHER than "is
+//     this context already patched". Re-installing would save our own trampoline
+//     as the original and recurse; not installing loses the capture. The set
+//     answers exactly that question and nothing else.
+void ibv::ensure_installed(ibv_context* ctx) {
+    if (!ctx)
+        return;
+    {
+        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        if (!g_installed_ctxs)
+            g_installed_ctxs = new std::set<const void*>();
+        if (!g_installed_ctxs->insert(ctx).second)
+            return;  // already patched, and still alive
+    }
+    ibv::Profiler::instance().install(ctx);
+}
+
+void ibv::forget_context(const ibv_context* ctx) {
+    if (!ctx)
         return;
     std::lock_guard<std::mutex> lk(g_known_mr_mutex);
-    if (!g_installed_ctxs)
-        g_installed_ctxs = new std::set<const void*>();
-    g_installed_ctxs->insert(ctx);
+    if (g_installed_ctxs)
+        g_installed_ctxs->erase(ctx);
 }
 
 static void remember_mr(const ibv_mr* mr) {
@@ -965,6 +982,8 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
 extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
                                      int fd, int access) {
     trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
+    if (pd)
+        ibv::ensure_installed(pd->context);
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
                                                                      access);
     remember_mr(mr);
@@ -987,6 +1006,8 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
 #undef ibv_reg_mr
 extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
     trace_mr_caller("reg_mr", __builtin_return_address(0));
+    if (pd)
+        ibv::ensure_installed(pd->context);
     struct Depth {
         Depth() noexcept { ++ibv::reg_mr_depth(); }
         ~Depth() noexcept { --ibv::reg_mr_depth(); }
@@ -1002,6 +1023,8 @@ extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access)
 extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint64_t iova,
                                     unsigned int access) {
     trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));
+    if (pd)
+        ibv::ensure_installed(pd->context);
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);
     remember_mr(mr);
     return mr;
