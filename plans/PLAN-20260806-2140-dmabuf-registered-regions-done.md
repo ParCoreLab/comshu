@@ -1,7 +1,13 @@
 # PLAN — dmabuf-registered memory regions are invisible to the ibverbs provider
 
 - **Created:** 2026-08-06 21:40 +03
-- **Status:** PARTLY DONE. `ibv_reg_dmabuf_mr` is hooked (option A, with B's
+- **Status:** DONE (2026-08-07). The dmabuf half shipped on 2026-08-06; the
+  residue it could not explain turned out not to be a registration door at all —
+  see PLAN-20260806-2320-dlvsym-interposer-not-observed, which closed it by
+  installing object-ops on contexts opened through doors we do not interpose.
+  `entity_close_accounted` now passes on 02, 06 and 07 with the markers dropped.
+
+- **Original status:** PARTLY DONE. `ibv_reg_dmabuf_mr` is hooked (option A, with B's
   capability — see below). It closed NVSHMEM's half and **did not** close
   NCCL's; the residue is narrowed to registrations and is still open.
 - **Blocks:** `entity_close_accounted` on cases 02, 06, 07 (marked

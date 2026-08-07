@@ -1,8 +1,15 @@
 # PLAN — our `dlvsym` interposer appears not to run, and every explanation so far is dead
 
 - **Created:** 2026-08-06 23:20 +03
-- **Status:** TODO — five hypotheses eliminated by measurement. The next step is
-  one line of instrumentation, deliberately not a sixth hypothesis.
+- **Status:** DONE (2026-08-07, job 44372679). The answer was not a registration
+  door at all: contexts opened through a door we do not interpose never had
+  object-ops installed, so `ibv_reg_dm_mr`'s trampoline was absent while
+  `ibv_dereg_mr` — a preload hook — fired normally. Fixed by installing a context
+  on first sight through ANY door, with `ibv_close_device` hooked so a recycled
+  pointer is not mistaken for an instrumented context. `entity_close_accounted`
+  passes on 02/06/07 with zero unmatched closes; case 02 gained 504
+  `device_memory` regions that were previously absent entirely; sends unchanged
+  at 26880 on all 8 ranks, reproduced across jobs 44372679 and 44372782.
 - **Blocks:** the 33 unmatched `ib_mem_region` closes on cases 02 and 06
   (`entity_close_accounted`, marked `expect_fail` with evidence).
 - **Related:** `PLAN-20260806-2140-dmabuf-registered-regions` (the search this
@@ -305,6 +312,32 @@ Open question to settle first: whether to hold this on a branch until the
 deterministic half lands, or keep it on main with the three assertions marked
 `expect_fail` carrying this evidence. Leaving main red and unmarked is the one
 option that is not acceptable.
+
+### Round 7 (2026-08-07): CLOSED
+
+The reverted idea was right; what shipped with it was wrong. `ensure_installed`
+had a dedup set with no lifecycle, and that set — not first-sight install — is
+what lost two ranks. `ibv_close_device` now erases the entry, the same set is
+safe, and installing from every context-holding door works exactly as intended.
+
+Result: zero unmatched closes on 02/06/07, 504 `device_memory` regions recovered
+on case 02, board green with the `expect_fail` markers **dropped** rather than
+carried.
+
+### The methodological lesson, since it cost seven rounds
+
+Six registration hypotheses died, and every one of them was a question about
+symbols: which symbol is unhooked, which symbol is versioned, which symbol does
+NCCL resolve. The answer was about an OBJECT — which context this MR belongs to,
+and whether that object was ever instrumented. `nm`, `readelf`, `LD_DEBUG` and
+the dlsym trace cannot express that question, so they kept returning confident
+answers to a question nobody was asking. What broke it open was following one
+`ibv_mr*` and asking what was true of it.
+
+That is the same shape as case 08 (a door that was a function pointer, not a
+symbol) and it is now the second time it has cost a week-scale hunt. Worth
+reaching for earlier: when several symbol-level hypotheses die in a row, the
+question is probably not at the symbol level.
 
 ### What is still open
 
