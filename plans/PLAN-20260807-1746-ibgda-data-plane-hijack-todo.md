@@ -327,9 +327,16 @@ the doorbell rate is a fraction of the work) before committing to a persistent
 green-context kernel — which, unlike Stages 1-2, has no working reference to port
 and would be genuinely new CUDA. Do not build it blind against this microbenchmark.
 
-### Stage 4 still owed
+### Stage 4 SHIPPED — `12_ibgda_doorbell`
 
-A hijack-enabled test case (09 is passive), asserting doorbell/send counts and
-`byte_count` against the workload's known message pattern, plus the negative
-control (hijack off → zero doorbell rows, table untouched). The manual du04 runs
-above stand in for it today; they are not in the suite.
+A hijack-enabled case now lives in the suite (09 stays passive). It runs the
+put-ring twice on du04 — with and without `--enable-doorbell-hijack` — and
+asserts `doorbell_engaged` (the gate), `doorbell_names_qp` and
+`device_send_named` (data-plane closure), and `sends_are_sized` (payload a whole
+element count, derived from `params.elem_bytes` — the check that catches the
+mis-decodes this session fixed). The negative control asserts a passive run
+produces no 212/214 streams and byte-identical application output.
+`verify_asserts.sh` exercises each assertion sqlite-only, so they run on hosts
+that cannot do IBGDA. Passes on du04: 13 assertions. The export-table patcher's
+negative control (hijack off → table untouched) is implicit in "no doorbell
+rows"; a direct assertion on the table bytes is not built and is not worth it.
