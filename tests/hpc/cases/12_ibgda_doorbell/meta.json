@@ -1,0 +1,31 @@
+{
+  "case": "12_ibgda_doorbell",
+  "providers": [
+    "mlx5dv"
+  ],
+  "platform": "a100",
+  "topology": "1 node x2 A100 PEs over one ConnectX-5, NVSHMEM put-ring forced through the NIC with P2P disabled, GPU-initiated (IBGDA), doorbell hijack enabled",
+  "golden": "none, by design",
+  "why": "the data plane. Case 09 proves the mlx5dv provider captures the IBGDA CONTROL plane (queue pairs, topology). This case proves the doorbell hijack captures the DATA plane the control plane cannot see: the actual GPU-initiated sends. Under IBGDA there is no CPU data plane, so ib_post_send is empty and Mlx5DeviceSend is the only send record there is.",
+  "why_no_goldens": "every quantity is allocation- or fabric-dependent: qp_num, the coalesced send count (NVSHMEM decides how to combine warp puts), addresses and keys. The invariants that survive are closure (every doorbell/send names a created qp) and the derived payload size, which is what this case asserts.",
+  "platform_note": "Requires IBGDA, which only du04 in the lab can run (nvidia_peermem + PeerMappingOverride=1). MN5's ACC partition self-skips. job.sbatch pre-flights the prerequisites and SKIPs rather than failing where IBGDA cannot run.",
+  "hijack_note": "This is the ONE pcomm mechanism that sits in the application's data path — it redirects the GPU's doorbell page and replays the store. It is opt-in (--enable-doorbell-hijack) and perturbs timing, so this case makes NO timing claim; it asserts only what was captured, against a control run with the hijack OFF.",
+  "negative_control": "The job runs the workload a second time WITHOUT the hijack and asserts the capture has NO mlx5_doorbell / mlx5_device_send rows and the application's own output is byte-identical to the hijacked run. 'It captured nothing' and 'there was nothing to capture' must stay distinguishable — a passive run producing doorbell rows would mean the hijack leaked into a run that did not ask for it.",
+  "loopback_note": "Both PEs sit behind ONE HCA. Closure is the invariant that survives loopback: every doorbell and every send must name a queue pair some rank created.",
+  "workload": {
+    "ranks": 2,
+    "nodes": 1,
+    "gpus": 2,
+    "iters": 20,
+    "elems": 1024,
+    "elem_bytes": 4,
+    "umem_binding": 1
+  },
+  "workload_note": "`mpirun -np 2 ... putget 1024 20` under `pcomm -p mlx5dv --enable-doorbell-hijack`. 20 iterations rather than 09's 2, so the doorbell/send streams are substantial enough to assert against. elem_bytes=4 is the nvshmem_int_p element size, and sends_are_sized derives the payload invariant from it.",
+  "expect_tables": [
+    "mlx5_devx_qp",
+    "mlx5_doorbell",
+    "mlx5_device_send"
+  ],
+  "oracle_note": "doorbell_engaged runs first and gates the rest: an empty doorbell table means the hijack did not engage, which is indistinguishable from a workload that rang no doorbells, so it is a failure and not a silent pass. The send-size and closure assertions are only meaningful once it holds."
+}

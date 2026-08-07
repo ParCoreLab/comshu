@@ -1,0 +1,154 @@
+# PLAN — the on-GPU doorbell repeater: keep the fast path fast
+
+- **Created:** 2026-08-07 23:44 +03
+- **Status:** TODO, and deliberately not started. This is Stage 3 of the
+  IBGDA data-plane work; Stages 1-2 (the CPU repeater + WQE decode) shipped and
+  reach parity with *working* SigmaTrace. This stage is a capability neither
+  codebase currently has.
+- **Parent:** `PLAN-20260807-1746-ibgda-data-plane-hijack-todo` — read its
+  "Stage 2 SHIPPED" close first; the numbers there are the whole justification
+  for this plan, and the whole argument for not building it yet.
+- **Prior art / design source:** `../SigmaTrace/Profiler/Modules/GPUMemoryHijack/`
+  — `GPUMemoryRepeater.cuh` (the host+device shared structures, complete and
+  worth copying) and `GPUMemoryRepeater.cu` (the kernel — **do not port it as
+  working code**: `parse_and_record` is unreachable, `parse_and_record_oneshot`'s
+  one call site is commented out, and the poll loop carries a bare
+  `printf("UPDATING")`. The *design* is the reference; the *implementation* is
+  not).
+
+## Why this exists, in one paragraph
+
+A GPU-initiated send is one GPU store to a NIC BAR page. The CPU repeater
+(Stage 1-2) observes it by redirecting that store to host memory, waking a host
+thread, and replaying it — which reintroduces the CPU onto the exact path IBGDA
+exists to bypass. Measured on du04: **+68% wall for the pure forward, +86% with
+the WQE copy-out**, and `wqes_lapped > 0` once the GPU outpaces the host. Both
+costs come from the same root: a host round trip per doorbell, and a host thread
+that cannot keep up with a GPU producer. The on-GPU repeater removes the root —
+observe and forward *on the GPU* — so the fast path stays `GPU → BAR` and the
+observer runs at GPU speed.
+
+## What changes, mechanically
+
+| | CPU repeater (shipped) | on-GPU repeater (this plan) |
+|---|---|---|
+| fake doorbell page | host pinned memory (`cuMemHostAlloc`) | **GPU HBM** (`cuMemAlloc`) |
+| who polls it | a host thread in `UMWAIT`/`PAUSE` | a **persistent CUDA kernel** |
+| how the doorbell is seen | GPU store → PCIe → host memory → wakeup | GPU store → HBM; kernel reads HBM |
+| WQE inspection | `cuMemcpyDtoHAsync` out of the SQ, host parse | parsed **in place** in HBM, no copy |
+| forward to NIC | host store to BAR | **GPU store** to BAR (native shape) |
+| record delivery | direct `Recorder::record` on host thread | GPU pushes to a pinned ring; host drains lazily, off the critical path |
+
+The forward is the load-bearing difference: it goes back to a single GPU→BAR
+store, so the send's latency is (near) native and a timing measurement taken
+under this repeater is about the application again, not the instrument.
+
+## The design, from `GPUMemoryRepeater.cuh`
+
+One pinned `GpuRepeaterChannel`, mapped into both host and device address
+spaces, is the entire host↔device contract:
+
+- **UAR table** (`GpuUarEntry{fake_addr, real_addr}[MAX_UARS]`, `num_uars`):
+  host writes, GPU reads. `fake_addr` is the HBM page the app rings; `real_addr`
+  is the NIC BAR device pointer the kernel forwards to.
+- **QP table** (`GpuQpEntry{sq_base, qpn, log_wq_size, qp_type, gpu_id}[MAX_QPS]`,
+  `num_qps`): host writes, GPU reads. This is the same `(qpn → sq_base, shape)`
+  map Stage 2 already builds in `hijack::register_qp` — it moves into the channel.
+- **Result ring** (`GpuWqeRecord result_ring[16384]`, `result_head` GPU
+  producer, `result_tail` host consumer): GPU writes decoded WQEs, host drains.
+  `GpuWqeRecord` already carries everything `Mlx5DeviceSend` needs
+  (`raddr/laddr/rkey/lkey/byte_count/qpn/wqe_idx/opcode/ds`) plus a device
+  `clock64()` timestamp.
+- **`shutdown`**: host sets it, the kernel exits its poll loop.
+
+The kernel (`gpu_doorbell_intercept_kernel`) is a persistent loop: for each UAR,
+read `*fake_addr`; on change, decode `(qpn, prod_idx)`, look up the QP, parse the
+delta WQEBBs straight out of `sq_base` in HBM, push a `GpuWqeRecord` per WQE into
+the ring, then store the doorbell value to `real_addr`. **The WQE parse is the
+one Stage 2 already got right** (`uar_hijack.hpp` — half AV segment, inline-flag
+detection, front-based offsets); it must be ported to device code *from pcomm's
+version, not SigmaTrace's*, because SigmaTrace's assumes a full AV and pointer
+data segments and is wrong on this NVSHMEM.
+
+## The hard part: it steals an SM from the workload it measures
+
+A persistent kernel occupies SMs the application wants. Left unbounded it
+contends with the application's kernels and perturbs exactly what it is trying to
+measure honestly. SigmaTrace's answer, which this plan adopts: run the repeater
+in a **CUDA green context with a single SM**, so the profiler kernel is confined
+to one SM and the scheduler keeps it off the application's. Porting that carving
+— not a plain persistent kernel — is a first-class requirement, not a
+refinement. Without it this trades the CPU repeater's host round trip for a
+whole-GPU contention that is harder to reason about.
+
+## Stages
+
+### Stage 3.0 — the channel and a green context that does nothing
+Allocate the `GpuRepeaterChannel` (pinned), create a one-SM green context, launch
+an empty persistent kernel in it that only polls `shutdown`. Prove: the
+application runs unperturbed beside it (byte-identical, and overhead inside the
+noise of three clean runs — the same gate Stage 1 used). If a bare one-SM
+persistent kernel already perturbs the workload, the whole approach is in
+question and this is where that is cheap to learn.
+
+### Stage 3.1 — forward only, no decode
+Move the fake UAR page to HBM (`cuMemAlloc` instead of `cuMemHostAlloc`), fill the
+channel's UAR table at the swap, and have the kernel forward `fake_addr →
+real_addr` with the correct release ordering. No parsing, no ring. Gate: full
+NVSHMEM run byte-identical, and **overhead materially below the CPU repeater's
++68%** — that delta is the entire reason to build this. If it is not below, stop:
+the GPU forward is not buying what the plan promised.
+
+### Stage 3.2 — decode on-device, drain on-host
+Fill the QP table, port pcomm's Stage-2 WQE parse into the kernel, push
+`GpuWqeRecord`s to the result ring, and drain it on a host thread that translates
+each into `Mlx5Doorbell`/`Mlx5DeviceSend` through the existing sinks. The records
+are unchanged — only their *source* moves to the GPU. Gate: on the case where the
+CPU repeater reported `wqes_lapped > 0`, this reports **zero** (or far less), and
+the send count is complete against the workload's known pattern.
+
+### Stage 3.3 — the ordering proof
+`GpuWqeRecord` and the forward both cross the GPU→PCIe→NIC boundary, where store
+ordering is not CPU ordering — the open question SigmaTrace flags and does not
+resolve (`MemoryRepeater.hpp:59`). Whatever fence discipline the kernel uses
+between "WQEs visible in the SQ" and "doorbell visible at the BAR" needs a written
+justification against the mlx5 PRM and the CUDA memory model, not
+`__threadfence()` because it ran. Getting this wrong corrupts the *application*,
+not the trace — this stage is where that risk is discharged or the plan halts.
+
+## Verification, and the honesty rule that gates the whole thing
+
+Same as the parent: **du04 only** (`missa18@a100` via university-base). MN5 cannot
+run IBGDA.
+
+The load-bearing measurement is NOT on the loopback microbenchmark. Stages 1-2
+were measured on a doorbell-bound put-ring where the doorbell rate is nearly the
+whole workload — the worst case for the CPU repeater and therefore the case that
+*most* flatters this one. Before 3.1's gate is trusted, the comparison has to be
+re-run on **a workload with real GPU compute between sends**, where the doorbell
+is a small fraction of the work. It is entirely possible that there the CPU
+repeater's overhead is already in the noise and this whole stage is 770 lines of
+CUDA for a problem the realistic workload does not have. The parent plan's own
+rule, inherited verbatim: *if the CPU repeater is inside budget on the cases we
+have, do not carry the GPU repeater — and say so here, with the number.*
+
+## Risks
+
+- **Green-context availability.** One-SM carving depends on the driver/arch
+  supporting green contexts (CUDA 12.4+; check on du04's driver before building).
+  If unavailable, the fallback is MPS or a plain persistent kernel with an
+  explicit SM cap, each with worse isolation — and that weakens the timing claim
+  the stage exists to make.
+- **New CUDA in the provider.** The mlx5dv provider does not link CUDA today (it
+  resolves everything at runtime). A device kernel means the provider — or a
+  sidecar `.so` it dlopens — now compiles with `nvcc` and carries a `.cu`. That
+  is a build-system change (the gpumem provider already shows the shape) and it
+  must stay behind the `--enable-doorbell-hijack` gate so a CUDA-less host
+  (MN5 core) still builds the passive provider.
+- **The reference is broken.** Unlike Stages 1-2, there is no working
+  implementation to port — SigmaTrace's kernel does not run. Every line is new,
+  and the parse is the only piece with a trusted source (pcomm's own Stage 2).
+- **Perturbation of a different kind.** This does not eliminate perturbation, it
+  changes its shape from host-round-trip latency to one-SM contention. A timing
+  claim under it is still a claim about an instrumented system — better, not
+  clean. Say so wherever a number from it is published.
