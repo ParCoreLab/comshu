@@ -268,3 +268,68 @@ prints the perturbation warning and the hijack stays off by default.
   section says. It is gated behind `--enable-doorbell-hijack` today; it rewrites
   another library's dispatch table and deserves a negative control (hijack off →
   table untouched) in the Stage-4 suite.
+
+## Stage 2 SHIPPED — the decode, and the WQE format read from source not reference
+
+Built and verified on du04 (2026-08-07). `Mlx5Doorbell` (212) and
+`Mlx5DeviceSend` (214) in `mlx5_records.hpp`; the decode in `uar_hijack.hpp`;
+reader tables + schema (fbs, regenerated header, conformance, hash) all updated.
+
+The repeater callback now decodes what it forwards: it byte-swaps the doorbell
+into `(qp_num, prod_idx)` and emits `Mlx5Doorbell`, then `cuMemcpyDtoHAsync`s the
+delta WQEBBs out of the send queue (callback-before-forward, so the SQ still
+holds them) on a per-QP stream bound to the application's CUDA context captured
+at the swap, parses them, and emits one `Mlx5DeviceSend` per real WQE. The
+send-queue GPU address is `wq.gpu_base + wq_umem_offset`, where `gpu_base` is the
+dmabuf range base (added to `UmemInfo`) — the recorded `Mlx5DevxQp.sq_base` stays
+an offset under dmabuf on purpose, so the GPU VA is carried separately.
+
+**The WQE layout came from NVSHMEM source, and SigmaTrace's decoder is wrong
+here in two ways** that measurement caught:
+
+1. **Half AV segment, not full.** SigmaTrace skips a fixed 64-byte address-vector
+   segment for DCI (`seg += 64; ds -= 4`). NVSHMEM on du04 uses a *half* AV (1 DS,
+   16 bytes) — confirmed by `ds==4` for a simple pointer write
+   (ctrl+halfav+raddr+data). The fixed skip overshot into payload and decoded
+   length `0x08080808`. Segments are now located from the FRONT by ds with
+   `av_ds = is_dci ? 1 : 0`.
+2. **Inline payload.** NVSHMEM's warp-combine path inlines up to 128 B into the
+   WQE (`MLX5_INLINE_SEG`, `ibgda_write_rdma_write_inl_wqe_combine_warp`), so the
+   last DS is inline data, not a descriptor — locating the data segment from the
+   END read the payload (`0x01010101`). The segment after raddr is now checked for
+   the inline flag: inline → length only; pointer → length + laddr + lkey.
+
+Result: **3170 rdma_writes all decode `length=128`** (warp-coalesced 32-int
+puts), 119 masked atomics carry the barrier signal address, every `Mlx5Doorbell`
+joins a `Mlx5DevxQp`, application `VERIFY OK` byte-identical. Overhead rose to
+~+86% (the per-doorbell copy+sync on top of Stage 1's forward).
+
+**`wqes_lapped`** counts WQEBBs the GPU overwrote before the CPU repeater copied
+them. Zero at 50 iters; nonzero at 200, where the GPU outpaces the host — the
+producer-overrun that is the whole reason Stage 3 exists. The copy is clamped to
+one ring so an overrun *undercounts* rather than emitting rows decoded from
+wrapped bytes. Silence there would be the worst outcome: plausible, false sends.
+
+### Parity, and the verdict on Stage 3
+
+**Parity with *working* SigmaTrace is now reached.** SigmaTrace's functional
+capture is exactly this: the host repeater + WQE decode. Its GPU-resident
+repeater — the "Stage 3" equivalent — is, by this plan's own reading of the
+source and confirmed again here, **not working code** (`GPUMemoryRepeater.cu`:
+unreachable `parse_and_record`, a bare `printf("UPDATING")` in the poll loop).
+So Stage 3 is not a parity item; it is a new capability neither codebase has.
+
+Stage 3 remains **worth building only against a measured need**: the +86% and
+the `wqes_lapped` overrun both argue for on-GPU capture, but they were measured
+on a doorbell-bound loopback microbenchmark that is close to the worst case. The
+honest next step is a Stage-2 measurement on a workload with real compute (where
+the doorbell rate is a fraction of the work) before committing to a persistent
+green-context kernel — which, unlike Stages 1-2, has no working reference to port
+and would be genuinely new CUDA. Do not build it blind against this microbenchmark.
+
+### Stage 4 still owed
+
+A hijack-enabled test case (09 is passive), asserting doorbell/send counts and
+`byte_count` against the workload's known message pattern, plus the negative
+control (hijack off → zero doorbell rows, table untouched). The manual du04 runs
+above stand in for it today; they are not in the suite.
