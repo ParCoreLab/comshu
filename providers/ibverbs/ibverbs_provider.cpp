@@ -24,6 +24,8 @@
 #include "wr_builder.hpp"
 
 #include <cstring>
+#include <atomic>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -55,7 +57,13 @@ using pcomm::rec::InternDomain;
 // needs.
 // Instrument a context if it is not already instrumented, and forget it when it
 // closes. Defined at the bottom; declared here because the callbacks need them.
-static void ensure_installed(ibv_context* ctx);
+//
+// `door` names the interposer that is calling, and is recorded for the install
+// that actually happens. First-sight install is a floor, not a guarantee: a
+// context is instrumented at its first call through a door we hook, so anything
+// it did before that is missed. Which door that is bounds the window, and the
+// histogram dumped at unload is the only way to know it rather than argue it.
+static void ensure_installed(ibv_context* ctx, const char* door);
 static void forget_context(const ibv_context* ctx);
 
 static int& reg_mr_depth() noexcept {
@@ -415,7 +423,7 @@ Profiler::Profiler() {
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>([](ibv_context* ctx, ibv_device*, auto...) {
-        ensure_installed(ctx);
+        ensure_installed(ctx, "open_device");
     });
 
     // reg_mr_iova2 -> the same memory-region entity. `iova` is the virtual
@@ -792,7 +800,7 @@ extern "C" ibv_context* ibv_open_device(ibv_device* device) {
     return ibv::Profiler::invoke_preload<ibv::open_device_tag>(device);
 }
 extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
-    ibv::ensure_installed(context);
+    ibv::ensure_installed(context, "alloc_pd");
     return ibv::Profiler::invoke_preload<ibv::alloc_pd_tag>(context);
 }
 // Interposing this is what makes the new work-request API visible at all: it is
@@ -800,21 +808,23 @@ extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
 // are static inline wrappers no interposer can reach.
 extern "C" ibv_qp_ex* ibv_qp_to_qp_ex(ibv_qp* qp) {
     if (qp)
-        ibv::ensure_installed(qp->context);
+        ibv::ensure_installed(qp->context, "qp_to_qp_ex");
     return ibv::Profiler::invoke_preload<ibv::qp_to_qp_ex_tag>(qp);
 }
 
 extern "C" ibv_qp* ibv_create_qp(ibv_pd* pd, ibv_qp_init_attr* attr) {
     if (pd)
-        ibv::ensure_installed(pd->context);
+        ibv::ensure_installed(pd->context, "create_qp");
     return ibv::Profiler::invoke_preload<ibv::create_qp_tag>(pd, attr);
 }
 extern "C" int ibv_destroy_qp(ibv_qp* qp) {
+    if (qp)
+        ibv::ensure_installed(qp->context, "destroy_qp");
     return ibv::Profiler::invoke_preload<ibv::destroy_qp_tag>(qp);
 }
 extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
     if (qp)
-        ibv::ensure_installed(qp->context);
+        ibv::ensure_installed(qp->context, "modify_qp");
     return ibv::Profiler::invoke_preload<ibv::modify_qp_tag>(qp, attr, mask);
 }
 // DIAGNOSTIC, gated on PCOMM_TRACE_MR_CALLERS=1 — which LIBRARY calls each
@@ -916,7 +926,14 @@ static std::set<const void*>* g_installed_ctxs = nullptr;
 //     this context already patched". Re-installing would save our own trampoline
 //     as the original and recurse; not installing loses the capture. The set
 //     answers exactly that question and nothing else.
-void ibv::ensure_installed(ibv_context* ctx) {
+// Which door installed each context, counted. See dump_install_doors: a context
+// first seen at ibv_open_device has a zero-length blind window by construction,
+// and one first seen anywhere else does not, so this histogram is the difference
+// between "the window is theoretical" and "the window is real" — measured rather
+// than reasoned from API ordering, which has been wrong here twice.
+static std::map<std::string, unsigned>* g_install_doors = nullptr;  // leaked, like the sets
+
+void ibv::ensure_installed(ibv_context* ctx, const char* door) {
     if (!ctx)
         return;
     {
@@ -925,8 +942,42 @@ void ibv::ensure_installed(ibv_context* ctx) {
             g_installed_ctxs = new std::set<const void*>();
         if (!g_installed_ctxs->insert(ctx).second)
             return;  // already patched, and still alive
+        if (!g_install_doors)
+            g_install_doors = new std::map<std::string, unsigned>();
+        ++(*g_install_doors)[door ? door : "?"];
     }
     ibv::Profiler::instance().install(ctx);
+}
+
+// DIAGNOSTIC, gated on PCOMM_TRACE_CTX_INSTALL=1. One line per door that ever
+// installed a context, plus the total — enough to answer whether any context
+// reaches us later than ibv_open_device, which is the whole question.
+//
+// Note a context closed and reopened at the same address counts twice, which is
+// correct: each is a separate context with its own blind window.
+static void dump_install_doors() {
+    static const bool on = [] {
+        const char* v = std::getenv("PCOMM_TRACE_CTX_INSTALL");
+        return v && *v && std::strcmp(v, "0") != 0;
+    }();
+    if (!on)
+        return;
+    static std::atomic<bool> done{false};
+    if (done.exchange(true))
+        return;  // shutdown() and the unload destructor both call this
+    std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+    unsigned total = 0, late = 0;
+    if (g_install_doors)
+        for (const auto& [door, n] : *g_install_doors) {
+            total += n;
+            if (door != "open_device")
+                late += n;
+            std::fprintf(stderr, "[pcomm-ctxinstall] door=%-14s contexts=%u\n", door.c_str(), n);
+        }
+    std::fprintf(stderr, "[pcomm-ctxinstall] total=%u late=%u (late => a context ran uninstrumented "
+                         "between its open and that door)\n",
+                 total, late);
+    std::fflush(stderr);
 }
 
 void ibv::forget_context(const ibv_context* ctx) {
@@ -983,7 +1034,7 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
                                      int fd, int access) {
     trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
     if (pd)
-        ibv::ensure_installed(pd->context);
+        ibv::ensure_installed(pd->context, "reg_dmabuf_mr");
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
                                                                      access);
     remember_mr(mr);
@@ -991,6 +1042,8 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     trace_mr_caller("dereg_mr", __builtin_return_address(0));
+    if (mr)
+        ibv::ensure_installed(mr->context, "dereg_mr");
     trace_unmatched_dereg(mr, __builtin_return_address(0));
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
@@ -1007,7 +1060,7 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
 extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
     trace_mr_caller("reg_mr", __builtin_return_address(0));
     if (pd)
-        ibv::ensure_installed(pd->context);
+        ibv::ensure_installed(pd->context, "reg_mr");
     struct Depth {
         Depth() noexcept { ++ibv::reg_mr_depth(); }
         ~Depth() noexcept { --ibv::reg_mr_depth(); }
@@ -1024,7 +1077,7 @@ extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint6
                                     unsigned int access) {
     trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));
     if (pd)
-        ibv::ensure_installed(pd->context);
+        ibv::ensure_installed(pd->context, "reg_mr_iova2");
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);
     remember_mr(mr);
     return mr;
@@ -1044,6 +1097,7 @@ public:
         return true;
     }
     void shutdown() override {
+        dump_install_doors();
         pcomm_engine_drain_thread();
         pcomm_engine_release();
     }
@@ -1061,6 +1115,7 @@ static void __attribute__((constructor)) pcomm_ibverbs_load() {
     ibv::Profiler::instance();
 }
 static void __attribute__((destructor)) pcomm_ibverbs_unload() {
+    dump_install_doors();
     pcomm_engine_drain_thread();
     pcomm_engine_release();
 }
