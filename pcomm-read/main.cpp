@@ -494,6 +494,46 @@ template<> struct Table<mxr::Mlx5QueuePair> {
     }
 };
 
+template<> struct Table<mxr::Mlx5Doorbell> {
+    static constexpr const char* name = "mlx5_doorbell";
+    static constexpr const char* cols = "ticks,uar,qp_num,prod_idx";
+    static void                  row(std::FILE* f, const Stamped<mxr::Mlx5Doorbell>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.uar,
+                                      s.payload.qp_num, s.payload.prod_idx);
+    }
+};
+
+// opcode -> name, mirroring wr_opcode_name for ib_post_send: a raw 0x08 in a CSV
+// is a value nobody checks. mlx5 WQE opcodes (PRM): RDMA_WRITE 0x08, SEND 0x0a,
+// RDMA_READ 0x10, ATOMIC_CS 0x11, ATOMIC_FA 0x12.
+inline const char* mlx5_wqe_opcode_name(std::uint8_t op) {
+    switch (op) {
+        case 0x08: return "rdma_write";
+        case 0x0a: return "send";
+        case 0x10: return "rdma_read";
+        case 0x11: return "atomic_cs";
+        case 0x12: return "atomic_fa";
+        case 0x14: return "atomic_masked_cs";
+        case 0x15: return "atomic_masked_fa";
+        default:   return "?";
+    }
+}
+
+template<> struct Table<mxr::Mlx5DeviceSend> {
+    static constexpr const char* name = "mlx5_device_send";
+    static constexpr const char* cols =
+        "ticks,qp_num,wqe_idx,opcode,opcode_name,laddr,lkey,raddr,rkey,length";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5DeviceSend>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
+                     s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
+                     (unsigned long long)s.payload.laddr, s.payload.lkey,
+                     (unsigned long long)s.payload.raddr, s.payload.rkey, s.payload.length);
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
@@ -502,7 +542,8 @@ using TableRecords =
                ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend,
                ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
-               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair>;
+               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell,
+               mxr::Mlx5DeviceSend>;
 
 template<typename Tuple, typename F, std::size_t... Is>
 void for_each_type_impl(F&& f, std::index_sequence<Is...>) {

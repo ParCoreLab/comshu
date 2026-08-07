@@ -143,4 +143,35 @@ PCOMM_RECORD(Mlx5QueuePair, RecordKind::Entity, 210, "mlx5_queue_pair") {
     std::uint8_t  qp_type;
 };
 
+// EVENT — the GPU rang a doorbell. The data plane of a GPU-initiated send made
+// visible: the doorbell hijack redirects the UAR page, decodes the 8-byte store
+// the GPU wrote, and emits this. `qp_num` and `prod_idx` come straight from the
+// mlx5 control segment (big-endian `qpn_ds`/`opmod_idx_opcode`).
+//
+// Emitted even when the WQE behind it cannot be read, so "the doorbell rang and
+// we could not decode it" is a visible row and not silence — the distinction the
+// whole doorbell-hijack line of work exists to keep. `uar` joins Mlx5Uar; every
+// `qp_num` should join a Mlx5DevxQp some rank created.
+PCOMM_RECORD(Mlx5Doorbell, RecordKind::Event, 212, "mlx5_doorbell") {
+    Handle        uar;       // interned mlx5dv_devx_uar* (joins Mlx5Uar)
+    std::uint32_t qp_num;
+    std::uint32_t prod_idx;  // producer index the doorbell announced
+};
+
+// EVENT — a GPU-initiated send, decoded from the work-queue entry the doorbell
+// announced. The device-plane counterpart of IbPostSend, and deliberately the
+// same shape (opcode, local, remote, length) so a reader can union the two: on
+// an IBGDA run the ib_post_send table is empty and this is the only send record
+// there is.
+PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
+    std::uint64_t laddr;    // local address (data segment)
+    std::uint64_t raddr;    // remote address (RDMA segment), 0 if none
+    std::uint32_t qp_num;
+    std::uint32_t wqe_idx;  // producer index of this WQE
+    std::uint32_t lkey;
+    std::uint32_t rkey;     // remote key, 0 if no RDMA segment
+    std::uint32_t length;   // bytes this WQE moves
+    std::uint8_t  opcode;   // mlx5 WQE opcode (0x08 RDMA_WRITE, 0x0a SEND, …)
+};
+
 }  // namespace pcomm::providers::mlx5dv::records

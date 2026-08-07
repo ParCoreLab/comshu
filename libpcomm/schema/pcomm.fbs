@@ -428,3 +428,27 @@ struct Mlx5QueuePair {
   qp_num:uint32;
   qp_type:uint8;
 }
+
+// type 212, Event. The GPU rang a doorbell. Emitted by the doorbell hijack even
+// when the WQE cannot be read, so an undecodable doorbell is a visible row.
+struct Mlx5Doorbell {
+  temporal:Temporal;
+  uar:uint32;          // joins Mlx5Uar
+  qp_num:uint32;
+  prod_idx:uint32;
+}
+
+// type 214, Event. A GPU-initiated send decoded from the WQE the doorbell
+// announced. Same shape as IbPostSend so a reader can union device- and
+// host-initiated sends.
+struct Mlx5DeviceSend {
+  temporal:Temporal;
+  laddr:uint64;
+  raddr:uint64;
+  qp_num:uint32;
+  wqe_idx:uint32;
+  lkey:uint32;
+  rkey:uint32;
+  length:uint32;
+  opcode:uint8;
+}

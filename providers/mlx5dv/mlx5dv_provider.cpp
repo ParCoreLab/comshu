@@ -85,6 +85,12 @@ struct UmemInfo {
     pcomm::core::DeviceId device{kUnknownDevice};
     UmemBinding           binding{UmemBinding::ByAddress};
     std::int32_t          dmabuf_fd{-1};
+    // The buffer's real GPU virtual address base: the umem addr for a by_addr
+    // binding, the dmabuf-exported range base for by_dmabuf. This is what the
+    // doorbell hijack copies WQEs from — the recorded sq_base stays an offset
+    // under dmabuf on purpose (umem_binding_as_configured asserts that), so the
+    // GPU address is kept here separately rather than by rewriting the row.
+    std::uint64_t         gpu_base{0};
 };
 
 static std::mutex                                  g_umem_mutex;
@@ -135,10 +141,12 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
     pcomm::core::dmabuf::Range dmabuf_range{};
     const bool resolved = by_dmabuf && pcomm::core::dmabuf::lookup(dmabuf_fd, &dmabuf_range);
 
+    const std::uint64_t gpu_base = by_dmabuf ? (resolved ? dmabuf_range.base : 0)
+                                             : reinterpret_cast<std::uint64_t>(addr);
     UmemInfo info{reinterpret_cast<std::uint64_t>(addr), size,
                   by_dmabuf ? (resolved ? dmabuf_range.device : kUnknownDevice)
                             : pcomm::core::device_of(addr),
-                  by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress, dmabuf_fd};
+                  by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress, dmabuf_fd, gpu_base};
     remember_umem(out->umem_id, info);
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5Umem{{},
@@ -284,6 +292,13 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
                                 known ? wq.device : kUnknownDevice,
                                 static_cast<std::uint8_t>(service_type),
                                 static_cast<std::uint8_t>(gpu_driven ? 1 : 0)});
+
+    // Hand the doorbell hijack this queue pair's send-queue GPU address, so its
+    // repeater can copy WQEs out of it. The recorded sq_base above stays an
+    // offset under dmabuf; the real GPU VA is wq.gpu_base + wq_offset.
+    if (hijack::enabled() && gpu_driven)
+        hijack::register_qp(qp_num, wq.gpu_base + wq_offset, log_sq_size,
+                            static_cast<std::uint8_t>(service_type));
 }
 
 static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
@@ -333,6 +348,20 @@ Profiler::Profiler() {
     // we only announce it, because from an enabled run the timing is a
     // measurement of the instrumented system, not the application.
     if (hijack::enabled()) {
+        // The decode runs on the repeater thread and emits through these sinks,
+        // because the Recorder and intern tables live here in the provider. The
+        // doorbell's uar handle interns h(uar_ptr) — the same handle the Mlx5Uar
+        // entity carries — so the two join. Interning off the app thread is safe:
+        // the engine's intern tables are process-wide under a per-domain lock.
+        hijack::set_sinks(
+            [](void* uar_ptr, std::uint32_t qp_num, std::uint32_t prod_idx) {
+                rec().record(rr::Mlx5Doorbell{{}, {}, h(uar_ptr), qp_num, prod_idx});
+            },
+            [](std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode, std::uint64_t laddr,
+               std::uint32_t lkey, std::uint64_t raddr, std::uint32_t rkey, std::uint32_t length) {
+                rec().record(rr::Mlx5DeviceSend{
+                    {}, {}, laddr, raddr, qp_num, wqe_idx, lkey, rkey, length, opcode});
+            });
         hijack::install();
         std::fprintf(stderr,
                      "[pcomm] doorbell hijack ENABLED — this run sits in the data "
@@ -380,9 +409,10 @@ Profiler::Profiler() {
             if (!out)
                 return;
             // The hijack only ever swaps a page that came from here — this is
-            // the "never manufacture a capability" rule made concrete.
+            // the "never manufacture a capability" rule made concrete. The uar
+            // pointer is kept so a doorbell row can join back to Mlx5Uar (h(out)).
             if (hijack::enabled())
-                hijack::remember_uar(out->reg_addr, out->page_id);
+                hijack::remember_uar(out->reg_addr, out, out->page_id);
             rec().record(pcomm::core::Temporal::none(),
                          rr::Mlx5Uar{{},
                                      {},

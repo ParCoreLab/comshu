@@ -76,6 +76,10 @@ struct Mlx5DevxQpConnect;
 
 struct Mlx5QueuePair;
 
+struct Mlx5Doorbell;
+
+struct Mlx5DeviceSend;
+
 enum TimeKind : uint8_t {
   TimeKind_None = 0,
   TimeKind_Instant = 1,
@@ -1947,6 +1951,120 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5QueuePair FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(Mlx5QueuePair, 64);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5Doorbell FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t uar_;
+  uint32_t qp_num_;
+  uint32_t prod_idx_;
+  int32_t padding0__;
+
+ public:
+  Mlx5Doorbell()
+      : temporal_(),
+        uar_(0),
+        qp_num_(0),
+        prod_idx_(0),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  Mlx5Doorbell(const pcomm::fb::Temporal &_temporal, uint32_t _uar, uint32_t _qp_num, uint32_t _prod_idx)
+      : temporal_(_temporal),
+        uar_(::flatbuffers::EndianScalar(_uar)),
+        qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        prod_idx_(::flatbuffers::EndianScalar(_prod_idx)),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t uar() const {
+    return ::flatbuffers::EndianScalar(uar_);
+  }
+  uint32_t qp_num() const {
+    return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint32_t prod_idx() const {
+    return ::flatbuffers::EndianScalar(prod_idx_);
+  }
+};
+FLATBUFFERS_STRUCT_END(Mlx5Doorbell, 64);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t laddr_;
+  uint64_t raddr_;
+  uint32_t qp_num_;
+  uint32_t wqe_idx_;
+  uint32_t lkey_;
+  uint32_t rkey_;
+  uint32_t length_;
+  uint8_t opcode_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  Mlx5DeviceSend()
+      : temporal_(),
+        laddr_(0),
+        raddr_(0),
+        qp_num_(0),
+        wqe_idx_(0),
+        lkey_(0),
+        rkey_(0),
+        length_(0),
+        opcode_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  Mlx5DeviceSend(const pcomm::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint8_t _opcode)
+      : temporal_(_temporal),
+        laddr_(::flatbuffers::EndianScalar(_laddr)),
+        raddr_(::flatbuffers::EndianScalar(_raddr)),
+        qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        wqe_idx_(::flatbuffers::EndianScalar(_wqe_idx)),
+        lkey_(::flatbuffers::EndianScalar(_lkey)),
+        rkey_(::flatbuffers::EndianScalar(_rkey)),
+        length_(::flatbuffers::EndianScalar(_length)),
+        opcode_(::flatbuffers::EndianScalar(_opcode)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t laddr() const {
+    return ::flatbuffers::EndianScalar(laddr_);
+  }
+  uint64_t raddr() const {
+    return ::flatbuffers::EndianScalar(raddr_);
+  }
+  uint32_t qp_num() const {
+    return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint32_t wqe_idx() const {
+    return ::flatbuffers::EndianScalar(wqe_idx_);
+  }
+  uint32_t lkey() const {
+    return ::flatbuffers::EndianScalar(lkey_);
+  }
+  uint32_t rkey() const {
+    return ::flatbuffers::EndianScalar(rkey_);
+  }
+  uint32_t length() const {
+    return ::flatbuffers::EndianScalar(length_);
+  }
+  uint8_t opcode() const {
+    return ::flatbuffers::EndianScalar(opcode_);
+  }
+};
+FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 88);
 
 }  // namespace fb
 }  // namespace pcomm

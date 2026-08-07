@@ -58,6 +58,8 @@ PCOMM_SCHEMA_MATCH(mr::Mlx5DevxCmd, fb::Mlx5DevxCmd);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQp, fb::Mlx5DevxQp);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQpConnect, fb::Mlx5DevxQpConnect);
 PCOMM_SCHEMA_MATCH(mr::Mlx5QueuePair, fb::Mlx5QueuePair);
+PCOMM_SCHEMA_MATCH(mr::Mlx5Doorbell, fb::Mlx5Doorbell);
+PCOMM_SCHEMA_MATCH(mr::Mlx5DeviceSend, fb::Mlx5DeviceSend);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -463,6 +465,33 @@ int main() {
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 51, 52,
             0x1EFFB, 2);
         expect_identical("Mlx5QueuePair", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5Doorbell> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.uar = 0x2A;
+        c.payload.qp_num = 0x1EFFA;
+        c.payload.prod_idx = 0x0140;
+        fb::Mlx5Doorbell f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 0x2A,
+            0x1EFFA, 0x0140);
+        expect_identical("Mlx5Doorbell", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5DeviceSend> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.laddr = 0x7F0011220000ull;
+        c.payload.raddr = 0x7F0099880000ull;
+        c.payload.qp_num = 0x1EFF9;
+        c.payload.wqe_idx = 0x0080;
+        c.payload.lkey = 0xABCD;
+        c.payload.rkey = 0xDCBA;
+        c.payload.length = 4096;
+        c.payload.opcode = 0x08;
+        fb::Mlx5DeviceSend f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0x7F0011220000ull, 0x7F0099880000ull, 0x1EFF9, 0x0080, 0xABCD, 0xDCBA, 4096, 0x08);
+        expect_identical("Mlx5DeviceSend", &c, &f, sizeof(c));
     }
     {  // InternKey / InternString: the dictionary every Handle depends on.
         Stamped<cr::InternKey> c{};
