@@ -91,19 +91,23 @@ PCOMM_RECORD(InternString, RecordKind::Artifact, 512, "intern_string") {
 // containment is only sound within a lifetime — and the id map should read that
 // way.
 PCOMM_RECORD(MemObject, RecordKind::Entity, 520, "mem_object") {
-    // PROVIDER-LOCAL. Not a cross-provider identity, despite the name — do not
-    // join or deduplicate on it. ibverbs and mlx5dv intern it on the base
-    // address (InternDomain::Pointer); gpumem mints its own dense counter in
-    // AllocRegistry::add (`m_allocs.size() + 1`), which never touches the intern
-    // table. Both are dense 1-based uint32, so gpumem's object 3 and an interned
-    // pointer handle 3 are the same number naming different buffers, and merging
-    // on it would fabricate a device disagreement out of a collision.
+    // SHARED across providers as of 2026-08-07: every emitter interns the
+    // buffer's BASE ADDRESS in InternDomain::Pointer, so two providers that see
+    // the same buffer mint the same id and a GpuAccess can resolve to a region
+    // ibverbs registered.
     //
-    // `range` is the fact every emitter independently agrees on, so that is what
-    // pcomm-read merges by. Making this a real shared identity is worth doing —
-    // it would let a GpuAccess resolve to a region ibverbs registered, which
-    // today is impossible — but it is a change to all three emitters, not a
-    // relabelling of this field.
+    // It was provider-local until then — gpumem minted a dense counter in
+    // AllocRegistry::add (`m_allocs.size() + 1`) that never touched the intern
+    // table, and since intern handles are dense 1-based uint32 too, gpumem's
+    // object 3 and an interned pointer handle 3 were the same number naming
+    // different buffers. Joining on it would have fabricated a device
+    // disagreement out of a collision.
+    //
+    // pcomm-read still merges by `range`, not by this id. That is deliberate:
+    // the range is the fact every emitter agrees on WITHOUT having to agree on a
+    // convention, so it keeps working if a fourth emitter arrives interning
+    // something else. The id being joinable is what a query gains; it is not
+    // what the merge depends on.
     Handle   id;
     Handle   name;  // interned symbol/type name
     MemRange range;

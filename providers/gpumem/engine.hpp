@@ -36,11 +36,15 @@ public:
         core::Handle   object;  // MemObject entity id
     };
 
-    core::Handle add(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
+    // `object` is minted by the caller, not here, and that is the whole point:
+    // it used to be a dense local counter (`m_allocs.size() + 1`), which made
+    // MemObject.id provider-local and unjoinable — gpumem's object 3 and an
+    // interned pointer handle 3 were the same uint32 naming different buffers.
+    // on_alloc now interns the base address in the same domain ibverbs and
+    // mlx5dv use, so the id is a shared identity across providers.
+    void add(std::uint64_t base, std::uint64_t size, core::DeviceId dev, core::Handle object) {
         std::lock_guard lock(m_mutex);
-        auto            object = static_cast<core::Handle>(m_allocs.size() + 1);
         m_allocs.push_back({base, size, dev, object});
-        return object;
     }
 
     // A range that resolves a device but names no MemObject — the backend's
@@ -123,7 +127,12 @@ public:
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         auto& rec = recorder();
-        auto  object = m_allocs.add(base, size, dev);
+        // The buffer's base address, interned in the Pointer domain — exactly
+        // what ibverbs and mlx5dv do for the same buffer, so all three mint the
+        // SAME id and a GpuAccess can resolve to a region ibverbs registered.
+        // That was impossible while this was a dense counter local to gpumem.
+        const auto object = rec.intern(rec::InternDomain::Pointer, base);
+        m_allocs.add(base, size, dev, object);
         rec.record(rec.now_instant(),  // lifetime open until free-tracking lands
                    core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
     }

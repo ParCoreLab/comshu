@@ -481,15 +481,17 @@ struct CsvAgg {
 
     // --- memory attribution -------------------------------------------------
     //
-    // Merged by (rank, base, size), which is the buffer's identity. NOT by
-    // MemObject.id, and that deviates from the plan for a measured reason:
-    // ibverbs and mlx5dv intern the id on the base address in
-    // InternDomain::Pointer, but gpumem mints its own dense counter
-    // (AllocRegistry::add), and intern handles are dense 1-based counters too.
-    // So gpumem's object 3 and an interned pointer handle 3 are the same
-    // uint32 meaning two different buffers, and merging on it would fabricate
-    // a device disagreement out of an id collision. The range is the fact all
-    // three emitters actually agree on.
+    // Merged by (rank, base, size), which is the buffer's identity. Still not
+    // by MemObject.id, though as of 2026-08-07 that id IS shared — all three
+    // emitters intern the base address in InternDomain::Pointer, gpumem
+    // included, so joining on it is now sound where it used to collide (its
+    // dense AllocRegistry counter and a 1-based intern handle were the same
+    // uint32 naming different buffers).
+    //
+    // The range stays the merge key anyway: it is the fact every emitter agrees
+    // on without agreeing on a convention, so this loop does not break if some
+    // future emitter interns something else. Joining on the id is a gain for
+    // queries, not a reason to make the merge depend on it.
     struct MemObj {
         std::uint64_t            base{0}, size{0};
         core::DeviceId           lowest_device{0xFFFF};
