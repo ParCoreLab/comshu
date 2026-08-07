@@ -56,4 +56,33 @@ SELECT 'more closes than opens for one subject (opener ' || c.opener || ')',
 FROM closes c
 WHERE c.n > COALESCE((SELECT n FROM open_n o WHERE o.rank = c.rank AND o.subject = c.subject), 0)
 
+UNION ALL
+
+-- The other direction, and the one this file could not ask until closes were
+-- complete: an entity we saw opened and never saw closed. An unmatched CLOSE
+-- names a missing creation door; an unmatched OPEN names a missing DESTRUCTION
+-- door — ibv_destroy_qp has a dozen vendor-specific cousins and nothing here
+-- would notice if an application used one.
+--
+-- Measured before it was asserted, on job 44396323 across four workloads:
+-- opens and closes are exactly equal for every entity type that appears —
+-- pingpong 2/2 regions and 2/2 QPs, send_bw the same, NCCL 1518/1518 and
+-- 816/816, NVSHMEM coexist 716/716 and 432/432, multinode 1468/1468 and
+-- 928/928. Not approximately; exactly, on every rank.
+--
+-- WHEN THIS FIRES, it has two readings and they are not the same bug:
+--   * a destruction door we do not hook — the interesting one, and the mirror
+--     of the six-hypothesis hunt that produced this file;
+--   * an application that genuinely exits without cleaning up, which is legal
+--     and not our problem. If that is what it is, scope the assertion to the
+--     cases where cleanup is part of the workload rather than deleting it.
+-- A third reading exists and should be ruled out first: a close that happened
+-- after the last flush. That would make this flaky rather than red, and the
+-- 4/4 exactness above is the evidence it does not happen today.
+SELECT 'entity opened and never closed (opener ' || o.opener || ')',
+       o.rank, o.subject, 0 AS closes, count(*) AS opens
+FROM opens o
+WHERE NOT EXISTS (SELECT 1 FROM closes c WHERE c.rank = o.rank AND c.subject = o.subject)
+GROUP BY o.rank, o.subject, o.opener
+
 ORDER BY 1, 2, 3;
