@@ -102,7 +102,11 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # configured cannot be checked against either, which is exactly how hours went
 # into comparing two runs that were never the same experiment. 0 = by_addr,
 # 1 = by_dmabuf.
-PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes regions_per_rank umem_binding gpudirect"
+# rx_depth is the receive-queue depth a workload pre-posts. It is a genuine
+# oracle and not an observation: ibv_rc_pingpong takes it as -r (default 500)
+# and posts exactly that many receives up front, so the expected ib_post_recv
+# count is known from the command line before the code runs.
+PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes regions_per_rank umem_binding gpudirect rx_depth"
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
 params_sql="$(meta_py <<'PY'
