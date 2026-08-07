@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -41,8 +42,10 @@
 #include "mlx5_event_source.hpp"
 #include "pcomm/core/dmabuf_registry.hpp"
 #include "mlx5_records.hpp"
+#include "uar_hijack.hpp"
 
 namespace mlx5 {
+
 namespace rr = pcomm::providers::mlx5dv::records;
 using pcomm::rec::InternDomain;
 using rr::kUnknownDevice;
@@ -324,6 +327,19 @@ Profiler::Profiler() {
     // unknown device it reported before.
     pcomm::core::dmabuf::install();
 
+    // The doorbell hijack (cudaHost* interposers below) is opt-in and OFF by
+    // default: it is the one pcomm mechanism that sits in the application's data
+    // path. The exported interposers pass through untouched unless enabled; here
+    // we only announce it, because from an enabled run the timing is a
+    // measurement of the instrumented system, not the application.
+    if (hijack::enabled()) {
+        hijack::install();
+        std::fprintf(stderr,
+                     "[pcomm] doorbell hijack ENABLED — this run sits in the data "
+                     "path and its timing is perturbed; do not draw latency "
+                     "conclusions from it\n");
+    }
+
     // Bring up sink + recorder. `Tracer::instance()` alone was not enough and
     // failed in the most misleading way available: every hook fired (LD_DEBUG
     // confirmed nvshmem_transport_ibgda.so binding to this .so for umem_reg_ex,
@@ -363,6 +379,10 @@ Profiler::Profiler() {
         [](mlx5dv_devx_uar* out, ibv_context*, uint32_t flags, auto...) {
             if (!out)
                 return;
+            // The hijack only ever swaps a page that came from here — this is
+            // the "never manufacture a capability" rule made concrete.
+            if (hijack::enabled())
+                hijack::remember_uar(out->reg_addr, out->page_id);
             rec().record(pcomm::core::Temporal::none(),
                          rr::Mlx5Uar{{},
                                      {},
@@ -390,6 +410,10 @@ Profiler::Profiler() {
     this->register_post<devx_free_uar_tag>([](mlx5dv_devx_uar* uar, auto...) {
         if (!uar)
             return;
+        // Stop the repeater before the page goes away. Idempotent with the
+        // teardown cuMemHostUnregister does, in whichever order they arrive.
+        if (hijack::enabled())
+            hijack::teardown(uar->reg_addr);
         rec().record(rec().now_instant(),
                      pcomm::core::records::EntityClose{{}, {}, h(uar), rr::Mlx5Uar::pcomm_type_id});
     });
@@ -494,6 +518,11 @@ extern "C" ibv_qp* mlx5dv_create_qp(ibv_context* ctx, ibv_qp_init_attr_ex* attr,
     return mlx5::Profiler::invoke_preload<mlx5::create_qp_tag>(ctx, attr, mlx5_attr);
 }
 
+// The doorbell hijack's CUDA driver interceptions are NOT exported symbols: they
+// are patched directly into libcuda's private export table (cuda_export_table.hpp),
+// because on du04 NVSHMEM links libcudart statically and reaches the driver only
+// that way. Nothing to interpose here.
+
 // --- provider registration ---------------------------------------------------
 
 namespace pcomm::providers {
@@ -521,6 +550,8 @@ static void __attribute__((constructor)) pcomm_mlx5dv_load() {
     mlx5::Profiler::instance();
 }
 static void __attribute__((destructor)) pcomm_mlx5dv_unload() {
+    if (mlx5::hijack::enabled())
+        mlx5::hijack::report_and_shutdown(pcomm::Config::from_env().rank);
     pcomm_engine_drain_thread();
     pcomm_engine_release();
 }

@@ -181,6 +181,11 @@ void usage() {
                "  -v, --verbose      verbose provider logging\n"
                "      --list         show available providers and exit\n"
                "      --dry-run      print the run plan without executing\n"
+               "      --enable-doorbell-hijack\n"
+               "                     capture the IBGDA data plane by redirecting the\n"
+               "                     GPU's doorbell page (mlx5dv provider). Sits IN the\n"
+               "                     application's data path and PERTURBS its timing —\n"
+               "                     never draw a latency conclusion from such a run.\n"
                "  -h, --help         this message\n"
                "\n"
                "  e.g.  pcomm -p ib -- ./app          # network only, single run\n"
@@ -196,6 +201,7 @@ int main(int argc, char** argv) {
     std::vector<const Provider*> selected;
     std::string                  output_dir = "pcomm-out";
     bool                         verbose = false, dry_run = false;
+    bool                         doorbell_hijack = false;
     std::vector<char*>           target;
 
     auto add_selector = [&](std::string_view csv) {
@@ -238,6 +244,8 @@ int main(int argc, char** argv) {
             verbose = true;
         else if (a == "--dry-run")
             dry_run = true;
+        else if (a == "--enable-doorbell-hijack")
+            doorbell_hijack = true;
         else if (a == "--list") {
             list_providers();
             return 0;
@@ -348,6 +356,10 @@ int main(int argc, char** argv) {
         setenv("LD_PRELOAD", preload.c_str(), 1);
         setenv("PCOMM_OUTPUT_DIR", out.c_str(), 1);
         setenv("PCOMM_VERBOSE", verbose ? "1" : "0", 1);
+        // The mlx5dv provider reads this and arms the UAR doorbell hijack. Only
+        // that provider acts on it; harmless in a pass without it.
+        if (doorbell_hijack)
+            setenv("PCOMM_DOORBELL_HIJACK", "1", 1);
     };
 
     // ── Single pass: exec directly (no wrapper process left behind) ─────────

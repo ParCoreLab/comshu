@@ -191,3 +191,80 @@ saves nothing that stage 0 does not already have to build.
 doorbell means no `prod_idx`, so there is no way to know which WQEs are new, and
 the GPU recycles WQEBBs underneath the reader. It would produce plausible rows
 that are silently wrong, which is worse than an empty table.
+
+## Stages 0-1 SHIPPED — and the door was not the one this plan named
+
+Built and verified on du04 (2026-08-07): `providers/mlx5dv/cuda_export_table.hpp`
+(the CUDA driver export-table patcher), `memory_repeater.hpp/.cpp` (the ported
+WAITPKG/MWAITX/PAUSE repeater), `uar_hijack.hpp` (the swap + pure forwarder),
+wired into the provider behind `--enable-doorbell-hijack` (env
+`PCOMM_DOORBELL_HIJACK`), off by default.
+
+**The interception door was wrong in this plan, and hardware said so twice.**
+The plan (and stage 0b) assumed the UAR mapping is reachable by hooking the
+driver API through `cuGetProcAddress`. It is not, on du04's stack (NVSHMEM
+**3.3.24**, HPC-SDK 25.9, CUDA 13, A100). Two measured dead ends before the
+door that works:
+
+1. **Driver API via `cuGetProcAddress`** — `register_calls=0 getdevptr_calls=0`.
+   `cuMemHostRegister`/`cuMemHostGetDevicePointer` never even appear among the
+   `cuMem*` symbols NVSHMEM resolves through `cuGetProcAddress` — only the VMM
+   API (`cuMemCreate`/`cuMemMap`/…) does. NVSHMEM's *own* driver calls go through
+   `cuGetProcAddress`; the UAR mapping does not.
+2. **Runtime API via PLT interposition** — NVSHMEM maps the UAR with the CUDA
+   *runtime* API (`cudaHostRegister`+`cudaHostGetDevicePointer`,
+   `ibgda.cpp:1222-1235`), not the driver API. But NVSHMEM links **libcudart
+   statically** (`nm -D` shows no undefined `cudaHost*`; the binary is full of
+   `libcudart_static_*`), so those are static functions with no dynamic symbol to
+   interpose. `register_calls=0` again.
+3. **Driver API via the export table** — the door that works. cudart_static
+   resolves libcuda's `cuMemHostGetDevicePointer` through `cuGetExportTable`, the
+   private driver dispatch table. Interposing `cuGetExportTable` (via the engine's
+   `dlsym` hook, the same door the dmabuf registry already uses) and patching the
+   real function pointers in place is exactly SigmaTrace's
+   `CudaExportTableOverwrite`. **This is the component the plan's risk section
+   flagged as "the least defensible code" and hoped to avoid — the evidence makes
+   it required, not optional.** With it: `cuMemHostRegister UAR flags=0x7 -> SKIP`,
+   `SWAP -> repeater armed`, `uars_hijacked=4 getdevptr_calls=4` per rank.
+
+### Stage-1 gate — result
+
+`ibgda`+dmabuf (case 09's config), verifying put-ring, 200 iters, 2 PEs loopback:
+
+| | baseline (no pcomm) | passive (`-p mlx5dv`) | hijack |
+|---|---|---|---|
+| output | `VERIFY OK` rc=0 | `VERIFY OK` rc=0 | **`VERIFY OK` rc=0, byte-identical** |
+| mean wall | 3.540s | 3.537s | **5.937s** |
+| doorbells forwarded | — | 0 | ~940–1077 / rank |
+
+**Correctness: PASS.** The forwarder is sound — data transfers correctly and the
+run completes reliably every time, so the man-in-the-middle does not corrupt or
+hang the application. The verifying workload (`scratchpad/putget_verify.cu`,
+based on `04_nvshmem/putget.cu` plus a dst-value check) was written because the
+stock workload prints "OK" on completion without checking the data it received.
+
+**Timing: the +68% is real and is the finding, not a failure.** The gate's
+"no slower than the mean of three clean runs" clause is blown by the CPU
+repeater's PCIe round trip — precisely the cost the parent plan predicted and
+the reason Stage 3 (the on-GPU repeater) exists. It is NOT the "stop here" case:
+that clause guards against a data path that perturbs the application's *output*,
+which this does not. WAITPKG is present on du04's host (no PAUSE-spin fallback),
+so this is the inherent host-forward cost, not a spin artifact. The launcher
+prints the perturbation warning and the hijack stays off by default.
+
+### Consequences for the stages below
+
+- **Stage 2 (decode) is unblocked** and is the next deliverable: the swap
+  delivers the doorbell value to `on_change`; the decode reads `(qpn, prod_idx)`
+  and copies WQEs out of the SQ. The reals for the copy (`cuMemcpyDtoHAsync`,
+  streams) resolve through `cuda_export_table.hpp`'s `real()` the same way the
+  fake-page allocation already does.
+- **Stage 3 is now likely, not conditional-and-probably-unnecessary.** +68% on a
+  doorbell-bound microbenchmark is outside any "default-on" budget; a real
+  compute workload would dilute it, but the number says the on-GPU repeater is
+  the path to low-overhead capture. Decide it against a Stage-2 measurement on a
+  workload with compute, not this loopback.
+- **The export-table patcher wants its own kill switch and test**, as the risk
+  section says. It is gated behind `--enable-doorbell-hijack` today; it rewrites
+  another library's dispatch table and deserves a negative control (hijack off →
+  table untouched) in the Stage-4 suite.

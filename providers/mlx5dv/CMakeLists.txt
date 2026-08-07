@@ -8,16 +8,21 @@
 
 find_library(MLX5_LIB NAMES mlx5 REQUIRED)
 find_library(IBVERBS_LIB_FOR_MLX5 NAMES ibverbs REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(mlx5dv_trace SHARED
   mlx5dv_provider.cpp
+  # The doorbell hijack's per-UAR repeater. Its wait_mem lives in a .cpp because
+  # UMWAIT/MWAITX need per-function target attributes a header cannot carry.
+  memory_repeater.cpp
 )
 set_target_properties(mlx5dv_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "mlx5dv_trace")
 target_include_directories(mlx5dv_trace PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/third_party/mlx5/include)
 target_link_libraries(mlx5dv_trace PRIVATE
-  pcomm::pcomm pcomm::hook ${MLX5_LIB} ${IBVERBS_LIB_FOR_MLX5} ${CMAKE_DL_LIBS})
+  pcomm::pcomm pcomm::hook ${MLX5_LIB} ${IBVERBS_LIB_FOR_MLX5} ${CMAKE_DL_LIBS}
+  Threads::Threads)
 
 # Same RPATH reasoning as the ibverbs provider: the .so has a DT_NEEDED on
 # libpcomm_engine.so and must find it in both the build and installed layouts.
