@@ -799,6 +799,15 @@ extern "C" int ibv_close_device(ibv_context* context) {
 extern "C" ibv_context* ibv_open_device(ibv_device* device) {
     return ibv::Profiler::invoke_preload<ibv::open_device_tag>(device);
 }
+// Coverage only — see the create_cq hook in ib_hooks.hpp. A CQ is created from a
+// context, not from a PD, so this is the one door through which an object-op
+// (poll_cq) could reach a context we have not installed into yet.
+extern "C" ibv_cq* ibv_create_cq(ibv_context* context, int cqe, void* cq_context,
+                                 ibv_comp_channel* channel, int comp_vector) {
+    ibv::ensure_installed(context, "create_cq");
+    return ibv::Profiler::invoke_preload<ibv::create_cq_tag>(context, cqe, cq_context, channel,
+                                                             comp_vector);
+}
 extern "C" ibv_pd* ibv_alloc_pd(ibv_context* context) {
     ibv::ensure_installed(context, "alloc_pd");
     return ibv::Profiler::invoke_preload<ibv::alloc_pd_tag>(context);

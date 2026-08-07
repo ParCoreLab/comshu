@@ -109,6 +109,20 @@ DEFINE_OBJECT_OPS_HOOK(ibv, reg_dm_mr, "ibv_reg_dm_mr", ibv_mr*, ibv_pd*, ibv_dm
 DEFINE_OBJECT_OPS_HOOK(ibv, alloc_null_mr, "ibv_alloc_null_mr", ibv_mr*, ibv_pd*);
 DEFINE_PRELOAD_HOOK(ibv, dereg_mr, "ibv_dereg_mr", int, ibv_mr*);
 DEFINE_PRELOAD_HOOK(ibv, alloc_pd, "ibv_alloc_pd", ibv_pd*, ibv_context*);
+// Hooked for COVERAGE, not for a record: nothing registers a callback on it.
+//
+// Object-ops hooks live inside an ibv_context, and a context is instrumented at
+// its first call through a hooked door. Job 44396249 measured which door that
+// is: 48 of 73 contexts per rank arrive first at ibv_alloc_pd, i.e. they were
+// opened somewhere we do not interpose, so a window exists between their open
+// and that alloc_pd. Every object-op we hook needs a PD to exist first — a send
+// needs a QP, a QP needs a PD, reg_dm_mr and alloc_null_mr take one — with the
+// single exception of ibv_poll_cq, whose CQ is created from a CONTEXT and not
+// from a PD. This is that exception's door, and interposing it is what turns
+// "ordering says nothing can be lost" into something measured: if a context
+// ever installs at door=create_cq, a CQ existed on it before any PD did.
+DEFINE_PRELOAD_HOOK(ibv, create_cq, "ibv_create_cq", ibv_cq*, ibv_context*, int, void*,
+                    ibv_comp_channel*, int);
 DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_init_attr*);
 // The conversion an application must call to obtain the new work-request API,
 // and therefore the one place the wr_* function pointers can be patched: the
