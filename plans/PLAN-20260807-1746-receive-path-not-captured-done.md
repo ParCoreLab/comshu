@@ -1,8 +1,16 @@
 # PLAN — the receive path, which pcomm infers and never observes
 
 - **Created:** 2026-08-07 17:46 +03
-- **Status:** TODO. Scope is "everything SigmaTrace's ibverbs module reaches, on
-  the receive side, and the entities that make those rows joinable".
+- **Status:** DONE 2026-08-07. All five stages implemented and measured on MN5;
+  final board is job 44400747, SUITE GREEN — 8 PASS (3 carrying one documented
+  xfail) + 3 SKIP. Six record types landed. See "What was measured" at the
+  bottom: **three claims in this plan turned out to be wrong** and are corrected
+  there rather than quietly worked around.
+- **Spawned:** `PLAN-20260807-2119-ucx-context-open-door` — the missing CQ
+  creation door this work exposed. It is the reason for the three xfails and is
+  deliberately NOT part of this plan's scope.
+- **Scope was:** "everything SigmaTrace's ibverbs module reaches, on the receive
+  side, and the entities that make those rows joinable".
 - **Prior art:** `../SigmaTrace` — `Ibtrace/IbverbsHooks.hpp` (the hook set),
   `Ibtrace/IbverbsEventSource.hpp:64-102` (slot mapping + `get_object_from_args`),
   `Profiler/Handlers/IBV/Ibverbs.cpp:179-209` (the only receive-side handler that
@@ -180,3 +188,106 @@ the two boards with real proxy-thread traffic.
   `IbMemRegion.origin` does, keep a capture from leaking which entry point the
   caller happened to compile against.
 - Record ids: 100-199 is the ibverbs range, `100 102 106 110 112` taken.
+
+
+---
+
+# What was measured (2026-08-07, MN5)
+
+Six record types landed: `ib_completion_queue` (104), `ib_shared_recv_queue`
+(108), `ib_post_recv` (114), `ib_req_notify_cq` (116), `ib_address_handle`
+(118), `ib_device` (120).
+
+## The headline claim held
+
+Case 01, per rank: **500 posted receives, every one joining to the
+`ib_mem_region` that owns its buffer** (base `0x556943d4e000`, 4096 B). "Which
+memory receives this" is answerable for the first time, and it is answerable
+*because* the first sge's `addr`/`lkey` are kept — the field SigmaTrace's
+handler does not have. Confirmed against `../SigmaTrace`
+(`Profiler/Handlers/IBV/Ibverbs.cpp:177-209`): it stores `num_sge` and no sge
+list, and it does not check the return value either, so it records receives that
+were never posted.
+
+Volumes: 500/rank (case 01), 24,320 (case 02 NCCL), 147,088 (case 07 NVSHMEM —
+15,360 QP + 131,728 SRQ). The plan asked for a volume measurement before
+shipping the per-WR row. It is comfortably below `ib_post_send`'s firehose on
+the same cases, so **no predicate is needed** and none was added.
+
+## Three things this plan got wrong
+
+**1. "case 01's golden pins 20 recv completions, so the expected `ib_post_recv`
+count is known" — the count is 500, not 20.** `ibv_rc_pingpong` pre-posts
+`rx_depth` (default 500) and only reposts when its outstanding count falls to 1,
+which `-n 20` never triggers. The oracle is `rx_depth`, now a `params` column;
+`asserts/receives.sql` derives from it. The prediction was still made before the
+run and confirmed by it — just from the right parameter.
+
+**2. "`create_srq` should become an install door, since an SRQ can exist before
+any PD".** `ibv_create_srq` takes a **pd** and therefore cannot precede one. It
+is `ibv_create_srq_ex` that takes a *context* — and like `create_cq_ex` and
+`create_qp_ex` it is a `verbs_context` slot with no exported symbol. Both are
+hooked.
+
+**3. "every recv completion joins to a posted receive on the same rank and QP by
+`wr_id`" — not for SRQ receives, and the first version of the assertion was
+wrong because of it.** An SRQ receive is not bound to a QP when posted (the
+hardware picks one when a message lands), so its post carries `qp_num = 0` while
+its completion carries a real one. Scoping posts to `origin='qp'` without
+scoping completions to match reported **656 false violations on case 07**. The
+assertion now joins SRQ receives on `(rank, wr_id)`. Case 02 had passed only
+because NCCL creates 120 SRQs and posts to none of them — a capture with no SRQ
+traffic cannot tell you whether your SRQ handling is right.
+
+## Stage 5 was implemented against the plan's intent, not its letter
+
+The plan said hook `query_device` and `get_device_guid`. Hooking `query_device`
+*for the record* would make `ib_device` appear only when the application happens
+to ask — most do not. It is emitted from `ensure_installed` instead, the one
+place that runs exactly once per context: 73 contexts per rank on case 02, every
+one with a row. `get_device_guid` is not hooked at all — it takes an
+`ibv_device*` so it is useless as an install door, and its guid is already
+`node_guid` in the record. That is this plan's own "a hook that records nothing
+is not parity" test, applied to the plan.
+
+## Nothing shipped as an empty table
+
+The plan's central worry was five doors that record nothing. On case 02 (NCCL):
+162 address handles, 600 `req_notify_cq` rows, 120 SRQs. On case 07: 131,728 SRQ
+receives. `ib_device` carries real identity (`fw_ver 28.39.2048`, distinct
+`node_guid` per rank). `create_cq_ex` fires 480 times per run (60/rank), so
+hooking it rather than merely measuring it was the right call — a plain
+`ibv_create_cq` hook would have missed those silently.
+
+## What this opened, and handed on
+
+Stage 1 made completion queues visible, and visibility immediately found
+something: **30 CQs per rank are destroyed that nothing recorded creating**,
+identically on all 8 ranks of case 02 and case 07. That is the assertion working
+as designed — it is the same defect class `entity_close_accounted` was written
+to catch, and the same shape as the `create_qp_ex` hunt.
+
+It is diagnosed, not fixed, and it is **not this plan's scope**: the fix is in
+the context-opening path, not the receive path. Full evidence, the two
+instruments built for it, and the next steps are in
+`PLAN-20260807-2119-ucx-context-open-door`. `entity_close_accounted` is
+`expect_fail` on cases 02/06/07 with the measurement attached, exactly as
+`qp_creation_accounted` was on case 08 until its door was found — never
+weakened, rows still printed.
+
+`ib_device` contexts opened and never closed (73 opened, 67 closed, on every
+rank of both cases) was the other new signal, and it **is** closed here: the
+determinism ruled out the flush-timing reading, a device context's natural
+lifetime is the process, and real MPI stacks exit without closing them all.
+`entity_close_accounted`'s "never closed" clause now exempts opener 120 only,
+with the measurement in the comment. The other two clauses still cover
+`ib_device` in full — verified by mutation.
+
+## Known remaining gap, unrelated to this plan
+
+An application polling through the extended `ibv_cq_ex` API never touches
+`ctx->ops.poll_cq`, the mirror of the `ibv_wr_*` blind spot on the send side.
+`ib_poll_cq` would be empty and `recv_completion_accounted` would go *quiet*
+rather than red. pingpong and perftest both use the classic path, so it is not
+biting today. Carried in `PLAN-20260807-2119-ucx-context-open-door`, which is
+the same family of hole.
