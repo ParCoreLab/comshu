@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <cstring>
+#include <unistd.h>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -33,6 +34,18 @@
 
 #include "ib_records.hpp"  // provider record schemas (reader knows all types)
 #include "mlx5_records.hpp"
+
+// At file scope, deliberately: raw_columns.hpp opens `namespace pcomm::raw`, and
+// including it inside this file's anonymous namespace would declare a *nested*
+// pcomm that shadows the real one — which is exactly what happened the first
+// time. duckdb.h must precede it; the generated appends are duckdb_append_*.
+#if PCOMM_HAVE_DUCKDB
+extern "C" {
+#include "duckdb.h"
+}
+#include "duck_mount.hpp"   // raw_columns.hpp + the shared mount policy
+#include "link_sql.hpp"
+#endif
 
 namespace fs = std::filesystem;
 using namespace pcomm;
@@ -197,6 +210,18 @@ template<> struct Table<SourceLine> {
     static constexpr const char* cols = "pc,file,line";
     static void row(std::FILE* f, const Stamped<SourceLine>& s, const rec::InternDictionary& in) {
         std::fprintf(f, "%u,%s,%u", s.payload.pc, in.str(s.payload.file), s.payload.line);
+    }
+};
+
+// One row per rank: which machine it ran on. `node_hash = 0` means gethostname
+// failed, which is deliberately distinct from the record being absent — the
+// reader treats 0 as unknown and falls back to LID grouping rather than merging
+// every failed rank onto one node.
+template<> struct Table<NodeIdentity> {
+    static constexpr const char* name = "node_identity";
+    static constexpr const char* cols = "node_hash";
+    static void row(std::FILE* f, const Stamped<NodeIdentity>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu", (unsigned long long)s.payload.node_hash);
     }
 };
 
@@ -538,7 +563,7 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
 using TableRecords =
-    std::tuple<GpuAccess, MemObject, EntityClose, SourceLine, ClockAnchor, Attribution,
+    std::tuple<GpuAccess, MemObject, EntityClose, SourceLine, NodeIdentity, ClockAnchor, Attribution,
                ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend,
                ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
@@ -564,6 +589,43 @@ std::vector<core::RecordTypeId> known_types() {
                                          core::RecordTrait<InternString>::type_id};
     for_each_type<TableRecords>([&]<typename R>() { v.push_back(core::RecordTrait<R>::type_id); });
     return v;
+}
+
+// The type_id -> table name map, from the same Table<> list every exporter is
+// derived from.
+//
+// It exists because a capture directory carries no vocabulary whatsoever: it is
+// `rank-N/<type_id>.pcs` and nothing else, so the stream inventory can only name
+// a type by its number. Anything downstream that wants to *label* those numbers
+// — the corpus index, and the UI's derived tables after it — would otherwise
+// keep a private copy of this mapping, which is the drift `Table<>` exists to
+// prevent. Emitting it from the one list means a new record type appears here
+// for free, and a renamed table cannot silently disagree with its label.
+//
+// Takes no trace directory: this is a property of the build, not of a capture.
+// Sorted by type_id so the output is diffable across builds.
+void print_types() {
+    std::vector<std::tuple<unsigned, const char*, unsigned, std::string>> rows;
+    for_each_type<TableRecords>([&]<typename R>() {
+        rows.emplace_back(core::RecordTrait<R>::type_id, kind_name(core::RecordTrait<R>::kind),
+                          core::RecordTrait<R>::version, Table<R>::name);
+    });
+    // The two intern streams have no Table<> — they are consumed as the
+    // dictionary rather than exported as tables — but they are a third of the
+    // files in a capture and an index that cannot name them is an index with
+    // holes in it. Named from RecordTrait::name, the wire name, so this is still
+    // not a hardcoded string.
+    auto intern = [&]<typename R>() {
+        rows.emplace_back(core::RecordTrait<R>::type_id, kind_name(core::RecordTrait<R>::kind),
+                          core::RecordTrait<R>::version, std::string(core::RecordTrait<R>::name));
+    };
+    intern.template operator()<InternKey>();
+    intern.template operator()<InternString>();
+
+    std::sort(rows.begin(), rows.end());
+    std::puts("type_id\tkind\tversion\tname");
+    for (const auto& [id, kind, ver, name] : rows)
+        std::printf("%u\t%s\t%u\t%s\n", id, kind, ver, name.c_str());
 }
 
 // One rank's capture: streams + intern dictionaries.
@@ -934,6 +996,287 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     return 0;
 }
 
+// --- Parquet export -----------------------------------------------------------
+//
+// Parquet is the contract between the reader and everything above it: the UI
+// queries it through DuckDB, and Polars/pandas read the same files. Nothing
+// above this line is allowed to open a `.pcs` — stream headers, schema-hash
+// validation, stride checks, version mapping and intern resolution live here and
+// only here.
+//
+// **Raw records, native types, straight from the decoded structs.** A `.pcs` is
+// a packed array of fixed-stride PODs, so load_stream already hands back
+// `Stamped<R>` with real C++ types — `s.payload.qp_num` IS a uint32_t. Those
+// values go to DuckDB's appender as themselves. Nothing is stringified on the
+// way, so nothing has to be inferred back.
+//
+// An earlier attempt staged through CSV and let DuckDB re-derive the types from
+// text. It was wrong in a way worth recording, because the failure was silent:
+// `mem_object.base` (a uint64_t) came back as the integer 32825344 while
+// `ib_device.node_guid` stayed the string "0x946dae030047bf46" — same hex
+// notation, different inferred type, decided by whether the value happened to
+// exceed int64. A column's type would then depend on which capture you opened.
+// Here `base` is UBIGINT because the struct says uint64_t, on every capture.
+//
+// What this deliberately does NOT do is decode. No opcode names, no resolved
+// intern handles, no `rank` joined in from anywhere but the directory. Those
+// mappings are semantic, they belong to the derived-table layer, and SQL is a
+// better place for them than a C++ printer. `--csv` keeps the decoded columns
+// and its goldens are untouched.
+#if PCOMM_HAVE_DUCKDB
+
+using pcomm::duck::exec;
+constexpr auto duck_exec = [](duckdb_connection c, const std::string& q, const char* w) {
+    return pcomm::duck::exec(c, q, w);
+};
+
+int export_parquet(const fs::path& root, const fs::path& outdir) {
+    auto ranks = scan_ranks(root);
+    if (ranks.empty()) {
+        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
+        return 1;
+    }
+    std::error_code ec;
+    fs::create_directories(outdir, ec);
+
+    duckdb_database   db{};
+    duckdb_connection con{};
+    if (duckdb_open(nullptr, &db) != DuckDBSuccess ||
+        duckdb_connect(db, &con) != DuckDBSuccess) {
+        std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
+        return 1;
+    }
+
+    // Each table is materialised in DuckDB before COPY, so the peak is the
+    // largest table, not the largest rank — measured at 627 MB for a 2.1M-row
+    // capture. An in-memory database will not spill without somewhere to spill
+    // to, so give it one: a capture an order of magnitude larger should get
+    // slower, not killed. (Reading one rank at a time above is a real but much
+    // smaller saving; it is not what dominates.)
+    duck_exec(con, "SET temp_directory='" + outdir.string() + "'", "temp_directory");
+
+    std::size_t tables = 0, rows_total = 0, failed = 0;
+    for_each_type<raw::RawRecords>([&]<typename R>() {
+        using Raw = raw::RawTable<R>;
+
+        // Existence first, so an absent stream produces no table at all rather
+        // than an empty one. "The table is missing" and "the table is empty"
+        // mean different things about a capture — under IBGDA the ib_* streams
+        // are legitimately absent, and flattening that into an empty table
+        // would erase the distinction.
+        //
+        // Only existence, though: loading every rank up front to count rows
+        // held the whole capture in memory at once (600 MB peak on a 167 MB
+        // capture) for no gain, since each rank is appended and dropped below.
+        const bool any = std::any_of(ranks.begin(), ranks.end(), [](const RankDir& r) {
+            return fs::exists(stream_path<R>(r));
+        });
+        if (!any)
+            return;
+        std::size_t rows = 0;
+
+        if (!duck_exec(con, Raw::ddl, Raw::table)) {
+            failed++;
+            return;
+        }
+
+        duckdb_appender ap{};
+        if (duckdb_appender_create(con, nullptr, Raw::table, &ap) != DuckDBSuccess) {
+            std::fprintf(stderr, "pcomm-read: cannot append to %s\n", Raw::table);
+            failed++;
+            return;
+        }
+        // One rank at a time: the vector is freed before the next is read, so
+        // peak memory is the largest single stream rather than the capture.
+        for (const auto& r : ranks) {
+            const auto path = stream_path<R>(r);
+            if (!fs::exists(path))
+                continue;
+            const auto recs = load_stream<R>(path);
+            rows += recs.size();
+            for (const auto& s : recs) {
+                Raw::append(ap, r.rank, s);
+                duckdb_appender_end_row(ap);
+            }
+        }
+        // Flush before destroy so a write error is reported rather than
+        // swallowed by the destructor path.
+        const bool flushed = duckdb_appender_flush(ap) == DuckDBSuccess;
+        if (!flushed)
+            std::fprintf(stderr, "pcomm-read: %s: appender flush failed: %s\n", Raw::table,
+                         duckdb_appender_error(ap));
+        duckdb_appender_destroy(&ap);
+        if (!flushed) {
+            failed++;
+            return;
+        }
+
+        const auto out = (outdir / (std::string(Raw::table) + ".parquet")).string();
+        if (duck_exec(con,
+                      "COPY \"" + std::string(Raw::table) + "\" TO '" + out + "' (FORMAT PARQUET)",
+                      Raw::table)) {
+            tables++;
+            rows_total += rows;
+        } else {
+            failed++;
+        }
+    });
+
+    duckdb_disconnect(&con);
+    duckdb_close(&db);
+
+    std::printf("pcomm-read: %zu ranks, %zu tables, %zu rows -> %s/*.parquet%s\n", ranks.size(),
+                tables, rows_total, outdir.c_str(), failed ? " (SOME FAILED, see above)" : "");
+    return failed ? 1 : 0;
+}
+using pcomm::duck::mount_raw_tables;
+
+// Derive the link tables from an export. Reads Parquet, writes Parquet beside
+// it; the raw tables are untouched.
+int run_link(const fs::path& dir) {
+    if (!fs::is_directory(dir)) {
+        std::fprintf(stderr, "pcomm-read: not a directory: %s\n", dir.c_str());
+        return 1;
+    }
+    duckdb_database   db{};
+    duckdb_connection con{};
+    if (duckdb_open(nullptr, &db) != DuckDBSuccess ||
+        duckdb_connect(db, &con) != DuckDBSuccess) {
+        std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
+        return 1;
+    }
+    duck_exec(con, "SET temp_directory='" + dir.string() + "'", "temp_directory");
+
+    const auto present = mount_raw_tables(con, dir);
+    if (!present) {
+        std::fprintf(stderr, "pcomm-read: no raw .parquet tables in %s — run --parquet first\n",
+                     dir.c_str());
+        duckdb_disconnect(&con);
+        duckdb_close(&db);
+        return 1;
+    }
+
+    std::size_t failed = 0;
+    for (const auto& v : link::kViews)
+        if (!duck_exec(con, v.sql, v.name))
+            failed++;
+
+    std::size_t written = 0;
+    for (const auto& t : link::kTables) {
+        const auto out = (dir / (std::string(t.name) + ".parquet")).string();
+        if (duck_exec(con,
+                      "COPY (" + std::string(t.sql) + ") TO '" + out + "' (FORMAT PARQUET)",
+                      t.name))
+            written++;
+        else
+            failed++;
+    }
+
+    // The health table is derived like the others but reported here, because a
+    // number nobody reads is a number nobody acts on. Every one of these should
+    // be zero; a non-zero row is a defect in the link, not in the workload.
+    duckdb_result res;
+    if (duckdb_query(con, "SELECT finding, n FROM link_health WHERE n > 0", &res) ==
+        DuckDBSuccess) {
+        for (idx_t row = 0; row < duckdb_row_count(&res); ++row) {
+            char* f = duckdb_value_varchar(&res, 0, row);
+            char* n = duckdb_value_varchar(&res, 1, row);
+            std::fprintf(stderr, "pcomm-read: link_health: %s = %s\n", f ? f : "?", n ? n : "?");
+            duckdb_free(f);
+            duckdb_free(n);
+        }
+    }
+    duckdb_destroy_result(&res);
+
+    duckdb_disconnect(&con);
+    duckdb_close(&db);
+    std::printf("pcomm-read: %zu raw tables -> %zu derived -> %s/*.parquet%s\n", present, written,
+                dir.c_str(), failed ? " (SOME FAILED, see above)" : "");
+    return failed ? 1 : 0;
+}
+
+// Query an exported directory. Takes the EXPORT, not the capture: re-reading
+// every `.pcs` per query would make an interactive session unusable on a capture
+// of any size, and the export is the contract everything above the reader is
+// supposed to use anyway. Verifying that contract is the immediate reason this
+// exists — "the Parquet reproduces the CSV" is not a claim anyone can check
+// without a way to query the Parquet.
+//
+// Results are printed by DuckDB itself, via COPY to stdout, rather than walked
+// with the C result API. That is not a shortcut: the row-wise accessors are
+// deprecated, and the supported alternative means hand-decoding every column
+// type a query might return. COPY handles all of them and cannot drift.
+int run_sql(const fs::path& dir, const std::string& query) {
+    // Checked rather than assumed: directory_iterator *throws* on a missing
+    // path, so a mistyped directory used to abort with an uncaught
+    // filesystem_error instead of saying which directory it could not find.
+    if (!fs::is_directory(dir)) {
+        std::fprintf(stderr, "pcomm-read: not a directory: %s\n", dir.c_str());
+        return 1;
+    }
+    duckdb_database   db{};
+    duckdb_connection con{};
+    if (duckdb_open(nullptr, &db) != DuckDBSuccess ||
+        duckdb_connect(db, &con) != DuckDBSuccess) {
+        std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
+        return 1;
+    }
+
+    // Parquet preferred, CSV accepted. A --csv export is a perfectly good thing
+    // to query, and refusing it would mean the suite's existing outputs are
+    // unreachable from here for no reason.
+    std::size_t views = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file())
+            continue;
+        const auto ext = entry.path().extension();
+        const bool parquet = ext == ".parquet";
+        if (!parquet && ext != ".csv")
+            continue;
+        const auto name = entry.path().stem().string();
+        const auto reader = parquet ? "read_parquet('" : "read_csv('";
+        const auto suffix = parquet ? "')" : "', header=true, auto_detect=true, sample_size=-1)";
+        if (duck_exec(con,
+                      "CREATE OR REPLACE VIEW \"" + name + "\" AS SELECT * FROM " + reader +
+                          entry.path().string() + suffix,
+                      name.c_str()))
+            views++;
+    }
+    if (!views) {
+        std::fprintf(stderr, "pcomm-read: no .parquet or .csv tables in %s\n", dir.c_str());
+        duckdb_disconnect(&con);
+        duckdb_close(&db);
+        return 1;
+    }
+
+    // Via a temp file, NOT `COPY ... TO '/dev/stdout'`. That spelling looks
+    // tidier and is wrong: when stdout is a redirected file DuckDB opens it and
+    // seeks to offset 0, silently overwriting whatever the process already
+    // wrote. Two --sql runs into one redirect lost the first, and so would any
+    // `pcomm-read --sql ... > out.csv` that printed anything beforehand.
+    const auto tmp = fs::temp_directory_path() /
+                     ("pcomm-sql-" + std::to_string(::getpid()) + ".csv");
+    const bool ok =
+        duck_exec(con, "COPY (" + query + ") TO '" + tmp.string() + "' (FORMAT CSV, HEADER)",
+                  "query");
+    if (ok) {
+        if (std::FILE* f = std::fopen(tmp.c_str(), "rb")) {
+            char        buf[64 * 1024];
+            std::size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0)
+                std::fwrite(buf, 1, n, stdout);
+            std::fclose(f);
+        }
+    }
+    std::error_code ec;
+    fs::remove(tmp, ec);
+
+    duckdb_disconnect(&con);
+    duckdb_close(&db);
+    return ok ? 0 : 1;
+}
+#endif  // PCOMM_HAVE_DUCKDB
+
 // --- rank clock calibration ---------------------------------------------------
 // TSC ticks aren't comparable across nodes (per-CPU, boot-relative), so each
 // rank's ClockAnchors (start+end: local_ticks + wall_ns) calibrate ticks ->
@@ -1226,9 +1569,52 @@ int main(int argc, char** argv) {
             "       pcomm-read <trace-dir> --perfetto <out>   export Perfetto/Chrome JSON trace\n"
             "       pcomm-read <trace-dir> --pftrace <out>    export Perfetto native protobuf "
             "trace\n"
-            "       pcomm-read <trace-dir> --dump <typeid>    decode one raw stream\n",
+            "       pcomm-read <trace-dir> --parquet <outdir> export all tables as Parquet\n"
+            "       pcomm-read <trace-dir> --dump <typeid>    decode one raw stream\n"
+            "       pcomm-read --link <export-dir>            derive the rank-space tables\n"
+            "       pcomm-read --sql <export-dir> \"<query>\"   query an exported directory\n"
+            "       pcomm-read --types                        type_id -> table name, this build\n",
             stderr);
         return 1;
+    }
+
+    // Before the directory check: --types describes the build, not a capture.
+    if (std::strcmp(argv[1], "--types") == 0) {
+        print_types();
+        return 0;
+    }
+
+    // --link, like --sql, takes an EXPORT directory rather than a capture.
+    if (std::strcmp(argv[1], "--link") == 0) {
+        if (argc < 3) {
+            std::fputs("usage: pcomm-read --link <export-dir>\n", stderr);
+            return 1;
+        }
+#if PCOMM_HAVE_DUCKDB
+        return run_link(argv[2]);
+#else
+        std::fputs("pcomm-read: built without DuckDB, so --link is unavailable.\n"
+                   "  tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n",
+                   stderr);
+        return 1;
+#endif
+    }
+
+    // --sql takes an EXPORT directory, not a trace directory, so it is matched
+    // here rather than in the <trace-dir> <flag> shape below.
+    if (std::strcmp(argv[1], "--sql") == 0) {
+        if (argc < 4) {
+            std::fputs("usage: pcomm-read --sql <export-dir> \"<query>\"\n", stderr);
+            return 1;
+        }
+#if PCOMM_HAVE_DUCKDB
+        return run_sql(argv[2], argv[3]);
+#else
+        std::fputs("pcomm-read: built without DuckDB, so --sql is unavailable.\n"
+                   "  tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n",
+                   stderr);
+        return 1;
+#endif
     }
 
     fs::path dir = argv[1];
@@ -1239,6 +1625,20 @@ int main(int argc, char** argv) {
 
     if (argc >= 4 && std::strcmp(argv[2], "--csv") == 0) {
         return export_csv(dir, argv[3]);
+    }
+
+    if (argc >= 4 && std::strcmp(argv[2], "--parquet") == 0) {
+#if PCOMM_HAVE_DUCKDB
+        return export_parquet(dir, argv[3]);
+#else
+        // Say which build this is and how to get the other one. A bare "unknown
+        // option" here would read as a version problem rather than a build one.
+        std::fputs("pcomm-read: built without DuckDB, so --parquet is unavailable.\n"
+                   "  tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n"
+                   "  (needs network; MN5 has none — use --csv there)\n",
+                   stderr);
+        return 1;
+#endif
     }
 
     if (argc >= 4 && std::strcmp(argv[2], "--perfetto") == 0) {

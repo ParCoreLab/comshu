@@ -12,6 +12,14 @@ option(PCOMM_PROVIDER_IBVERBS "Build the ibverbs provider (needs libibverbs)" OF
 # control plane that IBGDA uses instead of verbs, and it needs libmlx5 as well.
 option(PCOMM_PROVIDER_MLX5DV  "Build the mlx5dv/DEVX provider (needs libmlx5)" OFF)
 
+# Parquet + SQL in pcomm-read, via DuckDB. OFF by default and that default is
+# load-bearing, not caution: MN5 has no network and no cmake outside `module
+# load` (verified 2026-08-09), and every suite case runs `pcomm-read --csv`
+# there. A mandatory DuckDB would break the cluster path the whole test suite
+# depends on. Parquet is produced where the UI runs, which is not the cluster.
+# Fetch the library with tools/get_duckdb.sh, then configure with -DPCOMM_DUCKDB=ON.
+option(PCOMM_DUCKDB "Build pcomm-read with DuckDB (--parquet, --sql)" OFF)
+
 # ── Install layout ─────────────────────────────────────────────────────────
 # Deliberately a literal lib/, not GNUInstallDirs' LIBDIR: on RHEL-likes that
 # resolves to lib64/, and the launcher looks for providers in exactly
@@ -74,6 +82,7 @@ add_subdirectory(libpcomm)
 add_subdirectory(providers)
 add_subdirectory(pcomm)
 add_subdirectory(pcomm-read)
+
 
 if(PCOMM_BUILD_TESTS)
   add_subdirectory(tests)
