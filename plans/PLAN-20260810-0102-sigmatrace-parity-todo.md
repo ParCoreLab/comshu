@@ -188,6 +188,64 @@ Design the comparison so a decode disagreement cannot fail the doorbell-identity
 check. If they are conflated, the test will report "no parity" over a difference
 we already understand and have already resolved in our favour.
 
+## BLOCKED 2026-08-10 — SigmaTrace crashes on this workload
+
+It **builds** on du04, which was the part expected to be hard:
+
+- `clang-20` is installed and satisfies its "GCC >= 13 or Clang >= 20"; the box
+  has only gcc-11/12, so without clang this needed a compiler build.
+- CMake 3.23.1 is below its >= 3.31; `pip3 install --user 'cmake>=3.31'` gives
+  3.31.6.
+- abseil from `apt install libabsl-dev`; Perfetto/UCX/libfabric/NVBit disabled,
+  since we read the event files directly rather than through its exporter.
+- The first configure reported **GPU backend: NONE** — `nvcc` is not on PATH and
+  CUDA lives at `/usr/local/cuda-13.0`. That would have silently produced a
+  SigmaTrace with no doorbell hijack, i.e. the one component this comparison
+  needs. Reconfigured with CUDA 13.0.48, host compiler g++-12, sm_80.
+
+It then **runs, loads all three traces, and aborts before recording anything**:
+
+```
+[Profiler] loaded Ibverbs Trace
+[Profiler] loaded mlx5dv Trace
+[Profiler] Loaded Doorbell Hijack Trace
+terminate called after throwing an instance of 'std::out_of_range'
+  what():  absl::container_internal::raw_hash_map<>::at
+[Profiler] doorbell_submitted: 0
+```
+
+**Not caused by this build.** `~/pcomm-ibgda/sigma2.log` from 2026-08-04 ends in
+the same exit code 6, and the only other historical run
+(`sigma_run.log`) was 1 PE with `doorbell_submitted: 0` — a single PE has no
+remote peer, so it exercised nothing. There is no usable historical baseline.
+
+Still crashes with `--load-cupti=0`, so it is in the ibverbs/mlx5dv/doorbell
+path, not the CUPTI handler.
+
+Two candidate causes, in order:
+
+1. **abseil version skew.** SigmaTrace pins `abseil-cpp 20260107.0`; Ubuntu
+   22.04's package is `20210324`, five years older. The next thing to try is
+   cloning the pinned tag into `Imports/abseil-cpp` and rebuilding — mechanical,
+   and the highest-probability fix.
+2. **A genuine missing-key lookup.** `raw_hash_map::at` throws when a key was
+   never inserted, and SigmaTrace's own reader carries a
+   `WARNING: Unknown context_addr` for exactly that shape. If so it is the same
+   class of blindness pcomm hit when UCX opened `ibv_context`s through a door
+   the provider did not interpose — a context created somewhere SigmaTrace does
+   not see, then looked up unconditionally.
+
+If (2) is the cause it is a *finding about NVSHMEM 3.3.24 on this box*, not a
+setup problem, and it means the parity comparison cannot be run against this
+version of SigmaTrace without fixing it first.
+
+Localising it further needs a backtrace from the **traced child**, not the
+launcher: `Profiler` spawns the application with `LD_PRELOAD`, so gdb on
+`Profiler` traces the wrong process. Reproducing the preload by hand
+(`LD_PRELOAD=libProfilerShim.so:providers/libibverbs_trace.so`) segfaults
+instead, so the launcher does setup beyond the preload string and the honest
+route is a gdb wrapper the launcher itself execs.
+
 ## Step 5 — reading SigmaTrace's logs
 
 SigmaTrace's `ProfilerEventReader` produces a comm-graph JSON and a Perfetto-ish
