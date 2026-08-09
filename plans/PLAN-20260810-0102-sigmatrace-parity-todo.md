@@ -188,6 +188,55 @@ Design the comparison so a decode disagreement cannot fail the doorbell-identity
 check. If they are conflated, the test will report "no parity" over a difference
 we already understand and have already resolved in our favour.
 
+## RESULT 2026-08-10 — the comparison ran
+
+Both tools, same binary, same `1024 20`, same no-dmabuf configuration, separate
+runs. `Tools/sigma_dump.cpp` reads SigmaTrace's event files and emits the same
+TSV shape the pcomm side does, so neither tool's analysis code is in the loop.
+
+| | SigmaTrace | pcomm (run C) |
+|---|---|---|
+| queue pairs | 4 | 4 |
+| doorbells | 167 | 173 |
+| opcode 0x14 (atomic) | 60 | 59 |
+| opcode 0x08 (rdma_write) | **107** | **1258** |
+| total bytes | **172,472,576,384** | **161,024** |
+
+**Where they agree — and it is the part that matters for capture completeness.**
+Same queue-pair count. Doorbell totals within 6 of each other, which is *inside*
+the run-to-run variance pcomm showed against itself (168 vs 162 in step 1), so
+these are indistinguishable at this precision. Atomic doorbells agree at 60 vs
+59. Both tools saw the same control plane and rang-doorbell stream.
+
+**Where they diverge, with an independent oracle to say who is right.** The
+workload moves 1024 ints x 4 B x 20 iters x 2 PEs = **163,840 bytes**. pcomm
+reports 161,024 — 98.3% of nominal, a 2,816 B shortfall consistent with capture
+starting after the hijack installs. SigmaTrace reports **172 GB**, six orders of
+magnitude out. That is not a measurement difference, it is a misparse.
+
+Two distinct causes, both predicted:
+
+1. **Batched WQEs are not decoded.** 107 data doorbells against pcomm's 1258
+   decoded sends. One doorbell can announce many WQEs — measured strides of 64
+   and 67 slots in step 3 — and SigmaTrace records one event per doorbell rather
+   than walking the batch. The atomics match precisely *because* they are one
+   WQE per doorbell; the RDMA writes are the batched ones.
+2. **The length field is read from the wrong offset.** This is the AV-segment
+   layout difference this plan flagged before any code ran: SigmaTrace assumes a
+   full 64-byte AV segment and pointer data segments, NVSHMEM 3.3.24 here emits
+   a half AV (`ds == 4`) and inlines warp-combined payloads. 172 GB is what
+   reading a length out of an inlined payload looks like.
+
+**So the parity claim holds where it was designed to hold and fails where the
+plan said it would.** The doorbell stream — the layout-independent surface — is
+in agreement. The decoded fields are not, and the workload's own parameters
+adjudicate: pcomm is within 2% of a number derived from the command line, and
+SigmaTrace is not close to it.
+
+This is why the plan refused to treat SigmaTrace as ground truth for decoded
+fields. Had the comparison been built on `opcode`/`length` equality, it would
+have reported pcomm as wrong.
+
 ## RESOLVED 2026-08-10 — SigmaTrace HEAD runs on du04
 
 The crash was **not** abseil skew and not a build problem. It was SigmaTrace
