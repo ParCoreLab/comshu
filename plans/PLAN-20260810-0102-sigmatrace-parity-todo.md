@@ -50,6 +50,51 @@ Same binary matters. Case 12 builds `nvshmem_putget_sm80` from
 its own apps under `Apps/`, and using them would make the workload a second
 variable. Build once, run under each tool.
 
+## MEASURED 2026-08-10 — step 1 ran, and it inverted the design
+
+Two pcomm runs of case 12 on du04, identical parameters, canonical fingerprint:
+
+```
+                 run A     run B
+device_sends      1309      1309     identical
+opcode histogram  same      same     atomic_masked_cs 59, rdma_write 1250
+total_bytes     160000    160000     identical
+wqe_bag       109d403a  109d403a     IDENTICAL
+umem_bag      d9396ba8  d9396ba8     identical
+doorbells          168       162     DIFFER
+doorbell_bag  9dd22446  c7e18a66     DIFFER
+```
+
+**The work is deterministic; the notifications are not.** The same 1309 WQEs —
+same slots, same opcodes, same lengths — were announced by a different number of
+doorbells. NVSHMEM batches warp-combined writes and rings once per batch, and
+where a batch ends moves with timing. The risk this plan listed last ("each tool
+perturbs timing, which can change how many doorbells ring") is not a risk, it is
+the measured behaviour, and it shows up between two runs of the *same* tool.
+
+**This inverts what the plan said above.** "Doorbell identity and sequence is the
+parity claim" is wrong: the doorbell count is the one thing that does not
+reproduce, so it cannot carry a claim. The decoded WQE stream is the stable
+surface.
+
+And that creates the tension to design around: the surface that *is* repeatable
+(the WQEs) is exactly where SigmaTrace is expected to disagree, because of the
+AV-segment layout difference below. So the comparison may lean on neither
+doorbell counts (unstable) nor decoded fields taken at face value (contested).
+
+**What survives as a sound parity claim**, all three measured deterministic
+here: WQE count, total bytes, and the opcode histogram. Plus the set of
+announced slots — with doorbell counts compared only as "both tools saw rings
+covering the same work", never as equality.
+
+Corollary for the fingerprint in step 2: build it on the per-QP **WQE**
+sequence, not the per-QP doorbell sequence. `wqe_bag` was byte-identical across
+runs; `doorbell_bag` was not.
+
+Both runs passed all 14 case-12 assertions, which also means the
+trailing-doorbell rule in `doorbell_sequence_complete` holds across differently
+batched runs rather than only the one it was derived from.
+
 ## Step 1 — self-repeatability, before any cross-tool claim
 
 **Run pcomm twice and require the canonical fingerprint (below) to be
