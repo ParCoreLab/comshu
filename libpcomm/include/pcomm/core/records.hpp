@@ -154,6 +154,32 @@ PCOMM_RECORD(EntityClose, RecordKind::Event, 522, "entity_close") {
 
 // ARTIFACT — clock-domain calibration anchor (UNIFICATION §4). Emitted at
 // start/end per domain so pcomm-read can fit offset + skew.
+// ENTITY — which machine this rank ran on.
+//
+// Exists because a device ordinal is NODE-LOCAL and therefore does not name a
+// GPU on its own: rank 0 and rank 4 of an 8-rank two-node run both report
+// `run_device 0` and they are different hardware. Turning a `gpu_access`
+// peer-device into a rank needs `(node, device) -> rank`, and before this record
+// nothing in a capture said which node a rank was on.
+//
+// The reader can *infer* it from LIDs — ranks sharing an HCA port share a node —
+// and does when this record is absent, so older captures still resolve. But that
+// inference needs InfiniBand, and fails on exactly the runs that need it most: a
+// pure-NVLink capture has no LID at all, so every NVLink edge in nccl_p2p and
+// p2p_kernel resolved to "unknown peer". This record is what closes that.
+//
+// A hash rather than the hostname: the id only has to be *comparable between
+// ranks of one job*, and putting a machine name on disk in every capture is a
+// cost with no matching benefit. Collisions across a job would merge two nodes,
+// which 64 bits of FNV-1a makes not worth defending against.
+//
+// Emitted once per rank by the engine at start, not by a provider: every
+// provider needs it and none owns it — the same reasoning that put MemObject in
+// the internal range rather than gpumem's.
+PCOMM_RECORD(NodeIdentity, RecordKind::Entity, 524, "node_identity") {
+    std::uint64_t node_hash;  // FNV-1a of the hostname; 0 if it could not be read
+};
+
 PCOMM_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {
     DomainId      domain;
     Ticks         local_ticks;  // domain clock (TSC / GPU globaltimer)

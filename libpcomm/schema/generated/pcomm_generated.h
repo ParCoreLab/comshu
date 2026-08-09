@@ -40,6 +40,8 @@ struct MemObject;
 
 struct EntityClose;
 
+struct NodeIdentity;
+
 struct ClockAnchor;
 
 struct IbMemRegion;
@@ -812,6 +814,29 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) EntityClose FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(EntityClose, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NodeIdentity FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t node_hash_;
+
+ public:
+  NodeIdentity()
+      : temporal_(),
+        node_hash_(0) {
+  }
+  NodeIdentity(const pcomm::fb::Temporal &_temporal, uint64_t _node_hash)
+      : temporal_(_temporal),
+        node_hash_(::flatbuffers::EndianScalar(_node_hash)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t node_hash() const {
+    return ::flatbuffers::EndianScalar(node_hash_);
+  }
+};
+FLATBUFFERS_STRUCT_END(NodeIdentity, 56);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) ClockAnchor FLATBUFFERS_FINAL_CLASS {
  private:

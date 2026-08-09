@@ -195,6 +195,17 @@ struct EntityClose {
   opener:uint16;       // type_id of the record that should have opened it
 }
 
+// type 524, Entity. Which machine this rank ran on — FNV-1a of the hostname.
+//
+// A device ordinal is node-local, so `run_device 0` on two nodes is two
+// different GPUs. Resolving a peer device to a rank needs (node, device), and
+// this is the node half. The reader falls back to grouping ranks by HCA LID
+// when this record is absent, which works only where InfiniBand exists.
+struct NodeIdentity {
+  temporal:Temporal;
+  node_hash:uint64;
+}
+
 // type 590, Artifact. Clock-domain calibration anchor.
 struct ClockAnchor {
   temporal:Temporal;

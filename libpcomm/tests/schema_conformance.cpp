@@ -38,6 +38,7 @@ PCOMM_SCHEMA_MATCH(cr::MemObject, fb::MemObject);
 PCOMM_SCHEMA_MATCH(cr::EntityClose, fb::EntityClose);
 PCOMM_SCHEMA_MATCH(cr::SourceLine, fb::SourceLine);
 PCOMM_SCHEMA_MATCH(cr::Attribution, fb::Attribution);
+PCOMM_SCHEMA_MATCH(cr::NodeIdentity, fb::NodeIdentity);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
 PCOMM_SCHEMA_MATCH(cr::InternKey, fb::InternKey);
 PCOMM_SCHEMA_MATCH(cr::InternString, fb::InternString);
@@ -221,6 +222,15 @@ int main() {
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 7, 9,
             fb::EdgePredicate_ResidesOn);
         expect_identical("Attribution", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<cr::NodeIdentity> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.node_hash = 0x0123456789ABCDEFull;
+        fb::NodeIdentity f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0x0123456789ABCDEFull);
+        expect_identical("NodeIdentity", &c, &f, sizeof(c));
     }
     {
         Stamped<cr::ClockAnchor> c{};

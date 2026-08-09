@@ -75,7 +75,8 @@ public:
         // vendor teardown path that skips our dtor) would otherwise hold the
         // count above zero and the capture would never be flushed at all.
         std::atexit([] { instance().finalize(); });
-        emit_anchor();  // start-of-run clock anchor (UNIFICATION §4)
+        emit_anchor();         // start-of-run clock anchor (UNIFICATION §4)
+        emit_node_identity();  // which machine this rank is on
     }
 
     // Symmetric: only the last provider to leave finalizes the capture, so one
@@ -177,6 +178,29 @@ private:
         m_recorder->record(
             core::Temporal::none(),
             core::records::ClockAnchor{{}, {}, /*domain=*/0, s.local_ticks, s.wall_ns, s.mono_ns});
+    }
+
+    // Which machine this rank is on. Once per rank, at start, beside the anchor
+    // — both are facts about the run rather than about anything the application
+    // did, and both are useless if written later than the records that need
+    // them.
+    //
+    // A hash, not the hostname: the id only has to be comparable between ranks
+    // of one job. `gethostname` failing is recorded as 0 rather than skipped,
+    // so "this capture has no node identity" and "this rank could not read its
+    // hostname" stay distinguishable — the reader treats 0 as unknown and falls
+    // back, instead of silently grouping every failed rank onto one node.
+    void emit_node_identity() {
+        char host[256] = {};
+        std::uint64_t h = 0;
+        if (::gethostname(host, sizeof host - 1) == 0) {
+            h = 1469598103934665603ull;  // FNV-1a offset basis
+            for (const char* p = host; *p; ++p) {
+                h ^= static_cast<unsigned char>(*p);
+                h *= 1099511628211ull;
+            }
+        }
+        m_recorder->record(core::Temporal::none(), core::records::NodeIdentity{{}, {}, h});
     }
 
     // Intern dictionaries, as records plus one byte heap.
