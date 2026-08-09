@@ -188,7 +188,116 @@ Design the comparison so a decode disagreement cannot fail the doorbell-identity
 check. If they are conflated, the test will report "no parity" over a difference
 we already understand and have already resolved in our favour.
 
-## BLOCKED 2026-08-10 — SigmaTrace crashes on this workload
+## RESOLVED 2026-08-10 — SigmaTrace HEAD runs on du04
+
+The crash was **not** abseil skew and not a build problem. It was SigmaTrace
+being blind to how NVSHMEM registers memory in the configuration we were running
+— and **pcomm diagnosed it**, which is worth recording on its own.
+
+Our capture answers the question directly:
+
+```
+rank,ticks,umem,addr,size,umem_id,access,dmabuf_fd,device,binding,entry
+0,0,2,0x0,8,2,0x1,84,0,by_dmabuf,reg_ex
+```
+
+Every umem on that run is `binding = by_dmabuf`, `entry = reg_ex`, `addr = 0x0`.
+Against that:
+
+- SigmaTrace hooks `mlx5dv::devx_umem_reg_tag` and **has no `umem_reg_ex` hook
+  at all** (grep across `Profiler/` and `Mlx5dvTrace/` finds none).
+- Its GPU discovery is `cudaPointerGetAttributes(addr)` — and under dmabuf the
+  address *is* `0x0`, so it could not succeed even if the door were hooked.
+
+The failure chain, end to end:
+
+1. NVSHMEM registers the send queue via `devx_umem_reg_ex` with a dmabuf fd →
+   SigmaTrace never sees the registration.
+2. `MLX5_CMD_OP_CREATE_QP` looks the umem up, does not find it, and
+   **returns early without registering the queue pair** — the code even says
+   `// TODO: this is probably wrong, UMEM reg GPU discovery can fail`.
+3. The GPU rings a doorbell for that queue pair; `CUDAHijack.cpp:394` does
+   `m_mlx5_qp_info.at(dbr_qpn)` under the comment *"Should be guaranteed to
+   exist"*, and `std::out_of_range` aborts the process.
+
+This is exactly the class of blindness pcomm hit when UCX opened `ibv_context`s
+through an un-interposed door: an object created somewhere the tracer does not
+watch, then looked up unconditionally.
+
+### The working configuration
+
+**`NVSHMEM_IB_DISABLE_DMABUF=1`.** With dmabuf off and `nvidia_peermem` loaded
+(it is, on du04), NVSHMEM registers GPU memory *by address*,
+`cudaPointerGetAttributes` succeeds, the queue pair is registered, and the
+doorbell handler finds it.
+
+This is not a workaround invented here — `tests/hpc/cases/11_ibdevx_peermem`
+already says in its own comments that **ibdevx with DMABUF disabled is
+SigmaTrace's published artifact configuration**, and case 10 is the IBGDA
+variant of it. The answer was in our own suite.
+
+```bash
+# du04.  ssh -J mktips@100.64.0.8 missa18@172.20.31.90
+export PATH=/usr/local/cuda-13.0/bin:$PATH
+export NVSHMEM_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/25.9/comm_libs/13.0/nvshmem
+export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH"
+export NVSHMEM_BOOTSTRAP=MPI NVSHMEM_DISABLE_P2P=1 \
+       NVSHMEM_REMOTE_TRANSPORT=ibgda NVSHMEM_IB_ENABLE_IBGDA=1 \
+       NVSHMEM_IBGDA_NIC_HANDLER=gpu \
+       NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE=gpumem \
+       NVSHMEM_IB_DISABLE_DMABUF=1          # <-- the one that matters
+
+mpirun -np 2 -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P \
+  -x NVSHMEM_REMOTE_TRANSPORT -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
+  -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE -x NVSHMEM_IB_DISABLE_DMABUF \
+  ~/SigmaTrace/build/target/Profiler --enable-doorbell-hijack --load-cupti=0 \
+  -f -o ~/pcomm-parity/sigma  ~/nvshmem_putget_sm80 1024 20
+```
+
+Result: `nvshmem put-ring OK: 2 PEs, 1024 ints, 20 iters`,
+`doorbell_submitted: 20` per rank, `Exited Normally!`, 33 non-empty event files.
+
+Two invocation traps, both silent:
+
+- **Do not pass `--` before the program.** With it the app received
+  `0 ints, 1024 iters` instead of `1024 ints, 20 iters` — a *different workload*,
+  which would have made any comparison meaningless while looking fine.
+- `--load-cupti=0` is not required for the fix but removes a moving part.
+
+### Build recipe on du04
+
+```bash
+pip3 install --user 'cmake>=3.31'      # ships 3.23.1; SigmaTrace needs >= 3.31
+sudo apt-get install -y libabsl-dev    # only if not building abseil from source
+git submodule update --init --recursive Imports/abseil-cpp   # pinned 20260107.0
+cmake -B build -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc \
+  -DCMAKE_CUDA_HOST_COMPILER=g++-12 -DCMAKE_CUDA_ARCHITECTURES=80 \
+  -DBUILD_ABSEIL=ON \
+  -DSIGMA_ENABLE_PERFETTO=OFF -DSIGMA_ENABLE_UCX=OFF \
+  -DSIGMA_ENABLE_LIBFABRIC=OFF -DSIGMA_ENABLE_NVBIT=OFF
+cmake --build build -j8
+```
+
+- `clang-20` is present and satisfies "GCC >= 13 or Clang >= 20"; the box has
+  only gcc-11/12, so without it a compiler build would have been needed.
+- **Watch the configure summary for `GPU backend`.** Without
+  `CMAKE_CUDA_COMPILER` it reports `NONE` and silently builds a SigmaTrace with
+  no doorbell hijack — the one component this comparison needs.
+- `BUILD_ABSEIL=ON` is required to use the pinned submodule; without it the
+  build silently takes Ubuntu's `20210324`, five years older than the pin.
+
+### Consequence for the comparison
+
+Runs A and B were captured **with dmabuf** and SigmaTrace needs it **off**, so
+they are not comparable as they stand. The parity run must repeat pcomm in this
+same configuration — which is case 10's, already in the suite.
+
+That is also a finding in its own right: **pcomm traces this workload in both
+memory-registration modes; SigmaTrace traces only one.**
+
+## Superseded — the original blocked note
 
 It **builds** on du04, which was the part expected to be hard:
 
