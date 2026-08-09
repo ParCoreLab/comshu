@@ -1,0 +1,47 @@
+@import 'tailwindcss';
+
+/* Palette tokens stay CSS custom properties rather than Tailwind theme colours:
+   they are the *validated* values from the data-viz reference palette, the
+   light/dark pairs have to swap as a set, and viz.js reads the same steps for
+   SVG fills. Tailwind does layout and spacing here; colour is tokens. */
+:root {
+  color-scheme: light;
+  --surface-0: #f4f3f1;
+  --surface-1: #fcfcfb;
+  --border:    #dcdbd7;
+  --text-1:    #0b0b0b;
+  --text-2:    #52514e;
+  --text-3:    #7a7975;
+  --critical:  #d03b3b;
+  --good:      #0ca30c;
+}
+
+/* Dark declared under both scopes: the media query covers the OS setting, the
+   data-theme scope covers an explicit choice, and the :not() guard lets a light
+   stamp beat OS-dark. Neither can be dropped without one of them losing. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --surface-0: #111110;
+    --surface-1: #1a1a19;
+    --border:    #383835;
+    --text-1:    #ffffff;
+    --text-2:    #c3c2b7;
+    --text-3:    #8f8e85;
+  }
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --surface-0: #111110;
+  --surface-1: #1a1a19;
+  --border:    #383835;
+  --text-1:    #ffffff;
+  --text-2:    #c3c2b7;
+  --text-3:    #8f8e85;
+}
+
+html, body { background: var(--surface-0); color: var(--text-1); }
+body {
+  margin: 0;
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
