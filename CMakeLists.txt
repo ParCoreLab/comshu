@@ -82,7 +82,11 @@ add_subdirectory(libpcomm)
 add_subdirectory(providers)
 add_subdirectory(pcomm)
 add_subdirectory(pcomm-read)
-
+# The UI is a DuckDB consumer by definition — serving a capture is querying it —
+# so it exists only in a DuckDB build. On MN5 this subdirectory is never entered.
+if(PCOMM_DUCKDB)
+  add_subdirectory(pcomm-ui)
+endif()
 
 if(PCOMM_BUILD_TESTS)
   add_subdirectory(tests)

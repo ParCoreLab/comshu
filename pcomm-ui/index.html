@@ -1,0 +1,227 @@
+<!-- The communication matrix — step 3 of the UI plan.
+     One panel, end to end, over a real capture: Parquet -> DuckDB -> /query -> SVG.
+     Everything the page knows arrives through query(); there is no second data path. -->
+<meta charset="utf-8">
+<title>pcomm — communication matrix</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f3f1;
+    --surface-1: #fcfcfb;
+    --border:    #dcdbd7;
+    --text-1:    #0b0b0b;
+    --text-2:    #52514e;
+    --text-3:    #7a7975;
+    --critical:  #d03b3b;
+    /* Sequential blue, 100 -> 700. Continuous magnitude, so the lightest step
+       is allowed to recede toward the surface. */
+    --s100: #cde2fb; --s150: #b7d3f6; --s200: #9ec5f4; --s250: #86b6ef;
+    --s300: #6da7ec; --s350: #5598e7; --s400: #3987e5; --s450: #2a78d6;
+    --s500: #256abf; --s550: #1c5cab; --s600: #184f95; --s650: #104281;
+    --s700: #0d366b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #111110; --surface-1: #1a1a19; --border: #383835;
+      --text-1: #ffffff; --text-2: #c3c2b7; --text-3: #8f8e85;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #111110; --surface-1: #1a1a19; --border: #383835;
+    --text-1: #ffffff; --text-2: #c3c2b7; --text-3: #8f8e85;
+  }
+
+  body { margin: 0; padding: 24px; background: var(--surface-0); color: var(--text-1);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 2px; }
+  .sub { color: var(--text-2); font-size: 13px; margin-bottom: 20px; }
+  .card { background: var(--surface-1); border: 1px solid var(--border);
+          border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .scroll { overflow-x: auto; }
+  .legend { display: flex; align-items: center; gap: 8px; margin-top: 14px;
+            font-size: 12px; color: var(--text-2); }
+  .legend .ramp { display: flex; }
+  .legend .ramp i { width: 16px; height: 10px; display: block; }
+  .health { border-left: 3px solid var(--critical); padding: 8px 12px; margin-bottom: 16px;
+            background: var(--surface-1); font-size: 13px; }
+  .health b { color: var(--critical); }
+  table { border-collapse: collapse; font-size: 12px; width: 100%; }
+  th, td { text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-2); font-weight: 500; }
+  details { margin-top: 8px; } summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
+  #tip { position: fixed; pointer-events: none; opacity: 0; transition: opacity .08s;
+         background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+         padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.18);
+         color: var(--text-1); z-index: 10; }
+  .err { color: var(--critical); }
+</style>
+
+<div class="wrap">
+  <h1>Communication matrix</h1>
+  <div class="sub" id="sub">loading…</div>
+  <div id="health"></div>
+  <div class="card">
+    <div class="scroll"><svg id="m"></svg></div>
+    <div class="legend">
+      <span>less</span><span class="ramp" id="ramp"></span><span>more</span>
+      <span style="margin-left:6px">bytes sent, log scale</span>
+    </div>
+  </div>
+  <details>
+    <summary>Table view</summary>
+    <div class="card scroll"><table id="tbl"></table></div>
+  </details>
+</div>
+<div id="tip"></div>
+
+<script>
+// ?theme=light|dark stamps the root the same way a toggle would. Present so both
+// modes are reachable without changing an OS setting — a dark-only render is how
+// the inverted-ramp bug below survived its first review.
+const _t = new URLSearchParams(location.search).get('theme');
+if (_t === 'light' || _t === 'dark') document.documentElement.dataset.theme = _t;
+
+// Same mirror the CSS uses: an explicit toggle wins, OS preference decides otherwise.
+const isDark = document.documentElement.dataset.theme === 'dark' ||
+  (document.documentElement.dataset.theme !== 'light' &&
+   matchMedia('(prefers-color-scheme: dark)').matches);
+
+// Sequential blue, ordered so that MORE is always further from the surface.
+// On light that is light->dark; on dark it must be reversed, or the largest
+// values get the darkest step and sink into the background — which is exactly
+// what the first render did: the 1.3 GB diagonal read quieter than the 158 KB
+// sub-diagonal beside it. A sequential ramp is defined against its surface, not
+// in the abstract.
+const RAMP = (() => {
+  const steps = ['--s100','--s150','--s200','--s250','--s300','--s350','--s400',
+                 '--s450','--s500','--s550','--s600','--s650','--s700']
+    .map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+  return isDark ? steps.reverse() : steps;
+})();
+
+// THE data path. Every panel goes through here and nowhere else — it is what
+// keeps a static/DuckDB-WASM build reachable without hunting fetches through a UI.
+async function query(sql) {
+  const r = await fetch('/query', { method: 'POST', body: sql });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j.rows.map(row => Object.fromEntries(j.columns.map((c, i) => [c, row[i]])));
+}
+
+const fmtBytes = n => {
+  if (n < 1024) return n + ' B';
+  const u = ['KB','MB','GB','TB']; let i = -1;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(n < 10 ? 1 : 0) + ' ' + u[i];
+};
+
+const tip = document.getElementById('tip');
+function showTip(html, ev) {
+  tip.innerHTML = html; tip.style.opacity = 1;
+  const pad = 14;
+  tip.style.left = Math.min(ev.clientX + pad, innerWidth - tip.offsetWidth - 8) + 'px';
+  tip.style.top  = Math.min(ev.clientY + pad, innerHeight - tip.offsetHeight - 8) + 'px';
+}
+const hideTip = () => tip.style.opacity = 0;
+
+function render(edges) {
+  // dst_rank = -1 means the peer could not be resolved. Kept as its own column
+  // rather than dropped: a matrix that silently omits unattributed traffic lies
+  // about its totals, and this is the signal the owner map has a hole.
+  const ranks = [...new Set(edges.flatMap(e => [+e.src_rank, +e.dst_rank]))]
+    .filter(r => r >= 0).sort((a, b) => a - b);
+  const hasUnres = edges.some(e => +e.dst_rank < 0);
+  const cols = hasUnres ? [...ranks, -1] : ranks;
+
+  const byte = new Map(), send = new Map();
+  for (const e of edges) {
+    byte.set(`${e.src_rank},${e.dst_rank}`, +e.bytes);
+    send.set(`${e.src_rank},${e.dst_rank}`, +e.sends);
+  }
+  const vals = [...byte.values()].filter(v => v > 0);
+  const lo = Math.log(Math.min(...vals)), hi = Math.log(Math.max(...vals));
+  // Log, because the corpus showed a real matrix spanning five orders of
+  // magnitude (two cells at ~200k sends, the rest around 14). Linear renders
+  // that as two lit cells on a dead grid.
+  const colorOf = v => RAMP[Math.max(0, Math.min(RAMP.length - 1,
+    Math.round((hi > lo ? (Math.log(v) - lo) / (hi - lo) : 1) * (RAMP.length - 1))))];
+
+  const n = ranks.length, m = cols.length;
+  const cell = n > 48 ? 14 : n > 24 ? 20 : 28;
+  const gap = 2, pad = { l: 46, t: 46 };           // 2px surface gap between fills
+  const svg = document.getElementById('m');
+  const W = pad.l + m * cell, H = pad.t + n * cell;
+  svg.setAttribute('viewBox', `0 0 ${W + 8} ${H + 8}`);
+  svg.setAttribute('width', W + 8); svg.setAttribute('height', H + 8);
+
+  const every = n > 32 ? 4 : n > 16 ? 2 : 1;
+  const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  let out = '';
+  out += `<text x="4" y="14" font-size="11" fill="var(--text-3)">from \\ to</text>`;
+  cols.forEach((c, j) => {
+    if (c >= 0 && j % every) return;
+    out += `<text x="${pad.l + j * cell + cell / 2}" y="${pad.t - 8}" font-size="10"
+            text-anchor="middle" fill="${c < 0 ? 'var(--critical)' : 'var(--text-2)'}">${c < 0 ? '?' : c}</text>`;
+  });
+  ranks.forEach((r, i) => {
+    if (i % every) return;
+    out += `<text x="${pad.l - 8}" y="${pad.t + i * cell + cell / 2 + 3}" font-size="10"
+            text-anchor="end" fill="var(--text-2)">${r}</text>`;
+  });
+  ranks.forEach((r, i) => cols.forEach((c, j) => {
+    const b = byte.get(`${r},${c}`), s = send.get(`${r},${c}`);
+    const x = pad.l + j * cell, y = pad.t + i * cell;
+    if (b === undefined) {
+      out += `<rect x="${x}" y="${y}" width="${cell - gap}" height="${cell - gap}" rx="2"
+              fill="var(--surface-0)"/>`;
+      return;
+    }
+    out += `<rect class="c" x="${x}" y="${y}" width="${cell - gap}" height="${cell - gap}" rx="2"
+            fill="${colorOf(b)}" data-t="${esc(`rank ${r} → ${c < 0 ? 'unresolved' : 'rank ' + c}`)}"
+            data-v="${esc(`${fmtBytes(b)} in ${s.toLocaleString()} sends`)}"/>`;
+  }));
+  svg.innerHTML = out;
+
+  svg.querySelectorAll('.c').forEach(el => {
+    el.addEventListener('mousemove', ev =>
+      showTip(`<b>${el.dataset.t}</b><br>${el.dataset.v}`, ev));
+    el.addEventListener('mouseleave', hideTip);
+  });
+
+  document.getElementById('ramp').innerHTML =
+    RAMP.map(c => `<i style="background:${c}"></i>`).join('');
+
+  const tot = [...byte.values()].reduce((a, b) => a + b, 0);
+  document.getElementById('sub').textContent =
+    `${n} ranks · ${edges.length} edges · ${fmtBytes(tot)} total` +
+    (hasUnres ? ' · includes unresolved traffic' : '');
+
+  document.getElementById('tbl').innerHTML =
+    '<tr><th>src</th><th>dst</th><th>sends</th><th>bytes</th></tr>' +
+    edges.map(e => `<tr><td>${e.src_rank}</td><td>${+e.dst_rank < 0 ? '?' : e.dst_rank}</td>` +
+      `<td>${(+e.sends).toLocaleString()}</td><td>${(+e.bytes).toLocaleString()}</td></tr>`).join('');
+}
+
+(async () => {
+  try {
+    const edges = await query(
+      'SELECT src_rank, dst_rank, sends, bytes FROM comm_edges ORDER BY src_rank, dst_rank');
+    render(edges);
+    // Surfaced, not swallowed: "a wrong matrix that looks confident is worse
+    // than no matrix."
+    const h = await query('SELECT finding, n, note FROM link_health WHERE n > 0').catch(() => []);
+    if (h.length)
+      document.getElementById('health').innerHTML =
+        `<div class="health">${h.map(r =>
+          `<b>${r.finding} = ${r.n}</b> — ${r.note}`).join('<br>')}</div>`;
+  } catch (e) {
+    document.getElementById('sub').innerHTML =
+      `<span class="err">${e.message}</span><br>` +
+      `<span style="font-size:12px">run <code>pcomm-read &lt;trace&gt; --parquet &lt;dir&gt;</code>` +
+      ` then <code>pcomm-read --link &lt;dir&gt;</code></span>`;
+  }
+})();
+</script>
