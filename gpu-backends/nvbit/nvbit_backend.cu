@@ -14,6 +14,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
@@ -743,9 +744,30 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     g_skip_callback = true;
     CtxState* state = G().ctx_state.at(ctx);
 
+    // Consume any error latched BEFORE us. cudaGetLastError returns the last
+    // error from this thread, not the last one from the two lines above it, so
+    // asserting on it here charged us for anything the application or NVSHMEM
+    // had already done. That is how case 13 died: exit 134, SIGABRT out of a
+    // profiler's teardown, with the capture lost.
+    if (const cudaError_t stale = cudaGetLastError(); stale != cudaSuccess)
+        std::fprintf(stderr, "pcomm: cuda error already pending at ctx term (not ours): %s\n",
+                     cudaGetErrorString(stale));
+
     pcomm_flush_channel<<<1, 1>>>(state->channel_dev);
-    cudaDeviceSynchronize();
-    assert(cudaGetLastError() == cudaSuccess);
+    cudaError_t flush = cudaDeviceSynchronize();
+    if (flush == cudaSuccess)
+        flush = cudaGetLastError();
+
+    // REPORT, never abort. This runs at context teardown of the application we
+    // are profiling: aborting here kills the app at exit and takes the whole
+    // capture with it, which is the worst possible response to "the last flush
+    // may have dropped some records". The remaining teardown below is what
+    // writes the streams, so it has to run either way.
+    if (flush != cudaSuccess)
+        std::fprintf(stderr,
+                     "pcomm: channel flush failed at ctx term: %s — records still in the "
+                     "device buffer are lost, the rest of the capture is intact\n",
+                     cudaGetErrorString(flush));
 
     state->channel_host.destroy(false);
     cudaFree(state->channel_dev);
