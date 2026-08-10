@@ -47,6 +47,8 @@ extern "C" {
 #include "link_sql.hpp"
 #endif
 
+#include "capture_load.hpp"  // scan_ranks, the raw-stream -> DuckDB loop
+
 namespace fs = std::filesystem;
 using namespace pcomm;
 using namespace pcomm::core::records;
@@ -576,14 +578,9 @@ using TableRecords =
                mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell,
                mxr::Mlx5DeviceSend>;
 
-template<typename Tuple, typename F, std::size_t... Is>
-void for_each_type_impl(F&& f, std::index_sequence<Is...>) {
-    (f.template operator()<std::tuple_element_t<Is, Tuple>>(), ...);
-}
-template<typename Tuple, typename F> void for_each_type(F&& f) {
-    for_each_type_impl<Tuple>(std::forward<F>(f),
-                              std::make_index_sequence<std::tuple_size_v<Tuple>>{});
-}
+// Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
+// capture directly instead of only reading a Parquet export of one.
+using capture::for_each_type;
 
 // Every record type this build can decode: the tables plus the two intern
 // streams (consumed as the dictionary, not exported as tables). Anything else
@@ -634,50 +631,10 @@ void print_types() {
         std::printf("%u\t%s\t%u\t%s\n", id, kind, ver, name.c_str());
 }
 
-// One rank's capture: streams + intern dictionaries.
-struct RankDir {
-    int                   rank{0};
-    fs::path              dir;
-    rec::InternDictionary intern;  // pcomm/rec/intern_reader.hpp
-
-    const char* str(core::Handle h) const { return intern.str(h); }
-    const char* str(rec::InternDomain d, core::Handle h) const { return intern.str(d, h); }
-};
-
-// A rank's stream file for record type R.
-template<core::Record R> fs::path stream_path(const RankDir& r) {
-    return rec::stream_path<R>(r.dir);
-}
-
-// Find every rank-* directory under `root`. A single run lays them out flat
-// (root/rank-*); a replayed run nests one level per pass (root/<pass>/rank-*),
-// e.g. root/ib/rank-0 and root/gpumem/rank-0 for the same logical rank 0. We
-// recurse and accept duplicate rank numbers across passes — each RankDir loads
-// its own intern table, so pass-local handles never collide, and because each
-// provider emits a disjoint record-type range the passes merge by rank number.
-void scan_ranks_into(const fs::path& root, std::vector<RankDir>& ranks) {
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(root, ec)) {
-        if (!entry.is_directory())
-            continue;
-        auto name = entry.path().filename().string();
-        if (name.rfind("rank-", 0) != 0) {
-            scan_ranks_into(entry.path(), ranks);  // descend into a pass subdir
-            continue;
-        }
-        RankDir r;
-        r.rank = std::atoi(name.c_str() + 5);
-        r.dir = entry.path();
-        r.intern = rec::InternDictionary::load(r.dir);
-        ranks.push_back(std::move(r));
-    }
-}
-
-std::vector<RankDir> scan_ranks(const fs::path& root) {
-    std::vector<RankDir> ranks;
-    scan_ranks_into(root, ranks);
-    return ranks;
-}
+using capture::RankDir;
+using capture::scan_ranks;
+using capture::scan_ranks_into;
+using capture::stream_path;
 
 // --- CSV export ---------------------------------------------------------------
 
@@ -1234,71 +1191,32 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     // smaller saving; it is not what dominates.)
     duck_exec(con, "SET temp_directory='" + outdir.string() + "'", "temp_directory");
 
-    std::size_t tables = 0, rows_total = 0, failed = 0;
+    // The load is capture_load.hpp's, shared with pcomm-ui so that "read a
+    // capture into DuckDB" has one implementation. What stays here is the only
+    // part that is actually about Parquet: writing each loaded table out.
+    auto st = capture::load_raw_tables(con, ranks);
+
+    std::size_t tables = 0, rows_total = st.rows, failed = st.failed;
     for_each_type<raw::RawRecords>([&]<typename R>() {
         using Raw = raw::RawTable<R>;
-
-        // Existence first, so an absent stream produces no table at all rather
-        // than an empty one. "The table is missing" and "the table is empty"
-        // mean different things about a capture — under IBGDA the ib_* streams
-        // are legitimately absent, and flattening that into an empty table
-        // would erase the distinction.
-        //
-        // Only existence, though: loading every rank up front to count rows
-        // held the whole capture in memory at once (600 MB peak on a 167 MB
-        // capture) for no gain, since each rank is appended and dropped below.
-        const bool any = std::any_of(ranks.begin(), ranks.end(), [](const RankDir& r) {
-            return fs::exists(stream_path<R>(r));
-        });
-        if (!any)
+        // Only tables the load actually created: probing is how we keep the
+        // absent/empty distinction the loader established, without repeating
+        // its existence rules here and risking the two drifting apart.
+        duckdb_result probe{};
+        const bool    present =
+            duckdb_query(con, ("SELECT 1 FROM \"" + std::string(Raw::table) + "\" LIMIT 0").c_str(),
+                         &probe) == DuckDBSuccess;
+        duckdb_destroy_result(&probe);
+        if (!present)
             return;
-        std::size_t rows = 0;
-
-        if (!duck_exec(con, Raw::ddl, Raw::table)) {
-            failed++;
-            return;
-        }
-
-        duckdb_appender ap{};
-        if (duckdb_appender_create(con, nullptr, Raw::table, &ap) != DuckDBSuccess) {
-            std::fprintf(stderr, "pcomm-read: cannot append to %s\n", Raw::table);
-            failed++;
-            return;
-        }
-        // One rank at a time: the vector is freed before the next is read, so
-        // peak memory is the largest single stream rather than the capture.
-        for (const auto& r : ranks) {
-            const auto path = stream_path<R>(r);
-            if (!fs::exists(path))
-                continue;
-            const auto recs = load_stream<R>(path);
-            rows += recs.size();
-            for (const auto& s : recs) {
-                Raw::append(ap, r.rank, s);
-                duckdb_appender_end_row(ap);
-            }
-        }
-        // Flush before destroy so a write error is reported rather than
-        // swallowed by the destructor path.
-        const bool flushed = duckdb_appender_flush(ap) == DuckDBSuccess;
-        if (!flushed)
-            std::fprintf(stderr, "pcomm-read: %s: appender flush failed: %s\n", Raw::table,
-                         duckdb_appender_error(ap));
-        duckdb_appender_destroy(&ap);
-        if (!flushed) {
-            failed++;
-            return;
-        }
 
         const auto out = (outdir / (std::string(Raw::table) + ".parquet")).string();
         if (duck_exec(con,
                       "COPY \"" + std::string(Raw::table) + "\" TO '" + out + "' (FORMAT PARQUET)",
-                      Raw::table)) {
+                      Raw::table))
             tables++;
-            rows_total += rows;
-        } else {
+        else
             failed++;
-        }
     });
 
     duckdb_disconnect(&con);

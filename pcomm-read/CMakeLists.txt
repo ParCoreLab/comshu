@@ -45,6 +45,12 @@ if(PCOMM_DUCKDB)
   # libpcomm's headers and the providers' record schemas — carried by the
   # interface rather than re-listed by every consumer.
   target_link_libraries(pcomm_duck INTERFACE pcomm::pcomm)
+  # Linking this target IS having DuckDB, so the flag the headers gate on rides
+  # with it. It used to be PRIVATE on pcomm_read alone, which meant pcomm-ui got
+  # the headers but silently compiled out every block guarded by the flag —
+  # capture_load.hpp's loader vanished and the error named a missing member
+  # rather than a missing define.
+  target_compile_definitions(pcomm_duck INTERFACE PCOMM_HAVE_DUCKDB=1)
   target_include_directories(pcomm_duck INTERFACE
     "${CMAKE_SOURCE_DIR}/providers/ibverbs" "${CMAKE_SOURCE_DIR}/providers/mlx5dv")
   add_custom_target(pcomm_duck_gen DEPENDS "${_raw_hdr}")

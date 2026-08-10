@@ -1,6 +1,6 @@
 // pcomm ui — serve an exported capture as a queryable page.
 //
-//   pcomm-ui <export-dir> [--port N] [--dir <static-dir>]
+//   pcomm-ui <capture-or-export-dir> [--port N] [--dir <static-dir>]
 //
 // The export directory is one produced by `pcomm-read --parquet` and linked
 // with `--link`. This process never opens a `.pcs`: stream headers, schema
@@ -30,6 +30,8 @@ extern "C" {
 #include "httplib.h"
 
 #include "duck_mount.hpp"  // shared with pcomm-read: the empty-table policy
+#include "capture_load.hpp"  // ... and reading a raw capture straight in
+#include "link_sql.hpp"      // ... and the derived layer, as views
 #include "ui_assets.hpp"   // generated: the built page, embedded
 
 namespace fs = std::filesystem;
@@ -83,8 +85,9 @@ std::string json_escape(const char* s) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fputs("usage: pcomm-ui <export-dir> [--port N] [--dir <static-dir>]\n"
-                   "  <export-dir> is a `pcomm-read --parquet` output, ideally --link'ed\n",
+        std::fputs("usage: pcomm-ui <dir> [--port N] [--dir <static-dir>]\n"
+                   "  <dir> is either a capture (one containing rank-* dirs) or a\n"
+                   "  `pcomm-read --parquet` export, ideally --link'ed\n",
                    stderr);
         return 1;
     }
@@ -115,7 +118,35 @@ int main(int argc, char** argv) {
     // missing one. Without that, a panel querying `mlx5_device_send` fails on
     // every verbs-only capture, and every panel would have to branch on which
     // provider ran — the coupling the derived layer exists to remove.
-    std::size_t tables = pcomm::duck::mount_raw_tables(con, dir);
+    // Two kinds of directory, told apart by whether it holds rank-* dirs.
+    //
+    // A capture is loaded in full and the derived layer defined as views, so
+    // `pcomm-ui <capture>` works with no export step. That is the common case —
+    // needing `--parquet` and then `--link` before you could look at a run made
+    // the quick question ("what does this capture look like?") the slow one.
+    //
+    // An export is still mounted as before: it is what the suite produces, and
+    // re-decoding streams that have already been decoded would be slower and
+    // would give a second answer to a question that already has one.
+    std::size_t tables = 0;
+    const bool  from_capture = pcomm::capture::looks_like_capture(dir);
+    if (from_capture) {
+        const auto ranks = pcomm::capture::scan_ranks(dir);
+        if (ranks.empty()) {
+            std::fprintf(stderr, "pcomm-ui: %s holds rank dirs but none could be read\n",
+                         dir.c_str());
+            return 1;
+        }
+        const auto st = pcomm::capture::load_raw_tables(con, ranks);
+        pcomm::capture::fill_missing_raw_tables(con);
+        const auto bad = pcomm::link::define(con);
+        tables = st.tables;
+        std::printf("pcomm-ui: capture %s — %zu ranks, %zu tables, %zu rows%s\n", dir.c_str(),
+                    ranks.size(), st.tables, st.rows,
+                    (st.failed || bad) ? " (SOME FAILED, see above)" : "");
+    } else {
+        tables = pcomm::duck::mount_raw_tables(con, dir);
+    }
 
     // Then everything else in the directory — the derived tables from --link,
     // and anything a future pass adds. Raw and derived share one namespace on
@@ -138,10 +169,20 @@ int main(int argc, char** argv) {
         duckdb_destroy_result(&r2);
     }
     if (!tables) {
-        std::fprintf(stderr,
-                     "pcomm-ui: no .parquet tables in %s\n"
-                     "  pcomm-read <trace-dir> --parquet %s && pcomm-read --link %s\n",
-                     dir.c_str(), dir.c_str(), dir.c_str());
+        // Two different failures, and telling someone to run --parquet on a
+        // directory that already IS a capture is how a wrong error message
+        // costs more time than no error message.
+        if (from_capture)
+            std::fprintf(stderr,
+                         "pcomm-ui: %s has rank dirs but no decodable streams\n"
+                         "  check it with: pcomm-read %s\n",
+                         dir.c_str(), dir.c_str());
+        else
+            std::fprintf(stderr,
+                         "pcomm-ui: no .parquet tables in %s, and no rank-* dirs either\n"
+                         "  pcomm-read <capture> --parquet %s && pcomm-read --link %s\n"
+                         "  (or just: pcomm-ui <capture>)\n",
+                         dir.c_str(), dir.c_str(), dir.c_str());
         return 1;
     }
 

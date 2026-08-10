@@ -308,4 +308,23 @@ FROM (
 )sql"},
 };
 
+// Define the whole derived layer as views on an open connection.
+//
+// `--link` materialises kTables to Parquet instead, because its output is a
+// fixture other tools read. A UI holds the capture in memory and only ever
+// queries, so a view is the same answer without the copy — and, more to the
+// point, without a temp directory the server would have to own and clean up.
+inline std::size_t define(duckdb_connection con) {
+    std::size_t failed = 0;
+    for (const auto& v : kViews)
+        if (!duck::exec(con, v.sql, v.name))
+            failed++;
+    for (const auto& t : kTables)
+        if (!duck::exec(con,
+                        "CREATE OR REPLACE VIEW \"" + std::string(t.name) + "\" AS " + t.sql,
+                        t.name))
+            failed++;
+    return failed;
+}
+
 }  // namespace pcomm::link
