@@ -39,6 +39,18 @@ PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null 
 PCOMM_SM=${PCOMM_SM:-90}
 APP="$HOME/asym_patterns-sm$PCOMM_SM"
 
+# NVSHMEM_HOME is resolved by globbing the SDKs and taking the newest, so it can
+# name a directory whose layout differs from the one the modules provide. If the
+# host library is not where we are about to point -L, the link silently falls
+# back to whatever the module put on the default search path and the mismatch
+# only surfaces as an undefined symbol at startup — which is how job 44457910
+# was spent. Check it here, where the message can say which directory.
+if [ ! -e "$NVSHMEM_HOME/lib/libnvshmem_host.so" ]; then
+  echo "!! no libnvshmem_host.so under $NVSHMEM_HOME/lib" >&2
+  ls "$NVSHMEM_HOME/lib" 2>/dev/null | head -20 >&2
+  exit 1
+fi
+
 # One binary per arch for all three cases, so the three captures differ only in
 # the pattern and never in the build. The arch is in the name because a cached
 # binary from the other machine is not a build error, it is a silent wrong
@@ -49,10 +61,26 @@ if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; t
     -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
+    -Wl,--disable-new-dtags,-rpath,"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart \
     || { echo "!! nvcc failed — refusing to run a stale or missing binary" >&2; exit 1; }
   pcomm_load_runtime
 fi
+
+# WHICH NVSHMEM this binary actually resolves, printed every run.
+#
+# Job 44457910 died at startup with "undefined symbol:
+# nvshmem_selected_device_transport, version NVSHMEM". NVSHMEM_HOME is resolved
+# by globbing the SDKs and taking the newest (26.5 on MN5), while
+# pcomm_load_runtime does `module load nvidia-hpc-sdk/25.7` — so the headers and
+# -L can come from one NVSHMEM and the loader can find another. Case 04 does not
+# hit this only because its binary is cached from before the two diverged.
+#
+# -rpath above pins the binary to the NVSHMEM it was linked against, which is
+# the fix. This line is the evidence: a version mismatch should be one grep in
+# the log, not another job.
+echo "=== nvshmem this binary links against ==="
+ldd "$APP" 2>/dev/null | grep -i nvshmem || echo "  (none reported by ldd)"
 
 OUT=$(pcomm_out pipeline); rm -rf "$OUT"; mkdir -p "$OUT"
 
