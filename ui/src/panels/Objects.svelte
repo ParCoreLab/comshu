@@ -53,7 +53,7 @@
       FROM (SELECT DISTINCT rank, id, range_base, range_size, device FROM mem_object) m
       LEFT JOIN (
         SELECT owner_rank, object, count(*) AS n,
-               array_to_string(array_agg(DISTINCT actor_kind || ' ' || actor), ', ')
+               array_to_string(array_agg(DISTINCT 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '')), ', ')
                  AS touched_by,
                array_to_string(array_agg(DISTINCT source ORDER BY source), ' + ') AS sources
         FROM object_access GROUP BY 1, 2
@@ -95,7 +95,7 @@
              max(a.obj_offset)::BIGINT                AS off_hi,
              array_to_string(array_agg(DISTINCT a.source ORDER BY a.source), ' + ')
                                                       AS sources,
-             array_to_string(array_agg(DISTINCT a.actor_kind || ' ' || a.actor), ', ')
+             array_to_string(array_agg(DISTINCT 'rank ' || a.actor_rank || coalesce(' (GPU ' || a.actor_device || ')', '')), ', ')
                                                       AS actors,
              bool_and(a.exact)                        AS all_exact,
              (SELECT hi FROM w)::BIGINT               AS covered
@@ -113,12 +113,12 @@
   $effect(() => {
     if (!sel) { split = []; return; }
     query(`
-      SELECT source, actor_kind, bool_and(exact) AS exact,
+      SELECT source, bool_and(exact) AS exact,
              count(*)::BIGINT AS n, sum(size)::BIGINT AS bytes,
-             array_to_string(array_agg(DISTINCT actor ORDER BY actor), ', ') AS actors
+             array_to_string(array_agg(DISTINCT 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '') ORDER BY 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '')), ', ') AS actors
       FROM object_access
       WHERE owner_rank = ${num(sel.rank)} AND object = ${num(sel.id)}
-      GROUP BY 1, 2 ORDER BY n DESC`)
+      GROUP BY 1 ORDER BY n DESC`)
       .then((r) => (split = r))
       .catch(() => (split = []));
   });
@@ -191,8 +191,7 @@
               <span>
                 <b>{sp.source}</b>
                 <span style="color: var(--text-2)">
-                  {count(num(sp.n))} touches · {bytes(num(sp.bytes))} · by {sp.actor_kind}
-                  {sp.actors}
+                  {count(num(sp.n))} touches · {bytes(num(sp.bytes))} · by {sp.actors}
                 </span>
                 {#if !sp.exact}
                   <span style="color: var(--text-3)"> · offsets approximate</span>
@@ -259,8 +258,9 @@
     </div>
     <p class="text-xs mt-2 m-0" style="color: var(--text-3)">
       <b>device</b> is the GPU that <i>owns</i> the memory; <b>touched by</b> is
-      whoever did the touching — a GPU for <code>p2p</code>, a rank for
-      <code>verbs</code>, because the two providers observe in different spaces.
+      whoever did the touching, as <code>rank N (GPU M)</code>. The GPU is
+      omitted rather than guessed when a rank drives more than one — which is the
+      normal case for a single-process multi-GPU run.
       <b>via</b> names which of them saw it, and an object seen by both is not
       double-counted so much as observed twice. <code>rank</code> is the process
       that recorded the row, which is neither of the above. <code>unknown</code> is device id 65535 — attribution failed,

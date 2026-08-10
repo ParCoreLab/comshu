@@ -140,6 +140,23 @@ WHERE coalesce(ni.node_hash, l.node) IS NOT NULL
     //
     // `claimants` is kept for the same reason _owner keeps it: two ranks
     // claiming one (node, device) is a finding, not a tie to break quietly.
+    // rank -> the device it drives, and NULL when that question has no single
+    // answer. A rank can own several GPUs (the 4-GPU ring is one process), and
+    // naming one of them would be a guess that reads exactly like a fact. The
+    // ibverbs cases put one GPU on each node precisely so this resolves.
+    {"_rank_device", R"sql(
+CREATE OR REPLACE VIEW _rank_device AS
+SELECT rank,
+       CASE WHEN count(DISTINCT device) = 1 THEN min(device) END AS device,
+       count(DISTINCT device)                                    AS devices
+FROM (
+    SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, run_device AS device FROM gpu_access
+)
+GROUP BY rank
+)sql"},
+
     {"_device_owner", R"sql(
 CREATE OR REPLACE VIEW _device_owner AS
 SELECT n.node, d.device, min(d.rank) AS rank, count(DISTINCT d.rank) AS claimants
@@ -251,8 +268,8 @@ WITH p2p AS (
                                                     AS obj_offset,
            g.size                                   AS size,
            'p2p'                                    AS source,
-           g.run_device::BIGINT                     AS actor,
-           'device'                                 AS actor_kind,
+           g.rank::BIGINT                           AS actor_rank,
+           g.run_device::BIGINT                     AS actor_device,
            FALSE                                    AS exact
     FROM gpu_access g
 ),
@@ -262,8 +279,8 @@ verbs AS (
            s.remote_addr - m.range_base             AS obj_offset,
            s.length                                 AS size,
            'verbs'                                  AS source,
-           s.rank::BIGINT                           AS actor,
-           'rank'                                   AS actor_kind,
+           s.rank::BIGINT                           AS actor_rank,
+           rd.device::BIGINT                        AS actor_device,
            TRUE                                     AS exact
     FROM ib_post_send s
     JOIN _peer_of_qp e
@@ -278,6 +295,7 @@ verbs AS (
     -- LATERAL and not QUALIFY: there is no unique send id here (wr_id repeats),
     -- so a window partition collapses distinct sends — measured, 393228 rows
     -- became 131078.
+    LEFT JOIN _rank_device rd ON rd.rank = s.rank
     JOIN LATERAL (
         SELECT o.id, o.range_base
         FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
