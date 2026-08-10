@@ -34,6 +34,15 @@ public:
         std::uint64_t  size;
         core::DeviceId device;
         core::Handle   object;  // MemObject entity id
+        // For a peer's mapping of a symmetric region: what to add to a local
+        // address to get the SYMMETRIC one. Zero for everything else.
+        //
+        // It exists because nvshmem_malloc is a user-space sub-allocator over
+        // the heap (src/host/mem/mem_heap.cpp -> mspace, a dlmalloc derivative),
+        // so the fine-grained buffers only ever have symmetric addresses — no
+        // CUDA call ever names them, and a peer access arrives at the mapping
+        // address instead. Translating is the only way to reach them.
+        std::int64_t sym_delta;
     };
 
     // `object` is minted by the caller, not here, and that is the whole point:
@@ -42,9 +51,10 @@ public:
     // interned pointer handle 3 were the same uint32 naming different buffers.
     // on_alloc now interns the base address in the same domain ibverbs and
     // mlx5dv use, so the id is a shared identity across providers.
-    void add(std::uint64_t base, std::uint64_t size, core::DeviceId dev, core::Handle object) {
+    void add(std::uint64_t base, std::uint64_t size, core::DeviceId dev, core::Handle object,
+             std::int64_t sym_delta = 0) {
         std::lock_guard lock(m_mutex);
-        m_allocs.push_back({base, size, dev, object});
+        m_allocs.push_back({base, size, dev, object, sym_delta});
     }
 
     // A range that resolves a device but names no MemObject — the backend's
@@ -54,7 +64,7 @@ public:
     // that does not exist. Ownership is the only thing we know here.
     void add_range(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         std::lock_guard lock(m_mutex);
-        m_allocs.push_back({base, size, dev, core::kNullHandle});
+        m_allocs.push_back({base, size, dev, core::kNullHandle, 0});
     }
 
     // Linear scan like snoopie's find_dev_of_ptr (allocation counts are small;
@@ -69,18 +79,28 @@ public:
     // and every recorded access stayed unattributed even after the object was
     // being registered correctly. Both entries agree on the device, so taking
     // the named one loses nothing.
+    //
+    // Among named matches, the SMALLEST wins. Ranges nest: an
+    // nvshmem_malloc'd buffer sits inside the symmetric heap region that was
+    // mapped once for all of them, and both name an object. The innermost is
+    // the answer, for the same reason the innermost enclosing scope names a
+    // variable — it is also the rule the reader's mem_owner already applies to
+    // containment chains, so capture and reader agree.
     const Alloc* find(std::uint64_t addr) const {
         std::lock_guard lock(m_mutex);
+        const Alloc*    named = nullptr;
         const Alloc*    unnamed = nullptr;
         for (const auto& a : m_allocs) {
             if (a.base <= addr && addr < a.base + a.size) {
-                if (a.object != core::kNullHandle)
-                    return &a;
-                if (!unnamed)
+                if (a.object != core::kNullHandle) {
+                    if (!named || a.size < named->size)
+                        named = &a;
+                } else if (!unnamed || a.size < unnamed->size) {
                     unnamed = &a;
+                }
             }
         }
-        return unnamed;
+        return named ? named : unnamed;
     }
 
 private:
@@ -97,8 +117,23 @@ public:
 
     void attribute(const attr::RawAccess& a, core::records::GpuAccess& out,
                    rec::Recorder<>&) override {
-        if (const auto* alloc = m_allocs->find(a.address))
-            out.object = alloc->object;
+        const auto* alloc = m_allocs->find(a.address);
+        if (!alloc)
+            return;
+        out.object = alloc->object;
+
+        // A peer's mapping resolves to the region; the buffer inside it is only
+        // addressable symmetrically, so translate and look again. Falls back to
+        // the region's own object when the finer one is not known — an
+        // application that never calls nvshmem_malloc, or a buffer allocated
+        // before we interposed.
+        if (alloc->sym_delta != 0) {
+            const auto sym = static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(a.address) + alloc->sym_delta);
+            if (const auto* fine = m_allocs->find(sym);
+                fine && fine->object != core::kNullHandle)
+                out.object = fine->object;
+        }
     }
 
 private:
@@ -179,8 +214,32 @@ public:
     // address finds nothing, and why the mapping has to carry the handle
     // instead of the reader trying to recover it.
     void on_peer_range(std::uint64_t mapped_base, std::uint64_t size, core::DeviceId dev,
-                       core::Handle object) {
-        m_allocs.add(mapped_base, size, dev, object);
+                       core::Handle object, std::uint64_t symmetric_base) {
+        m_allocs.add(mapped_base, size, dev, object,
+                     static_cast<std::int64_t>(symmetric_base) -
+                         static_cast<std::int64_t>(mapped_base));
+    }
+
+    // One nvshmem_malloc'd buffer, at its symmetric address.
+    //
+    // These never reach any CUDA allocation API: nvshmem_malloc sub-allocates
+    // from the pre-mapped heap through NVSHMEM's own mspace allocator
+    // (src/host/mem/mem_heap.cpp -> custom_malloc.cpp, a dlmalloc derivative),
+    // so the driver only ever saw the one cuMemMap of the whole heap. Which is
+    // why attribution stopped at 512 MB of "the heap" and why this has to be
+    // interposed at the NVSHMEM boundary rather than below it.
+    //
+    // The address is symmetric, so interning it yields the SAME id on every PE —
+    // the property that already makes the heap region a cross-rank identity,
+    // now at buffer granularity.
+    void on_symmetric_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
+        if (!base || !size)
+            return;
+        auto&      rec = recorder();
+        const auto object = rec.intern(rec::InternDomain::Pointer, base);
+        rec.record(rec.now_instant(),
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
+        m_allocs.add(base, size, dev, object);
     }
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {

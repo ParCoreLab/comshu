@@ -18,6 +18,12 @@
     pcomm_instrument_mem;
     pcomm_create_provider;
     pcomm_abi_version;
+    /* Interposed so nvshmem_malloc'd buffers can be named. They must be global
+       or the preload never wins the symbol and attribution silently stays at
+       heap granularity — a failure that looks exactly like success. */
+    nvshmem_malloc;
+    nvshmem_calloc;
+    nvshmem_align;
   local:
     *;
 };
