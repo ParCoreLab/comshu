@@ -48,14 +48,16 @@
   $effect(() => {
     query(`
       SELECT m.rank, m.id, m.range_base AS base, m.range_size AS size, m.device,
-             coalesce(a.n, 0) AS accesses, coalesce(a.touched_by, '') AS touched_by
+             coalesce(a.n, 0) AS accesses, coalesce(a.touched_by, '') AS touched_by,
+             coalesce(a.sources, '') AS sources
       FROM (SELECT DISTINCT rank, id, range_base, range_size, device FROM mem_object) m
       LEFT JOIN (
-        SELECT rank, object, count(*) AS n,
-               array_to_string(array_agg(DISTINCT run_device ORDER BY run_device), ', ')
-                 AS touched_by
-        FROM gpu_access GROUP BY 1, 2
-      ) a ON a.rank = m.rank AND a.object = m.id
+        SELECT owner_rank, object, count(*) AS n,
+               array_to_string(array_agg(DISTINCT actor_kind || ' ' || actor), ', ')
+                 AS touched_by,
+               array_to_string(array_agg(DISTINCT source ORDER BY source), ' + ') AS sources
+        FROM object_access GROUP BY 1, 2
+      ) a ON a.owner_rank = m.rank AND a.object = m.id
       ORDER BY accesses DESC, size DESC, rank, m.device, base
       LIMIT 500`)
       .then((r) => {
@@ -70,41 +72,55 @@
     objects ? [...new Set(objects.map((o) => num(o.device)))] : [],
   );
 
-  // The heatmap is binned over the OBSERVED address window, not over
-  // [base, base+size). For a peer access the address is this process's mapping
-  // of the peer's buffer, which sits far from the object's own base — measured
-  // ~275 GB away — so subtracting `base` would produce nonsense. min(address)
-  // is the mapping base, and it is exact whenever the workload touches the
-  // whole buffer: on the capture this was built against the observed span is
-  // 4092 over a 4096-byte object. `covered` below reports that, so a partially
-  // touched buffer is visible as such rather than silently mislabelled.
+  // Binned on object_access.obj_offset, which is where the two providers are
+  // reconciled — see link_sql.hpp. Both are shown on one axis because they
+  // describe the same buffer, and `exact` travels with them because they do not
+  // agree on what offset zero means: a verbs offset is anchored to the object's
+  // true base, a p2p offset to the first byte observed, since the peer-mapping
+  // delta is not in the record (measured 128 GiB on nvshmem_p2p_fine-du04).
+  // `covered` reports the observed extent so a partially touched buffer reads as
+  // one rather than being silently rescaled.
   $effect(() => {
     if (!sel) { bins = []; return; }
     const r = num(sel.rank), o = num(sel.id);
     query(`
       WITH w AS (
-        SELECT min(address) AS lo, max(address) + max(size) AS hi
-        FROM gpu_access WHERE rank = ${r} AND object = ${o}
+        SELECT max(obj_offset) + max(size) AS hi
+        FROM object_access WHERE owner_rank = ${r} AND object = ${o}
       )
-      SELECT floor((g.address - w.lo) * ${BINS} / greatest(w.hi - w.lo, 1))::INT AS bin,
-             count(*)::BIGINT                        AS n,
-             sum(g.size)::BIGINT                     AS bytes,
-             min(g.address - w.lo)::BIGINT           AS off_lo,
-             max(g.address - w.lo)::BIGINT           AS off_hi,
-             min(g.address)::BIGINT                  AS addr_lo,
-             array_to_string(array_agg(DISTINCT g.run_device ORDER BY g.run_device), ', ')
-                                                     AS from_gpus,
-             array_to_string(array_agg(DISTINCT
-               CASE g.op WHEN 0 THEN 'load' WHEN 1 THEN 'store'
-                         WHEN 2 THEN 'atomic' WHEN 3 THEN 'prefetch'
-                         ELSE 'op' || g.op END), ', ') AS ops,
-             array_to_string(array_agg(DISTINCT g.mem_device::VARCHAR), ', ') AS peers,
-             (SELECT hi - lo FROM w)::BIGINT          AS covered
-      FROM gpu_access g, w
-      WHERE g.rank = ${r} AND g.object = ${o}
+      SELECT floor(a.obj_offset * ${BINS} / greatest(w.hi, 1))::INT AS bin,
+             count(*)::BIGINT                         AS n,
+             sum(a.size)::BIGINT                      AS bytes,
+             min(a.obj_offset)::BIGINT                AS off_lo,
+             max(a.obj_offset)::BIGINT                AS off_hi,
+             array_to_string(array_agg(DISTINCT a.source ORDER BY a.source), ' + ')
+                                                      AS sources,
+             array_to_string(array_agg(DISTINCT a.actor_kind || ' ' || a.actor), ', ')
+                                                      AS actors,
+             bool_and(a.exact)                        AS all_exact,
+             (SELECT hi FROM w)::BIGINT               AS covered
+      FROM object_access a, w
+      WHERE a.owner_rank = ${r} AND a.object = ${o}
       GROUP BY bin ORDER BY bin`)
       .then((b) => (bins = b))
       .catch(() => (bins = []));
+  });
+
+  // Per-source totals for the selected object. The heatmap merges the streams
+  // into one shape; this says what went into it, which is the difference
+  // between combining two measurements and hiding one.
+  let split = $state([]);
+  $effect(() => {
+    if (!sel) { split = []; return; }
+    query(`
+      SELECT source, actor_kind, bool_and(exact) AS exact,
+             count(*)::BIGINT AS n, sum(size)::BIGINT AS bytes,
+             array_to_string(array_agg(DISTINCT actor ORDER BY actor), ', ') AS actors
+      FROM object_access
+      WHERE owner_rank = ${num(sel.rank)} AND object = ${num(sel.id)}
+      GROUP BY 1, 2 ORDER BY n DESC`)
+      .then((r) => (split = r))
+      .catch(() => (split = []));
   });
 
   const colorOf = $derived(logScale(bins.map((b) => num(b.n))));
@@ -120,8 +136,8 @@
     // the participating GPUs. All three are here; the address is absolute, as
     // the one thing you can paste into a debugger.
     tip = {
-      title: `0x${num(b.addr_lo).toString(16)}  (+${bytes(num(b.off_lo))}–${bytes(num(b.off_hi))})`,
-      body: `${count(num(b.n))} ${b.ops} · ${bytes(num(b.bytes))} · from GPU ${b.from_gpus} · on GPU ${b.peers}`,
+      title: `+${bytes(num(b.off_lo))} – ${bytes(num(b.off_hi))}${b.all_exact ? '' : ' (approx.)'}`,
+      body: `${count(num(b.n))} touches · ${bytes(num(b.bytes))} · via ${b.sources} · by ${b.actors}`,
     };
     tipRef?.move(ev);
   }
@@ -169,12 +185,32 @@
           </span>
           <span>more accesses, log scale</span>
         </div>
+        {#if split.length}
+          <div class="flex flex-wrap gap-x-5 gap-y-1 mt-2 text-xs">
+            {#each split as sp}
+              <span>
+                <b>{sp.source}</b>
+                <span style="color: var(--text-2)">
+                  {count(num(sp.n))} touches · {bytes(num(sp.bytes))} · by {sp.actor_kind}
+                  {sp.actors}
+                </span>
+                {#if !sp.exact}
+                  <span style="color: var(--text-3)"> · offsets approximate</span>
+                {/if}
+              </span>
+            {/each}
+          </div>
+        {/if}
+
         <p class="text-xs mt-2 m-0" style="color: var(--text-3)">
           Binned over the address window actually touched
-          ({bytes(covered)} of {bytes(num(sel.size))}). A peer access arrives at
-          this process's mapping of the peer's buffer, not at the object's own
-          base, so offsets are measured from the first byte observed rather than
-          from <code>base</code>.
+          ({bytes(covered)} of {bytes(num(sel.size))}). The two sources do not
+          agree on where offset zero is: a <code>verbs</code> offset is exact,
+          because RDMA names the peer's real address and the object's base is
+          known; a <code>p2p</code> access arrives at this process's mapping of
+          the peer's buffer, whose distance from the base is not in the record
+          (measured 128 GiB on one capture), so its offsets run from the first
+          byte observed. Any bin mixing the two is marked approximate on hover.
         </p>
       </div>
     {/if}
@@ -183,7 +219,7 @@
       <table class="w-full text-xs border-collapse">
         <thead>
           <tr>
-            {#each ['', 'rank', 'device', 'base', 'size', 'touched by', 'accesses'] as h}
+            {#each ['', 'rank', 'device', 'base', 'size', 'touched by', 'via', 'accesses'] as h}
               <th class="px-2.5 py-1 font-medium border-b {h === 'accesses' || h === 'size' ? 'text-right' : 'text-left'}"
                   style="color: var(--text-2); border-color: var(--border)">{h}</th>
             {/each}
@@ -210,7 +246,10 @@
               <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">0x{num(o.base).toString(16)}</td>
               <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{bytes(num(o.size))}</td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
-                <span style="color: {o.touched_by ? 'var(--text-1)' : 'var(--text-3)'}">{o.touched_by ? 'GPU ' + o.touched_by : '—'}</span>
+                <span style="color: {o.touched_by ? 'var(--text-1)' : 'var(--text-3)'}">{o.touched_by || '—'}</span>
+              </td>
+              <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
+                <span style="color: {o.sources ? 'var(--text-1)' : 'var(--text-3)'}">{o.sources || '—'}</span>
               </td>
               <td class="px-2.5 py-1 text-right border-b" style="border-color: var(--border)">{count(num(o.accesses))}</td>
             </tr>
@@ -220,9 +259,11 @@
     </div>
     <p class="text-xs mt-2 m-0" style="color: var(--text-3)">
       <b>device</b> is the GPU that <i>owns</i> the memory; <b>touched by</b> is
-      the GPU that ran the accessing kernel, and the two differ exactly when the
-      access was remote. <code>rank</code> is the process that recorded the row,
-      which is neither. <code>unknown</code> is device id 65535 — attribution failed,
+      whoever did the touching — a GPU for <code>p2p</code>, a rank for
+      <code>verbs</code>, because the two providers observe in different spaces.
+      <b>via</b> names which of them saw it, and an object seen by both is not
+      double-counted so much as observed twice. <code>rank</code> is the process
+      that recorded the row, which is neither of the above. <code>unknown</code> is device id 65535 — attribution failed,
       which is not the same as host memory and is deliberately not merged with
       GPU 0. Objects with no recorded accesses are listed but not viewable: the
       transport registers buffers the instrumented kernels never touch.
