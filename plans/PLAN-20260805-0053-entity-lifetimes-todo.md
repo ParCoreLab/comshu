@@ -1,7 +1,55 @@
 # PLAN — entities have no close, so every capture counts calls, not lifetimes
 
 - **Created:** 2026-08-05 00:53 +03
-- **Status:** TODO — the engine no longer blocks it; the design decision is open.
+- **Status:** STEPS 1-3 SHIPPED. The decision was made (A) and implemented; this
+  header was stale. Reviewed 2026-08-10 — what remains is below.
+
+## Where it actually stands, 2026-08-10
+
+**Step 1 — done.** `EntityClose` is type 522, Event, internal range, in the
+schema, the generated bindings, `schema_conformance` and the reader.
+
+**Step 2 — done and then some.** Emitted from ibverbs (six doors), mlx5dv (two),
+and now gpumem's `nvshmem_free`. The table in "What is broken" below is
+historical: every row of it now records a close.
+
+**Step 3 — done, and stronger than the plan asked.**
+`tests/hpc/suite/asserts/entity_close_accounted.sql` carries all three clauses:
+a close naming an entity nothing opened, more closes than opens for a subject,
+and an entity opened and never closed. The `ib_device` exemption on the third is
+measured, not assumed.
+
+**Step 4 — largely subsumed, and worth saying so rather than doing it.** The
+plan wanted "live regions" to become computable so case 06's count stops
+tracking allocator churn. It is computable — measured on
+`nvshmem_coexist-44400747`: 179 opens, 179 closes, **0 live**, identically on
+all four ranks. But clause 3 of the assertion already requires every opened
+entity to be closed, so "live at end == 0" is implied by an assertion that
+already runs everywhere, and a case-06 golden asserting 0 would add a number
+without adding a check. Case 06's per-rank symmetry assertion stays as it is.
+
+## What is actually left
+
+**The reader does not use the window, and address reuse is real.** Measured on
+the same capture:
+
+```
+ib_mem_region   716 opens, 560 distinct handles,  63 reused
+mem_object      600 opens, 522 distinct handles,  28 reused  (one opened 6x)
+```
+
+A handle is a pointer value, so a freed address gets reused and the same handle
+names a *different* buffer. `mem_owner` merges objects by `(base, size)` and
+`gpu_access.object` joins by handle, so both conflate incarnations that
+`EntityClose` now makes separable. Resolving an access against the `[open,
+close)` window it falls in is the work this plan was ultimately for, and it is
+now unblocked — the records exist, the timestamps are per-rank TSC and every
+join here is already rank-scoped.
+
+**gpumem hooks `nvshmem_free` but not `cudaFree`**, and the symmetric heap
+region is never freed at all. `entity_close_accounted` exempts opener 520 from
+its never-closed clause for exactly that reason; the exemption is a marker for
+the missing door and should be deleted when it is hooked.
 - **Related:** case 06's `ib_entities` counts `reg_mr` *calls* for exactly this
   reason; `PLAN-20260803-2253-ibgda-device-initiated-capture` (the void-hook
   work that removed the mechanical obstacle).
