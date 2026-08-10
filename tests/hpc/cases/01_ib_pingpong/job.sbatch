@@ -56,10 +56,19 @@ CLI=$?
 
 # Reap the server on the client's terms. It exits by itself on a successful
 # exchange; when the client failed it does not, and an unbounded `wait` turns
-# one broken case into a dead allocation. Give it a moment to exit cleanly,
-# then take it down — the case has already failed either way, and the next case
-# is worth more than this one's exit code.
-for _ in $(seq 1 10); do kill -0 "$SRV" 2>/dev/null || break; sleep 1; done
+# one broken case into a dead allocation.
+#
+# The grace period is 60s and that is not padding. At 10s (job 44457851) the
+# exchange SUCCEEDED — client_rc=0, 163840 bytes at 4325 Mbit/s — and the kill
+# still fired, because the server was not hung, it was DRAINING its capture.
+# server_rc=137 was my own SIGKILL, and it truncated the server rank's records,
+# so four goldens and three assertions failed on a run where the workload had
+# done exactly what it was asked. A backstop that fires on the happy path is not
+# a backstop, it is a second bug wearing the first one's clothes.
+#
+# The driver's per-case timeout is the real bound on a hang; this only needs to
+# be longer than a drain.
+for _ in $(seq 1 60); do kill -0 "$SRV" 2>/dev/null || break; sleep 1; done
 if kill -0 "$SRV" 2>/dev/null; then
   echo "!! server still running after client exited (client_rc=$CLI) — terminating"
   kill "$SRV" 2>/dev/null
