@@ -31,6 +31,33 @@ So "does this capture know what the application allocated" currently answers
 lifting before any of our work starts. Paying that to learn a buffer's name is
 backwards.
 
+### Precisely what the transport does and does not give you
+
+Not "the transport's addresses are fake" — they are real memory, and saying
+otherwise would be wrong. Three distinct situations, measured on the same
+workload:
+
+| registration | address recorded | whose buffer | containment-linkable |
+|---|---|---|---|
+| umem/MR `by_addr` | real (`0x727cf2400000`) | NVSHMEM's own | yes, if app objects exist |
+| umem `by_dmabuf` | **none** — `0x0` + fd 84 | NVSHMEM's own | no, at all |
+| `nvshmem_malloc` | real (`0x628681800`) | **the application's** | only gpumem records it |
+
+The sizes give it away: the `by_addr` umems are 8, 40 and 327680 bytes — control
+structures and work queues. NVSHMEM does not register per-`nvshmem_malloc`; it
+registers what *it* hands the NIC.
+
+So the link is not broken, and no new join is needed: `mem_owner` already
+resolves an address to the object containing it. What is missing is one END of
+that join — on an ib/DEVX-only capture nothing ever records `dst`, so the MR
+says "the NIC was given this range" and nothing says a range inside it is the
+buffer the program allocated.
+
+The dmabuf row is a separate and harder problem: with `addr = 0x0` there is no
+address to contain anything, so this plan cannot fix it and does not claim to.
+That one needs `fd -> GPU VA` (`cuMemGetHandleForAddressRange`), tracked in the
+IBGDA plan.
+
 ## Why the earlier answer was wrong
 
 `PLAN-20260806-1329` decided **independent emitters, dedup by interned id**, and
