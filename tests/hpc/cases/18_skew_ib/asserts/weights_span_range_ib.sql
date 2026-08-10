@@ -10,7 +10,12 @@
 -- matrix's log colour scale, which a uniform matrix satisfies trivially. If a
 -- future PE count flattened the spread this case would still pass everything
 -- else while quietly testing nothing — the silent-degradation mode a ring-only
--- corpus already cost us once.
+-- corpus already cost us once.--
+-- Written as a subquery + WHERE rather than a bare HAVING. sqlite 3.34 (MN5)
+-- rejects HAVING without GROUP BY -- "a GROUP BY clause is required before
+-- HAVING" -- while 3.51 (this laptop) accepts it, so the assertion passed every
+-- local test and errored on the cluster. Any aggregate-over-the-whole-table
+-- check in this suite has to be written this way.
 WITH RECURSIVE seq(i) AS (
     SELECT 0 UNION ALL SELECT i+1 FROM seq WHERE i+1 < (SELECT ranks FROM params)
 ),
@@ -24,6 +29,6 @@ heavy AS (
       ON x.src = CAST(e.src_rank AS INTEGER) AND x.dst = CAST(e.dst_rank AS INTEGER)
 )
 SELECT 'edge weights too uniform to exercise a log scale' AS problem,
-       min(b) AS lightest, max(b) AS heaviest
-FROM heavy
-HAVING max(b) < 8 * min(b);
+       lightest, heaviest
+FROM (SELECT min(b) AS lightest, max(b) AS heaviest FROM heavy)
+WHERE heaviest < 8 * lightest;
