@@ -123,6 +123,17 @@
       .catch(() => (split = []));
   });
 
+  // The query returns a row only for bins that were touched, so rendering
+  // `bins` directly draws nothing where nothing happened — and "untouched" then
+  // looks identical to "the object ends here". On the skew capture that is 43 of
+  // 64 bins invisible, which reads as a much smaller object rather than a
+  // sparsely written one. Densify so every bin is drawn, and give the empty ones
+  // a visible track.
+  const dense = $derived.by(() => {
+    const by = new Map(bins.map((b) => [num(b.bin), b]));
+    return Array.from({ length: BINS }, (_, i) => by.get(i) ?? null);
+  });
+
   const colorOf = $derived(logScale(bins.map((b) => num(b.n))));
   const steps = $derived(ramp());
   const covered = $derived(bins.length ? num(bins[0].covered) : 0);
@@ -131,7 +142,16 @@
   function onMove(ev) {
     const i = ev.target?.dataset?.b;
     if (i === undefined) { tip = null; return; }
-    const b = bins[+i];
+    const b = dense[+i];
+    if (!b) {
+      // An untouched bin still has an address range, and saying so is the point
+      // of drawing it at all.
+      const lo = Math.floor((covered * +i) / BINS);
+      const hi = Math.floor((covered * (+i + 1)) / BINS) - 1;
+      tip = { title: `+${bytes(lo)} – ${bytes(hi)}`, body: 'no accesses recorded' };
+      tipRef?.move(ev);
+      return;
+    }
     // The paper's hover carries the memory address, the instruction types and
     // the participating GPUs. All three are here; the address is absolute, as
     // the one thing you can paste into a debugger.
@@ -169,9 +189,18 @@
         <div class="overflow-x-auto" onmousemove={onMove} onmouseleave={() => (tip = null)}>
           <svg width={BINS * 11 + 2} height="46" role="img"
                aria-label="access density across the object's address range">
-            {#each bins as b, i}
-              <rect x={num(b.bin) * 11} y="0" width="9" height="34" rx="2"
-                    fill={colorOf(num(b.n))} data-b={i} />
+            {#each dense as b, i}
+              {#if b}
+                <rect x={i * 11} y="0" width="9" height="34" rx="2"
+                      fill={colorOf(num(b.n))} data-b={i} />
+              {:else}
+                <!-- Untouched: a faint track, not absence. Outlined rather than
+                     filled so it cannot be mistaken for the lightest ramp step,
+                     which is a real value. -->
+                <rect x={i * 11} y="0" width="9" height="34" rx="2"
+                      fill="var(--surface-1)" stroke="var(--border)" stroke-width="1"
+                      data-b={i} />
+              {/if}
             {/each}
             <text x="0" y="44" font-size="10" fill="var(--text-3)">0</text>
             <text x={BINS * 11} y="44" font-size="10" text-anchor="end"
@@ -179,6 +208,11 @@
           </svg>
         </div>
         <div class="flex items-center gap-2 mt-1.5 text-xs" style="color: var(--text-2)">
+          <span class="inline-flex items-center gap-1">
+            <i class="block w-3 h-2" style="background: var(--surface-1);
+                      box-shadow: inset 0 0 0 1px var(--border)"></i>
+            untouched
+          </span>
           <span>fewer</span>
           <span class="flex">
             {#each steps as s}<i class="block w-3 h-2" style="background: {s}"></i>{/each}
