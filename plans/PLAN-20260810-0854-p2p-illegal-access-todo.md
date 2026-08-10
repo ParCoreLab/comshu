@@ -88,6 +88,34 @@ correlate. `hub` (16 and 2 blocks), `pipe` (4/8/12) and case 04 (256) are all
 exact multiples of 256; only `skew` produces a partial block. All three fault,
 only one diverges.
 
+## STEP 1 RESULT, 2026-08-10 — the NVSHMEM version is EXONERATED
+
+Job 44464083, one node, 4 PEs, both sections under `-p p2p`:
+
+| section | binary | result |
+|---|---|---|
+| C control | case 04's cached binary | `put-ring OK: 4 PEs, 65536 ints, 3 iters`, **exit 0** |
+| D experiment | case 04's SAME source rebuilt against NVSHMEM 26.5 | `put-ring OK`, **exit 0** |
+
+So rebuilding the known-passing workload against the current NVSHMEM does not
+fault. The hypothesis in the correction below — that the cause is NVSHMEM 26.5's
+inlined device code rather than the workload — is refuted, and the original
+suspect list is back in force.
+
+This does not make the correction wrong to have made. The case 04 comparison
+genuinely was uncontrolled, and the only way to know which side it fell on was to
+control it, which took one 12-minute job. What survives from the correction:
+the prior-art section below (the earlier fix was an address-space allowlist, not
+a locality filter, and USE_ASYNC_STREAM was refuted), the finding that
+RemoteFilter is host-side, the note that the PE 3 control proves only that
+executing instrumented code is necessary, and the latent `__shfl_sync` bug.
+
+**So the difference IS in the workload**, and the candidates are as originally
+listed: 64-bit index arithmetic, the non-zero `dst_off`, three symmetric buffers
+rather than two, and per-rank grid variation. The instruction bisect is now the
+right next move, because it names the faulting instruction without requiring a
+guess about which of those four matters.
+
 ## The prior art, corrected
 
 The earlier NVBit hang was fixed by **`3c5d55f`**, "gpumem: fix the case 07 hang
