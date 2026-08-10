@@ -99,6 +99,11 @@ nvshmem_multinode-44451168	nvshmem_multinode	44451168	8	6ec51373f67692ca	522	ent
 nvshmem_multinode-44451168	nvshmem_multinode	44451168	8	6ec51373f67692ca	524	node_identity	entity	8	448
 nvshmem_multinode-44451168	nvshmem_multinode	44451168	8	6ec51373f67692ca	590	clock_anchor	artifact	16	1280
 nvshmem_multinode-44451168	nvshmem_multinode	44451168	8	6ec51373f67692ca	700	gpu_access	event	1179648	94371840
+nvshmem_p2p_attr-du04	nvshmem_p2p_attr	du04	0	6ec51373f67692ca	510	intern_key	artifact	62	3968
+nvshmem_p2p_attr-du04	nvshmem_p2p_attr	du04	0	6ec51373f67692ca	520	mem_object	entity	62	4960
+nvshmem_p2p_attr-du04	nvshmem_p2p_attr	du04	0	6ec51373f67692ca	524	node_identity	entity	2	112
+nvshmem_p2p_attr-du04	nvshmem_p2p_attr	du04	0	6ec51373f67692ca	590	clock_anchor	artifact	4	320
+nvshmem_p2p_attr-du04	nvshmem_p2p_attr	du04	0	6ec51373f67692ca	700	gpu_access	event	40960	3276800
 p2p_kernel-44400747	p2p_kernel	44400747	1	14b1d68c503ae656	510	intern_key	artifact	4	256
 p2p_kernel-44400747	p2p_kernel	44400747	1	14b1d68c503ae656	520	mem_object	entity	4	320
 p2p_kernel-44400747	p2p_kernel	44400747	1	14b1d68c503ae656	590	clock_anchor	artifact	2	160

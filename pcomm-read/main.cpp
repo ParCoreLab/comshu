@@ -709,10 +709,17 @@ struct CsvAgg {
     // queries, not a reason to make the merge depend on it.
     struct MemObj {
         std::uint64_t            base{0}, size{0};
+        core::Handle             id{core::kNullHandle};  // the interned base
         core::DeviceId           lowest_device{0xFFFF};
         std::set<core::DeviceId> devices;  // what the emitters each claimed
         long                     emitters{0};
         long                     refs{0}, ambiguous_refs{0}, nested_refs{0};
+        // Of `refs`, how many arrived already attributed — the producer named
+        // the object rather than us inferring it from an address. Kept separate
+        // because "we were told" and "we worked it out" are different evidence,
+        // and a row that is entirely direct needs none of the ambiguity
+        // machinery below to be trusted.
+        long direct_refs{0};
     };
     // rank -> (base, size) -> merged object.
     std::map<int, std::map<std::pair<std::uint64_t, std::uint64_t>, MemObj>> objects;
@@ -720,13 +727,24 @@ struct CsvAgg {
     // than resolved on the fly because the generic export loop reaches
     // gpu_access before mem_object, so containment cannot be answered yet.
     std::map<int, std::unordered_map<std::uint64_t, long>> access_addrs, region_bases;
+    // rank -> object handle -> refs, for accesses the producer already
+    // attributed. Address containment cannot answer these at all: a peer's
+    // symmetric-heap mapping is ~275 GB from the object's own base, so the
+    // address resolves to nothing while the handle is exact.
+    std::map<int, std::unordered_map<core::Handle, long>> object_refs;
 };
 
 template<core::Record R> void aggregate(CsvAgg&, const RankDir&, const Stamped<R>&) {}
 
+// An access that names its object is counted against that object; only the
+// unattributed ones fall through to address containment. The producer is the
+// better authority — it saw the mapping that the address alone cannot express.
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<GpuAccess>& s) {
     a.n_access++;
-    a.access_addrs[r.rank][s.payload.address]++;
+    if (s.payload.object != core::kNullHandle)
+        a.object_refs[r.rank][s.payload.object]++;
+    else
+        a.access_addrs[r.rank][s.payload.address]++;
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
@@ -735,6 +753,10 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
     o.size = s.payload.range.size;
     o.devices.insert(s.payload.device);
     o.lowest_device = *o.devices.begin();
+    // All emitters intern the base in the Pointer domain, so they mint the same
+    // id; keep the first non-null rather than assuming every row carries one.
+    if (o.id == core::kNullHandle)
+        o.id = s.payload.id;
     o.emitters++;
 }
 
@@ -819,7 +841,8 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
         }
 
     std::FILE* f = std::fopen((outdir / "mem_owner.csv").c_str(), "w");
-    std::fputs("rank,source,base,size,device,devices,emitters,refs,ambiguous_refs,nested_refs\n",
+    std::fputs("rank,source,base,size,device,devices,emitters,refs,direct_refs,"
+               "ambiguous_refs,nested_refs\n",
                f);
 
     // (rank, source-name, address -> refs)
@@ -827,7 +850,24 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
         sources[] = {{"gpu_access", &agg.access_addrs}, {"ib_mem_region", &agg.region_bases}};
 
     for (const auto& [source, addrs_by_rank] : sources) {
-        for (const auto& [rank, addrs] : *addrs_by_rank) {
+        const bool is_access = std::strcmp(source, "gpu_access") == 0;
+
+        // Which ranks to visit. Driving this from the address map alone was
+        // wrong once every access became producer-attributed: a rank whose
+        // accesses ALL carry an object contributes no addresses, so the map is
+        // empty for it and the whole rank was silently skipped — mem_owner came
+        // back with nothing but a header over a fully attributed capture.
+        std::set<int> ranks_here;
+        for (const auto& [rank, _addrs] : *addrs_by_rank)
+            ranks_here.insert(rank);
+        if (is_access)
+            for (const auto& [rank, _objs] : agg.object_refs)
+                ranks_here.insert(rank);
+
+        static const std::unordered_map<std::uint64_t, long> kNoAddrs;
+        for (const int rank : ranks_here) {
+            const auto  addrs_it = addrs_by_rank->find(rank);
+            const auto& addrs = addrs_it != addrs_by_rank->end() ? addrs_it->second : kNoAddrs;
             auto objs_it = agg.objects.find(rank);
             // Copy the rank's objects: refs/ambiguous_refs are per (source,
             // rank), so the merged rows must not accumulate across sources.
@@ -837,6 +877,33 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
                     objs.push_back(o);
 
             long unresolved = 0;
+
+            // Producer-attributed accesses first. These need no containment and
+            // admit no ambiguity: the handle names exactly one object. Only
+            // gpu_access carries them, and charging them here keeps `refs`
+            // meaning "references to this object" regardless of how it was
+            // established.
+            //
+            // A handle naming no object we recorded is counted unresolved
+            // rather than dropped — that would mean a producer attributed an
+            // access to an entity it never emitted, which is a finding and not
+            // something to hide.
+            if (const auto orefs = agg.object_refs.find(rank);
+                orefs != agg.object_refs.end() && is_access) {
+                for (const auto& [id, refs] : orefs->second) {
+                    bool placed = false;
+                    for (auto& o : objs)
+                        if (o.id == id) {
+                            o.refs += refs;
+                            o.direct_refs += refs;
+                            placed = true;
+                            break;
+                        }
+                    if (!placed)
+                        unresolved += refs;
+                }
+            }
+
             for (const auto& [addr, refs] : addrs) {
                 std::size_t hits = 0, last = 0;
                 for (std::size_t i = 0; i < objs.size(); ++i)
@@ -904,13 +971,13 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
             for (const auto& o : objs) {
                 if (o.refs == 0)
                     continue;
-                std::fprintf(f, "%d,%s,0x%llx,%llu,%u,%zu,%ld,%ld,%ld,%ld\n", rank, source,
+                std::fprintf(f, "%d,%s,0x%llx,%llu,%u,%zu,%ld,%ld,%ld,%ld,%ld\n", rank, source,
                              (unsigned long long)o.base, (unsigned long long)o.size,
                              o.lowest_device, o.devices.size(), o.emitters, o.refs,
-                             o.ambiguous_refs, o.nested_refs);
+                             o.direct_refs, o.ambiguous_refs, o.nested_refs);
             }
             if (unresolved)
-                std::fprintf(f, "%d,%s,none,0,65535,0,0,%ld,0,0\n", rank, source, unresolved);
+                std::fprintf(f, "%d,%s,none,0,65535,0,0,%ld,0,0,0\n", rank, source, unresolved);
         }
     }
     std::fclose(f);
