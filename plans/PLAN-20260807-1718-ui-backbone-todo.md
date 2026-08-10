@@ -555,6 +555,39 @@ because naming them belongs in a derived table in `--link`, not in a second copy
 of `wr_opcode_name()` in the browser. That is step 2's remaining work, and so is
 the `intern` table the Source panel needs to turn file handles into paths.
 
+#### The object view, and the GPU view it turned out to need — 2026-08-10
+
+Step 4's list named a "GPU view" and I nearly skipped it as vague. Reading
+Snoopie (ICS'24) for what attaches to the object view showed it is the object
+view's stated complement, and that the object view I had shipped was keyed on
+the wrong column.
+
+The paper gives each GPU its own object-view tab. I tabbed on **rank**. Those
+are different columns and `gpu_access` carries both: `run_device` is the GPU
+that ran the kernel, `mem_device` the GPU whose memory was touched. On the
+4-GPU ring capture a single process drives all four devices, so rank collapsed
+four GPUs into one list — a ring displayed as a self-loop. This is the same
+error as the `(lid, qp_num)` keying: a process is not a device, and the capture
+had said so all along.
+
+So: **Objects** tabs on `mem_device` (the GPU as owner) and names, per object,
+the GPU that reached in. **Devices** tabs on `run_device` (the GPU as actor)
+and carries the paper's two tables — objects touched, each marked local or
+remote, and the instruction-type mix. Being the same rows read from opposite
+ends makes them cross-check each other: on the ring, Objects/GPU 0 reports
+"touched by GPU 3" and Devices/GPU 3 reports "memory on GPU 0, remote", 16,384
+stores both ways.
+
+Two of the paper's features are deliberately absent. **Source lines** appear in
+its object hover and device table; out of scope. The **2D reshape** needs
+dimensions the capture does not record and the user would have to supply — the
+1D heatmap is what the data supports.
+
+The object view is also the first view that reads the core object registry: on
+IBGDA captures with no gpumem it lists the application's 4 KB buffers at the
+*same address on both ranks*, which is the symmetric heap, visible without
+NVBit for the first time.
+
 **Superseded — the original list of remaining panels:** dendrogram, sankey,
 object view, source view.
 The first two are where Vega's grammar may not reach — `vega-hierarchy`'s
