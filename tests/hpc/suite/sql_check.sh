@@ -102,11 +102,18 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # configured cannot be checked against either, which is exactly how hours went
 # into comparing two runs that were never the same experiment. 0 = by_addr,
 # 1 = by_dmabuf.
+# app_buffer_bytes is what the APPLICATION allocates in one buffer — for putget,
+# elems * sizeof(int). A separate param rather than derived from
+# elems * elem_bytes, because deriving it would apply to cases 02, 03 and 05
+# too, and those are NCCL and plain-CUDA workloads that never allocate a
+# symmetric buffer: `elems` there is a collective's element count. A case opts
+# in by declaring it, which is what makes app_buffers_recorded a check rather
+# than noise on a third of the board.
 # rx_depth is the receive-queue depth a workload pre-posts. It is a genuine
 # oracle and not an observation: ibv_rc_pingpong takes it as -r (default 500)
 # and posts exactly that many receives up front, so the expected ib_post_recv
 # count is known from the command line before the code runs.
-PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes regions_per_rank umem_binding gpudirect rx_depth"
+PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding gpudirect rx_depth"
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
 params_sql="$(meta_py <<'PY'
@@ -121,6 +128,14 @@ vals = ["NULL" if w.get(c) is None else str(int(w[c])) for c in cols]
 print("INSERT INTO params VALUES (%s);" % ", ".join(vals))
 PY
 2>&1)" || { echo "$case_name: bad workload block in meta.json: $params_sql" >&2; exit 2; }
+# Belt as well as braces. The guard above returns non-zero and its message was
+# still lost once: every assertion then reported "no such table: params", which
+# names the symptom rather than the cause and reads as five broken assertions
+# instead of one unrecognised key. Check the value itself.
+case "$params_sql" in
+  "CREATE TABLE params"*) ;;
+  *) echo "$case_name: bad workload block in meta.json: $params_sql" >&2; exit 2 ;;
+esac
 sql "$params_sql"
 
 # A rank appears in whichever tables the capture happens to have, so the
