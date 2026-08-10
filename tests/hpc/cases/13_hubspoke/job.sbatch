@@ -29,9 +29,15 @@ export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 # cases are meant to run on MN5's H100s (sm_90) AND on the A100 box (sm_80),
 # where run_on_a100.sh executes this file directly. A fixed -gencode is why the
 # older cases are MN5-only.
-CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-CC=${CC:-90}
-APP="$HOME/asym_patterns-sm$CC"
+# PCOMM_SM, not CC: `CC` is the C compiler variable, and pcomm_load_build below
+# loads modules that export it. The first version used CC and was clobbered
+# BETWEEN its two uses — the binary was named asym_patterns-sm90 (correct, read
+# before the modules loaded) while -gencode became
+# arch=compute_/apps/.../bin/nvc (read after). nvcc rejected it and the case
+# then ran a binary that did not exist, exit 127.
+PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+PCOMM_SM=${PCOMM_SM:-90}
+APP="$HOME/asym_patterns-sm$PCOMM_SM"
 
 # One binary per arch for all three cases, so the three captures differ only in
 # the pattern and never in the build. The arch is in the name because a cached
@@ -40,10 +46,11 @@ APP="$HOME/asym_patterns-sm$CC"
 if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
   pcomm_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
-    -gencode arch=compute_$CC,code=sm_$CC -Wno-deprecated-gpu-targets \
+    -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
-    -lnvshmem_host -lnvshmem_device -lcudart
+    -lnvshmem_host -lnvshmem_device -lcudart \
+    || { echo "!! nvcc failed — refusing to run a stale or missing binary" >&2; exit 1; }
   pcomm_load_runtime
 fi
 
