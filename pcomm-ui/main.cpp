@@ -1,6 +1,6 @@
 // pcomm ui — serve an exported capture as a queryable page.
 //
-//   pcomm-ui <capture-or-export-dir> [--port N] [--dir <static-dir>]
+//   pcomm-ui <capture-or-export-dir> [--port N] [--dir <static-dir>] [--bind ADDR]
 //
 // The export directory is one produced by `pcomm-read --parquet` and linked
 // with `--link`. This process never opens a `.pcs`: stream headers, schema
@@ -57,6 +57,10 @@ constexpr const char* kReadOnlyErr =
 // any file the user can (`read_csv('/etc/passwd')`). That is acceptable at
 // loopback and would NOT be if this ever grew a bind address, which is the
 // moment to add `SET enable_external_access=false` and a real parser.
+//
+// It has now grown one (`--bind`), so that condition is honoured below: binding
+// anywhere other than loopback turns external access OFF and refuses to serve a
+// Parquet export at all. See bind_is_loopback / harden_for_network.
 bool looks_like_select(const std::string& sql) {
     const std::size_t i = sql.find_first_not_of(" \t\r\n");
     if (i == std::string::npos)
@@ -94,12 +98,17 @@ int main(int argc, char** argv) {
     fs::path    dir = argv[1];
     int         port = 8777;
     std::string static_dir;
+    std::string bind_addr = "127.0.0.1";
     for (int i = 2; i + 1 < argc; i += 2) {
         if (std::strcmp(argv[i], "--port") == 0)
             port = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--dir") == 0)
             static_dir = argv[i + 1];
+        else if (std::strcmp(argv[i], "--bind") == 0)
+            bind_addr = argv[i + 1];
     }
+    const bool loopback = bind_addr == "127.0.0.1" || bind_addr == "localhost" ||
+                          bind_addr == "::1";
     if (!fs::is_directory(dir)) {
         std::fprintf(stderr, "pcomm-ui: not a directory: %s\n", dir.c_str());
         return 1;
@@ -146,6 +155,40 @@ int main(int argc, char** argv) {
                     (st.failed || bad) ? " (SOME FAILED, see above)" : "");
     } else {
         tables = pcomm::duck::mount_raw_tables(con, dir);
+    }
+
+    // Binding off loopback changes the trust boundary, so it changes the rules.
+    // The comment above looks_like_select names the two holes that loopback was
+    // covering: the first-token SELECT check is not a parser, and DuckDB's table
+    // functions let any SELECT read any file this process can. Both are
+    // acceptable when the only possible caller already has a shell here. Neither
+    // is acceptable to a network, however small.
+    if (!loopback) {
+        // A Parquet export is served as views over read_parquet, so it needs
+        // file access at QUERY time and cannot be hardened. A capture is loaded
+        // into memory up front, so it can. Refuse rather than quietly leave
+        // external access on — the whole point is that this path is the one
+        // reachable by someone else.
+        if (!from_capture) {
+            std::fprintf(stderr,
+                         "pcomm-ui: --bind %s refuses a Parquet export: its tables are views\n"
+                         "  over files, so queries need file access that must stay off here.\n"
+                         "  Point it at the capture directory instead — that loads into memory.\n",
+                         bind_addr.c_str());
+            return 1;
+        }
+        if (!pcomm::duck::exec(con, "SET enable_external_access=false",
+                               "disable external access")) {
+            std::fprintf(stderr, "pcomm-ui: refusing to bind %s without external access off\n",
+                         bind_addr.c_str());
+            return 1;
+        }
+        std::fprintf(stderr,
+                     "pcomm-ui: bound to %s — reachable by anyone who can route to it.\n"
+                     "  External file access is OFF; the query endpoint is still SELECT-only\n"
+                     "  by a first-token check, not a parser. Serve captures you would show\n"
+                     "  that audience anyway.\n",
+                     bind_addr.c_str());
     }
 
     // Then everything else in the directory — the derived tables from --link,
@@ -257,13 +300,14 @@ int main(int argc, char** argv) {
 
     std::printf("pcomm-ui: %zu tables from %s\n", tables, dir.c_str());
     if (static_dir.empty())
-        std::printf("pcomm-ui: http://127.0.0.1:%d/  (built-in page)\n", port);
+        std::printf("pcomm-ui: http://%s:%d/  (built-in page)\n", bind_addr.c_str(), port);
     else
-        std::printf("pcomm-ui: http://127.0.0.1:%d/  (serving %s)\n", port, static_dir.c_str());
+        std::printf("pcomm-ui: http://%s:%d/  (serving %s)\n", bind_addr.c_str(), port,
+                    static_dir.c_str());
     std::fflush(stdout);
 
-    if (!srv.listen("127.0.0.1", port)) {
-        std::fprintf(stderr, "pcomm-ui: cannot bind 127.0.0.1:%d\n", port);
+    if (!srv.listen(bind_addr.c_str(), port)) {
+        std::fprintf(stderr, "pcomm-ui: cannot bind %s:%d\n", bind_addr.c_str(), port);
         return 1;
     }
     duckdb_disconnect(&con);
