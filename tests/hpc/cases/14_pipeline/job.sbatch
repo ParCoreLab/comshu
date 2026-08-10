@@ -60,7 +60,7 @@ if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; t
     -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
-    -Wl,--disable-new-dtags,-rpath,"$NVSHMEM_HOME/lib" \
+    -Xlinker --disable-new-dtags -Xlinker -rpath -Xlinker "$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart \
     || { echo "!! nvcc failed — refusing to run a stale or missing binary" >&2; exit 1; }
   pcomm_load_runtime
