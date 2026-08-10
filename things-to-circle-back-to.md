@@ -936,3 +936,46 @@ Two things NOT closed by it, both recorded in `cuda_dmabuf.hpp`:
 - **The registry is per-`.so`.** It lives in mlx5dv because that is its only
   consumer. Sharing it across providers needs the engine — a static library
   linked into two `.so`s gives two copies, not one.
+
+## NVBit: instrumenting a 64-bit-indexed global access raises an illegal memory access
+
+**Status:** root-caused 2026-08-10, worked around in our fixture, NOT fixed.
+**Impact:** any application indexing a buffer with a 64-bit expression — i.e. any
+buffer over 2 GB — cannot be captured with `-p p2p`. It is not a subtle
+mis-attribution; the context is poisoned and the capture is lost.
+
+Reproduced on MN5, 4 PEs, one node, NVSHMEM 26.5, sm_90. A kernel doing
+`nvshmem_int_p(&dst[idx], src[i], peer)` faults under instrumentation when `idx`
+is 64-bit and does not when it is 32-bit. Same source, same launch, same kernel
+name, one word changed:
+
+| kernel | result |
+|---|---|
+| `long i, long dst_off` | FAULT |
+| `int i, long dst_off` (`dst_off + i` promotes) | FAULT |
+| `long i`, no offset | FAULT |
+| `int i`, no offset | clean |
+| `int i, int dst_off` | clean |
+
+Evidence it is the instrumentation and not the workload:
+
+- The workload runs clean with no profiler (job 44458142, exit 0, all PEs
+  correct).
+- `PCOMM_INSTR_LO/HI` bisect (44464306, 44464689): each of the kernel's three
+  instrumented instructions faults on its own —
+  `LDG.E.64.CONSTANT`, `LDG.E`, `ST.E` — while all 1485 instructions in
+  `nvshmemi_transfer_rma_p<int>` instrument cleanly. Not an instruction class,
+  not an address space.
+- The NVSHMEM version is exonerated: case 04's workload rebuilt against the
+  current SDK still passes (44464083).
+
+Case 04 has always passed for one reason only: `put_to_next` uses `int i` and
+`&dst[i]`.
+
+**Next step if picked up:** dump the SASS of a faulting and a clean variant
+(`nvdisasm` on the cubin) and compare what NVBit injects around the access. The
+64-bit form uses `IMAD.WIDE` and a register pair for the address; the suspicion
+is the injected call's handling of that pair. Same family as `3c5d55f`, where a
+`LDL.64` in the same NVSHMEM function broke instrumentation and was excluded
+rather than fixed.
+
