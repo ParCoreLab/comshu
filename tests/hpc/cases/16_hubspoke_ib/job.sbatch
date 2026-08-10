@@ -120,18 +120,7 @@ OUT=$(pcomm_out hubspoke_ib); rm -rf "$OUT"; mkdir -p "$OUT"
 # no NVBit in this configuration. Deliberately NOT running p2p alongside — it has
 # an open illegal-memory-access bug (PLAN-20260810-0854) that poisons the context
 # and costs the capture, and these three exist to be usable while that is open.
-# --host, explicitly, from the allocation. The mpirun on PATH is the HPC SDK's
-# bundled Open MPI (echoed above), and with --ntasks-per-node=1 it does not infer
-# the slot count from SLURM: it reported "not enough slots available to satisfy
-# the 4 slots requested" on a 4-node allocation that plainly had them. The other
-# NVSHMEM cases never hit this because they run 4 tasks on one node, where its
-# default (cores) is generous enough by accident.
-#
-# --host a,b,c,d gives one slot per host, which is exactly this placement: one
-# rank per node, one GPU each.
-HOSTS=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | paste -sd, -)
-echo "=== hosts: $HOSTS"
-mpirun -np 4 --host "$HOSTS" -x PATH -x LD_LIBRARY_PATH \
+mpirun -np 4 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
   "$PCOMM" -p ib -o "$OUT" -- "$APP" hub 4096 3
 echo "mpirun exit=$?"

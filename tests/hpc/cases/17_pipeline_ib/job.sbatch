@@ -1,5 +1,5 @@
 #!/bin/bash
-# Case 17 — pipeline_ib: NVSHMEM chain, rank i -> i+1 only, volume growing, ONE GPU PER NODE
+# Case 17 — pipeline_ib: NVSHMEM star, spokes push to rank 0 and get an eighth back, ONE GPU PER NODE
 #
 # Shares tests/hpc/asym_patterns.cu with the other two asymmetric-pattern cases;
 # only the pattern argument differs. See that file for why these exist — briefly,
@@ -108,14 +108,21 @@ ldd "$APP" 2>/dev/null | grep -i nvshmem || echo "  (none reported by ldd)"
 
 OUT=$(pcomm_out pipeline_ib); rm -rf "$OUT"; mkdir -p "$OUT"
 
-# PCOMM_KERNEL_NAME=put_slice for the same reason as case 04: nvshmem_int_p is
-# inlined into put_slice and captured as part of its SASS, and the filter's job
-# is to exclude NVSHMEM's own separately-launched barrier kernels, which are
-# enormous and not byte-repeatable.
-mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
+# ONE RANK PER NODE, and that is the whole point of this case. On one node
+# NVSHMEM routes every put over NVLink and the NIC carries no data at all, so an
+# ibverbs capture would hold bootstrap traffic and nothing else. Measured on case
+# 07 (8 PEs, 2 nodes): only the 2 ring hops that crossed the node boundary
+# appeared as verbs data; the other 6 stayed on NVLink and were invisible here.
+# With one GPU per node every edge crosses the NIC and the whole pattern is
+# visible in rank space.
+#
+# -p ib only. No PCOMM_KERNEL_NAME: that filter is an NVBit concept and there is
+# no NVBit in this configuration. Deliberately NOT running p2p alongside — it has
+# an open illegal-memory-access bug (PLAN-20260810-0854) that poisons the context
+# and costs the capture, and these three exist to be usable while that is open.
+mpirun -np 4 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
-  -x PCOMM_KERNEL_NAME=put_slice \
-  "$PCOMM" -p p2p -o "$OUT" -- "$APP" hub 4096 3
+  "$PCOMM" -p ib -o "$OUT" -- "$APP" pipe 4096 3
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
