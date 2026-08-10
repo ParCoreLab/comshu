@@ -8,14 +8,22 @@
   // address space as a 1D heatmap of operations per address, with the memory
   // address, the instruction types and the participating remote GPUs on hover.
   //
-  // GROUPED BY THE OWNING GPU, which is Snoopie's "each GPU has its separate
-  // object view tab" and is not the same as grouping by rank. gpu_access
-  // carries both `run_device` (the GPU that ran the kernel) and `mem_device`
-  // (the GPU whose memory was touched); an object belongs to the latter. One
-  // process can drive several GPUs — on the 4-GPU ring capture a single rank
-  // owns objects on devices 0..3 — so keying the tab on rank collapses four
-  // GPUs into one tab and silently mixes them. Rank stays in the table, as the
-  // process that recorded the row.
+  // ONE TABLE, every object, deliberately. Snoopie splits this into a tab per
+  // GPU; we do not. The whole-capture list is the thing you actually want in
+  // front of you — every object, its owner, its size and who touched it, sorted
+  // and comparable across devices in one place. Tabs hide n-1 devices to remove
+  // a column, and the column is cheaper.
+  //
+  // What the tabs were really fixing was a missing distinction, and that is
+  // kept: gpu_access carries `run_device` (the GPU that ran the kernel) and
+  // `mem_device` (the GPU whose memory was touched). `device` below is the
+  // owner, `touched by` the actor, and they differ exactly when the access was
+  // remote. Both are columns here. Rank is neither — it is the process that
+  // recorded the row, and one process can drive several GPUs, which is why
+  // grouping on it collapsed the 4-GPU ring into a self-loop.
+  //
+  // The GPU-as-actor rollup lives in Devices.svelte, which is a different
+  // question ("what did this GPU do") rather than a filter of this one.
   //
   // Snoopie's version also carries source-line numbers and an optional 2D
   // reshape. Neither is here: source_line is empty in every capture we have,
@@ -25,7 +33,6 @@
 
   let objects = $state(null);
   let error = $state(null);
-  let gpu = $state(null);        // the owning device whose tab is open
   let sel = $state(null);        // {rank, id, base, size, device, accesses}
   let bins = $state([]);
   let tip = $state(null);
@@ -33,6 +40,11 @@
 
   // DISTINCT because a handle can open more than once — a freed address gets
   // reused — and the list is of objects, not of lifetimes.
+  //
+  // The sort ends in device and base so it is total. On the ring capture all
+  // four objects tie on every leading key, and without a tiebreak the rows come
+  // back in a different order each run — which for a table read by comparing
+  // rows is the difference between a view and a shuffle.
   $effect(() => {
     query(`
       SELECT m.rank, m.id, m.range_base AS base, m.range_size AS size, m.device,
@@ -44,25 +56,19 @@
                  AS touched_by
         FROM gpu_access GROUP BY 1, 2
       ) a ON a.rank = m.rank AND a.object = m.id
-      ORDER BY accesses DESC, size DESC, rank
+      ORDER BY accesses DESC, size DESC, rank, m.device, base
       LIMIT 500`)
       .then((r) => {
         objects = r;
-        const first = r.find((o) => num(o.accesses) > 0) ?? r[0] ?? null;
-        if (gpu === null && first) gpu = num(first.device);
         if (!sel) sel = r.find((o) => num(o.accesses) > 0) ?? null;
       })
       .catch((e) => (error = e.message));
   });
 
-  // The tabs, in device order, with `unknown` (65535) last because it is a
-  // failure bucket and not a GPU.
+  // Distinct owning devices, for the subtitle only — the table shows them all.
   const gpus = $derived(
-    objects
-      ? [...new Set(objects.map((o) => num(o.device)))].sort((a, b) => a - b)
-      : [],
+    objects ? [...new Set(objects.map((o) => num(o.device)))] : [],
   );
-  const shown = $derived(objects ? objects.filter((o) => num(o.device) === gpu) : []);
 
   // The heatmap is binned over the OBSERVED address window, not over
   // [base, base+size). For a peer access the address is this process's mapping
@@ -137,27 +143,6 @@
       This capture records no memory objects.
     </p>
   {:else}
-    <!-- One tab per owning GPU, after the paper. Rendered even for a single
-         GPU: it names which device you are looking at, which a bare table
-         does not. -->
-    <div class="flex flex-wrap gap-1 mb-3">
-      {#each gpus as g}
-        <button
-          onclick={() => {
-            gpu = g;
-            // Move the plot with the tab. Leaving the previous device's object
-            // selected would render one GPU's heatmap under another's tab —
-            // the exact confusion the tabs exist to prevent.
-            sel = objects.find((o) => num(o.device) === g && num(o.accesses) > 0) ?? null;
-          }}
-          class="text-xs rounded px-2.5 py-1 border cursor-pointer"
-          style="border-color: {gpu === g ? 'var(--text-3)' : 'var(--border)'};
-                 background: {gpu === g ? 'var(--surface-1)' : 'transparent'};
-                 color: {gpu === g ? 'var(--text-1)' : 'var(--text-2)'}"
-        >{dev(g)}</button>
-      {/each}
-    </div>
-
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     {#if sel && bins.length}
       <div class="mb-4">
@@ -198,14 +183,14 @@
       <table class="w-full text-xs border-collapse">
         <thead>
           <tr>
-            {#each ['', 'rank', 'base', 'size', 'touched by', 'accesses'] as h}
+            {#each ['', 'rank', 'device', 'base', 'size', 'touched by', 'accesses'] as h}
               <th class="px-2.5 py-1 font-medium border-b {h === 'accesses' || h === 'size' ? 'text-right' : 'text-left'}"
                   style="color: var(--text-2); border-color: var(--border)">{h}</th>
             {/each}
           </tr>
         </thead>
         <tbody>
-          {#each shown as o}
+          {#each objects as o}
             {@const active = sel && sel.rank === o.rank && sel.id === o.id}
             <tr>
               <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">
@@ -219,6 +204,9 @@
                 >{active ? 'shown' : 'view'}</button>
               </td>
               <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{o.rank}</td>
+              <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
+                <span style="color: {num(o.device) === 65535 ? 'var(--text-3)' : 'var(--text-1)'}">{dev(o.device)}</span>
+              </td>
               <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">0x{num(o.base).toString(16)}</td>
               <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{bytes(num(o.size))}</td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
@@ -231,9 +219,10 @@
       </table>
     </div>
     <p class="text-xs mt-2 m-0" style="color: var(--text-3)">
-      Tabs are the GPU that <i>owns</i> the memory; <b>touched by</b> is the GPU
-      that ran the accessing kernel, and the two differ exactly when the access
-      was remote. <code>unknown</code> is device id 65535 — attribution failed,
+      <b>device</b> is the GPU that <i>owns</i> the memory; <b>touched by</b> is
+      the GPU that ran the accessing kernel, and the two differ exactly when the
+      access was remote. <code>rank</code> is the process that recorded the row,
+      which is neither. <code>unknown</code> is device id 65535 — attribution failed,
       which is not the same as host memory and is deliberately not merged with
       GPU 0. Objects with no recorded accesses are listed but not viewable: the
       transport registers buffers the instrumented kernels never touch.
