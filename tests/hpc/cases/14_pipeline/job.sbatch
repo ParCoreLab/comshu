@@ -23,7 +23,6 @@ set -x
 PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
 source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
-export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
 # Compute capability from the device rather than hardcoded, because these three
 # cases are meant to run on MN5's H100s (sm_90) AND on the A100 box (sm_80),
@@ -79,6 +78,19 @@ fi
 # -rpath above pins the binary to the NVSHMEM it was linked against, which is
 # the fix. This line is the evidence: a version mismatch should be one grep in
 # the log, not another job.
+# LD_LIBRARY_PATH is exported HERE, after the build block, and that ordering is
+# the whole bug. It used to sit at the top, before the build — but the build
+# block ends with pcomm_load_runtime, which re-runs `module load
+# nvidia-hpc-sdk/25.7` and PREPENDS 25.7's paths, putting them ahead of the
+# NVSHMEM_HOME (26.5) the binary was just linked against. Only 26.5 defines
+# nvshmem_selected_device_transport, so the loader found 25.7's libnvshmem_host
+# first and the process died at startup (job 44457910).
+#
+# Case 04 has the same shape and survives only because its binary is cached, so
+# its build block never runs and nothing re-prepends. Its next rebuild would
+# have hit this — a bug that hides until the day someone changes the workload.
+export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
+
 echo "=== nvshmem this binary links against ==="
 ldd "$APP" 2>/dev/null | grep -i nvshmem || echo "  (none reported by ldd)"
 
