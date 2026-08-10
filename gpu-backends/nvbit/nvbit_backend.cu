@@ -62,6 +62,12 @@ struct CtxState {
     ChannelDev*                  channel_dev{nullptr};
     ChannelHost                  channel_host;
     volatile unsigned long long* dbg_host{nullptr};  // PCOMM_CHANNEL_DEBUG counters
+    // The recv thread's only other way out. It normally exits on the flush
+    // token the terminating kernel writes; if that kernel cannot run — a
+    // poisoned context, where every launch returns the sticky error — the token
+    // never arrives and the thread spins while nvbit_at_ctx_term blocks in
+    // pthread_join. Measured: job 44458142 hung until the walltime.
+    std::atomic<bool>            recv_abort{false};
 };
 
 // NVBit drives context teardown from an atexit handler, which can run after
@@ -516,11 +522,13 @@ void* recv_thread_fun(void* args) {
     // nvbit_at_ctx_init before channel_host.init() spawns us, so it is already
     // visible.
     const volatile unsigned long long* dbg_ctrs = nullptr;
+    const std::atomic<bool>*           abort_flag = nullptr;
     {
         MutexLock lock(g_mutex);
         CtxState* st = G().ctx_state.at(ctx);
         ch_host = &st->channel_host;
         dbg_ctrs = st->dbg_host;
+        abort_flag = &st->recv_abort;
     }
 
     const long             chan_sz = channel_size();
@@ -550,6 +558,17 @@ void* recv_thread_fun(void* args) {
 
     bool done = false;
     while (!done) {
+        // Checked before recv, not only when idle: on a poisoned context recv
+        // can keep returning stale ring content forever, so "no data" is not
+        // the only shape a stuck channel takes.
+        if (abort_flag->load(std::memory_order_relaxed)) {
+            std::fprintf(stderr,
+                         "pcomm: recv thread for ctx=%p asked to stop before the flush token "
+                         "(%llu bytes drained) — the rest of this context's device records are "
+                         "lost\n",
+                         (void*)ctx, total_bytes);
+            break;
+        }
         uint32_t n = ch_host->recv(recv_buffer, chan_sz);
         ++recv_calls;
         if (n == 0) {
@@ -763,11 +782,18 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     // capture with it, which is the worst possible response to "the last flush
     // may have dropped some records". The remaining teardown below is what
     // writes the streams, so it has to run either way.
-    if (flush != cudaSuccess)
+    if (flush != cudaSuccess) {
         std::fprintf(stderr,
                      "pcomm: channel flush failed at ctx term: %s — records still in the "
                      "device buffer are lost, the rest of the capture is intact\n",
                      cudaGetErrorString(flush));
+        // The flush kernel did not run, so it never wrote the token the recv
+        // thread waits for. Without this the destroy() below joins a thread
+        // that will never return: replacing the old abort() with a report
+        // turned a fast crash into a hung allocation (job 44458142, killed at
+        // the walltime with two later cases never started).
+        state->recv_abort.store(true, std::memory_order_relaxed);
+    }
 
     state->channel_host.destroy(false);
     cudaFree(state->channel_dev);
