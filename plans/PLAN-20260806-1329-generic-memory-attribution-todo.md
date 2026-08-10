@@ -256,6 +256,17 @@ cheap to fix when they start to matter:**
 Neither is urgent while gpumem is the only consumer. Both become urgent the
 moment it is not, and the cost of noticing late is a second copy that drifts.
 
+**SUPERSEDED the same day.** The trigger had already fired and this section
+missed it, because it looked for a second *provider* and the second consumer is
+the UI. Measured: the same NVSHMEM workload captured with mlx5dv only has 20
+mem_object rows (8, 40, 327680 — DEVX umems, i.e. the transport's objects) and
+the two 4 KB buffers the application allocated are simply absent; captured with
+gpumem it has them. "What did the program allocate" therefore answers "only if
+you ran NVBit", at ~435 s of module lifting. Transport artifacts and application
+objects are different things sharing a record type, and counting rows made them
+look interchangeable. See
+PLAN-20260810-0505-object-tracking-is-not-a-provider-concern.
+
 ## Explicitly out of scope
 
 - A dedicated memory-tracking provider. Rejected on the grounds that allocation
