@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -86,21 +87,49 @@ public:
     // the answer, for the same reason the innermost enclosing scope names a
     // variable — it is also the rule the reader's mem_owner already applies to
     // containment chains, so capture and reader agree.
-    const Alloc* find(std::uint64_t addr) const {
-        std::lock_guard lock(m_mutex);
-        const Alloc*    named = nullptr;
-        const Alloc*    unnamed = nullptr;
+    // BY VALUE, not by pointer. The lock ends with this call, so a pointer into
+    // m_allocs would be read unlocked while another thread can push_back and
+    // reallocate the vector — and close() below can erase the very element.
+    // Copying a 40-byte POD is cheaper than either bug.
+    std::optional<Alloc> find(std::uint64_t addr) const {
+        std::lock_guard      lock(m_mutex);
+        std::optional<Alloc> named, unnamed;
         for (const auto& a : m_allocs) {
             if (a.base <= addr && addr < a.base + a.size) {
                 if (a.object != core::kNullHandle) {
                     if (!named || a.size < named->size)
-                        named = &a;
+                        named = a;
                 } else if (!unnamed || a.size < unnamed->size) {
-                    unnamed = &a;
+                    unnamed = a;
                 }
             }
         }
         return named ? named : unnamed;
+    }
+
+    // The object registered at exactly this base, for closing the entity.
+    //
+    // It does NOT erase, and that is the correction to a bug this very function
+    // introduced. Accesses are attributed on the recv thread as the channel
+    // drains, which can happen after the kernel and after the application has
+    // freed the buffer; dropping the entry at free time made those late
+    // arrivals fall back to the enclosing heap region, and mem_owner regressed
+    // from the 4 KB buffer to the 512 MB heap.
+    //
+    // Keeping the entry is also what the project already decided for every
+    // other entity: lifetimes are expressed by appending an EntityClose record,
+    // not by deleting state, so a reader can resolve an address reused across a
+    // free with the [open, close) window. See
+    // PLAN-20260805-0053-entity-lifetimes.
+    //
+    // Matching the exact base is deliberate: free() is given the pointer malloc
+    // returned, and anything merely *containing* it is the heap region.
+    core::Handle object_at(std::uint64_t base) const {
+        std::lock_guard lock(m_mutex);
+        for (const auto& a : m_allocs)
+            if (a.base == base && a.object != core::kNullHandle)
+                return a.object;
+        return core::kNullHandle;
     }
 
 private:
@@ -117,7 +146,7 @@ public:
 
     void attribute(const attr::RawAccess& a, core::records::GpuAccess& out,
                    rec::Recorder<>&) override {
-        const auto* alloc = m_allocs->find(a.address);
+        const auto alloc = m_allocs->find(a.address);
         if (!alloc)
             return;
         out.object = alloc->object;
@@ -130,7 +159,7 @@ public:
         if (alloc->sym_delta != 0) {
             const auto sym = static_cast<std::uint64_t>(
                 static_cast<std::int64_t>(a.address) + alloc->sym_delta);
-            if (const auto* fine = m_allocs->find(sym);
+            if (const auto fine = m_allocs->find(sym);
                 fine && fine->object != core::kNullHandle)
                 out.object = fine->object;
         }
@@ -242,6 +271,25 @@ public:
         m_allocs.add(base, size, dev, object);
     }
 
+    // nvshmem_free: the buffer's lifetime ends here.
+    //
+    // Without this an address reused by a later allocation would still resolve
+    // to the dead object — the registry only ever grew. It also gives the
+    // symmetric buffers the same [open, close) treatment MRs, QPs and UARs
+    // already get, so entity_close_accounted covers them too.
+    //
+    // opener is MemObject's type_id because that is the record that opened it;
+    // a record id rather than a new enum, so nothing has to be kept in sync.
+    void on_symmetric_free(std::uint64_t base) {
+        const auto object = m_allocs.object_at(base);
+        if (object == core::kNullHandle)
+            return;  // never recorded — nothing to close, and nothing to claim
+        auto& rec = recorder();
+        rec.record(rec.now_instant(),
+                   core::records::EntityClose{
+                       {}, {}, object, core::records::MemObject::pcomm_type_id});
+    }
+
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         auto& rec = recorder();
         // The buffer's base address, interned in the Pointer domain — exactly
@@ -276,7 +324,7 @@ public:
         for (auto& a : batch) {
             if (a.mem_device != attr::kUnresolvedDevice)
                 continue;
-            const auto* alloc = m_allocs.find(a.address);
+            const auto alloc = m_allocs.find(a.address);
             a.mem_device = alloc ? alloc->device : a.run_device;
         }
         m_pipeline->process(batch);

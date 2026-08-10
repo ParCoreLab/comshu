@@ -693,6 +693,17 @@ extern "C" void* nvshmem_align(size_t alignment, size_t size) {
     return p;
 }
 
+// Closed BEFORE the real free, while the pointer still names a live entity. The
+// other order would race an allocation that reuses the address: the new object
+// could be registered first and then removed by this close.
+extern "C" void nvshmem_free(void* p) {
+    static auto real = next_sym<void (*)(void*)>("nvshmem_free");
+    if (p && g_engine)
+        g_engine->on_symmetric_free(reinterpret_cast<uint64_t>(p));
+    if (real)
+        real(p);
+}
+
 
 __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
     pcomm_gpu_access_t ma;
