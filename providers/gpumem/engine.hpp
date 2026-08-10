@@ -146,10 +146,22 @@ public:
 
     void attribute(const attr::RawAccess& a, core::records::GpuAccess& out,
                    rec::Recorder<>&) override {
+        // The core first: it interposes the allocator APIs, so it knows the
+        // application's own buffers — which this registry cannot see, because
+        // nvshmem_malloc sub-allocates from a pre-mapped heap and reaches no
+        // CUDA call. Innermost wins there too, so a 4 KB buffer beats the
+        // 512 MB region it sits in.
+        std::uint64_t cbase = 0, csize = 0;
+        std::uint32_t cobj = 0;
+        std::uint16_t cdev = 0;
+        if (pcomm_engine_object_at(a.address, &cbase, &csize, &cobj, &cdev) && cobj)
+            out.object = cobj;
+
         const auto alloc = m_allocs->find(a.address);
         if (!alloc)
             return;
-        out.object = alloc->object;
+        if (out.object == core::kNullHandle)
+            out.object = alloc->object;
 
         // A peer's mapping resolves to the region; the buffer inside it is only
         // addressable symmetrically, so translate and look again. Falls back to
@@ -159,9 +171,15 @@ public:
         if (alloc->sym_delta != 0) {
             const auto sym = static_cast<std::uint64_t>(
                 static_cast<std::int64_t>(a.address) + alloc->sym_delta);
-            if (const auto fine = m_allocs->find(sym);
-                fine && fine->object != core::kNullHandle)
+            // The core's table is keyed by symmetric address, which is what the
+            // translation produces — so a peer access lands on the very buffer
+            // the application allocated, named identically on every PE.
+            if (pcomm_engine_object_at(sym, &cbase, &csize, &cobj, &cdev) && cobj) {
+                out.object = cobj;
+            } else if (const auto fine = m_allocs->find(sym);
+                       fine && fine->object != core::kNullHandle) {
                 out.object = fine->object;
+            }
         }
     }
 

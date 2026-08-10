@@ -628,81 +628,15 @@ void* recv_thread_fun(void* args) {
 
 }  // namespace
 
-// --- nvshmem_malloc interposition -------------------------------------------
+// nvshmem_malloc interposition used to live here. It moved to the engine
+// (libpcomm/src/engine.cpp) because "what did the application allocate" must
+// not depend on which provider ran: an mlx5dv-only capture of the same NVSHMEM
+// workload held none of the buffers the program asked for, and NVBit costs
+// ~435 s of module lifting to find out. See core/object_registry.hpp.
 //
-// The symmetric heap is sub-allocated in user space: nvshmem_malloc goes to
-// NVSHMEM's own mspace allocator (src/host/mem/mem_heap.cpp ->
-// custom_malloc.cpp, a dlmalloc derivative) over a region the driver mapped
-// once. No CUDA allocation API is called per buffer, so nothing below this
-// layer can see one — attribution stopped at "the 512 MB heap" for exactly
-// that reason. Interposing here is the only place a buffer has a name.
-//
-// The .so is preloaded, so these definitions win over libnvshmem's for the
-// application's calls; the real ones are reached with RTLD_NEXT. They must be
-// listed in gpumem.map, which hides everything by default.
-//
-// Deliberately NOT hooked: nvshmemi_malloc, NVSHMEM's internal allocator. Its
-// buffers are NVSHMEM's own bookkeeping, not the application's data, and
-// recording them would bury the objects a user asked for.
-namespace {
-template<typename Fn> Fn next_sym(const char* name) {
-    return reinterpret_cast<Fn>(dlsym(RTLD_NEXT, name));
-}
-
-// The device the symmetric heap lives on. Asked once per allocation rather than
-// cached: the current device can change between allocations, and a wrong answer
-// here is a MemObject attributed to the wrong GPU.
-pcomm::core::DeviceId current_device() {
-    int dev = -1;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0)
-        return 0xFFFF;  // kUnknownDevice
-    return static_cast<pcomm::core::DeviceId>(dev);
-}
-
-// No g_mutex here, deliberately. That mutex serialises the NVBit callbacks and
-// the Globals they share; this path touches neither — AllocRegistry has its own
-// lock and the recorder is thread-safe through the engine ABI. Taking it would
-// add a non-recursive lock to a path the application can enter from anywhere,
-// including from inside a CUDA callback that already holds it, which is a
-// self-deadlock for no benefit.
-void note_alloc(void* p, size_t size) {
-    if (!p || !g_engine)
-        return;
-    g_engine->on_symmetric_alloc(reinterpret_cast<uint64_t>(p), size, current_device());
-}
-}  // namespace
-
-extern "C" void* nvshmem_malloc(size_t size) {
-    static auto real = next_sym<void* (*)(size_t)>("nvshmem_malloc");
-    void*       p = real ? real(size) : nullptr;
-    note_alloc(p, size);
-    return p;
-}
-
-extern "C" void* nvshmem_calloc(size_t count, size_t size) {
-    static auto real = next_sym<void* (*)(size_t, size_t)>("nvshmem_calloc");
-    void*       p = real ? real(count, size) : nullptr;
-    note_alloc(p, count * size);
-    return p;
-}
-
-extern "C" void* nvshmem_align(size_t alignment, size_t size) {
-    static auto real = next_sym<void* (*)(size_t, size_t)>("nvshmem_align");
-    void*       p = real ? real(alignment, size) : nullptr;
-    note_alloc(p, size);
-    return p;
-}
-
-// Closed BEFORE the real free, while the pointer still names a live entity. The
-// other order would race an allocation that reuses the address: the new object
-// could be registered first and then removed by this close.
-extern "C" void nvshmem_free(void* p) {
-    static auto real = next_sym<void (*)(void*)>("nvshmem_free");
-    if (p && g_engine)
-        g_engine->on_symmetric_free(reinterpret_cast<uint64_t>(p));
-    if (real)
-        real(p);
-}
+// It was also in the wrong file even within gpumem — this one's header reserves
+// it for vendor instrumentation types, and interposing a third-party library is
+// not that.
 
 
 __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {

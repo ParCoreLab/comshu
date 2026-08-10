@@ -27,7 +27,7 @@ extern "C" {
 #endif
 
 /* Bump on any incompatible change below. Checked at acquire. */
-#define PCOMM_ENGINE_ABI_VERSION 2u
+#define PCOMM_ENGINE_ABI_VERSION 3u
 
 /* A per-(thread, record-type) append region. The engine owns the storage and
  * the lifetime; the provider only appends into `slots` and bumps `count`.
@@ -107,6 +107,13 @@ uint32_t pcomm_engine_intern_key(uint8_t domain, uint64_t key);
  * this to put the engine in LD_PRELOAD — it must be *preloaded*, not merely
  * linked, or libc wins the `dlsym` lookup and the interposer never runs. */
 const char* pcomm_engine_so_path(void);
+
+/* Innermost application memory object containing `addr`, or 0 if none is known.
+ * Out params may be NULL. The engine interposes the allocator APIs that hand
+ * back an address (nvshmem_malloc and friends) so this answer does not depend
+ * on which provider ran — see core/object_registry.hpp. */
+int pcomm_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size, uint32_t* object,
+                           uint16_t* device);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -26,6 +26,9 @@
 
 #include "pcomm/engine_abi.h"
 #include "pcomm/core/ids.hpp"
+#include "pcomm/core/mem_attr.hpp"
+#include "pcomm/core/object_registry.hpp"
+#include "pcomm/core/records.hpp"
 #include "pcomm/core/record.hpp"
 #include "pcomm/rec/recorder.hpp"
 #include "pcomm/rec/thread_buffer_registry.hpp"
@@ -338,4 +341,123 @@ extern "C" const char* pcomm_engine_so_path() {
         return std::string();
     }();
     return path.empty() ? nullptr : path.c_str();
+}
+
+/* --- application memory objects -------------------------------------------
+ *
+ * Interposed HERE, in the engine, because the answer to "what did the program
+ * allocate" must not depend on which provider ran. See
+ * core/object_registry.hpp for the measurement that forced the move and
+ * PLAN-20260810-0505 for the design.
+ *
+ * The engine is preloaded first, so these definitions win the symbol for the
+ * application's calls and the real ones are reached with RTLD_NEXT. The engine
+ * already declares record ids 500-599 for itself (clock anchors), and
+ * MemObject 520 / EntityClose 522 are in that range — so this emits records the
+ * engine already owns rather than borrowing a provider's range.
+ *
+ * NVSHMEM only, for now. nvshmem_malloc never reaches any CUDA allocation API:
+ * it sub-allocates from the pre-mapped symmetric heap through NVSHMEM's own
+ * mspace (src/host/mem/mem_heap.cpp -> custom_malloc.cpp, a dlmalloc
+ * derivative), so no interposer below this layer can ever see a buffer. Plain
+ * cuMemAlloc is deliberately NOT taken: NVBit already sees it and gpumem needs
+ * it in its own registry regardless, so moving it would buy nothing today.
+ *
+ * nvshmemi_malloc — NVSHMEM's internal allocator — is deliberately not hooked.
+ * Those are NVSHMEM's bookkeeping, not the application's data, and recording
+ * them would bury the objects a user actually asked for.
+ */
+namespace {
+
+template<typename Fn> Fn pcomm_next_sym(const char* name) {
+    return reinterpret_cast<Fn>(dlsym(RTLD_NEXT, name));
+}
+
+void pcomm_note_object(void* p, std::size_t size) {
+    if (!p || !size)
+        return;
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder())
+        return;  /* nothing has started a capture; the app is running untraced */
+    const auto base = reinterpret_cast<std::uint64_t>(p);
+    auto&      rec = tracer.recorder();
+    /* Interned in the Pointer domain — the same identity scheme ibverbs,
+     * mlx5dv and gpumem use, so the same buffer mints the same id everywhere
+     * and the rows merge instead of doubling. */
+    const auto object = rec.intern(pcomm::rec::InternDomain::Pointer, base);
+    const auto device = pcomm::core::device_of(p);
+    rec.record(rec.now_instant(),
+               pcomm::core::records::MemObject{
+                   {}, {}, object, pcomm::core::kNullHandle, {base, size}, device});
+    pcomm::core::ObjectRegistry::instance().add(base, size, object, device);
+}
+
+void pcomm_close_object(void* p) {
+    if (!p)
+        return;
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder())
+        return;
+    const auto base = reinterpret_cast<std::uint64_t>(p);
+    const auto object = pcomm::core::ObjectRegistry::instance().object_at(base);
+    if (object == pcomm::core::kNullHandle)
+        return; /* allocated before we attached: closing it would manufacture
+                 * the unmatched row entity_close_accounted exists to detect */
+    auto& rec = tracer.recorder();
+    rec.record(rec.now_instant(),
+               pcomm::core::records::EntityClose{
+                   {}, {}, object, pcomm::core::records::MemObject::pcomm_type_id});
+}
+
+}  // namespace
+
+extern "C" void* nvshmem_malloc(size_t size) {
+    static auto real = pcomm_next_sym<void* (*)(size_t)>("nvshmem_malloc");
+    void*       p = real ? real(size) : nullptr;
+    pcomm_note_object(p, size);
+    return p;
+}
+
+extern "C" void* nvshmem_calloc(size_t count, size_t size) {
+    static auto real = pcomm_next_sym<void* (*)(size_t, size_t)>("nvshmem_calloc");
+    void*       p = real ? real(count, size) : nullptr;
+    pcomm_note_object(p, count * size);
+    return p;
+}
+
+extern "C" void* nvshmem_align(size_t alignment, size_t size) {
+    static auto real = pcomm_next_sym<void* (*)(size_t, size_t)>("nvshmem_align");
+    void*       p = real ? real(alignment, size) : nullptr;
+    pcomm_note_object(p, size);
+    return p;
+}
+
+/* Closed BEFORE the real free, while the pointer still names a live entity: the
+ * address can be handed to a new allocation the moment the call returns, and
+ * the other order would let that new object be registered and then closed. */
+extern "C" void nvshmem_free(void* p) {
+    static auto real = pcomm_next_sym<void (*)(void*)>("nvshmem_free");
+    pcomm_close_object(p);
+    if (real)
+        real(p);
+}
+
+/* Innermost object containing `addr`, for providers that must resolve an access
+ * to an object at runtime. Asking the CORE is not the coupling
+ * PLAN-20260806-1329 forbids — that rule is about one provider waiting on
+ * another; this is the same shape as core/mem_attr.hpp's device_of. */
+extern "C" int pcomm_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size,
+                                      uint32_t* object, uint16_t* device) {
+    const auto found = pcomm::core::ObjectRegistry::instance().find(addr);
+    if (!found)
+        return 0;
+    if (base)
+        *base = found->base;
+    if (size)
+        *size = found->size;
+    if (object)
+        *object = found->object;
+    if (device)
+        *device = found->device;
+    return 1;
 }
