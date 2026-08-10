@@ -1,0 +1,24 @@
+{
+  "case": "18_skew_ib",
+  "providers": [
+    "ib"
+  ],
+  "topology": "4 nodes x1 H100, NVSHMEM sparse heavy-tailed pairs over the NIC, weights spanning 32x",
+  "golden": "none \u2014 assertions only",
+  "workload": {
+    "ranks": 4,
+    "nodes": 4,
+    "gpus": 4,
+    "iters": 3,
+    "elems": 4096,
+    "elem_bytes": 4,
+    "app_buffer_bytes": 65536
+  },
+  "workload_note": "`asym_patterns skew 4096 3` with ONE GPU PER NODE and -p ib. The edge set comes from a closed form so the assertion derives it rather than recording it. Deliberately does NOT load p2p: it has an open illegal-memory-access bug (PLAN-20260810-0854) that poisons the CUDA context and costs the capture.",
+  "expect_tables": [
+    "ib_post_send",
+    "ib_queue_pair",
+    "comm_edges",
+    "mem_object"
+  ]
+}
