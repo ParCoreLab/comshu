@@ -26,7 +26,7 @@ thing never tested against a real capture.
 | Ranks | `comm_edges` | per-rank sent/received/peers |
 | Clustering | `comm_edges` | dendrogram, cosine distance over bytes-per-peer |
 | Flow | `ib_post_send` + `mlx5_device_send` | sankey: transport → opcode → size class |
-| Objects | `mem_object` | allocations per rank and device |
+| Objects | `mem_object` + `gpu_access` | per-object 1D access heatmap, after Snoopie's object view |
 | Source | `source_line` | **empty on every current capture** — needs gpumem with PC→line |
 | Timeline | event counts | deliberately not a timeline; hands off to Perfetto |
 | Ask | any | SQL console; the NL layer will emit into this same path |
