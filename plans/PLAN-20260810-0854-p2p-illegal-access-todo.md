@@ -50,97 +50,120 @@ rank" — all three are absent from pipe.
 **Sizes are not it either.** Case 04 pushes 65536 elements per launch; these push
 at most 4096.
 
-## What remains different from case 04
+## CORRECTION, 2026-08-10 — the case 04 comparison is not controlled
 
-After pipe eliminates the launch-pattern hypotheses, the surviving differences
-between `put_slice` (faults) and case 04's `put_to_next` (passes) are small:
+Everything below this heading supersedes the original suspect list, which was
+built on a comparison that does not hold.
 
-```
-  put_to_next(int* dst, const int* src, int  n,              int peer)
-  put_slice  (int* dst, const int* src, long n, int peer, long dst_off)
-```
+**Case 04's binary is cached and case 13/14/15's is not.** `04_nvshmem/job.sbatch`
+guards its build with `[ ! -x "$APP" ]`, so it has never been rebuilt; its
+statically linked `libnvshmem_device.a` is whatever SDK was newest when it was
+first built. The new cases rebuild against `NVSHMEM_HOME`, which `common.sh`
+resolves by globbing and taking the NEWEST (26.5 on MN5) while
+`pcomm_load_runtime` loads module 25.7. Case 16's own sbatch already says this in
+another context: "Case 04 does not hit this only because its binary is cached
+from before the two diverged."
 
-1. **64-bit index arithmetic.** `long i`, `long n`, and a store address computed
-   as `&dst[dst_off + i]`. put_to_next indexes with `int` and no offset.
-2. **A non-zero base offset into the target buffer.** put_to_next always writes
-   from element 0; put_slice writes at `dst_off = mype * slot`.
-3. **Grid size differs per rank** (pipe sends `slot*(mype+1)/npes`), where case
-   04 launches an identical grid on every rank.
-4. **Three symmetric buffers** rather than two.
+So "same per-PE shape, one faults, therefore the cause is in the remaining kernel
+differences" does not follow. The two binaries carry different NVSHMEM device
+libraries.
 
-(1) and (2) are the prime suspects, because they change the SASS of the
-instrumented store — which is precisely what NVBit rewrites.
+**And the differences the plan listed are the wrong order of magnitude.** The
+SASS NVBit rewrites inside `put_slice` is overwhelmingly NVSHMEM's inlined
+`nvshmem_int_p`, not the four lines of the kernel body. A different NVSHMEM major
+version means a different instruction mix in exactly the code that has already
+broken under instrumentation once — see below. `long` vs `int` indexing is a
+rounding error beside that.
 
-## Already shipped — do not redo
+**The PE 3 control proves less than claimed.** `PCOMM_KERNEL_NAME=put_slice`
+means instrumented code exists ONLY inside that kernel, so a rank that launches
+nothing executes no instrumented SASS. The control establishes that executing
+instrumented code is necessary — already known from case 07, where NVBit with a
+filter matching nothing runs fine. It does NOT localise the fault to
+`put_slice`'s own body, and treating it as if it did is how the suspect list came
+to contain only the kernel signature.
 
-- **f34fbb3** — `nvbit_at_ctx_term` no longer `abort()`s on a failed flush. It
-  consumes any error latched before us (cudaGetLastError is per-thread, so
-  asserting on it charged pcomm for the application's errors) and reports rather
-  than killing the profiled process at exit.
-- **a3d7569** — a poisoned context no longer hangs teardown. The recv thread's
-  only exit was the flush token that the terminating kernel writes; when that
-  kernel cannot run, `pthread_join` blocked forever. `CtxState::recv_abort` gives
-  it a second exit, checked before each `recv`.
+**Pre-refuted, recorded so it is not re-derived:** partial-warp tails do not
+correlate. `hub` (16 and 2 blocks), `pipe` (4/8/12) and case 04 (256) are all
+exact multiples of 256; only `skew` produces a partial block. All three fault,
+only one diverges.
 
-Together these turn "SIGABRT, capture lost" and "hung until walltime" into "one
-error line, partial capture written". **They do not fix anything.** They stop the
-bug costing an allocation per attempt.
+## The prior art, corrected
 
-## Steps
+The earlier NVBit hang was fixed by **`3c5d55f`**, "gpumem: fix the case 07 hang
+— only instrument global memory". It changed a memory-space blocklist into an
+allowlist (`nvbit_backend.cu:380-386`): instrument GLOBAL, GENERIC and
+GLOBAL_TO_SHARED only. Its bisect, via the `PCOMM_INSTR_LO/HI` harness that still
+exists, found `[0,1006)` completing in 22 s and `[0,1007)` hanging, where index
+1006 is an `LDL.64` — a LOCAL access, per-thread stack — inside
+`nvshmemi_transfer_rma_p<int>`. The 64-bit global atomic and the STRONG.SYS
+stores on either side were innocent.
 
-### Step 1 — compute-sanitizer, for the faulting kernel and address
+Two things this corrects in the recollection that prompted the investigation:
 
-The decisive measurement, and it should come first because every later step is
-cheaper once it is known.
+- The filter that fixed it is on ADDRESS SPACE (local/shared vs global), not on
+  `run_device == mem_device`. Those are different filters and only the first ever
+  fixed anything.
+- `USE_ASYNC_STREAM` was a REFUTED theory, not part of the fix —
+  `things-to-circle-back-to.md:424` lists it among six theories that "died on the
+  way, each refuted by measurement": it "behaves identically". It is not defined
+  in this build and is not plausibly implicated in an illegal access.
 
-```
-compute-sanitizer --tool memcheck --log-file cs.%q{SLURM_PROCID}.log \
-  pcomm -p p2p -o $OUT -- asym_patterns pipe 4096 3
-```
+Also established: `RemoteFilter` runs HOST-side (`gpumem/engine.hpp:190-193`,
+applied in `attr/pipeline.hpp` from `recv_thread_fun`), so the device pushes
+every GLOBAL access regardless of locality — `mem_device` is not even known on
+the device. That costs bandwidth, not safety: `pipe`'s heaviest rank pushes about
+1 MB against a 1 GiB ring, so the fill/flush/wrap path never runs.
 
-Run `pipe`, not `hub`: it faults on 3 of 4 ranks with the simplest possible
-launch shape, and rank 3 gives a clean in-run control.
+## Steps, revised
 
-Two cautions. NVBit and compute-sanitizer both rewrite SASS and have been known
-to interact; if the run will not start, fall back to `--tool memcheck` with
-`PCOMM_KERNEL_NAME` unset so nothing is instrumented, to confirm the sanitizer
-itself is clean on this workload. And expect it to be slow — budget the full
-2-hour `acc_debug` wall, one node, 4 PEs.
+### Step 1 — equalise the libraries before bisecting anything
 
-**Decides:** whether the bad address is inside the instrumented store (our SASS
-rewrite), inside the channel push (`inject_funcs.cu`), or in NVSHMEM code.
+Rebuild **case 04's own `putget.cu`, unmodified**, against the current
+`NVSHMEM_HOME`, and run it exactly as case 04 does (`putget 65536 3`,
+`PCOMM_KERNEL_NAME=put_to_next`, `-p p2p`). Delete `$HOME/nvshmem_putget` first
+so the build fires. This holds the workload at the known-passing one and changes
+only which NVSHMEM the device code comes from.
 
-### Step 2 — bisect the kernel, one difference at a time
+- **Faults** → the kernel-signature differences are a ghost, the cause is the
+  library/toolchain, and the four-variant bisect must not be run.
+- **Passes** → the version is exonerated and one variable is gone.
 
-Only if step 1 is inconclusive. Build variants of `put_slice` and run each under
-`-p p2p`, changing exactly one thing:
+### Step 2 — the instruction bisect, not compute-sanitizer
 
-| variant | change | refutes if it passes |
-|---|---|---|
-| A | `long` → `int` for `i` and `n` | 64-bit index arithmetic |
-| B | drop `dst_off` (always write from 0) | non-zero base offset |
-| C | fixed grid on every rank | per-rank grid variation |
-| D | one symmetric buffer instead of three | buffer count |
+`PCOMM_INSTR_LO/HI` already exists (`nvbit_backend.cu:398-427`), indices are
+stable because they are assigned before the range test, and `PCOMM_INSTR_DUMP`
+turns an index back into opcode/function/offset. Each run is seconds at 4096x3,
+so ~11 runs binary-search the whole instrumented set.
 
-Each is a two-line edit to `tests/hpc/asym_patterns.cu`. Run them in ONE job —
-the QoS allows one job at a time and eight nodes, so a single allocation running
-four variants sequentially is four times cheaper than four submissions.
+This replaces the original step 1. It is cheaper, it names the INSTRUCTION rather
+than an address, it has already solved this exact class of bug once, and it
+carries none of the "compute-sanitizer may not compose with NVBit" risk the
+original plan flagged. Run it on `pipe`.
 
-### Step 3 — fix, then prove the fix on the control
+Both fit in one allocation. If a third section fits, build with
+`-DPCOMM_INJECT_NO_PUSH` (`inject_funcs.cu:41-51`) to separate "the injected call
+perturbs the kernel" from "push() interacts with it".
 
-Whatever the cause, the regression test already exists: cases 13/14/15 go green,
-and `14_pipeline`'s PE 3 must still record zero accesses (`last_rank_silent`).
-A fix that makes the fault disappear by also suppressing instrumentation would
-pass the first and fail the second, which is why that assertion is worth more
-than it looks.
+### Step 3 — fix, then prove it on the control
 
-### Step 4 — decide what the guard should be
+Unchanged: cases 13/14/15 go green AND `14_pipeline`'s PE 3 still records zero
+accesses. A "fix" that works by suppressing instrumentation passes the first and
+fails the second.
 
-Independent of the root cause: `nvbit_at_ctx_term` currently discovers a poisoned
-context at the very end, after all the records are already unrecoverable.
-Consider checking `cudaGetLastError()` after each instrumented launch (behind an
-env flag if it costs a sync), so the capture reports WHICH launch poisoned the
-context instead of only that one did.
+## Separate latent bug, found while reading — not the cause
+
+`inject_funcs.cu:24-26` fills all 32 lanes with `__shfl_sync(active_mask, addr, i)`.
+For a lane NOT in `active_mask` the shuffle result is undefined, not zero — but
+`dev_common.h:16` documents `addrs[32]` as "0 = inactive lane" and
+`nvbit_backend.cu:608` skips only exact zeros. Under any divergence at an
+instrumented instruction this manufactures phantom addresses. `RemoteFilter`
+drops most of them (garbage resolves to no allocation, so `mem_device` becomes
+`run_device`), but garbage landing inside a peer range becomes a FABRICATED
+remote access. Fix: zero `ma.addrs[i]` when lane `i` is not set in `active_mask`.
+
+Worth doing regardless of this bug, and worth doing before trusting any capture
+from a workload with divergent stores.
 
 ## Explicitly out of scope
 
