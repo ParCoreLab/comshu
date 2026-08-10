@@ -66,8 +66,17 @@ if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; t
     -Wl,--disable-new-dtags,-rpath,"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart \
     || { echo "!! nvcc failed — refusing to run a stale or missing binary" >&2; exit 1; }
-  pcomm_load_runtime
 fi
+
+# Unconditionally, AFTER the build block, so the module state does not depend on
+# whether we happened to build. When the binary was stale the block ran
+# pcomm_load_build and then reloaded the runtime, leaving a different PATH than
+# when the binary was fresh and the block was skipped entirely. Case 16 built and
+# worked; 17 and 18 reused its binary and died with Open MPI "not enough slots"
+# on an identical 4-node allocation, because they got a different mpirun.
+# A run must not depend on whether a previous run left a binary behind.
+pcomm_load_runtime
+echo "=== mpirun: $(command -v mpirun)"
 
 # WHICH NVSHMEM this binary actually resolves, printed every run.
 #
