@@ -37,26 +37,32 @@ Not "the transport's addresses are fake" — they are real memory, and saying
 otherwise would be wrong. Three distinct situations, measured on the same
 workload:
 
-| registration | address recorded | whose buffer | containment-linkable |
+| registration | address in the OBJECT record | whose buffer | linkable |
 |---|---|---|---|
-| umem/MR `by_addr` | real (`0x727cf2400000`) | NVSHMEM's own | yes, if app objects exist |
-| umem `by_dmabuf` | **none** — `0x0` + fd 84 | NVSHMEM's own | no, at all |
-| `nvshmem_malloc` | real (`0x628681800`) | **the application's** | only gpumem records it |
+| umem/MR `by_addr` | real (`0x727cf2400000`) | NVSHMEM's own | yes |
+| umem `by_dmabuf` | real (`0x7e7f2e400000`) — recovered | NVSHMEM's own | yes |
+| `nvshmem_malloc` | real (`0x628681800`) | **the application's** | **only if gpumem ran** |
 
-The sizes give it away: the `by_addr` umems are 8, 40 and 327680 bytes — control
+**The dmabuf row resolves, and that was already built.** The umem record keeps
+`addr = 0x0` and `fd = 84`, faithfully recording what the API was handed — but
+`core/dmabuf_registry.hpp` intercepts the `cuMemGetHandleForAddressRange` that
+NVSHMEM must call to *obtain* that fd, so `fd -> (dptr, size)` is known before
+the registration and mlx5dv emits a MemObject with the real range. Measured on
+runA: umems at `0x0`/fd 84 with sizes 8, 327680, 40 have MemObject rows at
+`0x7e7f2e400000`, `0x7e7f2e460000` with the same sizes. Nothing here needs
+fixing.
+
+The sizes give away whose buffers they are: 8, 40 and 327680 bytes — control
 structures and work queues. NVSHMEM does not register per-`nvshmem_malloc`; it
 registers what *it* hands the NIC.
 
-So the link is not broken, and no new join is needed: `mem_owner` already
-resolves an address to the object containing it. What is missing is one END of
-that join — on an ib/DEVX-only capture nothing ever records `dst`, so the MR
-says "the NIC was given this range" and nothing says a range inside it is the
-buffer the program allocated.
-
-The dmabuf row is a separate and harder problem: with `addr = 0x0` there is no
-address to contain anything, so this plan cannot fix it and does not claim to.
-That one needs `fd -> GPU VA` (`cuMemGetHandleForAddressRange`), tracked in the
-IBGDA plan.
+**So the remaining gap is exactly one row of that table, and nothing else.** The
+link is not broken and no new join is needed: `mem_owner` already resolves an
+address to the object containing it, and every address it needs is already
+present — including the dmabuf ones. What is missing is one END of the join. On
+an ib/DEVX-only capture nothing records `dst`, so the transport says "the NIC
+was given this range" and nothing says a range inside it is the buffer the
+program allocated.
 
 ## Why the earlier answer was wrong
 
