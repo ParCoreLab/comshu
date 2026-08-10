@@ -5,6 +5,7 @@
   import Dendrogram from './panels/Dendrogram.svelte';
   import Sankey from './panels/Sankey.svelte';
   import Objects from './panels/Objects.svelte';
+  import Devices from './panels/Devices.svelte';
   import SourceLines from './panels/SourceLines.svelte';
   import Timeline from './panels/Timeline.svelte';
   import Ask from './panels/Ask.svelte';
@@ -23,6 +24,7 @@
     { id: 'cluster', label: 'Clustering', c: Dendrogram },
     { id: 'flow',    label: 'Flow',       c: Sankey },
     { id: 'objects', label: 'Objects',    c: Objects },
+    { id: 'devices', label: 'Devices',    c: Devices },
     { id: 'source',  label: 'Source',     c: SourceLines },
     { id: 'time',    label: 'Timeline',   c: Timeline },
     { id: 'ask',     label: 'Ask',        c: Ask },
