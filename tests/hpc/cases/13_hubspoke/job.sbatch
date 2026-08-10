@@ -25,13 +25,22 @@ source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
-APP="$HOME/asym_patterns"
-# One binary for all three cases, so the three captures differ only in the
-# pattern and never in the build.
+# Compute capability from the device rather than hardcoded, because these three
+# cases are meant to run on MN5's H100s (sm_90) AND on the A100 box (sm_80),
+# where run_on_a100.sh executes this file directly. A fixed -gencode is why the
+# older cases are MN5-only.
+CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+CC=${CC:-90}
+APP="$HOME/asym_patterns-sm$CC"
+
+# One binary per arch for all three cases, so the three captures differ only in
+# the pattern and never in the build. The arch is in the name because a cached
+# binary from the other machine is not a build error, it is a silent wrong
+# answer.
 if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
   pcomm_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
-    -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
+    -gencode arch=compute_$CC,code=sm_$CC -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart
