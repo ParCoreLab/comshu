@@ -22,9 +22,15 @@
 //
 // All three patterns are one kernel (`put_slice`) driven by a per-PE send list,
 // because the pattern is data and only the data differs. PCOMM_KERNEL_NAME can
-// therefore filter on one name for all three. NB the filter matches the
-// enclosing kernel, not the puts: nvshmem_int_p is inlined into put_slice and
-// is captured as part of its SASS (see case 04's job.sbatch).
+// therefore filter on one name for all three.
+//
+// NB it is NOT inlined here, contrary to what case 04's job.sbatch says about
+// its own binary. PCOMM_INSTR_DUMP on this workload shows two instrumented
+// functions: `put_slice` with 3 instructions and
+// `nvshmemi_transfer_rma_p<int>` with 1485. So `nvshmem_int_p` compiles to a
+// real call in this build. Whether it inlines is a property of the build, not
+// of the source, and the filter's reach differs accordingly — worth knowing
+// before reasoning about what a kernel-name filter does or does not capture.
 //
 //   asym_patterns <hub|pipe|skew> [slot_elems] [iters]
 //
@@ -38,8 +44,35 @@
 #include <nvshmem.h>
 #include <nvshmemx.h>
 
-__global__ void put_slice(int* dst, const int* src, long n, int peer, long dst_off) {
-    long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
+// EVERY INDEX HERE IS 32-BIT, DELIBERATELY, AND IT IS NOT A STYLE CHOICE.
+//
+// Instrumenting this kernel with a 64-bit index computation raises an illegal
+// memory access that poisons the CUDA context — the workload runs perfectly with
+// no profiler. Bisected to the instruction with PCOMM_INSTR_LO/HI (MN5 jobs
+// 44464306, 44464689) and then to the cause with four kernel variants (44464836,
+// 44465353):
+//
+//   long i, long dst_off                       -> FAULT
+//   int  i, long dst_off  (dst_off + i is 64b) -> FAULT
+//   long i, no offset                          -> FAULT
+//   int  i, no offset                          -> clean
+//   int  i, int  dst_off                       -> clean   <- this kernel
+//
+// Every variant that computes a 64-bit index into the symmetric-heap pointer
+// faults; every 32-bit one is clean. It is not the offset — variant 3 has none
+// and still faults on a `long` counter — and it is not NVSHMEM's code, whose
+// 1485 instrumented instructions in nvshmemi_transfer_rma_p are all clean while
+// each of this kernel's three faults on its own.
+//
+// This is a WORKAROUND in the fixture, not a fix. The defect is in the
+// instrumentation of 64-bit-indexed accesses and it still bites any real
+// application indexing past 2 GB. See PLAN-20260810-0854 and
+// things-to-circle-back-to.md.
+//
+// Case 04 passes for exactly this reason and no other: `put_to_next` happens to
+// use `int i` and `&dst[i]`.
+__global__ void put_slice(int* dst, const int* src, int n, int peer, int dst_off) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n)
         nvshmem_int_p(&dst[dst_off + i], src[i], peer);
 }
@@ -49,8 +82,8 @@ __global__ void put_slice(int* dst, const int* src, long n, int peer, long dst_o
 struct Send {
     int   peer;
     int*  dst;
-    long  dst_off;
-    long  count;
+    int   dst_off;   // 32-bit on purpose — see put_slice above
+    int   count;
 };
 
 int main(int argc, char** argv) {
@@ -81,6 +114,16 @@ int main(int argc, char** argv) {
     const long src_elems = slot;
     const long resp_elems = slot / 8;
 
+    // The kernel indexes with int (see put_slice). Every offset it can be given
+    // is < recv_elems, so that is the bound to check — and checking beats a
+    // comment, because the failure it prevents is a silent wrong answer rather
+    // than a crash.
+    if (recv_elems > 2147483647L) {
+        if (mype == 0)
+            fprintf(stderr, "asym_patterns: slot too large — npes*slot must fit in int\n");
+        MPI_Abort(MPI_COMM_WORLD, 3);
+    }
+
     int* recv = static_cast<int*>(nvshmem_malloc(recv_elems * sizeof(int)));
     int* src = static_cast<int*>(nvshmem_malloc(src_elems * sizeof(int)));
     int* resp = static_cast<int*>(nvshmem_malloc(resp_elems * sizeof(int)));
@@ -101,10 +144,10 @@ int main(int argc, char** argv) {
         // the hub's buffer, which is what makes the hub's object heatmap
         // banded rather than solid.
         if (mype != 0)
-            sends.push_back({0, recv, (long)mype * slot, slot});
+            sends.push_back({0, recv, (int)(mype * slot), (int)slot});
         else
             for (int s = 1; s < npes; ++s)
-                sends.push_back({s, resp, 0, resp_elems});
+                sends.push_back({s, resp, 0, (int)resp_elems});
     } else if (strcmp(pattern, "pipe") == 0) {
         // Chain. PE i sends only to i+1, and the last PE sends nothing at all,
         // so the matrix is a single superdiagonal with a structurally empty
@@ -113,7 +156,7 @@ int main(int argc, char** argv) {
         // visible as a gap, not just as a smaller number.
         if (mype + 1 < npes) {
             const long n = slot * (mype + 1) / npes;
-            sends.push_back({mype + 1, recv, (long)mype * slot, n});
+            sends.push_back({mype + 1, recv, (int)(mype * slot), (int)n});
         }
     } else if (strcmp(pattern, "skew") == 0) {
         // Sparse and heavy-tailed, from a closed form rather than an RNG so the
@@ -126,7 +169,7 @@ int main(int argc, char** argv) {
             const int h = (mype * 31 + peer * 17) % 11;
             if (h < 5) continue;
             const long n = slot >> (h - 5);   // slot/1 .. slot/32
-            if (n > 0) sends.push_back({peer, recv, (long)mype * slot, n});
+            if (n > 0) sends.push_back({peer, recv, (int)(mype * slot), (int)n});
         }
     } else {
         if (mype == 0) fprintf(stderr, "asym_patterns: unknown pattern '%s'\n", pattern);
