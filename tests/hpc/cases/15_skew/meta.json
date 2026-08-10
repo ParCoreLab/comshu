@@ -1,0 +1,22 @@
+{
+  "case": "15_skew",
+  "providers": [
+    "p2p"
+  ],
+  "topology": "1 node x4 H100, NVSHMEM sparse pairs with heavy-tailed weights",
+  "golden": "none \u2014 assertions only",
+  "workload": {
+    "ranks": 4,
+    "nodes": 1,
+    "gpus": 4,
+    "iters": 3,
+    "elems": 4096,
+    "elem_bytes": 4,
+    "app_buffer_bytes": 65536
+  },
+  "workload_note": "`asym_patterns skew 4096 3`. The edge set comes from a closed form \u2014 h = (mype*31 + peer*17) % 11, no edge when h < 5, count = slot >> (h-5) \u2014 rather than from an RNG, so it is identical on every run and every PE count: a capture you cannot reproduce is not a fixture. Roughly half the ordered pairs carry no edge and the rest span 32x, which is what puts the matrix's log colour scale and the clustering metric under load. Directional: an edge i->j says nothing about j->i.",
+  "expect_tables": [
+    "gpu_access",
+    "mem_object"
+  ]
+}

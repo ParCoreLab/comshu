@@ -1,0 +1,22 @@
+{
+  "case": "14_pipeline",
+  "providers": [
+    "p2p"
+  ],
+  "topology": "1 node x4 H100, NVSHMEM chain: PE i -> i+1 only, volume growing along the chain",
+  "golden": "none \u2014 assertions only",
+  "workload": {
+    "ranks": 4,
+    "nodes": 1,
+    "gpus": 4,
+    "iters": 3,
+    "elems": 4096,
+    "elem_bytes": 4,
+    "app_buffer_bytes": 65536
+  },
+  "workload_note": "`asym_patterns pipe 4096 3`. PE i sends slot*(i+1)/npes elems to PE i+1 and nothing to anyone else; PE 3 sends nothing at all. So the rank-space matrix is a single superdiagonal \u2014 1024, 2048, 3072 elems/iter \u2014 with a structurally empty last row and, crucially, zero back-flow. This is the case that can tell 'we record direction' apart from 'we symmetrise and nobody noticed', which no ring or pair capture in the corpus can.",
+  "expect_tables": [
+    "gpu_access",
+    "mem_object"
+  ]
+}
