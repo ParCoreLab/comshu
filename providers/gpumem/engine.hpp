@@ -57,15 +57,30 @@ public:
         m_allocs.push_back({base, size, dev, core::kNullHandle});
     }
 
-    // Returns {found, alloc}; linear scan like snoopie's find_dev_of_ptr
-    // (allocation counts are small; interval tree later if needed).
+    // Linear scan like snoopie's find_dev_of_ptr (allocation counts are small;
+    // interval tree later if needed), but preferring a match that NAMES an
+    // object over one that only resolves a device.
+    //
+    // The preference is load-bearing, not a tiebreak. The same peer mapping is
+    // registered twice: once by the mapped-region pass, which sees a cuMemMap
+    // and can only supply a device (add_range, null object), and again by the
+    // NVSHMEM pass, which knows it is a symmetric region and supplies the
+    // object. Returning the first hit meant the device-only entry always won —
+    // and every recorded access stayed unattributed even after the object was
+    // being registered correctly. Both entries agree on the device, so taking
+    // the named one loses nothing.
     const Alloc* find(std::uint64_t addr) const {
         std::lock_guard lock(m_mutex);
+        const Alloc*    unnamed = nullptr;
         for (const auto& a : m_allocs) {
-            if (a.base <= addr && addr < a.base + a.size)
-                return &a;
+            if (a.base <= addr && addr < a.base + a.size) {
+                if (a.object != core::kNullHandle)
+                    return &a;
+                if (!unnamed)
+                    unnamed = &a;
+            }
         }
-        return nullptr;
+        return unnamed;
     }
 
 private:
@@ -124,6 +139,49 @@ public:
     AllocRegistry& allocs() { return m_allocs; }
 
     // Backend callbacks ------------------------------------------------------
+
+    // Record this process's own symmetric-heap region as a MemObject, and
+    // return its handle so the peer mappings of the same region can name it.
+    //
+    // Why this was missing, and why gpu_access.object was 0 for every recorded
+    // access: the symmetric heap is created through the VMM APIs (cuMemCreate /
+    // cuMemMap), so it never reaches on_alloc, and the mapped-region pass files
+    // it with add_range — which deliberately names no object. There was
+    // therefore no MemObject anywhere for the one buffer every peer access
+    // touches. RemoteFilter keeps only peer accesses, so *every* row we record
+    // pointed at nothing.
+    //
+    // Interning the base in the Pointer domain is the same identity scheme
+    // on_alloc, ibverbs and mlx5dv use, so this joins to the rest rather than
+    // minting a private id.
+    //
+    // Deliberately does not add() the range again: the mapped-region pass has
+    // already registered [base, base+size) and find() returns the first match,
+    // so a second entry would be dead weight. Local accesses to it are filtered
+    // out by RemoteFilter in any case — the handle exists for the peers.
+    core::Handle on_symmetric_region(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
+        auto&      rec = recorder();
+        const auto object = rec.intern(rec::InternDomain::Pointer, base);
+        rec.record(rec.now_instant(),
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
+        return object;
+    }
+
+    // A peer's copy of a symmetric region, mapped into this process at
+    // `mapped_base`, carrying the object handle of the local region it mirrors.
+    //
+    // Naming the *local* object for a *peer's* memory is correct rather than
+    // approximate: the heap is symmetric, so the buffer at a given offset is the
+    // same logical buffer on every PE. Measured on
+    // nvshmem_multinode-44451168 — rank 0's object on device 0 and rank 1's on
+    // device 1 are both at 1100585369600, while the peer mapping sits ~275 GB
+    // away at 1375639449088. That distance is why containment against the raw
+    // address finds nothing, and why the mapping has to carry the handle
+    // instead of the reader trying to recover it.
+    void on_peer_range(std::uint64_t mapped_base, std::uint64_t size, core::DeviceId dev,
+                       core::Handle object) {
+        m_allocs.add(mapped_base, size, dev, object);
+    }
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         auto& rec = recorder();

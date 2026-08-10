@@ -289,6 +289,18 @@ void refresh_mapped_regions() {
             continue;
         mine++;
 
+        // This region is confirmed to be OUR symmetric heap, and that is the
+        // only point at which we know it. Record it as a MemObject now: the
+        // heap is VMM-mapped so on_alloc never saw it, and the mapped-region
+        // pass above filed it with no object — leaving every peer access with
+        // nothing to name. The handle is then attached to each peer's copy
+        // below, which is sound because the heap is symmetric.
+        const int  my_dev = device_of(r.base, ndev, "NVSHMEM heap (local)");
+        const auto object = my_dev >= 0
+                                ? g_engine->on_symmetric_region(
+                                      r.base, r.size, static_cast<pcomm::core::DeviceId>(my_dev))
+                                : pcomm::core::kNullHandle;
+
         for (int pe = 0; pe < npes; pe++) {
             void* q = api.ptr((const void*)r.base, pe);
             if (!q)
@@ -301,8 +313,14 @@ void refresh_mapped_regions() {
             // than inherit the conflation.
             const int dev = device_of((uint64_t)q, ndev, "NVSHMEM heap");
             if (dev >= 0) {
-                g_engine->allocs().add_range((uint64_t)q, r.size,
-                                             static_cast<pcomm::core::DeviceId>(dev));
+                // r.base is the SYMMETRIC address of this region and q is where
+                // PE `pe`'s copy of it is mapped locally. Passing both is what
+                // lets an access through q name the object: the heap is
+                // symmetric, so the buffer this process recorded at r.base is
+                // the same logical buffer, at the same offset. Dropping r.base
+                // here is why gpu_access.object was 0 for every recorded access.
+                g_engine->on_peer_range((uint64_t)q, r.size,
+                                        static_cast<pcomm::core::DeviceId>(dev), object);
                 peers++;
             }
         }
