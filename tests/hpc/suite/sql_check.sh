@@ -277,6 +277,14 @@ if [ "$fail" -eq 0 ]; then echo "=== $case_name : PASS ($gn goldens, $an asserti
 else echo "=== $case_name : FAIL (goldens $([ $gfail -eq 0 ] && echo ok || echo FAILED), assertions $([ $afail -eq 0 ] && echo ok || echo FAILED)) ==="; fi
 [ "$axpass" -gt 0 ] && echo "  !! $axpass assertion(s) marked expect_fail now pass — update meta.json"
 
+# The directory may not exist: when the workload produced no capture at all,
+# `pcomm-read --csv` writes nothing and $CSV_DIR was never created. The verdict
+# still has to be written — a case that failed hardest is exactly the one whose
+# result the aggregator must see. Without this the check died with
+# "result.json: No such file or directory", which reads as a broken harness
+# rather than as a workload that did not run.
+mkdir -p "$CSV_DIR"
+
 # Machine-readable verdict for the aggregator. `ok`/`checks` keep their old
 # meaning so run_suite.sh is unaffected; the two verdicts are reported
 # separately because they mean different things — a failed assertion is a
