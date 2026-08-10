@@ -1,4 +1,8 @@
 -- requires: comm_edges params.ranks
+-- NB comm_edges here is the `--csv` export, whose columns are
+-- (src_rank, dst_rank, sends, bytes) — no `transport`. That column exists only
+-- in the `--link` Parquet. It is not needed: this case loads ib alone with one
+-- GPU per node, so there is no NVLink traffic to exclude by construction.
 -- The star must be a star in RANK space, over the NIC.
 --
 -- THRESHOLD-FREE, and that is the point. A verbs capture is not just the data
@@ -25,7 +29,6 @@ expected AS (
 heaviest AS (
     SELECT CAST(src_rank AS INTEGER) src, CAST(dst_rank AS INTEGER) dst
     FROM comm_edges
-    WHERE transport <> 'nvlink'
     ORDER BY CAST(bytes AS INTEGER) DESC
     LIMIT (SELECT 2 * (ranks - 1) FROM params)
 )

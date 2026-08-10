@@ -1,4 +1,8 @@
 -- requires: comm_edges params.ranks
+-- NB comm_edges here is the `--csv` export, whose columns are
+-- (src_rank, dst_rank, sends, bytes) — no `transport`. That column exists only
+-- in the `--link` Parquet. It is not needed: this case loads ib alone with one
+-- GPU per node, so there is no NVLink traffic to exclude by construction.
 -- No chain link may carry comparable traffic in the reverse direction.
 --
 -- THE REASON THIS CASE EXISTS. Every other NVSHMEM fixture here is a ring or a
@@ -31,7 +35,7 @@ chain AS (
 vol AS (
     SELECT CAST(src_rank AS INTEGER) src, CAST(dst_rank AS INTEGER) dst,
            sum(CAST(bytes AS INTEGER)) AS b
-    FROM comm_edges WHERE transport <> 'nvlink' GROUP BY 1, 2
+    FROM comm_edges GROUP BY 1, 2
 )
 SELECT 'reverse traffic comparable to the forward link on a one-way chain' AS problem,
        c.src, c.dst,

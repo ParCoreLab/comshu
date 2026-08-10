@@ -1,4 +1,8 @@
 -- requires: comm_edges params.ranks
+-- NB comm_edges here is the `--csv` export, whose columns are
+-- (src_rank, dst_rank, sends, bytes) — no `transport`. That column exists only
+-- in the `--link` Parquet. It is not needed: this case loads ib alone with one
+-- GPU per node, so there is no NVLink traffic to exclude by construction.
 -- The heaviest predicted edge must carry at least 8x the lightest.
 --
 -- A guard on the FIXTURE, not on the tool. The formula spans 32x by
@@ -18,7 +22,6 @@ heavy AS (
     SELECT CAST(e.bytes AS INTEGER) b
     FROM comm_edges e JOIN expected x
       ON x.src = CAST(e.src_rank AS INTEGER) AND x.dst = CAST(e.dst_rank AS INTEGER)
-    WHERE e.transport <> 'nvlink'
 )
 SELECT 'edge weights too uniform to exercise a log scale' AS problem,
        min(b) AS lightest, max(b) AS heaviest

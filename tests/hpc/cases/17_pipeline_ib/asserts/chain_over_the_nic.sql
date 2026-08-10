@@ -1,4 +1,8 @@
 -- requires: comm_edges params.ranks
+-- NB comm_edges here is the `--csv` export, whose columns are
+-- (src_rank, dst_rank, sends, bytes) — no `transport`. That column exists only
+-- in the `--link` Parquet. It is not needed: this case loads ib alone with one
+-- GPU per node, so there is no NVLink traffic to exclude by construction.
 -- The heaviest ranks-1 edges must be exactly the chain i -> i+1.
 --
 -- Threshold-free for the reason given in 16's star assertion: a verbs capture
@@ -13,7 +17,7 @@ expected AS (
 ),
 heaviest AS (
     SELECT CAST(src_rank AS INTEGER) src, CAST(dst_rank AS INTEGER) dst
-    FROM comm_edges WHERE transport <> 'nvlink'
+    FROM comm_edges
     ORDER BY CAST(bytes AS INTEGER) DESC
     LIMIT (SELECT ranks - 1 FROM params)
 )
