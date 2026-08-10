@@ -1091,7 +1091,17 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
         std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
         return 1;
     }
-    fs::create_directories(outdir);
+    // Checked, not assumed: create_directories THROWS on a path that exists and
+    // is not a directory, so `--csv /dev/null` aborted the process with an
+    // uncaught filesystem_error instead of saying which path it could not use.
+    // Same class as the --sql crash on a missing directory.
+    std::error_code ec;
+    fs::create_directories(outdir, ec);
+    if (!fs::is_directory(outdir)) {
+        std::fprintf(stderr, "pcomm-read: cannot use %s as an output directory: %s\n",
+                     outdir.c_str(), ec ? ec.message().c_str() : "not a directory");
+        return 1;
+    }
 
     // Say what we cannot represent, before writing tables that omit it.
     std::size_t unhandled = 0;

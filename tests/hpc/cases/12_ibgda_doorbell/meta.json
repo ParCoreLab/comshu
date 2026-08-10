@@ -19,6 +19,7 @@
     "iters": 20,
     "elems": 1024,
     "elem_bytes": 4,
+    "app_buffer_bytes": 4096,
     "umem_binding": 1
   },
   "workload_note": "`mpirun -np 2 ... putget 1024 20` under `pcomm -p mlx5dv --enable-doorbell-hijack`. 20 iterations rather than 09's 2, so the doorbell/send streams are substantial enough to assert against. elem_bytes=4 is the nvshmem_int_p element size, and sends_are_sized derives the payload invariant from it.",

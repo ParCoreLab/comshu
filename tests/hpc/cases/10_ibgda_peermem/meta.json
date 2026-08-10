@@ -18,6 +18,7 @@
     "iters": 2,
     "elems": 1024,
     "elem_bytes": 4,
+    "app_buffer_bytes": 4096,
     "umem_binding": 0
   },
   "workload_note": "`mpirun -np 2 ... putget 1024 2`, the same binary as cases 04/06/07/09. umem_binding=0 (by_addr) is the *configured* transport, asserted against the capture by umem_binding_as_configured rather than read from it — so a capture can never be checked against the wrong experiment.",

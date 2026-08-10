@@ -15,6 +15,7 @@
     "iters": 3,
     "elems": 65536,
     "elem_bytes": 4,
+    "app_buffer_bytes": 262144,
     "gpudirect": 1
   },
   "workload_note": "`mpirun -np 8 --map-by ppr:4:node ... putget 65536 3`, same binary as 04 and 06. `nodes` is load-bearing rather than descriptive here: the ring visits every PE once, so it crosses the node boundary exactly `nodes` times, which is how many ranks must record zero NVLink accesses. gpus is the per-node device count, which is what a device ordinal indexes.",

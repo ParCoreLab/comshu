@@ -17,6 +17,7 @@
     "iters": 2,
     "elems": 1024,
     "elem_bytes": 4,
+    "app_buffer_bytes": 4096,
     "umem_binding": 1
   },
   "workload_note": "`mpirun -np 2 ... putget 1024 2`, the same binary as cases 04/06/07. umem_binding=1 (by_dmabuf) is the *configured* transport, asserted against the capture rather than read from it: NVSHMEM_REMOTE_TRANSPORT=ibgda with DMABUF left enabled. The other supported configuration (ibdevx + NVSHMEM_IB_DISABLE_DMABUF=1, umem_binding=0) is what SigmaTrace's published artifact uses and is a follow-up case, not a variant of this one \u2014 they are different experiments and the param exists so a capture can never again be checked against the wrong one.",

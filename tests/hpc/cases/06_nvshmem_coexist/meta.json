@@ -14,7 +14,8 @@
     "gpus": 4,
     "iters": 3,
     "elems": 65536,
-    "elem_bytes": 4
+    "elem_bytes": 4,
+    "app_buffer_bytes": 262144
   },
   "workload_note": "identical to case 04 by construction — `putget 65536 3` on 4 PEs — because the only variable this case changes is the second provider. Both cases assert the same derivation against the same oracle, which is what makes the comparison between them evidence rather than coincidence.",
   "expect_tables": [
