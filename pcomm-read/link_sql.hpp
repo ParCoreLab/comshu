@@ -188,6 +188,21 @@ SELECT rank, qp_num, 'devx' AS transport,
        count(*) AS sends, sum(length)::BIGINT AS bytes
 FROM mlx5_device_send GROUP BY rank, qp_num
 )sql"},
+
+    // (rank, qp_num) -> the rank on the other end. Extracted from `endpoint`,
+    // which computed it inline, because object_access needs the same mapping and
+    // a kTable cannot reference another kTable — they are COPYed to Parquet, not
+    // registered. Both callers now share one definition of "who is at the other
+    // end of this queue pair", which is the join most likely to be got subtly
+    // wrong: the key is the PAIR (lid, qp_num), since qp_num is allocated per
+    // HCA and repeats across nodes.
+    {"_peer_of_qp", R"sql(
+CREATE OR REPLACE VIEW _peer_of_qp AS
+SELECT r.rank, r.qp_num, o_peer.rank AS peer_rank
+FROM _rtr r
+LEFT JOIN _owner o_peer
+       ON o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
+)sql"},
 };
 
 // Derived tables, materialised and written as Parquet in this order.
@@ -197,6 +212,93 @@ struct Table {
 };
 
 inline constexpr Table kTables[] = {
+    // Every recorded touch of an application object, from whichever provider
+    // saw it, normalised to an OFFSET inside that object and tagged with where
+    // it came from.
+    //
+    // WHY NORMALISE. The two providers report addresses in different address
+    // spaces, so the raw values cannot share an axis:
+    //
+    //   ib_post_send.remote_addr is in the PEER's address space. RDMA names the
+    //     peer's real virtual address, so subtracting the peer's object base is
+    //     exact. That is why the join is against the peer's mem_object and not
+    //     the sender's — it is the one place a cross-rank object join is
+    //     required rather than convenient, and it works because every rank is
+    //     captured and bases are interned in one domain.
+    //
+    //   gpu_access.address is in the LOCAL process's mapping of the peer's
+    //     buffer. Measured on nvshmem_p2p_fine-du04: object 32 has base
+    //     26447710208 and size 4096, while its accesses run from base+137438953472
+    //     to base+137438957564 — 128 GiB out, spanning exactly 4092. The extent
+    //     is right and the anchor is not, and the mapping delta is not in the
+    //     record, so the offset is taken from the first byte observed.
+    //
+    // Hence `exact`. A verbs offset is anchored to the object's true base; a p2p
+    // offset is anchored to the lowest address seen and is only the true offset
+    // when the workload touched the start of the buffer. Reporting these as one
+    // number without saying which would be the kind of quiet averaging that
+    // makes a plot untrustworthy — so the column is here, not in a panel.
+    //
+    // `source` is deliberately not collapsed either. A capture with both
+    // providers loaded has two independent views of the same object, and being
+    // able to see them apart is how you tell a provider that is missing traffic
+    // from a workload that did not send any.
+    {"object_access", R"sql(
+WITH p2p AS (
+    SELECT g.rank                                   AS owner_rank,
+           g.object                                 AS object,
+           g.address - min(g.address) OVER (PARTITION BY g.rank, g.object)
+                                                    AS obj_offset,
+           g.size                                   AS size,
+           'p2p'                                    AS source,
+           g.run_device::BIGINT                     AS actor,
+           'device'                                 AS actor_kind,
+           FALSE                                    AS exact
+    FROM gpu_access g
+),
+verbs AS (
+    SELECT e.peer_rank                              AS owner_rank,
+           m.id                                     AS object,
+           s.remote_addr - m.range_base             AS obj_offset,
+           s.length                                 AS size,
+           'verbs'                                  AS source,
+           s.rank::BIGINT                           AS actor,
+           'rank'                                   AS actor_kind,
+           TRUE                                     AS exact
+    FROM ib_post_send s
+    JOIN _peer_of_qp e
+      ON e.rank = s.rank AND e.qp_num = s.qp_num
+    -- INNERMOST containing object, via LATERAL so the pick is made per send.
+    -- Ranges nest: an nvshmem_malloc'd buffer sits inside the symmetric-heap
+    -- region mapped once for all of them, so "any containing object" binds every
+    -- send to the 512 MB heap instead of the 256 KB buffer. Same rule as
+    -- ObjectRegistry::find in the engine; it has to be stated in both places
+    -- because they answer the same question against different data.
+    --
+    -- LATERAL and not QUALIFY: there is no unique send id here (wr_id repeats),
+    -- so a window partition collapses distinct sends — measured, 393228 rows
+    -- became 131078.
+    JOIN LATERAL (
+        SELECT o.id, o.range_base
+        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
+        WHERE o.rank = e.peer_rank
+          AND s.remote_addr >= o.range_base
+          AND s.remote_addr <  o.range_base + o.range_size
+        ORDER BY o.range_size
+        LIMIT 1
+    ) m ON TRUE
+    -- remote_addr = 0 is a control send with no target buffer (41 of them on
+    -- one rank of the case 07 capture). Left in, they drag the window to zero
+    -- and every real access collapses into the last bin.
+    WHERE s.remote_addr > 0
+      AND e.peer_rank IS NOT NULL
+)
+SELECT * FROM p2p
+UNION ALL
+SELECT * FROM verbs
+)sql"},
+
+
     // One row per local endpoint that exists, whether or not it moved bytes.
     // peer_rank is NULL rather than -1 here: an endpoint that was never
     // connected has no peer, which is a different statement from "we could not
@@ -208,13 +310,13 @@ SELECT r.rank,
        o_self.lid              AS lid,
        r.dest_lid              AS peer_lid,
        r.dest_qp_num           AS peer_qp_num,
-       o_peer.rank             AS peer_rank,
+       p.peer_rank             AS peer_rank,
        coalesce(s.transport, 'none')      AS transport,
        coalesce(sum(s.sends), 0)::BIGINT  AS sends,
        coalesce(sum(s.bytes), 0)::BIGINT  AS bytes
 FROM _rtr r
 LEFT JOIN _owner o_self ON o_self.rank = r.rank AND o_self.qp_num = r.qp_num
-LEFT JOIN _owner o_peer ON o_peer.lid  = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
+LEFT JOIN _peer_of_qp p ON p.rank = r.rank AND p.qp_num = r.qp_num
 LEFT JOIN _sends s      ON s.rank = r.rank AND s.qp_num = r.qp_num
 GROUP BY ALL
 ORDER BY r.rank, r.qp_num
