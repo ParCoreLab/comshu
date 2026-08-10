@@ -588,6 +588,43 @@ IBGDA captures with no gpumem it lists the application's 4 KB buffers at the
 *same address on both ranks*, which is the symmetric heap, visible without
 NVBit for the first time.
 
+#### `pcomm-ui <capture>`, and the fixtures the corpus was missing — 2026-08-10
+
+Two gaps, found by trying to use the thing.
+
+**Pointing it at a run took three commands.** `pcomm-read --parquet`, then
+`--link`, then `pcomm-ui <export>`. The loop that turns `.pcs` streams into
+DuckDB tables lived inside `export_parquet`, so the only way to look at a
+capture was to write Parquet to disk first. It is now `capture_load.hpp`, shared
+by both tools, and `pcomm-ui <capture>` loads the streams and defines the
+derived layer as views — no export step and no temp directory for the server to
+own. An export directory still mounts as before; the two paths were checked to
+agree table by table.
+
+Note the deliberate asymmetry with `duck_mount.hpp`, which is why they stayed
+separate files. Loading a capture creates a table only for streams that exist,
+because absent and empty say different things about a run. Mounting for the UI
+manufactures the empty ones, because otherwise every panel would branch on which
+provider ran. The distinction is preserved where it is real and erased where it
+is noise.
+
+**Every fixture was symmetric, and every heatmap was flat.** The corpus was
+rings and pairs, which meant a matrix that symmetrised an edge would have been
+right on every capture we had, and — measured — every object heatmap was 512
+accesses in every one of 32 bins, on every object, because every workload wrote
+its whole buffer uniformly. The object view's central figure had never rendered
+structure, so a solid bar and a broken query looked identical.
+
+`tests/hpc/asym_patterns.cu` adds hub, pipe and skew. Pipe has zero back-flow,
+which is the property no ring can test. Hub gives each spoke its own disjoint
+region of the hub's buffer, so one object is written by three GPUs in three
+bands — the first non-flat heatmap, the first multi-writer `touched by`, and the
+first partially covered object. Skew derives its edges from a closed form, so
+the assertion computes the expected edge set instead of recording it.
+
+Ten assertions, no goldens, each verified in both directions against mutated
+captures — passing on correct data proves only that the SQL parses.
+
 **Superseded — the original list of remaining panels:** dendrogram, sankey,
 object view, source view.
 The first two are where Vega's grammar may not reach — `vega-hierarchy`'s
