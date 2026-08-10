@@ -220,6 +220,42 @@ plan lands.
   attribution only. Those are different questions and the plan should not be
   read as retiring NVBit.
 
+## Where the nvshmem_malloc interposer belongs (2026-08-10)
+
+gpumem now interposes `nvshmem_malloc`/`calloc`/`align`/`free` to name symmetric
+buffers, and "why is that gpumem's job?" is a fair question with a boring
+answer: gpumem is the only component that needs the buffer's **extent at
+runtime**, because `ObjectAttributor` resolves an access to an object as the
+channel drains. This plan's own constraint forbids the alternative — a provider
+asking another provider for memory information at runtime is out of bounds — so
+gpumem cannot delegate the observation and still attribute.
+
+It is also consistent with the shape decided above: independent emitters, dedup
+by construction. ibverbs and mlx5dv already emit their own `MemObject` rows
+(1014 on nccl_internode, 4553 on scale_nccl, with no gpumem loaded), and every
+emitter interns the base in `InternDomain::Pointer`, so a second provider
+hooking `nvshmem_malloc` would mint the SAME id and the rows would merge rather
+than double.
+
+**Two things are nevertheless wrong with the current placement, and both are
+cheap to fix when they start to matter:**
+
+1. **The interposers live in `gpu-backends/nvbit/nvbit_backend.cu`**, whose own
+   header states that vendor types are allowed there "and nowhere above". They
+   are not an NVBit concern at all — NVBit instruments instructions; this is
+   library interposition. They belong in `providers/gpumem/` proper, which needs
+   only a way to reach the engine instance from the provider translation unit.
+
+2. **The extraction trigger is a second consumer, and this plan already set the
+   precedent.** `device_of` was moved into the core *before* the second copy
+   existed, explicitly because the first copy had carried a wrong constant for
+   its entire life. The same applies here: the moment a second provider wants
+   symmetric-buffer identity, the interposer goes to the core — reached over the
+   C ABI, like every other core service gpumem uses — rather than being copied.
+
+Neither is urgent while gpumem is the only consumer. Both become urgent the
+moment it is not, and the cost of noticing late is a second copy that drifts.
+
 ## Explicitly out of scope
 
 - A dedicated memory-tracking provider. Rejected on the grounds that allocation
