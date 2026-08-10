@@ -296,6 +296,7 @@ static const char* ib_cq_origin_name(std::uint8_t raw) {
     switch (static_cast<ibr::IbCqOrigin>(raw)) {
     case ibr::IbCqOrigin::CreateCq: return "create_cq";
     case ibr::IbCqOrigin::CreateCqEx: return "create_cq_ex";
+    case ibr::IbCqOrigin::Mlx5dvCreateCq: return "mlx5dv_create_cq";
     case ibr::IbCqOrigin::Unknown: break;
     }
     return "unknown";

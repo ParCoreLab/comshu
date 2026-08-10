@@ -60,3 +60,15 @@ DEFINE_PRELOAD_HOOK(mlx5, devx_obj_modify, "mlx5dv_devx_obj_modify", int, mlx5dv
 // 08's ib_queue_pair table has been empty and marked expect_fail.
 DEFINE_PRELOAD_HOOK(mlx5, create_qp, "mlx5dv_create_qp", ibv_qp*, ibv_context*, ibv_qp_init_attr_ex*,
                     mlx5dv_qp_init_attr*);
+
+// mlx5dv_create_cq is NOT here, and that is not an oversight. It is hooked by
+// the ibverbs provider, because ibv_destroy_cq — which closes what it creates —
+// is hooked there, and an entity whose open and close come from two different
+// providers is only accounted when the user happens to select both. Exactly one
+// of our .so files may define an interposer for a given symbol; this one does
+// not define that one. See providers/ibverbs/ib_hooks.hpp.
+//
+// mlx5dv_create_qp above predates that rule and shows the cost of the other
+// choice: its Mlx5QueuePair open lives in this provider's range while
+// ibv_destroy_qp's EntityClose comes from ibverbs, so every assertion that
+// matches closes to opens has to be told about mlx5_queue_pair by hand.

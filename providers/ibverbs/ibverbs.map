@@ -36,6 +36,12 @@
     ibv_qp_to_qp_ex;
     ibv_reg_mr;
     ibv_reg_mr_iova2;
+    /* Not an ibv_* symbol, and the only one here that is not. mlx5dv_create_cq
+     * lives in libmlx5, but it creates the entity ibv_destroy_cq closes, so its
+     * open record has to come from the provider that emits that close —
+     * otherwise the accounting depends on which providers were selected. The
+     * mlx5dv provider does NOT define this symbol; exactly one of ours may. */
+    mlx5dv_create_cq;
     pcomm_create_provider;
     pcomm_abi_version;
   local:

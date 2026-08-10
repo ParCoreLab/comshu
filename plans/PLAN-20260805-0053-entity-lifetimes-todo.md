@@ -28,6 +28,37 @@ entity to be closed, so "live at end == 0" is implied by an assertion that
 already runs everywhere, and a case-06 golden asserting 0 would add a number
 without adding a check. Case 06's per-rank symmetry assertion stays as it is.
 
+## Step 3 did its job, 2026-08-10: the CQ deficit was a third door
+
+`entity_close_accounted` went red on every ibverbs case that runs NVSHMEM
+(13-18) and on nothing else. It was right, in both of the two ways it can be.
+
+On `hubspoke_ib-44459283`, every rank: 104 `create_cq` opens + 60 `create_cq_ex`
+opens, 194 closes. A deficit of exactly 30, identical on all four ranks, split 15
+closes naming a handle nothing opened and 15 naming a handle opened once and
+closed twice. Those are not two bugs. A handle is an interned pointer, so a CQ
+created through an unhooked door lands on a *reused* address half the time and on
+a fresh one the other half; the first shape shows up as a second close, the
+second as an orphan. Ordering the closes by tick shows it directly — the orphans
+are a contiguous block of handles first interned at teardown, each one adjacent
+to a re-close, four hooked `create_cq_ex` closes between every pair.
+
+The door is `mlx5dv_create_cq`, and `IbCqOrigin`'s own comment had already named
+the verdict before the evidence arrived: "neither means a third door". It is an
+exported symbol (`mlx5dv_create_cq@@MLX5_1.1`), unlike `ibv_create_cq_ex`, and
+`libuct_ib_mlx5.so.0` is the only object under UCX, OpenMPI or NVSHMEM on MN5
+that names it — UCX's mlx5 transport creates its tx and rx CQs there and destroys
+them through `ibv_destroy_cq`, which is why the close arrived alone.
+
+Hooked in the **ibverbs** provider despite being a libmlx5 symbol, because
+`ibv_destroy_cq` is there: an entity whose open and close come from two different
+providers is only accounted when the user selects both, and `pcomm -p ib` would
+have gone red on a correct capture. `mlx5dv_create_qp` took the other choice and
+left exactly that hole — its `mlx5_queue_pair` open was missing from the
+assertion's opens list entirely, so a perftest-shaped teardown was a guaranteed
+false positive. Added, with `tests/hpc/suite/asserts_fire.sh` as the mutation
+test that says the clause still fires without it.
+
 ## What is actually left
 
 **The reader does not use the window, and address reuse is real.** Measured on

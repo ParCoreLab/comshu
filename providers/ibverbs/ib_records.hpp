@@ -101,6 +101,11 @@ enum class IbCqOrigin : std::uint8_t {
     Unknown = 0,
     CreateCq = 1,    // ibv_create_cq — the exported symbol, a preload hook
     CreateCqEx = 2,  // verbs_context::create_cq_ex — object-ops, needs install
+    // The third door the two above were added to look for, and it is in
+    // libmlx5 rather than libibverbs: an exported symbol, so a preload hook.
+    // UCX's mlx5 transport creates its tx and rx CQs here. See ib_hooks.hpp for
+    // the measurement that found it.
+    Mlx5dvCreateCq = 3,
 };
 
 PCOMM_RECORD(IbCompletionQueue, RecordKind::Entity, 104, "ib_completion_queue") {

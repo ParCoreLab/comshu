@@ -66,3 +66,13 @@ add_executable(intern_table_test intern_table_test.cpp)
 target_link_libraries(intern_table_test PRIVATE pcomm::pcomm)
 pcomm_add_test(intern_table_test)
 add_test(NAME intern_table COMMAND intern_table_test)
+
+# The MN5 suite's cross-cutting assertions, run against synthetic captures that
+# contain a known defect. Every other test here checks the tool; this one checks
+# the *instruments* — an assertion that has been relaxed into silence looks
+# exactly like one that passes, and hpc/suite/asserts_fire.sh is where a
+# relaxation has to prove it still fires. No NIC and no capture needed: it builds
+# its own tables. Skips loudly (exit 0) when sqlite3 is absent, the same bargain
+# schema_generated_current makes with flatc.
+add_test(NAME asserts_fire
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/hpc/suite/asserts_fire.sh)

@@ -36,6 +36,17 @@
 -- into a spurious "names an entity no open record created", and this assertion
 -- becomes noise the moment it is most needed. The subject of ib_device is the
 -- interned ibv_context*, closed at ibv_close_device.
+--
+-- 210 mlx5_queue_pair is the case that failure mode was warning about, and it
+-- had already happened. A queue pair created through mlx5dv_create_qp gets its
+-- open record in the mlx5dv provider's range, while the close still comes from
+-- ibverbs' ibv_destroy_qp carrying opener 102 — so every such QP was a
+-- guaranteed "close names an entity no open record created" on any workload
+-- that both creates through mlx5dv and tears down. It is an open record like
+-- any other; leaving it out was an omission from this list, not a check.
+-- (The opener recorded on the close is still 102, because that is the type the
+-- CLOSING hook knows. This CTE is joined on subject alone, so the mismatch is
+-- harmless — `opener` is a signpost for the reader, not part of the join.)
 WITH opens AS (
   SELECT rank, mr AS subject, 100 AS opener FROM ib_mem_region
   UNION ALL SELECT rank, qp, 102 FROM ib_queue_pair
@@ -43,6 +54,7 @@ WITH opens AS (
   UNION ALL SELECT rank, srq, 108 FROM ib_shared_recv_queue
   UNION ALL SELECT rank, ah, 118 FROM ib_address_handle
   UNION ALL SELECT rank, context, 120 FROM ib_device
+  UNION ALL SELECT rank, qp, 210 FROM mlx5_queue_pair
   UNION ALL SELECT rank, umem, 200 FROM mlx5_umem
   UNION ALL SELECT rank, uar, 202 FROM mlx5_uar
   UNION ALL SELECT rank, id, 520 FROM mem_object

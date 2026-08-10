@@ -659,6 +659,37 @@ Profiler::Profiler() {
             remember_cq(cq);
         });
 
+    // mlx5dv_create_cq -> the same entity through libmlx5's own door.
+    //
+    // Recorded as an ib_completion_queue rather than as a provider-local record
+    // because that is what it is: the returned ibv_cq_ex* is the pointer
+    // ibv_destroy_cq will be handed and the pointer ib_poll_cq already names, so
+    // a second table would only force every consumer to union two. The origin
+    // column is what keeps the doors distinguishable, which is the whole reason
+    // it exists.
+    //
+    // Fields read through the same ibv_cq_ex_to_cq cast create_cq_ex uses, and
+    // for the same reason: cq->cqe is the depth the DEVICE granted. The
+    // mlx5dv_cq_init_attr* third argument is never dereferenced (see ib_hooks.hpp).
+    this->register_post<mlx5dv_create_cq_tag>(
+        [](ibv_cq_ex* cqx, ibv_context* ctx, ibv_cq_init_attr_ex* a, void*, auto...) {
+            if (!cqx)
+                return;
+            ibv_cq* cq = ibv_cq_ex_to_cq(cqx);
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbCompletionQueue{{},
+                                               {},
+                                               h(cq),
+                                               h(ctx),
+                                               (a && a->channel) ? h(a->channel)
+                                                                 : pcomm::core::Handle{},
+                                               static_cast<std::uint32_t>(cq->cqe),
+                                               a ? a->comp_vector : 0u,
+                                               static_cast<std::uint8_t>(
+                                                   rr::IbCqOrigin::Mlx5dvCreateCq)});
+            remember_cq(cq);
+        });
+
     // destroy_cq -> the CQ's lifetime ended. Same success-only discipline as
     // dereg_mr and destroy_qp: a destroy that failed closed nothing, and
     // recording it would make a live CQ look freed.
@@ -1096,6 +1127,21 @@ extern "C" ibv_cq* ibv_create_cq(ibv_context* context, int cqe, void* cq_context
     ibv::ensure_installed(context, "create_cq");
     return ibv::Profiler::invoke_preload<ibv::create_cq_tag>(context, cqe, cq_context, channel,
                                                              comp_vector);
+}
+// libmlx5's completion-queue door. A libmlx5 symbol interposed by the ibverbs
+// provider, which is deliberate: see ib_hooks.hpp. ensure_installed for exactly
+// the reason create_cq has it — a CQ hangs off a context, so this is a door
+// through which a context carrying only completion queues can first reach us,
+// and it is the door UCX's mlx5 transport actually uses.
+//
+// The third parameter is mlx5dv_cq_init_attr* in mlx5dv.h and void* here: the
+// declarations are ABI-identical and the C symbol has no mangling to disagree
+// about, so nothing in libmlx5 or its callers can tell the difference.
+extern "C" ibv_cq_ex* mlx5dv_create_cq(ibv_context* context, ibv_cq_init_attr_ex* cq_attr,
+                                       void* mlx5_cq_attr) {
+    ibv::ensure_installed(context, "mlx5dv_create_cq");
+    return ibv::Profiler::invoke_preload<ibv::mlx5dv_create_cq_tag>(context, cq_attr,
+                                                                    mlx5_cq_attr);
 }
 // The CQ's other end. ensure_installed here for the same reason create_cq has
 // it: a CQ hangs off a context rather than a PD, so this is one of the two doors

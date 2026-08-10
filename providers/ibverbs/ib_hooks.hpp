@@ -180,6 +180,48 @@ DEFINE_PRELOAD_HOOK(ibv, create_cq, "ibv_create_cq", ibv_cq*, ibv_context*, int,
 // It is also what puts CQs under suite/asserts/entity_close_accounted.sql,
 // which is the assertion that has found every missing door so far.
 DEFINE_PRELOAD_HOOK(ibv, destroy_cq, "ibv_destroy_cq", int, ibv_cq*);
+// The THIRD completion-queue door, and it is not in libibverbs at all.
+//
+// IbCqOrigin was added as an instrument with a written-down prediction: "a
+// deficit that is entirely CreateCq rules the install window out; one that is
+// entirely CreateCqEx implicates it; neither means a third door." The
+// instrument then answered. On 16_hubspoke_ib (job 44459283) every rank records
+// 104 create_cq + 60 create_cq_ex opens and 194 closes — a deficit of exactly
+// 30, on all four ranks, split 15 closes naming a handle nothing opened and 15
+// naming a handle opened once and closed twice. Both halves are the same fact:
+// an address the allocator reused lands on a handle we already interned (a
+// second close), a fresh address does not (an orphan). Not a double-emit.
+//
+// The third door is mlx5dv_create_cq, and unlike ibv_create_cq_ex it IS an
+// exported symbol — `mlx5dv_create_cq@@MLX5_1.1` in libmlx5.so.1 — so a plain
+// preload hook reaches it. It is the only undefined create_cq-shaped reference
+// in the whole stack besides ibv_create_cq: checked with readelf across every
+// .so under UCX, OpenMPI and NVSHMEM on MN5, and libuct_ib_mlx5.so.0 is the one
+// object that names it. UCX's mlx5 transport takes that path for its tx and rx
+// CQs and destroys them through ibv_destroy_cq, which is why the close arrived
+// and the open never did.
+//
+// rdma-core implements it over libmlx5's INTERNAL create_cq rather than over
+// the verbs_context::create_cq_ex slot, so hooking it does NOT double-count the
+// way ibv_reg_mr over ibv_reg_mr_iova2 did — and that is measured rather than
+// read off the source: if it routed through the slot, those 30 CQs would
+// already be in the capture with origin=create_cq_ex.
+//
+// WHY IT LIVES IN THIS PROVIDER, next to a libibverbs symbol. Because
+// ibv_destroy_cq does, and an entity whose open and close are emitted by
+// different providers is an entity whose accounting depends on which providers
+// the user selected: `pcomm -p ib` alone would record every close and no open,
+// and entity_close_accounted would go red on a correct capture. mlx5dv_create_qp
+// took the other choice and left exactly that hole — mlx5_queue_pair is an open
+// record in the mlx5dv range while ibv_destroy_qp's close comes from here, so
+// the assertion has to be taught about the table by hand.
+//
+// The third argument is mlx5dv_cq_init_attr*, declared void* here on purpose:
+// it is passed through untouched, a pointer is a pointer, and typing it would
+// put an mlx5dv.h dependency on the one provider that must build against
+// nothing but libibverbs.
+DEFINE_PRELOAD_HOOK(ibv, mlx5dv_create_cq, "mlx5dv_create_cq", ibv_cq_ex*, ibv_context*,
+                    ibv_cq_init_attr_ex*, void*);
 // The classic SRQ doors. Both ARE exported symbols (checked with readelf, unlike
 // their _ex cousin above), so a plain preload hook reaches them.
 // The UD addressing doors. Both exported (checked with readelf).
