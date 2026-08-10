@@ -751,6 +751,20 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
     } else if (is_exit && cbid == API_CUDA_cuMemAllocManaged) {
         auto* p = (cuMemAllocManaged_params*)params;
         handle_alloc(*p->dptr, p->bytesize);
+    } else if (!is_exit && (cbid == API_CUDA_cuMemFree_v2 || cbid == API_CUDA_cuMemFree)) {
+        // On ENTRY, not exit: the pointer is the thing being closed, and after
+        // the call returns the address can already have been handed to another
+        // allocation. Closing first keeps the record ordered with reality.
+        //
+        // cuMemFree rather than cudaFree because the allocation side hooks
+        // cuMemAlloc: cudaMalloc funnels into it, so the driver layer is where
+        // both halves belong and a runtime-level free hook would miss every
+        // driver-API allocation.
+        const uint64_t dptr = cbid == API_CUDA_cuMemFree_v2
+                                  ? (uint64_t)((cuMemFree_v2_params*)params)->dptr
+                                  : (uint64_t)((cuMemFree_params*)params)->dptr;
+        if (g_engine && dptr)
+            g_engine->on_free(dptr);
     } else if (is_exit && cbid == API_CUDA_cuMemMap) {
         // Record the extent, nothing more. Who owns each of these is decided at
         // the next launch, by asking CUDA and NVSHMEM — see

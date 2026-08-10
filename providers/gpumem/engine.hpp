@@ -271,6 +271,14 @@ public:
         m_allocs.add(base, size, dev, object);
     }
 
+    // cuMemFree: a plain device allocation's lifetime ends here.
+    //
+    // Same shape as on_symmetric_free and deliberately a separate entry point:
+    // the two arrive on different threads (a CUDA callback vs the application's
+    // own call into NVSHMEM) and name buffers registered by different paths.
+    // Sharing the body would only hide that.
+    void on_free(std::uint64_t base) { close_object(base); }
+
     // nvshmem_free: the buffer's lifetime ends here.
     //
     // Without this an address reused by a later allocation would still resolve
@@ -280,10 +288,16 @@ public:
     //
     // opener is MemObject's type_id because that is the record that opened it;
     // a record id rather than a new enum, so nothing has to be kept in sync.
-    void on_symmetric_free(std::uint64_t base) {
+    void on_symmetric_free(std::uint64_t base) { close_object(base); }
+
+    // The shared body: emit the close for whatever object is registered at this
+    // exact base. Silent when nothing is — a free of memory allocated before we
+    // attached is not a defect, and inventing a close for it would manufacture
+    // exactly the unmatched row entity_close_accounted exists to detect.
+    void close_object(std::uint64_t base) {
         const auto object = m_allocs.object_at(base);
         if (object == core::kNullHandle)
-            return;  // never recorded — nothing to close, and nothing to claim
+            return;
         auto& rec = recorder();
         rec.record(rec.now_instant(),
                    core::records::EntityClose{

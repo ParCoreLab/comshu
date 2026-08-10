@@ -562,8 +562,14 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
+// MemObject and EntityClose lead deliberately. The export loop is rank -> type,
+// so a type listed earlier is fully read before a later one for that rank —
+// which lets a GpuAccess resolve its object's [open, close) window as it
+// arrives, instead of buffering every access's timestamp to resolve afterwards.
+// Nothing else depends on this order: the CSV files are written independently,
+// known_types() is a set, and --types sorts by id.
 using TableRecords =
-    std::tuple<GpuAccess, MemObject, EntityClose, SourceLine, NodeIdentity, ClockAnchor, Attribution,
+    std::tuple<MemObject, EntityClose, GpuAccess, SourceLine, NodeIdentity, ClockAnchor, Attribution,
                ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend,
                ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
@@ -727,27 +733,108 @@ struct CsvAgg {
     // than resolved on the fly because the generic export loop reaches
     // gpu_access before mem_object, so containment cannot be answered yet.
     std::map<int, std::unordered_map<std::uint64_t, long>> access_addrs, region_bases;
-    // rank -> object handle -> refs, for accesses the producer already
-    // attributed. Address containment cannot answer these at all: a peer's
-    // symmetric-heap mapping is ~275 GB from the object's own base, so the
-    // address resolves to nothing while the handle is exact.
-    std::map<int, std::unordered_map<core::Handle, long>> object_refs;
+    // One LIFETIME of one object. A handle is a pointer value, so a freed
+    // address gets reused and the same handle names a different buffer later —
+    // measured on nvshmem_coexist: 63 of 560 region handles and 28 of 522
+    // object handles are reused, one of them six times. Merging those would
+    // charge one buffer's accesses to another, which is why a handle alone is
+    // not an identity and the window is needed.
+    struct Life {
+        std::uint64_t  open_ticks{0};
+        std::uint64_t  close_ticks{~0ull};  // open-ended until EntityClose says otherwise
+        std::uint64_t  base{0}, size{0};
+        core::DeviceId device{0xFFFF};
+        long           refs{0};
+    };
+    // rank -> object handle -> its lifetimes, in the order they were opened.
+    std::map<int, std::unordered_map<core::Handle, std::vector<Life>>> lives;
+    // Accesses whose handle matched no lifetime at all, per rank.
+    std::map<int, long> unmatched_object_refs;
+    // Accesses naming a handle with SEVERAL lifetimes, which only a trustworthy
+    // access timestamp could separate. See aggregate(GpuAccess).
+    std::map<int, long> ambiguous_object_refs;
 };
 
 template<core::Record R> void aggregate(CsvAgg&, const RankDir&, const Stamped<R>&) {}
 
-// An access that names its object is counted against that object; only the
-// unattributed ones fall through to address containment. The producer is the
-// better authority — it saw the mapping that the address alone cannot express.
+// An access that names its object is charged to the LIFETIME of that object it
+// falls inside; only the unattributed ones fall through to address containment.
+// The producer is the better authority for *which* object — it saw the mapping
+// the address cannot express — but not for which incarnation, because it hands
+// over a handle and handles repeat. The timestamp settles that.
+//
+// Resolvable in one pass because MemObject and EntityClose lead TableRecords,
+// so every lifetime of this rank is already known by the time its accesses
+// arrive.
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<GpuAccess>& s) {
     a.n_access++;
-    if (s.payload.object != core::kNullHandle)
-        a.object_refs[r.rank][s.payload.object]++;
-    else
+    if (s.payload.object == core::kNullHandle) {
         a.access_addrs[r.rank][s.payload.address]++;
+        return;
+    }
+    auto& by_handle = a.lives[r.rank];
+    const auto it = by_handle.find(s.payload.object);
+    if (it == by_handle.end()) {
+        // The producer named an object we never saw recorded.
+        a.unmatched_object_refs[r.rank]++;
+        return;
+    }
+
+    // ONE lifetime: there is nothing to disambiguate and the timestamp is not
+    // consulted. This is the common case and the one that must not be made to
+    // depend on a clock we cannot yet trust.
+    if (it->second.size() == 1) {
+        it->second.front().refs++;
+        return;
+    }
+
+    // Several lifetimes share this handle, so which buffer was touched depends
+    // on WHEN — and gpu_access cannot answer that today. Its `ticks` is the
+    // instant the record was DRAINED on the recv thread, not the instant the
+    // access happened: measured on the du04 capture, every access carries a
+    // timestamp *later* than the EntityClose of the buffer it touched
+    // (accesses 45383843401475670 vs close 45383840583777450), because the
+    // channel drains after the kernel and after the application freed.
+    //
+    // So the window is not applied here. Counting these as ambiguous states the
+    // limit instead of hiding it — charging them to the newest lifetime, or to
+    // all of them, would produce a number that looks resolved and is not.
+    // Fixing it is PLAN-20260803-1021-gpumem-window-timestamps, whose own
+    // blocker (the positional heap-owner guess) is the thing the nvshmem_ptr
+    // rewrite replaced.
+    a.ambiguous_object_refs[r.rank]++;
+}
+
+// Each MemObject row opens a lifetime. The merged-by-range map below still
+// feeds the containment path for unattributed addresses; this list is what the
+// handle path resolves against.
+void aggregate_life(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
+    a.lives[r.rank][s.payload.id].push_back({s.temporal.a.ticks,
+                                             ~0ull,
+                                             s.payload.range.base,
+                                             s.payload.range.size,
+                                             s.payload.device,
+                                             0});
+}
+
+// Close the most recent still-open lifetime of this subject. Most recent
+// because opens and closes interleave: with reuse there can be several, and the
+// one being closed is always the live one.
+void aggregate(CsvAgg& a, const RankDir& r, const Stamped<EntityClose>& s) {
+    if (s.payload.opener != core::records::MemObject::pcomm_type_id)
+        return;  // ib/mlx5 entities have their own accounting
+    const auto it = a.lives[r.rank].find(s.payload.subject);
+    if (it == a.lives[r.rank].end())
+        return;
+    for (auto life = it->second.rbegin(); life != it->second.rend(); ++life)
+        if (life->close_ticks == ~0ull) {
+            life->close_ticks = s.temporal.a.ticks;
+            return;
+        }
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
+    aggregate_life(a, r, s);
     auto& o = a.objects[r.rank][{s.payload.range.base, s.payload.range.size}];
     o.base = s.payload.range.base;
     o.size = s.payload.range.size;
@@ -861,7 +948,7 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
         for (const auto& [rank, _addrs] : *addrs_by_rank)
             ranks_here.insert(rank);
         if (is_access)
-            for (const auto& [rank, _objs] : agg.object_refs)
+            for (const auto& [rank, _objs] : agg.lives)
                 ranks_here.insert(rank);
 
         static const std::unordered_map<std::uint64_t, long> kNoAddrs;
@@ -878,31 +965,26 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
 
             long unresolved = 0;
 
-            // Producer-attributed accesses first. These need no containment and
-            // admit no ambiguity: the handle names exactly one object. Only
-            // gpu_access carries them, and charging them here keeps `refs`
-            // meaning "references to this object" regardless of how it was
-            // established.
-            //
-            // A handle naming no object we recorded is counted unresolved
-            // rather than dropped — that would mean a producer attributed an
-            // access to an entity it never emitted, which is a finding and not
-            // something to hide.
-            if (const auto orefs = agg.object_refs.find(rank);
-                orefs != agg.object_refs.end() && is_access) {
-                for (const auto& [id, refs] : orefs->second) {
-                    bool placed = false;
-                    for (auto& o : objs)
-                        if (o.id == id) {
-                            o.refs += refs;
-                            o.direct_refs += refs;
-                            placed = true;
-                            break;
-                        }
-                    if (!placed)
-                        unresolved += refs;
-                }
-            }
+            // Producer-attributed accesses are emitted per LIFETIME, below,
+            // rather than folded into the merged-by-range rows: two lifetimes
+            // of one handle share a base and a size, so merging them would put
+            // one buffer's accesses on another's row and no column would say
+            // so. Accesses whose handle matched no window are counted
+            // unresolved — an access outside every lifetime of the object it
+            // claims is a finding, not something to round into the nearest one.
+            if (is_access)
+                if (const auto u = agg.unmatched_object_refs.find(rank);
+                    u != agg.unmatched_object_refs.end())
+                    unresolved += u->second;
+
+            // Reported on its own row rather than folded into `unresolved`: the
+            // object IS known, only the incarnation is not, and those are
+            // different states of knowledge.
+            long ambiguous_lives = 0;
+            if (is_access)
+                if (const auto amb = agg.ambiguous_object_refs.find(rank);
+                    amb != agg.ambiguous_object_refs.end())
+                    ambiguous_lives = amb->second;
 
             for (const auto& [addr, refs] : addrs) {
                 std::size_t hits = 0, last = 0;
@@ -968,6 +1050,23 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
                     }
             }
 
+            // One row per lifetime that was actually referenced. `direct_refs`
+            // equals `refs` here by construction: every one of them was placed
+            // by the producer's handle and this instant's window, never by
+            // containment.
+            if (is_access) {
+                if (const auto lv = agg.lives.find(rank); lv != agg.lives.end())
+                    for (const auto& [_id, lifetimes] : lv->second)
+                        for (const auto& life : lifetimes) {
+                            if (life.refs == 0)
+                                continue;
+                            std::fprintf(f, "%d,%s,0x%llx,%llu,%u,1,1,%ld,%ld,0,0\n", rank, source,
+                                         (unsigned long long)life.base,
+                                         (unsigned long long)life.size, life.device, life.refs,
+                                         life.refs);
+                        }
+            }
+
             for (const auto& o : objs) {
                 if (o.refs == 0)
                     continue;
@@ -978,6 +1077,9 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
             }
             if (unresolved)
                 std::fprintf(f, "%d,%s,none,0,65535,0,0,%ld,0,0,0\n", rank, source, unresolved);
+            if (ambiguous_lives)
+                std::fprintf(f, "%d,%s,reused-handle,0,65535,0,0,%ld,0,%ld,0\n", rank, source,
+                             ambiguous_lives, ambiguous_lives);
         }
     }
     std::fclose(f);
