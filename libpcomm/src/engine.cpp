@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "pcomm/engine_abi.h"
+#include "pcomm/hook/dlsym/Dlsym.hpp"
 #include "pcomm/core/ids.hpp"
 #include "pcomm/core/mem_attr.hpp"
 #include "pcomm/core/object_registry.hpp"
@@ -126,6 +127,11 @@ std::uint32_t pcomm_engine_abi_version(void) {
     return PCOMM_ENGINE_ABI_VERSION;
 }
 
+// Registers the ibv_destroy_qp smart_dlsym hook (defined below). Called at
+// capture start so it is in place before the application initialises NVSHMEM,
+// which resolves ibv_destroy_qp through dlsym rather than the PLT.
+static void pcomm_install_ibv_destroy_qp_hook();
+
 int pcomm_engine_acquire(const char* output_dir, int rank, int verbose) {
     pcomm::Config cfg;
     if (output_dir && *output_dir)
@@ -140,6 +146,7 @@ int pcomm_engine_acquire(const char* output_dir, int rank, int verbose) {
                                   pcomm::core::id_range::internal_hi, PCOMM_ENGINE_ABI_VERSION);
 
     pcomm::Tracer::instance().start(cfg);
+    pcomm_install_ibv_destroy_qp_hook();
 
     // Loud, once: a linked-but-not-preloaded engine still "works" — it just
     // captures less, with no error anywhere. That cost 12 of 16 memory regions
@@ -259,6 +266,18 @@ std::vector<DeclaredProvider>& declared() {
 std::mutex& declared_mutex() {
     static auto* m = new std::mutex();
     return *m;
+}
+
+// True if some loaded provider declared the id range containing `type_id` — i.e.
+// a provider that records this kind of entity is present in this run. Used to
+// gate the QP close: on a p2p-only (gpumem) run no provider records queue-pair
+// opens, so a close would name an entity nothing created.
+bool type_is_declared(std::uint16_t type_id) {
+    std::lock_guard lock(declared_mutex());
+    for (const auto& d : declared())
+        if (type_id >= d.lo && type_id <= d.hi)
+            return true;
+    return false;
 }
 
 }  // namespace
@@ -425,6 +444,16 @@ void pcomm_close_qp(void* p) {
     auto& tracer = pcomm::Tracer::instance();
     if (!tracer.has_recorder())
         return;
+    // Only when a provider that records queue-pair opens is loaded. QP opens live
+    // in ib_queue_pair (102, ibverbs) and mlx5_queue_pair (210, mlx5dv); if
+    // neither range is declared — a p2p-only gpumem run — nothing recorded the
+    // open, and a close here would be the "close names an entity no open record
+    // created" row entity_close_accounted exists to flag. This is the gate
+    // pcomm_close_object gets from the object registry (an object nothing
+    // registered is not closed); a QP is opened by a provider, so the presence of
+    // that provider is the equivalent signal.
+    if (!type_is_declared(102) && !type_is_declared(210))
+        return;
     constexpr pcomm::core::RecordTypeId kIbQueuePairTypeId = 102;
     auto&                               rec = tracer.recorder();
     rec.record(rec.now_instant(),
@@ -468,27 +497,72 @@ extern "C" void nvshmem_free(void* p) {
         real(p);
 }
 
-/* Queue-pair destruction. Interposed in the ENGINE and not in a provider,
- * because a QP created through ibv_create_qp (ibverbs) and one created through
- * mlx5dv_create_qp (mlx5dv) are BOTH torn down here, the two providers coexist
- * by design, and interposition wants exactly one global definition of a symbol —
- * so no provider can own this door and account both. The engine can: it is
- * loaded and preloaded first in every provider selection. Before this, a
- * `-p mlx5dv`-only IBGDA run (cases 09/10/12) left every Mlx5QueuePair opened and
- * never closed, because the old owner, ibverbs, was not in the process at all.
+/* Queue-pair destruction, owned by the ENGINE and not by a provider. A QP
+ * created through ibv_create_qp (ibverbs) and one created through
+ * mlx5dv_create_qp (mlx5dv) are BOTH torn down through ibv_destroy_qp, the two
+ * providers coexist by design, and interposition wants exactly one owner of a
+ * symbol — so no provider can own this door and account both. The engine can: it
+ * is preloaded first in every selection. Before this, a `-p mlx5dv`-only IBGDA
+ * run (cases 09/10/12) left every Mlx5QueuePair opened and never closed, because
+ * the old owner, ibverbs, was not in the process at all.
  *
- * The argument is typed void* rather than ibv_qp* to keep the vendor header out
- * of the vendor-free engine; it is ABI-identical (a pointer) and never
- * dereferenced. Closed only on success and after the real call, matching the
- * ibverbs hook it replaces: a failed destroy freed nothing, and interning the
- * pointer value the instant real() returns is safe because no other allocation
- * can run before this thread returns to the caller. */
-extern "C" int ibv_destroy_qp(void* qp) {
-    static auto real = pcomm_next_sym<int (*)(void*)>("ibv_destroy_qp");
-    const int   ret = real ? real(qp) : -1;
+ * There are TWO ways in, and both must land in one place so a QP is closed
+ * exactly once. perftest and pingpong link libibverbs and call through the PLT,
+ * caught by the exported symbol below. NVSHMEM reaches ibv_destroy_qp entirely
+ * through dlsym+dlvsym (measured on du04, case 09: `[pcomm-entry] dlsym/dlvsym
+ * ibv_destroy_qp`) and calls the real symbol through that pointer, which no ELF
+ * interposer ever sees — caught by the smart_dlsym registration in
+ * pcomm_install_ibv_destroy_qp_hook. */
+namespace {
+
+// The real ibv_destroy_qp, resolved through the RAW dlsym (smart_dlsym::
+// real_dlsym), never the engine's own interposed dlsym: this symbol is
+// registered in the smart_dlsym chain, so resolving it through the interposed
+// dlsym would hand back the hook and recurse. RTLD_NEXT is relative to the
+// engine, which is preloaded ahead of libibverbs, so this is the real symbol.
+int ibv_destroy_qp_real(void* qp) {
+    static auto real = reinterpret_cast<int (*)(void*)>(
+        pcomm::smart_dlsym::real_dlsym
+            ? pcomm::smart_dlsym::real_dlsym(pcomm::smart_dlsym::DL_RTLD_NEXT, "ibv_destroy_qp")
+            : nullptr);
+    return real ? real(qp) : -1;
+}
+
+// Destroy, then record the close on success — a failed destroy freed nothing.
+// The void* is ABI-identical to ibv_qp* and never dereferenced, so the engine
+// stays vendor-header-free. Interning the pointer value the instant the real
+// call returns is safe: no other allocation runs before this thread returns to
+// the caller, so the handle still names this QP.
+int ibv_destroy_qp_hook(void* qp) {
+    const int ret = ibv_destroy_qp_real(qp);
     if (ret == 0)
         pcomm_close_qp(qp);
     return ret;
+}
+
+}  // namespace
+
+// The PLT door: exported global so a direct caller binds here.
+extern "C" int ibv_destroy_qp(void* qp) {
+    return ibv_destroy_qp_hook(qp);
+}
+
+// The dlsym door: hand callers that resolve ibv_destroy_qp dynamically the same
+// hook. Modelled on core/dmabuf_registry.hpp's cuGetProcAddress registration.
+static void pcomm_install_ibv_destroy_qp_hook() {
+    if (!pcomm::smart_dlsym::RegisteredSymbols)
+        return;  // dlsym interposer not initialised; nothing resolves through us
+    static bool installed = false;
+    if (installed)
+        return;
+    installed = true;
+    pcomm::smart_dlsym::register_symbol(
+        "ibv_destroy_qp",
+        [](void* /*next*/, void*, const char*) -> void* {
+            // next is ignored: ibv_destroy_qp_hook reaches the real symbol itself
+            // through the raw dlsym, and nothing else registers this symbol.
+            return reinterpret_cast<void*>(&ibv_destroy_qp_hook);
+        });
 }
 
 /* Innermost object containing `addr`, for providers that must resolve an access
