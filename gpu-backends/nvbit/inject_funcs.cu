@@ -22,7 +22,13 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcod
 
     pcomm_gpu_access_t ma;
     for (int i = 0; i < 32; i++) {
-        ma.addrs[i] = __shfl_sync(active_mask, addr, i);
+        // __shfl_sync from a source lane that is not in active_mask returns an
+        // undefined value, NOT the caller's addr and NOT zero. The host drain
+        // contract (dev_common.h: "0 = inactive lane") is that an unused lane
+        // reads back as 0, so write 0 explicitly for lanes not participating in
+        // this access. active_mask and i are warp-uniform, so every active lane
+        // takes the same branch each iteration and the shuffle stays collective.
+        ma.addrs[i] = (active_mask & (1 << i)) ? __shfl_sync(active_mask, addr, i) : 0;
     }
 
     ma.dev_id = dev_id;
