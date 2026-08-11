@@ -65,12 +65,18 @@ Validated on both clusters: MN5 01–08 green (job 44506331), du04 09–12 green
 door (the closing hook cannot know 102 vs 210), which is harmless — the assertion
 joins on subject alone.
 
-**Was open, one latent edge:** ibverbs and mlx5dv do not co-run in any case
-today; when they do, the gate lets the engine emit one close per destroy, which
-is correct, but a QP created via `ibv_create_qp` on an mlx5dv-only run (none
-observed) would be closed without an open. The gate was coarse (per-run, not
-per-QP); a true fix registers each opened QP handle, the same registry
-`PLAN-20260806-1329` builds for objects. Done, 2026-08-11 — below.
+**Was open, one latent edge:** the gate was coarse (per-run, not per-QP), so a
+QP created via `ibv_create_qp` on an mlx5dv-only run (none observed) would be
+closed without an open. A true fix registers each opened QP handle, the same
+registry `PLAN-20260806-1329` builds for objects. Done, 2026-08-11 — below.
+
+(This paragraph used to open with "ibverbs and mlx5dv do not co-run in any case
+today", which is **wrong** and worth striking rather than quietly deleting,
+because the per-QP work was deferred partly on it. `08_ib_send_bw` and
+`probes/qpcreate` both run `-p ib,devx`. Co-running is in fact the *safe*
+configuration — both creation doors are hooked, so every handle is registered.
+The exposure is the opposite one: a run that selects only ONE of the two while
+the workload uses the other's door.)
 
 ## 2026-08-11: the gate is per-QP now, and a close names the door that opened it
 
