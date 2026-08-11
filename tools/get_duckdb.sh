@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the pinned prebuilt libduckdb into .tools/duckdb (gitignored).
 #
-# DuckDB is what makes `pcomm-read --parquet` and `--sql` possible: it writes
+# DuckDB is what makes `pcomm export --parquet` and `pcomm sql` possible: it writes
 # Parquet natively, so the reader needs no Arrow, and it is the same engine the
 # UI queries with. One dependency covers the writer, the query layer and the UI
 # server; see plans/PLAN-20260807-1718-ui-backbone-todo.md.
@@ -14,7 +14,7 @@
 #
 # **MN5 has no network and no cmake outside `module load`** — verified
 # 2026-08-09, not merely inherited from get_flatc.sh's comment. That is why
-# PCOMM_DUCKDB defaults to OFF: the suite builds and runs `pcomm-read --csv` on
+# PCOMM_DUCKDB defaults to OFF: the suite builds and runs `pcomm export --csv` on
 # MN5 exactly as before, and nothing in the cluster path depends on this script.
 # Parquet is produced where the UI runs, which is not the cluster.
 #

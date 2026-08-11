@@ -55,8 +55,8 @@ mpirun -np 32 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   "$PCOMM" -p ib -o "$OUT" -- "$APP" 8388608 20
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$PCOMM" read "$OUT"
+"$PCOMM" export "$OUT" --csv "$OUT.csv"
 
 # The question this job exists to answer, printed in the job log so it is
 # available without fetching 32 ranks of capture first.

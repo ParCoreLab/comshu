@@ -167,7 +167,7 @@ static Result bench_fb_batched(const char* path) {
     return {"B2 FlatBuffers batched", dt / double(kRecords), bytes};
 }
 
-// --- read back: the analysis path (pcomm-read --csv) ----------------------
+// --- read back: the analysis path (pcomm export --csv) ----------------------
 // Touch every record and accumulate a field, so the compiler cannot elide the
 // parse and so the numbers include whatever pointer-chasing each format needs.
 static double read_raw(const char* path, std::uint64_t& sink) {

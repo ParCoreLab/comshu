@@ -14,7 +14,7 @@
 # LID-keyed graph still reconstructs, but the per-rank split is lost).
 #
 #   sbatch tests/hpc/ib_ring.sbatch
-#   pcomm-read $OUT --csv $OUT-csv   # then feed ib_modify_qp.csv x ib_post_send.csv
+#   pcomm export $OUT --csv $OUT-csv   # then feed ib_modify_qp.csv x ib_post_send.csv
 #
 #SBATCH --job-name=pcomm-ib-ring
 #SBATCH --account=etur02
@@ -27,7 +27,7 @@
 set -x
 module load gcc/13.2.0 >/dev/null 2>&1
 LIB="${PCOMM_IB_LIB:-$HOME/proj/pcomm/build/providers/ibverbs/libibverbs_trace.so}"
-READ="${PCOMM_READ:-$HOME/proj/pcomm/build/pcomm-read/pcomm-read}"
+PCOMM_BIN="${PCOMM_BIN:-$HOME/proj/pcomm/build/pcomm/pcomm}"
 OUT="$HOME/ib-ring-$SLURM_JOB_ID"
 rm -rf "$OUT"; mkdir -p "$OUT"
 nodes=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
@@ -51,7 +51,7 @@ for i in 0 1 2 3; do
 done
 wait
 
-echo "=== streams ==="; "$READ" "$OUT"
-echo "=== csv export ==="; "$READ" "$OUT" --csv "$OUT-csv"
+echo "=== streams ==="; "$PCOMM_BIN" read "$OUT"
+echo "=== csv export ==="; "$PCOMM_BIN" export "$OUT" --csv "$OUT-csv"
 echo "=== ring topology (modify_qp -> RTR: local qp @ its LID -> dest qp @ dest LID) ==="
 awk -F, 'NR>1 && $7==2 && $6!=0 {print "  qp "$4" -> dest qp "$5" @ LID "$6}' "$OUT-csv/ib_modify_qp.csv"

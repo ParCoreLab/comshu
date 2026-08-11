@@ -7,8 +7,7 @@ and (later) ucTrace. Design docs live one level up: [`../UNIFICATION.md`](../UNI
 | Piece | Name |
 |---|---|
 | Core library (L0–L2) | `libpcomm` |
-| Launcher | `pcomm` |
-| Post-processor / reader | `pcomm-read` |
+| The command (launch, read, export, query, serve) | `pcomm` |
 | Namespace | `pcomm::` (`core`, `rec`, `hook`, `attr`, `gpu`, `provider`) |
 | Env prefix | `PCOMM_*` |
 
@@ -27,8 +26,10 @@ providers/       L3 — each builds one .so (vendor types live HERE, not in core
 gpu-backends/    vendor capture engines feeding the gpumem provider
   nvbit/         phase-1 default (confirmed working on du04: CUDA 13.0, driver 580)
   sanitizer/     Compute-Sanitizer (stub; phase 2)
-pcomm/           launcher binary
-pcomm-read/      reader binary (binary streams -> Parquet/Perfetto)
+pcomm/           the binary: verb dispatch (main.cpp) + the launcher (run.cpp)
+pcomm-read/      the reading half — read/dump/export/link/sql/types, linked into pcomm
+pcomm-ui/        the serving half — `pcomm ui`, linked in when built with DuckDB
+ui/              the Svelte frontend, built to ui/dist and embedded in the binary
 tests/           core unit/smoke tests (no GPU required)
 ```
 
@@ -37,12 +38,20 @@ tests/           core unit/smoke tests (no GPU required)
 Pick what to capture by short name; `pcomm` assembles the run and reads it back.
 
 ```bash
-pcomm --list                       # what can I capture, and how?
-pcomm -p ib      -- ./app args     # InfiniBand wire traffic (inter-node)
-pcomm -p p2p     -- ./app args     # GPU-initiated NVLink peer r/w (intra-node, Snoopie)
-pcomm -p ib,p2p  -- ./app args     # both — see "replay" below
-pcomm-read pcomm-out               # inspect / export the capture
+pcomm                                  # the verbs
+pcomm list                             # what can I capture, and how?
+pcomm run -p ib      -- ./app args     # InfiniBand wire traffic (inter-node)
+pcomm run -p p2p     -- ./app args     # GPU-initiated NVLink peer r/w (intra-node, Snoopie)
+pcomm run -p ib,p2p  -- ./app args     # both — see "replay" below
+pcomm read pcomm-out                   # what is in the capture
+pcomm export pcomm-out --csv out.csv   # tables for anything that reads CSV
+pcomm ui pcomm-out                     # the panels, at 127.0.0.1:8777
 ```
+
+One binary with verbs, not three tools: `pcomm-read` and `pcomm-ui` are gone as
+executables (they are still the directories the code lives in). It also removes
+an argv[1] that used to mean a *capture* in some invocations and an *export* in
+others — `read`/`dump`/`export` take a capture, `link`/`sql` take an export.
 
 Providers are chosen with `-p name[,name...]` (each accepts short aliases, e.g.
 `ib`/`net`, `p2p`/`nvlink`/`snoopie`). Add `--dry-run` to print the plan.
@@ -52,7 +61,7 @@ the CUDA runtime and `dlsym`, so it can't share a process with anything else.
 When a selection mixes such an *exclusive* provider with others, one process
 can't host them, so `pcomm` **replays**: it runs the workload once per exclusive
 provider and drops each pass under one `-o` directory (`out/ib/`, `out/gpumem/`,
-…). The passes are wall-clock-aligned, and `pcomm-read` stitches them back into
+…). The passes are wall-clock-aligned, and `pcomm read` stitches them back into
 one per-rank picture (each provider owns a disjoint record-type range, so a
 rank's network and NVLink traffic merge cleanly). Hook-based providers (all the
 network ones) share a single pass — no replay needed among them.
@@ -86,7 +95,7 @@ search root, so an installed `pcomm` needs **no** `PCOMM_PROVIDER_PATH`,
 `PCOMM_ENGINE_PATH` or `LD_LIBRARY_PATH`:
 
 ```
-<prefix>/bin/{pcomm,pcomm-read}
+<prefix>/bin/pcomm
 <prefix>/lib/pcomm/{libpcomm_engine,libibverbs_trace,libgpumem_trace}.so
 <prefix>/include/pcomm/...
 ```
@@ -170,7 +179,7 @@ One entry per layer; the build refuses a missing one:
    (the compiler demands both or neither).
 
 `tools/schema_check.py` runs at build time and cross-checks 1-3; it also holds
-`tools/read_pcs.py`'s enum-name tables equal to pcomm-read's.
+`tools/read_pcs.py`'s enum-name tables equal to the reader's.
 
 ## Adding a provider
 

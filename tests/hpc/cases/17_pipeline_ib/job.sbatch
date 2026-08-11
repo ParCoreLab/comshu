@@ -125,7 +125,7 @@ mpirun -np 4 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH \
   "$PCOMM" -p ib -o "$OUT" -- "$APP" pipe 4096 3
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$PCOMM" read "$OUT"
+"$PCOMM" export "$OUT" --csv "$OUT.csv"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
      "$PCOMM_ROOT/tests/hpc/cases/17_pipeline_ib"

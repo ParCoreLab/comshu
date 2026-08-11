@@ -32,8 +32,8 @@ clang++-20 -std=c++20 -O2 -I Events -I Profiler -I Profiler/Events \
 ./sigma_dump <out> > sigma.tsv
 
 # pcomm, same configuration
-pcomm -p mlx5dv --enable-doorbell-hijack -o <out2> -- ~/nvshmem_putget_sm80 1024 20
-pcomm-read <out2> --csv <out2>.csv
+pcomm run -p mlx5dv --enable-doorbell-hijack -o <out2> -- ~/nvshmem_putget_sm80 1024 20
+pcomm export <out2> --csv <out2>.csv
 ```
 
 ## What to compare, and what not to

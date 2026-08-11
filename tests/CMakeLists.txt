@@ -44,7 +44,7 @@ pcomm_add_test(fork_smoke)
 add_test(NAME fork_smoke COMMAND fork_smoke)
 
 # The intern dictionary: written through Tracer (so, the engine), read back
-# through rec::InternDictionary — the same path pcomm-read uses.
+# through rec::InternDictionary — the same path the reader uses.
 add_executable(intern_format intern_format.cpp)
 target_link_libraries(intern_format PRIVATE pcomm::pcomm pcomm::engine)
 pcomm_add_test(intern_format)

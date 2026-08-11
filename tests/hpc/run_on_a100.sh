@@ -110,7 +110,6 @@ for c in $(rsh "ls $RDIR/tests/hpc/cases" | grep -E "^(${cases_filter// /|})" );
        export PCOMM_OUT_ROOT=$RDIR/results &&
        export PCOMM_PROVIDER_PATH=$RDIR/build/providers/mlx5dv &&
        export PCOMM=$RDIR/build/pcomm/pcomm &&
-       export PCOMM_READ=$RDIR/build/pcomm-read/pcomm-read &&
        bash tests/hpc/cases/$c/job.sbatch 2>&1 | tail -40"
 done
 

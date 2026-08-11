@@ -22,7 +22,7 @@ set -x
 module load gcc/13.2.0 >/dev/null 2>&1
 
 LIB="${PCOMM_IB_LIB:-$HOME/proj/pcomm/build/providers/ibverbs/libibverbs_trace.so}"
-READ="${PCOMM_READ:-$HOME/proj/pcomm/build/pcomm-read/pcomm-read}"
+PCOMM_BIN="${PCOMM_BIN:-$HOME/proj/pcomm/build/pcomm/pcomm}"
 OUT="$HOME/ib-mn-$SLURM_JOB_ID"      # shared dir; per-rank subdirs
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -50,10 +50,10 @@ wait $SRV; SRV_RC=$?
 echo "client_rc=$CLI_RC server_rc=$SRV_RC"
 
 echo "=== captured streams ==="
-"$READ" "$OUT"
+"$PCOMM_BIN" read "$OUT"
 echo "=== per-rank ib_queue_pair + ib_modify_qp (cross-node topology) ==="
 for r in "$OUT"/rank-*; do
   echo "--- $r ---"
-  echo "[queue_pair]"; "$READ" "$r" --dump 102
-  echo "[modify_qp]";  "$READ" "$r" --dump 104
+  echo "[queue_pair]"; "$PCOMM_BIN" dump "$r" 102
+  echo "[modify_qp]";  "$PCOMM_BIN" dump "$r" 104
 done

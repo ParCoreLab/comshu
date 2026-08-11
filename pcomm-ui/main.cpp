@@ -1,11 +1,11 @@
-// pcomm ui — serve an exported capture as a queryable page.
+// pcomm ui — serve a capture as a queryable page.
 //
-//   pcomm-ui <capture-or-export-dir> [--port N] [--bind ADDR] [--dir <static-dir>]
+//   pcomm ui <capture-or-export-dir> [--port N] [--bind ADDR] [--dir <static-dir>]
 //
-// The export directory is one produced by `pcomm-read --parquet` and linked
-// with `--link`. This process never opens a `.pcs`: stream headers, schema
-// hashes, stride checks, version mapping and intern resolution all live in
-// pcomm-read, and duplicating any of it here is how two readers start
+// The export directory is one produced by `pcomm export --parquet` and linked
+// with `pcomm link`. This process never opens a `.pcs`: stream headers, schema
+// hashes, stride checks, version mapping and intern resolution all live in the
+// reading half, and duplicating any of it here is how two readers start
 // disagreeing about what a capture says.
 //
 // **One data path.** Everything the page knows arrives through POST /query.
@@ -29,10 +29,11 @@ extern "C" {
 }
 #include "httplib.h"
 
-#include "duck_mount.hpp"    // shared with pcomm-read: the empty-table policy
+#include "duck_mount.hpp"    // shared with the reader: the empty-table policy
 #include "capture_load.hpp"  // ... and reading a raw capture straight in
 #include "link_sql.hpp"      // ... and the derived layer, as views
 #include "ui_assets.hpp"     // generated from ui/dist: the built app, embedded
+#include "../pcomm/cli.hpp"
 
 namespace fs = std::filesystem;
 
@@ -43,7 +44,7 @@ namespace {
 // the only thing that can POST to this port.
 constexpr int         kRowCap = 100000;
 constexpr const char* kReadOnlyErr =
-    "this endpoint answers SELECT only; use pcomm-read to write anything";
+    "this endpoint answers SELECT only; use `pcomm export` to write anything";
 
 // Cheap first-token check, and it is the ONLY thing stopping a write — an
 // in-memory DuckDB cannot be opened in READ_ONLY access mode, so there is no
@@ -52,7 +53,7 @@ constexpr const char* kReadOnlyErr =
 //
 // What actually bounds the risk is the trust boundary: the server binds
 // loopback and serves one local capture to the person who started it, so a
-// caller who can POST here can already run pcomm-read. Note the same reasoning
+// caller who can POST here can already run pcomm itself. Note the same reasoning
 // covers the larger hole — DuckDB's own table functions mean a SELECT can read
 // any file the user can (`read_csv('/etc/passwd')`). That is acceptable at
 // loopback and would NOT be if this ever grew a bind address, which is the
@@ -97,11 +98,11 @@ std::string json_escape(const char* s) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int pcomm::cli::ui_main(int argc, char** argv) {
     if (argc < 2) {
-        std::fputs("usage: pcomm-ui <dir> [--port N] [--bind ADDR] [--dir <static-dir>]\n"
+        std::fputs("usage: pcomm ui <dir> [--port N] [--bind ADDR] [--dir <static-dir>]\n"
                    "  <dir> is either a capture (one containing rank-* dirs) or a\n"
-                   "  `pcomm-read --parquet` export, ideally --link'ed\n"
+                   "  `pcomm export --parquet` export, ideally `pcomm link`'ed\n"
                    "  the frontend is built in; --dir serves one from disk instead,\n"
                    "  for iterating on ui/ without rebuilding this binary\n",
                    stderr);
@@ -122,18 +123,18 @@ int main(int argc, char** argv) {
     const bool loopback =
         bind_addr == "127.0.0.1" || bind_addr == "localhost" || bind_addr == "::1";
     if (!fs::is_directory(dir)) {
-        std::fprintf(stderr, "pcomm-ui: not a directory: %s\n", dir.c_str());
+        std::fprintf(stderr, "pcomm ui: not a directory: %s\n", dir.c_str());
         return 1;
     }
 
     duckdb_database   db{};
     duckdb_connection con{};
     if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
-        std::fprintf(stderr, "pcomm-ui: cannot open DuckDB\n");
+        std::fprintf(stderr, "pcomm ui: cannot open DuckDB\n");
         return 1;
     }
 
-    // Raw record tables first, through the SAME policy `--link` uses: a stream
+    // Raw record tables first, through the SAME policy `pcomm link` uses: a stream
     // this capture lacks becomes an EMPTY table with the right columns, not a
     // missing one. Without that, a panel querying `mlx5_device_send` fails on
     // every verbs-only capture, and every panel would have to branch on which
@@ -141,8 +142,8 @@ int main(int argc, char** argv) {
     // Two kinds of directory, told apart by whether it holds rank-* dirs.
     //
     // A capture is loaded in full and the derived layer defined as views, so
-    // `pcomm-ui <capture>` works with no export step. That is the common case —
-    // needing `--parquet` and then `--link` before you could look at a run made
+    // `pcomm ui <capture>` works with no export step. That is the common case —
+    // needing `export --parquet` and then `link` before you could look at a run made
     // the quick question ("what does this capture look like?") the slow one.
     //
     // An export is still mounted as before: it is what the suite produces, and
@@ -153,7 +154,7 @@ int main(int argc, char** argv) {
     if (from_capture) {
         const auto ranks = pcomm::capture::scan_ranks(dir);
         if (ranks.empty()) {
-            std::fprintf(stderr, "pcomm-ui: %s holds rank dirs but none could be read\n",
+            std::fprintf(stderr, "pcomm ui: %s holds rank dirs but none could be read\n",
                          dir.c_str());
             return 1;
         }
@@ -161,7 +162,7 @@ int main(int argc, char** argv) {
         pcomm::capture::fill_missing_raw_tables(con);
         const auto bad = pcomm::link::define(con);
         tables = st.tables;
-        std::printf("pcomm-ui: capture %s — %zu ranks, %zu tables, %zu rows%s\n", dir.c_str(),
+        std::printf("pcomm ui: capture %s — %zu ranks, %zu tables, %zu rows%s\n", dir.c_str(),
                     ranks.size(), st.tables, st.rows,
                     (st.failed || bad) ? " (SOME FAILED, see above)" : "");
     } else {
@@ -182,7 +183,7 @@ int main(int argc, char** argv) {
         // reachable by someone else.
         if (!from_capture) {
             std::fprintf(stderr,
-                         "pcomm-ui: --bind %s refuses a Parquet export: its tables are views\n"
+                         "pcomm ui: --bind %s refuses a Parquet export: its tables are views\n"
                          "  over files, so queries need file access that must stay off here.\n"
                          "  Point it at the capture directory instead — that loads into memory.\n",
                          bind_addr.c_str());
@@ -190,12 +191,12 @@ int main(int argc, char** argv) {
         }
         if (!pcomm::duck::exec(con, "SET enable_external_access=false",
                                "disable external access")) {
-            std::fprintf(stderr, "pcomm-ui: refusing to bind %s without external access off\n",
+            std::fprintf(stderr, "pcomm ui: refusing to bind %s without external access off\n",
                          bind_addr.c_str());
             return 1;
         }
         std::fprintf(stderr,
-                     "pcomm-ui: bound to %s — reachable by anyone who can route to it.\n"
+                     "pcomm ui: bound to %s — reachable by anyone who can route to it.\n"
                      "  External file access is OFF; the query endpoint is still SELECT-only\n"
                      "  by a first-token check, not a parser. Serve captures you would show\n"
                      "  that audience anyway.\n",
@@ -228,14 +229,14 @@ int main(int argc, char** argv) {
         // costs more time than no error message.
         if (from_capture)
             std::fprintf(stderr,
-                         "pcomm-ui: %s has rank dirs but no decodable streams\n"
-                         "  check it with: pcomm-read %s\n",
+                         "pcomm ui: %s has rank dirs but no decodable streams\n"
+                         "  check it with: pcomm read %s\n",
                          dir.c_str(), dir.c_str());
         else
             std::fprintf(stderr,
-                         "pcomm-ui: no .parquet tables in %s, and no rank-* dirs either\n"
-                         "  pcomm-read <capture> --parquet %s && pcomm-read --link %s\n"
-                         "  (or just: pcomm-ui <capture>)\n",
+                         "pcomm ui: no .parquet tables in %s, and no rank-* dirs either\n"
+                         "  pcomm export <capture> --parquet %s && pcomm link %s\n"
+                         "  (or just: pcomm ui <capture>)\n",
                          dir.c_str(), dir.c_str(), dir.c_str());
         return 1;
     }
@@ -322,17 +323,17 @@ int main(int argc, char** argv) {
             res.set_content("no such asset: " + req.path + "\n", "text/plain");
         });
 
-    std::printf("pcomm-ui: %zu tables from %s\n", tables, dir.c_str());
+    std::printf("pcomm ui: %zu tables from %s\n", tables, dir.c_str());
     if (static_dir.empty())
-        std::printf("pcomm-ui: http://%s:%d/  (%zu embedded assets)\n", bind_addr.c_str(), port,
+        std::printf("pcomm ui: http://%s:%d/  (%zu embedded assets)\n", bind_addr.c_str(), port,
                     pcomm::ui::kAssetCount);
     else
-        std::printf("pcomm-ui: http://%s:%d/  (serving %s)\n", bind_addr.c_str(), port,
+        std::printf("pcomm ui: http://%s:%d/  (serving %s)\n", bind_addr.c_str(), port,
                     static_dir.c_str());
     std::fflush(stdout);
 
     if (!srv.listen(bind_addr.c_str(), port)) {
-        std::fprintf(stderr, "pcomm-ui: cannot bind %s:%d\n", bind_addr.c_str(), port);
+        std::fprintf(stderr, "pcomm ui: cannot bind %s:%d\n", bind_addr.c_str(), port);
         return 1;
     }
     duckdb_disconnect(&con);

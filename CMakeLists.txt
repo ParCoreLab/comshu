@@ -80,13 +80,16 @@ endif()
 
 add_subdirectory(libpcomm)
 add_subdirectory(providers)
-add_subdirectory(pcomm)
+# The halves of the one `pcomm` binary, before the binary that links them:
+# pcomm-read and pcomm-ui are OBJECT libraries, and pcomm/ names both targets.
 add_subdirectory(pcomm-read)
 # The UI is a DuckDB consumer by definition — serving a capture is querying it —
-# so it exists only in a DuckDB build. On MN5 this subdirectory is never entered.
+# so it exists only in a DuckDB build. On MN5 this subdirectory is never entered,
+# and `pcomm ui` reports that this build has no such verb.
 if(PCOMM_DUCKDB)
   add_subdirectory(pcomm-ui)
 endif()
+add_subdirectory(pcomm)
 
 if(PCOMM_BUILD_TESTS)
   add_subdirectory(tests)

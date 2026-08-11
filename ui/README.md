@@ -1,24 +1,24 @@
 # ui/ — the pcomm frontend
 
 Svelte 5 + Vite + Tailwind. Built to `dist/`, which is **compiled into**
-`pcomm-ui` — the server has no other page, and a copy of the binary on a login
+`pcomm ui` — the server has no other page, and a copy of the binary on a login
 node carries the whole app with it.
 
 ```bash
 pnpm install
 pnpm build                                   # -> ui/dist, embedded at cmake build time
 
-pcomm-ui <trace-dir>                         # http://127.0.0.1:8777 — that is the whole flow
+pcomm ui <trace-dir>                         # http://127.0.0.1:8777 — that is the whole flow
 
 pnpm dev                                     # vite on :5180, /query proxied to :8777
-pcomm-ui <trace-dir> --dir ui/dist           # serve from disk instead of the embedded copy
+pcomm ui <trace-dir> --dir ui/dist           # serve from disk instead of the embedded copy
 ```
 
-`ui/dist` must exist when cmake configures `pcomm-ui`, or the build stops and
+`ui/dist` must exist when cmake configures the UI half, or the build stops and
 says so. Rebuilding the bundle re-runs the embedder; no export step and no
-`--parquet`/`--link` first, since `pcomm-ui` loads a capture directly.
+`pcomm export`/`pcomm link` first, since `pcomm ui` loads a capture directly.
 
-`pnpm dev` proxies `/query` to a running `pcomm-ui` rather than mocking it. The
+`pnpm dev` proxies `/query` to a running `pcomm ui` rather than mocking it. The
 data path is the part most worth exercising, and a fixture would be the one
 thing never tested against a real capture.
 
@@ -48,7 +48,7 @@ with no single place to fix it; and the static / DuckDB-WASM build swaps the
 transport in that one file instead of hunting fetches through a grown UI.
 
 **If a panel needs a table that does not exist, it belongs in
-`pcomm-read --link`, not in the panel.** That is what keeps every view a
+`pcomm link`, not in the panel.** That is what keeps every view a
 projection of one model rather than eight private pipelines.
 
 **Colour is tokens; Tailwind does layout.** The palette in `src/app.css` is the

@@ -105,7 +105,7 @@ else
 fi
 
 # --- the configurations -----------------------------------------------------
-# core is the one that must always work: header-only lib, engine, pcomm-read,
+# core is the one that must always work: header-only lib, engine, the pcomm binary,
 # the launcher, every test, and the schema checks.
 run_config core
 

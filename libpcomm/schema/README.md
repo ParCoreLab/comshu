@@ -17,7 +17,7 @@ per record, so it costs nothing on the hot path.
 
 **Captures written before format 1 are not readable.** They have no header, and
 the only thing that distinguishes them is the absence the check is looking for,
-so `pcomm-read` names the file and refuses it rather than guessing.
+so `pcomm read` names the file and refuses it rather than guessing.
 
 Adopting FlatBuffers changed no record layout and cost nothing: the structs are
 byte-identical to what the recorder already wrote (`sizeof` matches for all 10
@@ -96,7 +96,7 @@ contiguous, `(name, version)` and `type_id` are each unique, and every version
 of a family has the same `RecordKind`. All four rules were verified by writing
 the violation and watching it fail.
 
-The reader's half is `pcomm/rec/version_map.hpp`. `pcomm-read` loads every
+The reader's half is `pcomm/rec/version_map.hpp`. The reader loads every
 version present and upgrades the old ones forward one step at a time, so a
 capture written before the bump and one written after produce the same table.
 An upgrade takes `Stamped<Old>` to `Stamped<New>` and carries the temporal stamp
@@ -112,7 +112,7 @@ purely to have something to bump would put a permanent fiction in the format.
 
 Streams whose `type_id` this build does not know (a capture from a newer schema,
 or a provider it was built without) are **reported**, with a record count, by
-both `pcomm-read --csv` and `unhandled_streams`. Nothing about them makes the
+both `pcomm export --csv` and `unhandled_streams`. Nothing about them makes the
 rest of the read fail, which is exactly why they have to be announced: an
 ignored stream produces no rows and no error, and the export looks complete.
 
@@ -166,12 +166,12 @@ different things; the old one-file-per-domain layout hid that by only ever
 loading one of the files.
 
 `rec::InternDictionary` (`pcomm/rec/intern_reader.hpp`) is the reader, shared by
-`pcomm-read` and the test so neither exercises a copy of the other's logic.
+the reader and the test so neither exercises a copy of the other's logic.
 
 ## What is still not covered
 
 `comm_edges` and the CSV export have no schema. Both are *outputs* of
-`pcomm-read` rather than parts of a capture — `comm_edges` is derived from QP
+the reader rather than parts of a capture — `comm_edges` is derived from QP
 state transitions and exists only in the export — so they are a different
 problem from the on-disk format, and the CSV header row is the closest thing
 they have to one today. Record versioning is a mechanism now, but no *real* record has been through a

@@ -487,11 +487,11 @@ def main():
             for k in sorted(set(cpp_tab) | set(py_tab)):
                 if cpp_tab.get(k) != py_tab.get(k):
                     fail(f"ibverbs name tables disagree on {py_var}[{k}]: "
-                         f"pcomm-read says {cpp_tab.get(k)!r}, read_pcs.py says "
+                         f"the reader says {cpp_tab.get(k)!r}, read_pcs.py says "
                          f"{py_tab.get(k)!r} — the Python reader must name "
                          f"values exactly as the CSVs the goldens query")
         else:
-            notes.append(f"{py_var}: {len(py_tab)} names match pcomm-read's {cpp_fn}()")
+            notes.append(f"{py_var}: {len(py_tab)} names match the reader's {cpp_fn}()")
 
     # --- report
     print("schema check: C++ records vs libpcomm/schema/pcomm.fbs")

@@ -39,7 +39,7 @@ OUT=$(pcomm_out p2p_kernel); rm -rf "$OUT"; mkdir -p "$OUT"
 PCOMM_RANK=0 "$PCOMM" -p p2p -o "$OUT" -- "$APP" 4096 4
 echo "app exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$PCOMM" read "$OUT"
+"$PCOMM" export "$OUT" --csv "$OUT.csv"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
      "$PCOMM_ROOT/tests/hpc/cases/03_p2p_kernel"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# sql_check.sh — run a case's SQL checks against a pcomm-read CSV export.
+# sql_check.sh — run a case's SQL checks against a `pcomm export --csv` export.
 #
 #   sql_check.sh <csv-dir> <case-dir> [--update]
 #
@@ -278,7 +278,7 @@ else echo "=== $case_name : FAIL (goldens $([ $gfail -eq 0 ] && echo ok || echo 
 [ "$axpass" -gt 0 ] && echo "  !! $axpass assertion(s) marked expect_fail now pass — update meta.json"
 
 # The directory may not exist: when the workload produced no capture at all,
-# `pcomm-read --csv` writes nothing and $CSV_DIR was never created. The verdict
+# `pcomm export --csv` writes nothing and $CSV_DIR was never created. The verdict
 # still has to be written — a case that failed hardest is exactly the one whose
 # result the aggregator must see. Without this the check died with
 # "result.json: No such file or directory", which reads as a broken harness

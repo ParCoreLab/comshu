@@ -3,7 +3,7 @@
 Regression + correctness tests that answer one question concretely: **does the
 tool still capture the *right* thing for a real workload?** Each case runs a
 genuine communication workload on MareNostrum 5 under `pcomm`, exports the
-capture with `pcomm-read --csv`, and runs SQL over it.
+capture with `pcomm export --csv`, and runs SQL over it.
 
 ## Two kinds of check, and why
 
@@ -74,12 +74,12 @@ Supporting machinery, all in `meta.json`:
 
 ## How correctness is verified
 
-The chain is: **deterministic workload → capture → `pcomm-read --csv` → SQL → assert / diff golden.**
+The chain is: **deterministic workload → capture → `pcomm export --csv` → SQL → assert / diff golden.**
 
 - **Tests bind to the CSV column contract, not the on-disk format.** A check is
   a `.sql` file querying columns like `ib_post_send(rank, opcode, length)` or the
   derived `comm_edges(src_rank, dst_rank, sends, bytes)`. If the `.pcs` binary
-  format changes, `pcomm-read` changes; the tests don't. Improving the tools
+  format changes, the reader changes; the tests don't. Improving the tools
   (new columns, new derived tables) is how we make new properties checkable —
   e.g. `comm_edges` exists so topology is asserted in rank-space, never against
   run-specific QP numbers or LIDs.
@@ -296,13 +296,13 @@ tests/hpc/suite/run_suite.sh status
 tests/hpc/suite/run_suite.sh check                   # aggregate PASS/FAIL
 
 # regenerate a golden from a run you've independently verified:
-pcomm-read <out> --csv <out>.csv
+pcomm export <out> --csv <out>.csv
 tests/hpc/suite/sql_check.sh <out>.csv cases/<case> --update
 ```
 
 ## Prerequisites / gaps (see ../../../things-to-circle-back-to.md)
 
-- `pcomm`, `pcomm-read`, providers built under `~/proj/pcomm/build`. Build the
+- `pcomm` and its providers built under `~/proj/pcomm/build`. Build the
   `p2p` (gpumem/NVBit) provider on MN5 with the gcc-11.4 host and CUDA C++20:
   ```
   module load gcc/11.4.0 nvidia-hpc-sdk/25.7 cmake
@@ -314,7 +314,7 @@ tests/hpc/suite/sql_check.sh <out>.csv cases/<case> --update
   ```
   (NVBit 1.7.7 lives at `gpu-backends/nvbit/nvbit-1.7.7.1/`; 1.8 needs CUDA 13.)
 - Toolchain split (`common.sh`): compile CUDA with gcc-11.4, run with gcc-13.2
-  libstdc++ (`pcomm-read` needs `GLIBCXX_3.4.31` → `module load gcc/13.2.0`).
+  libstdc++ (`pcomm` needs `GLIBCXX_3.4.31` → `module load gcc/13.2.0`).
 - **Replay under MPI** isn't per-rank fork (breaks PMI); every case uses a single
   provider so `pcomm` exec's directly. A combined intra+inter case waits on
   mpirun-level replay.

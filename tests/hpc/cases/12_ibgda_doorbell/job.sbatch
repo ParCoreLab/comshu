@@ -124,6 +124,6 @@ app_hij="$(grep -h 'put-ring' "$OUT.app" | sort)"
 [ "$app_ctrl" = "$app_hij" ] || fail "application output differs under the hijack"
 
 # ---- assert the hijacked capture ------------------------------------------
-echo "=== captured streams (hijack) ==="; "$PCOMM_READ" "$OUT"
-"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+echo "=== captured streams (hijack) ==="; "$PCOMM" read "$OUT"
+"$PCOMM" export "$OUT" --csv "$OUT.csv"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"

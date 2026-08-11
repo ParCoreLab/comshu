@@ -126,7 +126,7 @@ if [ $rc -ne 0 ]; then
   exit 1
 fi
 
-"$PCOMM_READ" "$OUT/capture" --csv "$OUT/capture.csv"
+"$PCOMM" export "$OUT/capture" --csv "$OUT/capture.csv"
 
 # ---- the join -------------------------------------------------------------
 echo "=== ANSWER ==="

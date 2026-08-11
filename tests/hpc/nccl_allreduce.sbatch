@@ -20,8 +20,8 @@
 # NVLink (correctly not on the IB wire).
 #
 #   sbatch tests/hpc/nccl_allreduce.sbatch
-#   pcomm-read $OUT --csv $OUT-csv        # ib_modify_qp x ib_queue_pair x ib_post_send
-#   pcomm-read $OUT --pftrace nccl.pftrace  # timeline in ui.perfetto.dev
+#   pcomm export $OUT --csv $OUT-csv        # ib_modify_qp x ib_queue_pair x ib_post_send
+#   pcomm export $OUT --pftrace nccl.pftrace  # timeline in ui.perfetto.dev
 #
 #SBATCH --job-name=pcomm-nccl
 #SBATCH --account=etur02
@@ -38,7 +38,7 @@ SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7
 export LD_LIBRARY_PATH=$SDK/comm_libs/12.9/nccl-2.26/lib:$LD_LIBRARY_PATH
 
 LIB="${PCOMM_IB_LIB:-$HOME/proj/pcomm/build/providers/ibverbs/libibverbs_trace.so}"
-READ="${PCOMM_READ:-$HOME/proj/pcomm/build/pcomm-read/pcomm-read}"
+PCOMM_BIN="${PCOMM_BIN:-$HOME/proj/pcomm/build/pcomm/pcomm}"
 APP="${NCCL_APP:-$HOME/nccl_allreduce}"
 OUT="$HOME/nccl-$SLURM_JOB_ID"; rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -50,4 +50,4 @@ mpirun -np 8 --map-by ppr:4:node \
   "$APP" 8388608 20
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$READ" "$OUT"
+echo "=== captured streams ==="; "$PCOMM_BIN" read "$OUT"

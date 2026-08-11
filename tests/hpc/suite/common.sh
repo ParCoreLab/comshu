@@ -10,8 +10,9 @@
 : "${PCOMM_BUILD:=$PCOMM_ROOT/build}"
 
 # Tools + providers (the launcher finds .so via PCOMM_PROVIDER_PATH, colon-list).
+# One binary, verbs for everything: `$PCOMM run`, `$PCOMM read`, `$PCOMM export`.
+# There is no PCOMM_READ any more — there is no second executable to point it at.
 export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
-export PCOMM_READ="$PCOMM_BUILD/pcomm-read/pcomm-read"
 # Every provider directory, and an existing value is PREPENDED rather than
 # replaced: a caller that already pointed at a specific build (run_on_a100.sh
 # does) must not have it silently overwritten by sourcing this file. That

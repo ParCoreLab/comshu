@@ -42,18 +42,17 @@ add_custom_command(
   COMMENT "embedding ui/dist into pcomm-ui"
   VERBATIM)
 
-add_executable(pcomm_ui main.cpp "${_assets}")
-set_target_properties(pcomm_ui PROPERTIES OUTPUT_NAME "pcomm-ui")
-target_include_directories(pcomm_ui PRIVATE
+# `pcomm ui`, as an OBJECT library linked into the one executable — same reason
+# as the reading half: one command, one help text. PUBLIC usage requirements so
+# they reach the executable, which is built in another directory.
+add_library(pcomm_ui OBJECT main.cpp "${_assets}")
+target_include_directories(pcomm_ui PUBLIC
   "${_duckdb_dir}" "${_httplib_dir}" "${CMAKE_CURRENT_BINARY_DIR}")
-# The generated raw-column tables and the shared mount policy, from pcomm-read.
-target_link_libraries(pcomm_ui PRIVATE pcomm_duck)
+# The generated raw-column tables and the shared mount policy, from the reader.
+target_link_libraries(pcomm_ui PUBLIC pcomm_duck)
 add_dependencies(pcomm_ui pcomm_duck_gen)
-target_link_libraries(pcomm_ui PRIVATE "${_duckdb_dir}/libduckdb.so")
+target_link_libraries(pcomm_ui PUBLIC "${_duckdb_dir}/libduckdb.so")
 find_package(Threads REQUIRED)
-target_link_libraries(pcomm_ui PRIVATE Threads::Threads)
-set_property(TARGET pcomm_ui APPEND PROPERTY BUILD_RPATH "${_duckdb_dir}")
-
-if(PCOMM_INSTALL_CORE)
-  install(TARGETS pcomm_ui RUNTIME DESTINATION bin COMPONENT core)
-endif()
+target_link_libraries(pcomm_ui PUBLIC Threads::Threads)
+# What tells the dispatcher this build has a `ui` verb at all.
+target_compile_definitions(pcomm_ui PUBLIC PCOMM_HAVE_UI=1)

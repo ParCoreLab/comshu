@@ -78,7 +78,7 @@ fi
 wait "$SRV"; SRV_RC=$?
 echo "client_rc=$CLI server_rc=$SRV_RC"
 
-echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$PCOMM" read "$OUT"
+"$PCOMM" export "$OUT" --csv "$OUT.csv"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
      "$PCOMM_ROOT/tests/hpc/cases/01_ib_pingpong"

@@ -65,7 +65,7 @@ tests/hpc/corpus/harvest.sh --cases "nccl_internode nvshmem_multinode"
 tests/hpc/corpus/index.sh                       # rebuild index.tsv from the corpus
 ```
 
-`index.sh` needs a built `pcomm-read`; it finds one in `build-corpus/`, `build/`,
+`index.sh` needs a built `pcomm`; it finds one in `build-corpus/`, `build/`,
 or `$PCOMM_READ`.
 
 ## What the corpus still lacks

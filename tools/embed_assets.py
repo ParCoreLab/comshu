@@ -3,7 +3,7 @@
 
     tools/embed_assets.py <asset-dir> <out-header>
 
-Why the binary is self-contained: pcomm-ui is copied to a login node and run
+Why the binary is self-contained: pcomm is copied to a login node and run
 there behind an SSH port-forward. A server that needs a sibling `dist/`
 directory is one that serves a blank page the first time anybody does that, and
 the failure looks like a broken UI rather than a missing file.

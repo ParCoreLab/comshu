@@ -1,17 +1,18 @@
-// pcomm-read — post-processor. Target pipeline: raw per-type streams + intern
-// sidecars -> TimeAligner -> columnar Tables -> exporters (Parquet canonical,
-// Perfetto derived). Heavy deps (Arrow) are allowed here — off the hot path.
+// The reading half of pcomm: `read`, `dump`, `export`, `link`, `sql`, `types`.
+// Target pipeline: raw per-type streams + intern sidecars -> TimeAligner ->
+// columnar Tables -> exporters (Parquet canonical, Perfetto derived). Heavy
+// deps (Arrow) are allowed here — off the hot path.
 //
-// Current stage: relational CSV export with intern resolution (`--csv`), a
-// raw per-stream decoder (`--dump`), Perfetto exporters, and a stream
-// inventory. The CSVs are the queryable "log" output until the Parquet writer
+// Current stage: relational CSV export with intern resolution
+// (`export --csv`), a raw per-stream decoder (`dump`), Perfetto exporters, and
+// a stream inventory (`read`). The CSVs are the queryable "log" output until the Parquet writer
 // lands (they load directly into DuckDB/Polars/pandas).
 //
 // Every record type is described exactly once, by a Table<R> specialization:
-// its table name, its columns, and how one row prints. The CSV export, --dump
+// its table name, its columns, and how one row prints. The CSV export, `dump`
 // and the known-type inventory are all derived from that list, so a new record
 // type is one Table<> entry — and the exports cannot drift apart (they did:
-// --dump used to print raw handles where the CSV resolved them).
+// `dump` used to print raw handles where the CSV resolved them).
 
 #include <cstdio>
 #include <algorithm>
@@ -34,6 +35,7 @@
 
 #include "ib_records.hpp"  // provider record schemas (reader knows all types)
 #include "mlx5_records.hpp"
+#include "../pcomm/cli.hpp"
 
 // At file scope, deliberately: raw_columns.hpp opens `namespace pcomm::raw`, and
 // including it inside this file's anonymous namespace would declare a *nested*
@@ -172,7 +174,7 @@ std::string qp_type_name(unsigned t) {  // ibv_qp_type
 
 // --- the record descriptor table ---------------------------------------------
 // One specialization per exportable record type: table name, column header, and
-// THE row printer. `--csv` prefixes each row with the rank; `--dump` prints it
+// THE row printer. `export --csv` prefixes each row with the rank; `dump` prints it
 // bare; both call the same row(), so a field's format exists in one place.
 template<core::Record R>
 struct Table;  // no primary definition: an unspecialized use is a missing entry
@@ -893,7 +895,7 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
             if (o.devices.size() < 2)
                 continue;
             std::fprintf(stderr,
-                         "pcomm-read: rank %d: %ld emitters disagree on the device owning "
+                         "pcomm: rank %d: %ld emitters disagree on the device owning "
                          "0x%llx+%llu:",
                          rank, o.emitters, (unsigned long long)o.base, (unsigned long long)o.size);
             for (auto d : o.devices)
@@ -1062,7 +1064,7 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
 int export_csv(const fs::path& root, const fs::path& outdir) {
     auto ranks = scan_ranks(root);
     if (ranks.empty()) {
-        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
+        std::fprintf(stderr, "pcomm: no rank-* directories under %s\n", root.c_str());
         return 1;
     }
     // Checked, not assumed: create_directories THROWS on a path that exists and
@@ -1072,7 +1074,7 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     std::error_code ec;
     fs::create_directories(outdir, ec);
     if (!fs::is_directory(outdir)) {
-        std::fprintf(stderr, "pcomm-read: cannot use %s as an output directory: %s\n",
+        std::fprintf(stderr, "pcomm: cannot use %s as an output directory: %s\n",
                      outdir.c_str(), ec ? ec.message().c_str() : "not a directory");
         return 1;
     }
@@ -1081,12 +1083,12 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     std::size_t unhandled = 0;
     for (const auto& r : ranks)
         for (const auto& d : rec::unhandled_streams(r.dir, known_types())) {
-            std::fprintf(stderr, "pcomm-read: rank %d: %s\n", r.rank, d.message.c_str());
+            std::fprintf(stderr, "pcomm: rank %d: %s\n", r.rank, d.message.c_str());
             ++unhandled;
         }
     if (unhandled)
         std::fprintf(stderr,
-                     "pcomm-read: %zu stream(s) not exported — this build is older "
+                     "pcomm: %zu stream(s) not exported — this build is older "
                      "than the capture, or was built without a provider it used\n",
                      unhandled);
 
@@ -1143,7 +1145,7 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     for (const auto& [_, f] : files)
         std::fclose(f);
 
-    std::printf("pcomm-read: %zu ranks, %zu gpu-accesses, %zu ib-sends -> %s/"
+    std::printf("pcomm: %zu ranks, %zu gpu-accesses, %zu ib-sends -> %s/"
                 "{gpu_access,mem_object,source_line,clock_anchor,comm_edges,mem_owner,ib_*}.csv\n",
                 ranks.size(), agg.n_access, agg.n_send, outdir.c_str());
     return 0;
@@ -1186,7 +1188,7 @@ constexpr auto duck_exec = [](duckdb_connection c, const std::string& q, const c
 int export_parquet(const fs::path& root, const fs::path& outdir) {
     auto ranks = scan_ranks(root);
     if (ranks.empty()) {
-        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
+        std::fprintf(stderr, "pcomm: no rank-* directories under %s\n", root.c_str());
         return 1;
     }
     std::error_code ec;
@@ -1195,7 +1197,7 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     duckdb_database   db{};
     duckdb_connection con{};
     if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
-        std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
+        std::fprintf(stderr, "pcomm: cannot open an in-memory DuckDB\n");
         return 1;
     }
 
@@ -1238,7 +1240,7 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     duckdb_disconnect(&con);
     duckdb_close(&db);
 
-    std::printf("pcomm-read: %zu ranks, %zu tables, %zu rows -> %s/*.parquet%s\n", ranks.size(),
+    std::printf("pcomm: %zu ranks, %zu tables, %zu rows -> %s/*.parquet%s\n", ranks.size(),
                 tables, rows_total, outdir.c_str(), failed ? " (SOME FAILED, see above)" : "");
     return failed ? 1 : 0;
 }
@@ -1248,20 +1250,20 @@ using pcomm::duck::mount_raw_tables;
 // it; the raw tables are untouched.
 int run_link(const fs::path& dir) {
     if (!fs::is_directory(dir)) {
-        std::fprintf(stderr, "pcomm-read: not a directory: %s\n", dir.c_str());
+        std::fprintf(stderr, "pcomm: not a directory: %s\n", dir.c_str());
         return 1;
     }
     duckdb_database   db{};
     duckdb_connection con{};
     if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
-        std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
+        std::fprintf(stderr, "pcomm: cannot open an in-memory DuckDB\n");
         return 1;
     }
     duck_exec(con, "SET temp_directory='" + dir.string() + "'", "temp_directory");
 
     const auto present = mount_raw_tables(con, dir);
     if (!present) {
-        std::fprintf(stderr, "pcomm-read: no raw .parquet tables in %s — run --parquet first\n",
+        std::fprintf(stderr, "pcomm: no raw .parquet tables in %s — run `pcomm export --parquet` first\n",
                      dir.c_str());
         duckdb_disconnect(&con);
         duckdb_close(&db);
@@ -1292,7 +1294,7 @@ int run_link(const fs::path& dir) {
         for (idx_t row = 0; row < duckdb_row_count(&res); ++row) {
             char* f = duckdb_value_varchar(&res, 0, row);
             char* n = duckdb_value_varchar(&res, 1, row);
-            std::fprintf(stderr, "pcomm-read: link_health: %s = %s\n", f ? f : "?", n ? n : "?");
+            std::fprintf(stderr, "pcomm: link_health: %s = %s\n", f ? f : "?", n ? n : "?");
             duckdb_free(f);
             duckdb_free(n);
         }
@@ -1301,7 +1303,7 @@ int run_link(const fs::path& dir) {
 
     duckdb_disconnect(&con);
     duckdb_close(&db);
-    std::printf("pcomm-read: %zu raw tables -> %zu derived -> %s/*.parquet%s\n", present, written,
+    std::printf("pcomm: %zu raw tables -> %zu derived -> %s/*.parquet%s\n", present, written,
                 dir.c_str(), failed ? " (SOME FAILED, see above)" : "");
     return failed ? 1 : 0;
 }
@@ -1322,13 +1324,13 @@ int run_sql(const fs::path& dir, const std::string& query) {
     // path, so a mistyped directory used to abort with an uncaught
     // filesystem_error instead of saying which directory it could not find.
     if (!fs::is_directory(dir)) {
-        std::fprintf(stderr, "pcomm-read: not a directory: %s\n", dir.c_str());
+        std::fprintf(stderr, "pcomm: not a directory: %s\n", dir.c_str());
         return 1;
     }
     duckdb_database   db{};
     duckdb_connection con{};
     if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
-        std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
+        std::fprintf(stderr, "pcomm: cannot open an in-memory DuckDB\n");
         return 1;
     }
 
@@ -1353,7 +1355,7 @@ int run_sql(const fs::path& dir, const std::string& query) {
             views++;
     }
     if (!views) {
-        std::fprintf(stderr, "pcomm-read: no .parquet or .csv tables in %s\n", dir.c_str());
+        std::fprintf(stderr, "pcomm: no .parquet or .csv tables in %s\n", dir.c_str());
         duckdb_disconnect(&con);
         duckdb_close(&db);
         return 1;
@@ -1362,8 +1364,8 @@ int run_sql(const fs::path& dir, const std::string& query) {
     // Via a temp file, NOT `COPY ... TO '/dev/stdout'`. That spelling looks
     // tidier and is wrong: when stdout is a redirected file DuckDB opens it and
     // seeks to offset 0, silently overwriting whatever the process already
-    // wrote. Two --sql runs into one redirect lost the first, and so would any
-    // `pcomm-read --sql ... > out.csv` that printed anything beforehand.
+    // wrote. Two `sql` runs into one redirect lost the first, and so would any
+    // `pcomm sql ... > out.csv` that printed anything beforehand.
     const auto tmp =
         fs::temp_directory_path() / ("pcomm-sql-" + std::to_string(::getpid()) + ".csv");
     const bool ok = duck_exec(
@@ -1439,14 +1441,14 @@ std::pair<std::vector<RankClock>, std::uint64_t> build_clocks(const std::vector<
 int export_perfetto(const fs::path& root, const fs::path& outfile) {
     auto ranks = scan_ranks(root);
     if (ranks.empty()) {
-        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
+        std::fprintf(stderr, "pcomm: no rank-* directories under %s\n", root.c_str());
         return 1;
     }
     auto [clk, origin] = build_clocks(ranks);
 
     std::FILE* f = std::fopen(outfile.c_str(), "w");
     if (!f) {
-        std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str());
+        std::fprintf(stderr, "pcomm: cannot write %s\n", outfile.c_str());
         return 1;
     }
     std::fputs("{\"displayTimeUnit\":\"ns\",\"traceEvents\":[\n", f);
@@ -1520,7 +1522,7 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
     }
     std::fputs("\n]}\n", f);
     std::fclose(f);
-    std::printf("pcomm-read: %zu ranks, %zu events -> %s (load in ui.perfetto.dev)\n", ranks.size(),
+    std::printf("pcomm: %zu ranks, %zu events -> %s (load in ui.perfetto.dev)\n", ranks.size(),
                 n_ev, outfile.c_str());
     return 0;
 }
@@ -1560,7 +1562,7 @@ struct PB {
 int export_pftrace(const fs::path& root, const fs::path& outfile) {
     auto ranks = scan_ranks(root);
     if (ranks.empty()) {
-        std::fprintf(stderr, "pcomm-read: no rank-* directories under %s\n", root.c_str());
+        std::fprintf(stderr, "pcomm: no rank-* directories under %s\n", root.c_str());
         return 1;
     }
     auto [clk, origin] = build_clocks(ranks);
@@ -1636,12 +1638,12 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
 
     std::FILE* f = std::fopen(outfile.c_str(), "wb");
     if (!f) {
-        std::fprintf(stderr, "pcomm-read: cannot write %s\n", outfile.c_str());
+        std::fprintf(stderr, "pcomm: cannot write %s\n", outfile.c_str());
         return 1;
     }
     std::fwrite(trace.b.data(), 1, trace.b.size(), f);
     std::fclose(f);
-    std::printf("pcomm-read: %zu ranks, %zu events -> %s (%zu bytes; load in ui.perfetto.dev)\n",
+    std::printf("pcomm: %zu ranks, %zu events -> %s (%zu bytes; load in ui.perfetto.dev)\n",
                 ranks.size(), n_ev, outfile.c_str(), trace.b.size());
     return 0;
 }
@@ -1665,101 +1667,118 @@ void dump(core::RecordTypeId type, const fs::path& file) {
         }
     });
     if (!matched)
-        std::fprintf(stderr, "pcomm-read: no decoder for type %u yet\n", type);
+        std::fprintf(stderr, "pcomm read: no decoder for type %u yet\n", type);
+}
+
+// A DuckDB-only verb in a build without it. Says which build this is and how to
+// get the other one — a bare "unknown option" would read as a version problem
+// rather than a build one.
+#if !PCOMM_HAVE_DUCKDB
+int no_duckdb(const char* verb) {
+    std::fprintf(stderr,
+                 "pcomm %s: this build has no DuckDB.\n"
+                 "  tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n"
+                 "  (needs network; MN5 has none — `pcomm export --csv` is the path there)\n",
+                 verb);
+    return 1;
+}
+#endif
+
+void read_usage() {
+    std::fputs("usage: pcomm read   <capture>                     stream inventory\n"
+               "       pcomm dump   <capture> <type-id>           decode one raw stream\n"
+               "       pcomm export <capture> --csv      <outdir> all tables, intern-resolved\n"
+               "       pcomm export <capture> --parquet  <outdir> all tables as Parquet\n"
+               "       pcomm export <capture> --perfetto <out>    Perfetto/Chrome JSON trace\n"
+               "       pcomm export <capture> --pftrace  <out>    Perfetto native protobuf\n"
+               "       pcomm link   <export>                      derive the rank-space tables\n"
+               "       pcomm sql    <export> \"<query>\"            query an exported directory\n"
+               "       pcomm types                                type-id -> table name\n"
+               "\n"
+               "  A <capture> holds rank-* directories of .pcs streams; an <export> is what\n"
+               "  `pcomm export --csv/--parquet` wrote. They are different things, which is\n"
+               "  why they are different verbs.\n",
+               stderr);
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fputs(
-            "usage: pcomm-read <trace-dir>                    stream inventory\n"
-            "       pcomm-read <trace-dir> --csv <outdir>     export all tables (intern-resolved)\n"
-            "       pcomm-read <trace-dir> --perfetto <out>   export Perfetto/Chrome JSON trace\n"
-            "       pcomm-read <trace-dir> --pftrace <out>    export Perfetto native protobuf "
-            "trace\n"
-            "       pcomm-read <trace-dir> --parquet <outdir> export all tables as Parquet\n"
-            "       pcomm-read <trace-dir> --dump <typeid>    decode one raw stream\n"
-            "       pcomm-read --link <export-dir>            derive the rank-space tables\n"
-            "       pcomm-read --sql <export-dir> \"<query>\"   query an exported directory\n"
-            "       pcomm-read --types                        type_id -> table name, this build\n",
-            stderr);
-        return 1;
-    }
+int pcomm::cli::read_main(int argc, char** argv) {
+    const std::string_view verb = argc >= 1 ? argv[0] : "read";
 
-    // Before the directory check: --types describes the build, not a capture.
-    if (std::strcmp(argv[1], "--types") == 0) {
+    // Describes the build, not a capture, so it is answered before anything
+    // looks at a directory.
+    if (verb == "types") {
         print_types();
         return 0;
     }
 
-    // --link, like --sql, takes an EXPORT directory rather than a capture.
-    if (std::strcmp(argv[1], "--link") == 0) {
+    if (verb == "link") {
+        if (argc < 2) {
+            std::fputs("usage: pcomm link <export>\n", stderr);
+            return 1;
+        }
+#if PCOMM_HAVE_DUCKDB
+        return run_link(argv[1]);
+#else
+        return no_duckdb("link");
+#endif
+    }
+
+    if (verb == "sql") {
         if (argc < 3) {
-            std::fputs("usage: pcomm-read --link <export-dir>\n", stderr);
+            std::fputs("usage: pcomm sql <export> \"<query>\"\n", stderr);
             return 1;
         }
 #if PCOMM_HAVE_DUCKDB
-        return run_link(argv[2]);
+        return run_sql(argv[1], argv[2]);
 #else
-        std::fputs("pcomm-read: built without DuckDB, so --link is unavailable.\n"
-                   "  tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n",
-                   stderr);
-        return 1;
+        return no_duckdb("sql");
 #endif
     }
 
-    // --sql takes an EXPORT directory, not a trace directory, so it is matched
-    // here rather than in the <trace-dir> <flag> shape below.
-    if (std::strcmp(argv[1], "--sql") == 0) {
-        if (argc < 4) {
-            std::fputs("usage: pcomm-read --sql <export-dir> \"<query>\"\n", stderr);
-            return 1;
-        }
-#if PCOMM_HAVE_DUCKDB
-        return run_sql(argv[2], argv[3]);
-#else
-        std::fputs("pcomm-read: built without DuckDB, so --sql is unavailable.\n"
-                   "  tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n",
-                   stderr);
+    // Everything below takes a capture directory as its first argument.
+    if (argc < 2) {
+        read_usage();
         return 1;
-#endif
     }
-
     fs::path dir = argv[1];
     if (!fs::is_directory(dir)) {
-        std::fprintf(stderr, "pcomm-read: not a directory: %s\n", dir.c_str());
+        std::fprintf(stderr, "pcomm %.*s: not a directory: %s\n", (int)verb.size(), verb.data(),
+                     dir.c_str());
         return 1;
     }
 
-    if (argc >= 4 && std::strcmp(argv[2], "--csv") == 0) {
-        return export_csv(dir, argv[3]);
-    }
-
-    if (argc >= 4 && std::strcmp(argv[2], "--parquet") == 0) {
+    if (verb == "export") {
+        if (argc < 4) {
+            std::fputs("usage: pcomm export <capture> --csv|--parquet|--perfetto|--pftrace <out>\n",
+                       stderr);
+            return 1;
+        }
+        const std::string_view fmt = argv[2];
+        if (fmt == "--csv")
+            return export_csv(dir, argv[3]);
+        if (fmt == "--perfetto")
+            return export_perfetto(dir, argv[3]);
+        if (fmt == "--pftrace")
+            return export_pftrace(dir, argv[3]);
+        if (fmt == "--parquet") {
 #if PCOMM_HAVE_DUCKDB
-        return export_parquet(dir, argv[3]);
+            return export_parquet(dir, argv[3]);
 #else
-        // Say which build this is and how to get the other one. A bare "unknown
-        // option" here would read as a version problem rather than a build one.
-        std::fputs("pcomm-read: built without DuckDB, so --parquet is unavailable.\n"
-                   "  tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n"
-                   "  (needs network; MN5 has none — use --csv there)\n",
-                   stderr);
-        return 1;
+            return no_duckdb("export --parquet");
 #endif
+        }
+        std::fprintf(stderr, "pcomm export: unknown format '%s'\n", argv[2]);
+        return 1;
     }
 
-    if (argc >= 4 && std::strcmp(argv[2], "--perfetto") == 0) {
-        return export_perfetto(dir, argv[3]);
-    }
-
-    if (argc >= 4 && std::strcmp(argv[2], "--pftrace") == 0) {
-        return export_pftrace(dir, argv[3]);
-    }
-
-    if (argc >= 4 && std::strcmp(argv[2], "--dump") == 0) {
-        auto type = static_cast<core::RecordTypeId>(std::atoi(argv[3]));
+    if (verb == "dump") {
+        if (argc < 3) {
+            std::fputs("usage: pcomm dump <capture> <type-id>   (ids: pcomm types)\n", stderr);
+            return 1;
+        }
+        auto type = static_cast<core::RecordTypeId>(std::atoi(argv[2]));
         bool found = false;
         for (const auto& entry : fs::recursive_directory_iterator(dir)) {
             if (entry.is_regular_file() &&
@@ -1769,15 +1788,15 @@ int main(int argc, char** argv) {
             }
         }
         if (!found) {
-            std::fprintf(stderr, "pcomm-read: no %u.pcs under %s\n", type, dir.c_str());
+            std::fprintf(stderr, "pcomm dump: no %u.pcs under %s\n", type, dir.c_str());
             return 1;
         }
         return 0;
     }
 
-    // The inventory reads each file's own header rather than inferring anything
-    // from its name or its size. This is the first thing in the tree that is
-    // told what a capture is by the capture itself.
+    // `read`: the inventory reads each file's own header rather than inferring
+    // anything from its name or its size. This is the first thing in the tree
+    // that is told what a capture is by the capture itself.
     std::printf("streams in %s:\n", dir.c_str());
     std::printf("  %-34s %6s %-9s %7s %9s %16s\n", "file", "type", "kind", "stride", "records",
                 "schema");

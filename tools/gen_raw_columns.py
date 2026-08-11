@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the raw record -> DuckDB column tables for pcomm-read --parquet.
+"""Generate the raw record -> DuckDB column tables for `pcomm export --parquet`.
 
 Why generated rather than written: a raw table is a mechanical projection of a
 record struct — one column per field, the field's own type — and hand-writing

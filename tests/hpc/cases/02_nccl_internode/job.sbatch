@@ -44,7 +44,7 @@ mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   "$PCOMM" -p ib -o "$OUT" -- "$APP" 8388608 20
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM_READ" "$OUT"
-"$PCOMM_READ" "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$PCOMM" read "$OUT"
+"$PCOMM" export "$OUT" --csv "$OUT.csv"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
      "$PCOMM_ROOT/tests/hpc/cases/02_nccl_internode"

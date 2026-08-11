@@ -1,10 +1,16 @@
-add_executable(pcomm_read main.cpp)
-set_target_properties(pcomm_read PROPERTIES OUTPUT_NAME "pcomm-read")
+# The reading half of the one `pcomm` binary — read/dump/export/link/sql/types.
+# An OBJECT library rather than an executable: there is a single command now, and
+# a second entry point would be a second help text to keep in step. pcomm/ links
+# this in; nothing else should.
+#
+# PUBLIC, not PRIVATE, throughout: usage requirements have to reach the target
+# that actually links these objects, which lives in another directory.
+add_library(pcomm_read OBJECT main.cpp)
 # The reader decodes every provider's record schema; ib_records.hpp is
 # vendor-neutral (no verbs.h), so this include adds no ibverbs dependency.
-target_include_directories(pcomm_read PRIVATE ${CMAKE_SOURCE_DIR}/providers/ibverbs
-                                              ${CMAKE_SOURCE_DIR}/providers/mlx5dv)
-target_link_libraries(pcomm_read PRIVATE pcomm::pcomm)
+target_include_directories(pcomm_read PUBLIC ${CMAKE_SOURCE_DIR}/providers/ibverbs
+                                             ${CMAKE_SOURCE_DIR}/providers/mlx5dv)
+target_link_libraries(pcomm_read PUBLIC pcomm::pcomm)
 
 # DuckDB, when asked for. Located rather than assumed: a missing library is a
 # configure-time error naming the script that fetches it, not a link failure
@@ -58,21 +64,10 @@ if(PCOMM_DUCKDB)
 
   target_sources(pcomm_read PRIVATE "${_raw_hdr}")
 
-  target_compile_definitions(pcomm_read PRIVATE PCOMM_HAVE_DUCKDB=1)
-  target_include_directories(pcomm_read PRIVATE "${_duckdb_dir}" "${CMAKE_CURRENT_BINARY_DIR}")
-  target_link_libraries(pcomm_read PRIVATE "${_duckdb_dir}/libduckdb.so")
-  # The .so lives outside any install prefix, so an uninstalled build has to
-  # carry its location; BUILD_RPATH keeps `./build/pcomm-read/pcomm-read`
-  # runnable without LD_LIBRARY_PATH ceremony.
-  set_property(TARGET pcomm_read APPEND PROPERTY BUILD_RPATH "${_duckdb_dir}")
+  target_compile_definitions(pcomm_read PUBLIC PCOMM_HAVE_DUCKDB=1)
+  target_include_directories(pcomm_read PUBLIC "${_duckdb_dir}" "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(pcomm_read PUBLIC "${_duckdb_dir}/libduckdb.so")
 endif()
 
-# Header-only against libpcomm, so it carries no pcomm .so dependency — but it
-# is still C++ and needs the toolchain libstdc++ it was built with, which is
-# what PCOMM_INSTALL_RPATH_EXTRA supplies to an installed copy.
-set_target_properties(pcomm_read PROPERTIES
-  INSTALL_RPATH "${PCOMM_INSTALL_RPATH_EXTRA}")
-target_link_options(pcomm_read PRIVATE -Wl,--enable-new-dtags)
-if(PCOMM_INSTALL_CORE)
-  install(TARGETS pcomm_read RUNTIME DESTINATION bin COMPONENT core)
-endif()
+# Installation, rpath and the BUILD_RPATH that keeps ./build/pcomm/pcomm runnable
+# without LD_LIBRARY_PATH ceremony all belong to the executable, in pcomm/.
