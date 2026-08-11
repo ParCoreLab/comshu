@@ -44,12 +44,15 @@
 -- open record created" on any workload that both creates through mlx5dv and
 -- tears down. It is an open record like any other; leaving it out was an
 -- omission from this list, not a check.
--- (The opener recorded on the close is 102, because that is the type the CLOSING
--- hook knows. This CTE is joined on subject alone, so the mismatch is harmless —
--- `opener` is a signpost for the reader, not part of the join. As of 2026-08-11
--- ibv_destroy_qp is interposed by the ENGINE, not ibverbs, so this close is now
--- recorded even on a `-p mlx5dv`-only run where ibverbs is absent — which is
--- what makes the IBGDA cases (09/10/12) account their queue pairs at all. See
+-- (As of 2026-08-11 ibv_destroy_qp is interposed by the ENGINE, not ibverbs, so
+-- this close is recorded even on a `-p mlx5dv`-only run where ibverbs is absent
+-- — which is what makes the IBGDA cases (09/10/12) account their queue pairs at
+-- all. The close first carried opener 102 unconditionally, because 102 was all
+-- the closing hook could know; the creating providers now register each opened
+-- handle with the engine, so a close reports the door that actually made its
+-- subject — 210 for an mlx5dv-created queue pair. Either way this CTE joins on
+-- subject alone, so `opener` stays a signpost for the reader and a capture
+-- written by an older engine still checks out. See
 -- PLAN-20260805-0053-entity-lifetimes.)
 WITH opens AS (
   SELECT rank, mr AS subject, 100 AS opener FROM ib_mem_region

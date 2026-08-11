@@ -69,10 +69,18 @@ echo "-- entity_close_accounted"
 # any other, so a QP created through mlx5dv_create_qp and destroyed through
 # ibv_destroy_qp is accounted. Note the close carries opener 102 (ib_queue_pair)
 # while the open is a mlx5 row — the join is on subject, not on opener, and this
-# scenario is what says so.
+# scenario is what says so. Captures written before the engine tracked opened QP
+# handles all look like this, so it stays.
 run "mlx5dv-created QP, destroyed through ibverbs, is accounted" quiet "
 INSERT INTO mlx5_queue_pair VALUES (0, 7);
 INSERT INTO entity_close VALUES (0, 10, 7, 102);"
+
+# ...and the same QP as a current engine records it: the mlx5dv provider
+# registered the handle at create, so the close names 210, the door that made it.
+# Also quiet — which is the point of joining on subject and not on opener.
+run "mlx5dv-created QP closed with its own opener (210) is accounted" quiet "
+INSERT INTO mlx5_queue_pair VALUES (0, 7);
+INSERT INTO entity_close VALUES (0, 10, 7, 210);"
 
 # ...and the relaxation does not blind the clause. Same shape, but nothing
 # opened this one: still the signature of a creation door we do not hook.

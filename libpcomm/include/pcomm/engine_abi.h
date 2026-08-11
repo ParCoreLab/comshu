@@ -115,6 +115,36 @@ const char* pcomm_engine_so_path(void);
 int pcomm_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size, uint32_t* object,
                            uint16_t* device);
 
+/* Tell the engine a provider just recorded a queue-pair OPEN, so the engine's
+ * ibv_destroy_qp interposer can close that exact queue pair.
+ *
+ * The close door has to live in the engine (ibv_destroy_qp tears down both an
+ * ibv_create_qp and an mlx5dv_create_qp queue pair, and the two providers
+ * coexist by design, so no provider can own the symbol) while the OPEN doors
+ * stay in the providers. That split left the engine with no way to know, per
+ * queue pair, whether anything recorded its creation — only whether some
+ * QP-recording provider was loaded at all, which is a per-run answer to a
+ * per-QP question. This call supplies the per-QP one.
+ *
+ * `qp` is the ibv_qp* the creation door returned. `opener_type_id` is the record
+ * type that carries the open — 102 ib_queue_pair or 210 mlx5_queue_pair — and is
+ * echoed back on the close, so a close names the door that actually created its
+ * subject instead of always naming 102. Call it AFTER recording the open, and
+ * only when the open was recorded: an unregistered destroy still emits a close
+ * (see engine.cpp), because a queue pair torn down with no open record is the
+ * missing-creation-door signal entity_close_accounted exists to surface.
+ *
+ * Added WITHOUT bumping PCOMM_ENGINE_ABI_VERSION, deliberately: the version is
+ * checked for equality at declare, so a bump would reject providers this
+ * addition does not actually break. A provider built before this call simply
+ * never makes it, and the engine falls back to the coarse rule it used for
+ * everything — the old behaviour exactly, not a wrong one. The other direction
+ * cannot go quiet: a provider compiled against this header has a DT_NEEDED on
+ * the engine and is linked -Wl,--no-undefined, so an older engine fails the load
+ * with `undefined symbol: pcomm_engine_note_qp` rather than mis-accounting
+ * anything. */
+void pcomm_engine_note_qp(void* qp, uint16_t opener_type_id);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

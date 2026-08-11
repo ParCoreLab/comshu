@@ -767,6 +767,11 @@ Profiler::Profiler() {
                                      h(pd),
                                      qp->qp_num,
                                      static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
+        // The close lives in the engine (ibv_destroy_qp tears down ibverbs' and
+        // mlx5dv's queue pairs alike, so no provider may own it). Tell it this
+        // open was recorded, so it closes this handle as an ib_queue_pair rather
+        // than falling back to the per-run guess.
+        pcomm_engine_note_qp(qp, rr::IbQueuePair::pcomm_type_id);
     });
 
     // create_qp_ex -> the extended creation door, reached through the
@@ -788,6 +793,7 @@ Profiler::Profiler() {
                                          has_pd ? h(a->pd) : pcomm::core::Handle{},
                                          qp->qp_num,
                                          static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
+            pcomm_engine_note_qp(qp, rr::IbQueuePair::pcomm_type_id);
         });
 
     // reg_dmabuf_mr -> a region the NIC was given by descriptor.

@@ -428,40 +428,88 @@ void pcomm_close_object(void* p) {
                    {}, {}, object, pcomm::core::records::MemObject::pcomm_type_id});
 }
 
-/* Queue-pair teardown, closed unconditionally (on success) rather than via the
- * object registry: a QP is opened by a provider, not by this engine, so there is
- * no registry entry to gate on — a close naming a QP no open recorded is the
- * missing-creation-door signal entity_close_accounted is built to surface, not a
- * row to suppress. Subject is the interned QP pointer, which is unique across
- * providers, so it matches whichever open recorded it. `opener` is the
- * ib_queue_pair type id (102): the value the destroy door has always reported,
- * and the assertion joins on subject alone, so it is a signpost, not part of the
- * join. Named here rather than referenced from IbQueuePair because the engine is
- * vendor-free and cannot include a provider's records. */
+/* Queue pairs whose OPEN a provider recorded, keyed by the ibv_qp* the creation
+ * door returned — the per-QP counterpart of ObjectRegistry, and what lets the
+ * engine's ibv_destroy_qp close exactly the queue pairs some provider created.
+ * Populated through pcomm_engine_note_qp.
+ *
+ * Unlike ObjectRegistry this one ERASES on close, and the difference is not an
+ * inconsistency. An object's extent has to stay resolvable after the free — a
+ * GPU access still draining is attributed against the [open, close) window it
+ * fell in — whereas nothing ever resolves an address to a queue pair. What the
+ * entry is for is answering "was this handle's open recorded", and a destroyed
+ * handle's address is handed straight back to the next ibv_create_qp: keeping it
+ * would let the NEXT queue pair at that address, created through a door we do
+ * not hook, be closed as if its open had been recorded — the missing-door signal
+ * swallowed by a stale entry. Erasing also makes a second destroy of the same
+ * pointer fall to the unregistered path, where the assertion can see it. */
+class QpRegistry {
+public:
+    static QpRegistry& instance() {
+        static auto* self = new QpRegistry();  // leaked, like every engine global
+        return *self;
+    }
+
+    void add(std::uint64_t qp, std::uint16_t opener) {
+        std::lock_guard lock(m_mutex);
+        m_qps[qp] = opener;
+    }
+
+    // The opener type recorded for `qp`, and forgets it. 0 if no open was
+    // recorded for this handle.
+    std::uint16_t take(std::uint64_t qp) {
+        std::lock_guard lock(m_mutex);
+        auto            it = m_qps.find(qp);
+        if (it == m_qps.end())
+            return 0;
+        const auto opener = it->second;
+        m_qps.erase(it);
+        return opener;
+    }
+
+private:
+    std::mutex                                       m_mutex;
+    std::unordered_map<std::uint64_t, std::uint16_t> m_qps;
+};
+
+/* Queue-pair teardown. Subject is the interned QP pointer, which is unique
+ * across providers, so it matches whichever open recorded it. Named by type id
+ * here rather than referenced from IbQueuePair because the engine is vendor-free
+ * and cannot include a provider's records.
+ *
+ * Two paths, because there are two things a destroy can mean:
+ *
+ *  - The open WAS recorded (the registry knows this handle). Close it, and report
+ *    the opener the creating provider registered — 102 or 210, the door that
+ *    actually made this queue pair, rather than the 102 the closing hook used to
+ *    assume for all of them.
+ *
+ *  - No open was recorded. That is either the signal we want — a creation door we
+ *    do not hook, the mirror of case 08's unaccounted queue pair — or a queue
+ *    pair belonging to a provider the user did not select. The engine cannot tell
+ *    those apart from a void*: an ibv_create_qp queue pair on a `-p mlx5dv` run
+ *    and one mlx5dv_create_qp missed on that same run are the same pointer with
+ *    the same absent open. So the coarse per-run rule stays, for this path only:
+ *    emit the close if SOME QP-recording provider is loaded (102 ibverbs or 210
+ *    mlx5dv declared), so entity_close_accounted still fires on the missing door;
+ *    stay silent on a p2p-only gpumem run, where no provider records queue pairs
+ *    at all and every close would be noise. */
 void pcomm_close_qp(void* p) {
     if (!p)
         return;
     auto& tracer = pcomm::Tracer::instance();
     if (!tracer.has_recorder())
         return;
-    // Only when a provider that records queue-pair opens is loaded. QP opens live
-    // in ib_queue_pair (102, ibverbs) and mlx5_queue_pair (210, mlx5dv); if
-    // neither range is declared — a p2p-only gpumem run — nothing recorded the
-    // open, and a close here would be the "close names an entity no open record
-    // created" row entity_close_accounted exists to flag. This is the gate
-    // pcomm_close_object gets from the object registry (an object nothing
-    // registered is not closed); a QP is opened by a provider, so the presence of
-    // that provider is the equivalent signal.
-    if (!type_is_declared(102) && !type_is_declared(210))
-        return;
     constexpr pcomm::core::RecordTypeId kIbQueuePairTypeId = 102;
-    auto&                               rec = tracer.recorder();
+    const auto                          addr = reinterpret_cast<std::uint64_t>(p);
+    const std::uint16_t                 registered = QpRegistry::instance().take(addr);
+    if (!registered && !type_is_declared(102) && !type_is_declared(210))
+        return;
+    auto& rec = tracer.recorder();
     rec.record(rec.now_instant(),
                pcomm::core::records::EntityClose{
-                   {}, {},
-                   rec.intern(pcomm::rec::InternDomain::Pointer,
-                              reinterpret_cast<std::uint64_t>(p)),
-                   kIbQueuePairTypeId});
+                   {}, {}, rec.intern(pcomm::rec::InternDomain::Pointer, addr),
+                   registered ? registered : kIbQueuePairTypeId});
 }
 
 }  // namespace
@@ -602,4 +650,13 @@ extern "C" int pcomm_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* s
     if (device)
         *device = found->device;
     return 1;
+}
+
+/* A provider recorded a queue-pair open; remember the handle so the engine's
+ * ibv_destroy_qp closes THIS queue pair knowingly, and reports the door that
+ * created it. See QpRegistry and pcomm_close_qp for what the two paths mean. */
+extern "C" void pcomm_engine_note_qp(void* qp, uint16_t opener_type_id) {
+    if (!qp || !opener_type_id)
+        return;
+    QpRegistry::instance().add(reinterpret_cast<std::uint64_t>(qp), opener_type_id);
 }

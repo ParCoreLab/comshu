@@ -65,12 +65,47 @@ Validated on both clusters: MN5 01–08 green (job 44506331), du04 09–12 green
 door (the closing hook cannot know 102 vs 210), which is harmless — the assertion
 joins on subject alone.
 
-**Still open, one latent edge:** ibverbs and mlx5dv do not co-run in any case
+**Was open, one latent edge:** ibverbs and mlx5dv do not co-run in any case
 today; when they do, the gate lets the engine emit one close per destroy, which
 is correct, but a QP created via `ibv_create_qp` on an mlx5dv-only run (none
-observed) would be closed without an open. The gate is coarse (per-run, not
+observed) would be closed without an open. The gate was coarse (per-run, not
 per-QP); a true fix registers each opened QP handle, the same registry
-`PLAN-20260806-1329` builds for objects.
+`PLAN-20260806-1329` builds for objects. Done, 2026-08-11 — below.
+
+## 2026-08-11: the gate is per-QP now, and a close names the door that opened it
+
+`pcomm_engine_note_qp(qp, opener_type_id)` is a new engine-ABI call. Each
+creation door calls it right after recording the open — ibverbs from
+`create_qp` and `create_qp_ex` with 102, mlx5dv from `mlx5dv_create_qp` with 210
+— and the engine keeps the handles in a `QpRegistry`, the per-QP counterpart of
+`ObjectRegistry`. `pcomm_close_qp` then has two paths instead of one rule:
+
+- **handle registered** → close it, reporting the opener the creating provider
+  registered. So an mlx5dv-created queue pair closes as 210, and the "opener is
+  102 regardless of the creation door" wart above is gone. The assertion still
+  joins on subject alone, so old captures (every close 102) still check out;
+  `asserts_fire.sh` carries both shapes as quiet cases.
+- **handle not registered** → the coarse per-run rule, unchanged, for this path
+  only. Kept deliberately: an `ibv_create_qp` queue pair on a `-p mlx5dv` run and
+  an `mlx5dv_create_qp` one this provider missed are the same `void*` with the
+  same absent open, so suppressing the row would suppress the missing-door signal
+  the assertion exists for. What the registry removes is every case where the
+  engine *can* know; what is left is a case where nothing at the destroy site can.
+
+`QpRegistry` **erases** on close where `ObjectRegistry` deliberately does not.
+Nothing resolves an address to a queue pair, so there is no window to keep, and a
+destroyed `ibv_qp*` address goes straight back to the next `ibv_create_qp` — a
+retained entry would let the next queue pair at that address, created through an
+unhooked door, close as though its open had been recorded. Erasing also drops a
+double destroy of one pointer onto the unregistered path, where the assertion can
+still see it.
+
+**No ABI bump**, deliberately. `PCOMM_ENGINE_ABI_VERSION` is compared for
+equality at declare, so bumping would reject providers this addition does not
+break: a provider built before the call simply never makes it and the engine
+falls back to the coarse rule — the previous behaviour exactly. The reverse
+direction cannot be silent either, since providers carry a DT_NEEDED on the
+engine and link `-Wl,--no-undefined` (`undefined symbol: pcomm_engine_note_qp`).
 
 ## Step 3 did its job, 2026-08-10: the CQ deficit was a third door
 

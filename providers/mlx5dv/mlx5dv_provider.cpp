@@ -491,6 +491,11 @@ Profiler::Profiler() {
                                   h(attr ? attr->pd : nullptr),
                                   qp->qp_num,
                                   static_cast<std::uint8_t>(attr ? attr->qp_type : qp->qp_type)});
+            // ibv_destroy_qp is the engine's (this provider and ibverbs coexist,
+            // and both create queue pairs it tears down). Registering the handle
+            // is what makes the close name mlx5_queue_pair — the door that
+            // actually created it — instead of ib_queue_pair.
+            pcomm_engine_note_qp(qp, rr::Mlx5QueuePair::pcomm_type_id);
         });
 
     this->register_post<devx_obj_modify_tag>([](int ret, mlx5dv_devx_obj* obj, const void* cmd_in,
