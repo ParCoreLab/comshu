@@ -31,7 +31,7 @@
 #include <string>
 #include <unordered_map>
 
-#include <dlfcn.h>  // dladdr, for the MR caller diagnostic at the bottom
+#include <dlfcn.h>   // dladdr, for the MR caller diagnostic at the bottom
 #include <endian.h>  // be64toh — GIDs and GUIDs are big-endian on the wire
 
 namespace ibv {
@@ -429,9 +429,8 @@ Profiler::Profiler() {
     pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     // Install object-ops trampolines into each device context as it opens.
-    this->register_post<open_device_tag>([](ibv_context* ctx, ibv_device*, auto...) {
-        ensure_installed(ctx, "open_device");
-    });
+    this->register_post<open_device_tag>(
+        [](ibv_context* ctx, ibv_device*, auto...) { ensure_installed(ctx, "open_device"); });
 
     // The mlx5dv open door — the same install-at-open, for the contexts UCX's
     // mlx5 transport opens through it rather than through ibv_open_device. This
@@ -537,14 +536,13 @@ Profiler::Profiler() {
                                          static_cast<std::uint32_t>(access),
                                          -1,
                                          static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
-            rec().record(rec().now_instant(),
-                         pcomm::core::records::MemObject{
-                             {},
-                             {},
-                             h(addr),
-                             pcomm::core::kNullHandle,
-                             {reinterpret_cast<std::uint64_t>(addr), length},
-                             pcomm::core::device_of(addr)});
+            rec().record(rec().now_instant(), pcomm::core::records::MemObject{
+                                                  {},
+                                                  {},
+                                                  h(addr),
+                                                  pcomm::core::kNullHandle,
+                                                  {reinterpret_cast<std::uint64_t>(addr), length},
+                                                  pcomm::core::device_of(addr)});
         });
 
     // reg_dm_mr / alloc_null_mr -> the two MEMORYLESS registration doors.
@@ -561,23 +559,22 @@ Profiler::Profiler() {
     //
     // `length` comes from the returned mr, not the argument, so alloc_null_mr —
     // which has no length argument — is described by the same code.
-    this->register_post<reg_dm_mr_tag>(
-        [](ibv_mr* mr, ibv_pd* pd, ibv_dm*, std::uint64_t, std::size_t, unsigned int access,
-           auto...) {
-            if (!mr)
-                return;
-            rec().record(pcomm::core::Temporal::none(),
-                         rr::IbMemRegion{{},
-                                         {},
-                                         h(mr),
-                                         h(pd),
-                                         {0, mr->length},
-                                         mr->lkey,
-                                         mr->rkey,
-                                         static_cast<std::uint32_t>(access),
-                                         -1,
-                                         static_cast<std::uint8_t>(rr::IbRegionOrigin::DeviceMemory)});
-        });
+    this->register_post<reg_dm_mr_tag>([](ibv_mr* mr, ibv_pd*       pd, ibv_dm*, std::uint64_t,
+                                          std::size_t, unsigned int access, auto...) {
+        if (!mr)
+            return;
+        rec().record(pcomm::core::Temporal::none(),
+                     rr::IbMemRegion{{},
+                                     {},
+                                     h(mr),
+                                     h(pd),
+                                     {0, mr->length},
+                                     mr->lkey,
+                                     mr->rkey,
+                                     static_cast<std::uint32_t>(access),
+                                     -1,
+                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::DeviceMemory)});
+    });
     this->register_post<alloc_null_mr_tag>([](ibv_mr* mr, ibv_pd* pd, auto...) {
         if (!mr)
             return;
@@ -600,15 +597,13 @@ Profiler::Profiler() {
     // ...and the device entity's lifetime ends with it. Without this every
     // ib_device row would be an entity opened and never closed, which is a case
     // suite/asserts/entity_close_accounted.sql reports by design.
-    this->register_post<close_device_tag>(
-        [](int ret, ibv_context* ctx, auto...) {
-            if (ret != 0)
-                return;
-            rec().record(rec().now_instant(),
-                         pcomm::core::records::EntityClose{
-                             {}, {}, h(ctx), rr::IbDevice::pcomm_type_id});
-            forget_context(ctx);
-        });
+    this->register_post<close_device_tag>([](int ret, ibv_context* ctx, auto...) {
+        if (ret != 0)
+            return;
+        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
+                                              {}, {}, h(ctx), rr::IbDevice::pcomm_type_id});
+        forget_context(ctx);
+    });
 
     // create_cq / create_cq_ex -> the completion-queue entity.
     //
@@ -656,17 +651,16 @@ Profiler::Profiler() {
             if (!cqx)
                 return;
             ibv_cq* cq = ibv_cq_ex_to_cq(cqx);
-            rec().record(pcomm::core::Temporal::none(),
-                         rr::IbCompletionQueue{{},
-                                               {},
-                                               h(cq),
-                                               h(ctx),
-                                               (a && a->channel) ? h(a->channel)
-                                                                 : pcomm::core::Handle{},
-                                               static_cast<std::uint32_t>(cq->cqe),
-                                               a ? a->comp_vector : 0u,
-                                               static_cast<std::uint8_t>(
-                                                   rr::IbCqOrigin::CreateCqEx)});
+            rec().record(
+                pcomm::core::Temporal::none(),
+                rr::IbCompletionQueue{{},
+                                      {},
+                                      h(cq),
+                                      h(ctx),
+                                      (a && a->channel) ? h(a->channel) : pcomm::core::Handle{},
+                                      static_cast<std::uint32_t>(cq->cqe),
+                                      a ? a->comp_vector : 0u,
+                                      static_cast<std::uint8_t>(rr::IbCqOrigin::CreateCqEx)});
             remember_cq(cq);
         });
 
@@ -687,17 +681,16 @@ Profiler::Profiler() {
             if (!cqx)
                 return;
             ibv_cq* cq = ibv_cq_ex_to_cq(cqx);
-            rec().record(pcomm::core::Temporal::none(),
-                         rr::IbCompletionQueue{{},
-                                               {},
-                                               h(cq),
-                                               h(ctx),
-                                               (a && a->channel) ? h(a->channel)
-                                                                 : pcomm::core::Handle{},
-                                               static_cast<std::uint32_t>(cq->cqe),
-                                               a ? a->comp_vector : 0u,
-                                               static_cast<std::uint8_t>(
-                                                   rr::IbCqOrigin::Mlx5dvCreateCq)});
+            rec().record(
+                pcomm::core::Temporal::none(),
+                rr::IbCompletionQueue{{},
+                                      {},
+                                      h(cq),
+                                      h(ctx),
+                                      (a && a->channel) ? h(a->channel) : pcomm::core::Handle{},
+                                      static_cast<std::uint32_t>(cq->cqe),
+                                      a ? a->comp_vector : 0u,
+                                      static_cast<std::uint8_t>(rr::IbCqOrigin::Mlx5dvCreateCq)});
             remember_cq(cq);
         });
 
@@ -999,8 +992,8 @@ Profiler::Profiler() {
     // be joined to a completion by (qp, wr_id) the way a QP receive can, because
     // the QP is only decided when the message lands. The recv-completion
     // assertion scopes itself to origin='qp' for that reason, and says so.
-    this->register_post<post_srq_recv_tag>([](int ret, ibv_srq* srq, ibv_recv_wr* wr,
-                                              ibv_recv_wr**, std::uint64_t t0, std::uint64_t t1) {
+    this->register_post<post_srq_recv_tag>([](int ret, ibv_srq* srq, ibv_recv_wr* wr, ibv_recv_wr**,
+                                              std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !srq)
             return;
         const auto tspan = span(t0, t1);
@@ -1011,18 +1004,17 @@ Profiler::Profiler() {
             if (has_sge)
                 for (int i = 0; i < wr->num_sge; ++i)
                     length += wr->sg_list[i].length;
-            rec().record(
-                tspan, rr::IbPostRecv{{},
-                                      {},
-                                      h(srq),
-                                      wr->wr_id,
-                                      has_sge ? wr->sg_list[0].addr : 0u,
-                                      has_sge ? wr->sg_list[0].lkey : 0u,
-                                      length,
-                                      0u,
-                                      static_cast<std::uint8_t>(wr->num_sge),
-                                      static_cast<std::uint8_t>(
-                                          rr::IbRecvOrigin::SharedRecvQueue)});
+            rec().record(tspan, rr::IbPostRecv{
+                                    {},
+                                    {},
+                                    h(srq),
+                                    wr->wr_id,
+                                    has_sge ? wr->sg_list[0].addr : 0u,
+                                    has_sge ? wr->sg_list[0].lkey : 0u,
+                                    length,
+                                    0u,
+                                    static_cast<std::uint8_t>(wr->num_sge),
+                                    static_cast<std::uint8_t>(rr::IbRecvOrigin::SharedRecvQueue)});
         }
     });
 
@@ -1043,12 +1035,12 @@ Profiler::Profiler() {
         [](ibv_srq* srq, ibv_pd* pd, ibv_srq_init_attr* a, auto...) {
             if (!srq)
                 return;
-            ibv_srq_attr q{};
-            const bool   ok = ibv_query_srq(srq, &q) == 0;
+            ibv_srq_attr        q{};
+            const bool          ok = ibv_query_srq(srq, &q) == 0;
             const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
-            rec().record(pcomm::core::Temporal::none(),
-                         rr::IbSharedRecvQueue{
-                             {}, {}, h(srq), h(pd), s.max_wr, s.max_sge, s.srq_limit});
+            rec().record(
+                pcomm::core::Temporal::none(),
+                rr::IbSharedRecvQueue{{}, {}, h(srq), h(pd), s.max_wr, s.max_sge, s.srq_limit});
         });
 
     // The extended door. `pd` is comp_mask-gated here — the same discipline
@@ -1058,10 +1050,10 @@ Profiler::Profiler() {
         [](ibv_srq* srq, ibv_context*, ibv_srq_init_attr_ex* a, auto...) {
             if (!srq)
                 return;
-            ibv_srq_attr q{};
-            const bool   ok = ibv_query_srq(srq, &q) == 0;
+            ibv_srq_attr        q{};
+            const bool          ok = ibv_query_srq(srq, &q) == 0;
             const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
-            const bool has_pd = a && (a->comp_mask & IBV_SRQ_INIT_ATTR_PD);
+            const bool          has_pd = a && (a->comp_mask & IBV_SRQ_INIT_ATTR_PD);
             rec().record(pcomm::core::Temporal::none(),
                          rr::IbSharedRecvQueue{{},
                                                {},
@@ -1088,14 +1080,14 @@ Profiler::Profiler() {
     //
     // No predicate: unlike poll_cq there is no firehose to filter, because a CQ
     // is armed once per batch rather than once per completion.
-    this->register_post<req_notify_cq_tag>(
-        [](int ret, ibv_cq* cq, int solicited_only, std::uint64_t t0, std::uint64_t t1) {
-            if (ret != 0 || !cq)
-                return;
-            rec().record(span(t0, t1),
-                         rr::IbReqNotifyCq{{}, {}, h(cq),
-                                           static_cast<std::uint8_t>(solicited_only ? 1 : 0)});
-        });
+    this->register_post<req_notify_cq_tag>([](int ret, ibv_cq* cq, int solicited_only,
+                                              std::uint64_t t0, std::uint64_t t1) {
+        if (ret != 0 || !cq)
+            return;
+        rec().record(
+            span(t0, t1),
+            rr::IbReqNotifyCq{{}, {}, h(cq), static_cast<std::uint8_t>(solicited_only ? 1 : 0)});
+    });
 
     // poll_cq -> one row per reaped completion (predicate skips empty polls).
     this->register_post<poll_cq_tag>(
@@ -1163,8 +1155,7 @@ extern "C" ibv_cq* ibv_create_cq(ibv_context* context, int cqe, void* cq_context
 extern "C" ibv_cq_ex* mlx5dv_create_cq(ibv_context* context, ibv_cq_init_attr_ex* cq_attr,
                                        void* mlx5_cq_attr) {
     ibv::ensure_installed(context, "mlx5dv_create_cq");
-    return ibv::Profiler::invoke_preload<ibv::mlx5dv_create_cq_tag>(context, cq_attr,
-                                                                    mlx5_cq_attr);
+    return ibv::Profiler::invoke_preload<ibv::mlx5dv_create_cq_tag>(context, cq_attr, mlx5_cq_attr);
 }
 // The CQ's other end. ensure_installed here for the same reason create_cq has
 // it: a CQ hangs off a context rather than a PD, so this is one of the two doors
@@ -1266,9 +1257,9 @@ static bool trace_mr_callers_enabled() {
 static void trace_mr_caller(const char* door, void* ret_addr) {
     if (!trace_mr_callers_enabled())
         return;
-    Dl_info info{};
-    const char* who = (dladdr(ret_addr, &info) && info.dli_fname) ? info.dli_fname : "?";
-    static std::mutex            m;
+    Dl_info           info{};
+    const char*       who = (dladdr(ret_addr, &info) && info.dli_fname) ? info.dli_fname : "?";
+    static std::mutex m;
     std::lock_guard<std::mutex>  lk(m);
     static std::set<std::string> seen;
     if (!seen.insert(std::string(door) + "|" + who).second)
@@ -1409,7 +1400,7 @@ static void dump_install_doors() {
     if (done.exchange(true))
         return;  // shutdown() and the unload destructor both call this
     std::lock_guard<std::mutex> lk(g_known_mr_mutex);
-    unsigned total = 0, late = 0;
+    unsigned                    total = 0, late = 0;
     if (g_install_doors)
         for (const auto& [door, n] : *g_install_doors) {
             total += n;
@@ -1417,8 +1408,9 @@ static void dump_install_doors() {
                 late += n;
             std::fprintf(stderr, "[pcomm-ctxinstall] door=%-14s contexts=%u\n", door.c_str(), n);
         }
-    std::fprintf(stderr, "[pcomm-ctxinstall] total=%u late=%u (late => a context ran uninstrumented "
-                         "between its open and that door)\n",
+    std::fprintf(stderr,
+                 "[pcomm-ctxinstall] total=%u late=%u (late => a context ran uninstrumented "
+                 "between its open and that door)\n",
                  total, late);
     std::fflush(stderr);
 }
@@ -1479,10 +1471,11 @@ void ibv::trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr) {
     static std::mutex            m;
     std::lock_guard<std::mutex>  lk(m);
     static std::set<std::string> seen;
-    std::string key = std::string(fn) + "|" + who + "|" + (installed ? "y" : "n");
+    std::string                  key = std::string(fn) + "|" + who + "|" + (installed ? "y" : "n");
     if (!seen.insert(key).second)
         return;  // one line per distinct caller, not per CQ
-    std::fprintf(stderr, "[pcomm-unmatched] destroy_cq cq=%p cqe=%d ctx=%p installed=%s <- %s in %s\n",
+    std::fprintf(stderr,
+                 "[pcomm-unmatched] destroy_cq cq=%p cqe=%d ctx=%p installed=%s <- %s in %s\n",
                  static_cast<const void*>(cq), cq->cqe, static_cast<const void*>(cq->context),
                  installed ? "yes" : "NO", fn, who);
     std::fflush(stderr);
@@ -1511,7 +1504,7 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
     // FUNCTION is closing them, which names the registration path that created
     // them. The symbol is the nearest preceding one, so read it as "in or after
     // this function", not as an exact frame.
-    Dl_info info{};
+    Dl_info     info{};
     const bool  ok = dladdr(ret_addr, &info) != 0;
     const char* who = (ok && info.dli_fname) ? info.dli_fname : "?";
     const char* fn = (ok && info.dli_sname) ? info.dli_sname : "?";
@@ -1535,8 +1528,8 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
     trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
     if (pd)
         ibv::ensure_installed(pd->context, "reg_dmabuf_mr");
-    auto* mr = ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd,
-                                                                     access);
+    auto* mr =
+        ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd, access);
     remember_mr(mr);
     return mr;
 }

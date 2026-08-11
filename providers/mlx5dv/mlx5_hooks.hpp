@@ -50,16 +50,16 @@ DEFINE_PRELOAD_HOOK(mlx5, devx_alloc_uar, "mlx5dv_devx_alloc_uar", mlx5dv_devx_u
 // convention, and a UAR gets a close instead of an open-ended lifetime.
 DEFINE_PRELOAD_HOOK(mlx5, devx_free_uar, "mlx5dv_devx_free_uar", void, mlx5dv_devx_uar*);
 
-DEFINE_PRELOAD_HOOK(mlx5, devx_obj_create, "mlx5dv_devx_obj_create", mlx5dv_devx_obj*,
-                    ibv_context*, const void*, size_t, void*, size_t);
+DEFINE_PRELOAD_HOOK(mlx5, devx_obj_create, "mlx5dv_devx_obj_create", mlx5dv_devx_obj*, ibv_context*,
+                    const void*, size_t, void*, size_t);
 DEFINE_PRELOAD_HOOK(mlx5, devx_obj_modify, "mlx5dv_devx_obj_modify", int, mlx5dv_devx_obj*,
                     const void*, size_t, void*, size_t);
 
 // Not DEVX, but the same blind spot one layer up: perftest creates its queue
 // pairs with mlx5dv_create_qp and never calls ibv_create_qp, which is why case
 // 08's ib_queue_pair table has been empty and marked expect_fail.
-DEFINE_PRELOAD_HOOK(mlx5, create_qp, "mlx5dv_create_qp", ibv_qp*, ibv_context*, ibv_qp_init_attr_ex*,
-                    mlx5dv_qp_init_attr*);
+DEFINE_PRELOAD_HOOK(mlx5, create_qp, "mlx5dv_create_qp", ibv_qp*, ibv_context*,
+                    ibv_qp_init_attr_ex*, mlx5dv_qp_init_attr*);
 
 // mlx5dv_create_cq is NOT here, and that is not an oversight. It is hooked by
 // the ibverbs provider, because ibv_destroy_cq — which closes what it creates —

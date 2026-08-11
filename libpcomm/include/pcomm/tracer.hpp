@@ -191,7 +191,7 @@ private:
     // hostname" stay distinguishable — the reader treats 0 as unknown and falls
     // back, instead of silently grouping every failed rank onto one node.
     void emit_node_identity() {
-        char host[256] = {};
+        char          host[256] = {};
         std::uint64_t h = 0;
         if (::gethostname(host, sizeof host - 1) == 0) {
             h = 1469598103934665603ull;  // FNV-1a offset basis

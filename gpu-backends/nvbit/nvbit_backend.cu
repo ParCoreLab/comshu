@@ -67,7 +67,7 @@ struct CtxState {
     // poisoned context, where every launch returns the sticky error — the token
     // never arrives and the thread spins while nvbit_at_ctx_term blocks in
     // pthread_join. Measured: job 44458142 hung until the walltime.
-    std::atomic<bool>            recv_abort{false};
+    std::atomic<bool> recv_abort{false};
 };
 
 // NVBit drives context teardown from an atexit handler, which can run after
@@ -303,10 +303,10 @@ void refresh_mapped_regions() {
         // nothing to name. The handle is then attached to each peer's copy
         // below, which is sound because the heap is symmetric.
         const int  my_dev = device_of(r.base, ndev, "NVSHMEM heap (local)");
-        const auto object = my_dev >= 0
-                                ? g_engine->on_symmetric_region(
-                                      r.base, r.size, static_cast<pcomm::core::DeviceId>(my_dev))
-                                : pcomm::core::kNullHandle;
+        const auto object =
+            my_dev >= 0 ? g_engine->on_symmetric_region(r.base, r.size,
+                                                        static_cast<pcomm::core::DeviceId>(my_dev))
+                        : pcomm::core::kNullHandle;
 
         for (int pe = 0; pe < npes; pe++) {
             void* q = api.ptr((const void*)r.base, pe);
@@ -657,7 +657,6 @@ void* recv_thread_fun(void* args) {
 // It was also in the wrong file even within gpumem — this one's header reserves
 // it for vendor instrumentation types, and interposing a third-party library is
 // not that.
-
 
 __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
     pcomm_gpu_access_t ma;

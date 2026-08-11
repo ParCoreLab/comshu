@@ -53,9 +53,9 @@ int main(int argc, char** argv) {
     const int n = argc > 1 ? atoi(argv[1]) : 1024;
     const int iters = argc > 2 ? atoi(argv[2]) : 10;
 
-    int*        src = static_cast<int*>(nvshmem_malloc(n * sizeof(int)));
-    void*       first = nullptr;
-    dim3        block(256), grid((n + 255) / 256);
+    int*  src = static_cast<int*>(nvshmem_malloc(n * sizeof(int)));
+    void* first = nullptr;
+    dim3  block(256), grid((n + 255) / 256);
 
     // Two rounds; the buffer is freed between them.
     for (int round = 0; round < 2; ++round) {

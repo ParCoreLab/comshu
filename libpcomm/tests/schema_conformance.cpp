@@ -362,9 +362,8 @@ int main() {
         c.payload.vendor_part_id = 4123;
         c.payload.hw_ver = 0;
         c.payload.phys_port_cnt = 1;
-        fb::IbDevice f(
-            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 81, 82,
-            0x0002C90300ABCDEFull, 0x0002C90300ABCDF0ull, 0x02C9, 4123, 0, 1);
+        fb::IbDevice f(fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+                       81, 82, 0x0002C90300ABCDEFull, 0x0002C90300ABCDF0ull, 0x02C9, 4123, 0, 1);
         expect_identical("IbDevice", &c, &f, sizeof(c));
     }
     {

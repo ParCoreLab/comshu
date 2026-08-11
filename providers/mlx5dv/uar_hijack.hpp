@@ -135,29 +135,30 @@ struct RegisterIntent {
 // ring the same UAR, so one repeater thread owns this — but it is guarded anyway
 // because teardown touches it from another thread.
 struct QpCopy {
-    std::mutex     mutex;
-    std::uint32_t  last_prod{0};
-    bool           have_last{false};
-    void*          stream{nullptr};    // CUstream
-    std::uint8_t*  host_buf{nullptr};  // pinned, 1<<log_wq_size WQEBBs
-    std::size_t    host_buf_bytes{0};
+    std::mutex    mutex;
+    std::uint32_t last_prod{0};
+    bool          have_last{false};
+    void*         stream{nullptr};    // CUstream
+    std::uint8_t* host_buf{nullptr};  // pinned, 1<<log_wq_size WQEBBs
+    std::size_t   host_buf_bytes{0};
 };
 
 struct State {
     std::mutex mutex;
 
-    std::unordered_map<void*, std::uint32_t>          uar_pages;   // reg_addr -> page_id
-    std::unordered_map<void*, void*>                  uar_ptrs;    // reg_addr -> mlx5dv_devx_uar*
-    std::unordered_map<void*, RegisterIntent>         skipped;     // reg_addr -> skipped register
-    std::unordered_map<void*, void*>                  fake_pages;  // reg_addr -> fake page
-    std::unordered_map<void*, std::vector<repeater::RepeaterHandle>> handles;  // reg_addr -> repeaters
+    std::unordered_map<void*, std::uint32_t>  uar_pages;   // reg_addr -> page_id
+    std::unordered_map<void*, void*>          uar_ptrs;    // reg_addr -> mlx5dv_devx_uar*
+    std::unordered_map<void*, RegisterIntent> skipped;     // reg_addr -> skipped register
+    std::unordered_map<void*, void*>          fake_pages;  // reg_addr -> fake page
+    std::unordered_map<void*, std::vector<repeater::RepeaterHandle>>
+        handles;  // reg_addr -> repeaters
 
     // Stage 2.
-    DoorbellSink                            doorbell_sink{nullptr};
-    DeviceSendSink                          device_send_sink{nullptr};
-    std::unordered_map<std::uint32_t, QpInfo> qp_info;   // qpn -> send-queue shape
+    DoorbellSink                                               doorbell_sink{nullptr};
+    DeviceSendSink                                             device_send_sink{nullptr};
+    std::unordered_map<std::uint32_t, QpInfo>                  qp_info;  // qpn -> send-queue shape
     std::unordered_map<std::uint32_t, std::unique_ptr<QpCopy>> qp_copy;  // qpn -> copy state
-    std::atomic<void*>                        gpu_ctx{nullptr};  // CUcontext captured at the swap
+    std::atomic<void*> gpu_ctx{nullptr};  // CUcontext captured at the swap
 
     std::atomic<std::uint64_t> num_fake_accesses{0};
     std::atomic<std::uint64_t> doorbells_decoded{0};
@@ -226,7 +227,7 @@ inline void* resolve2(std::initializer_list<const char*> names) {
 
 inline constexpr std::uint32_t kWqebb = 64;
 inline constexpr std::uint32_t kProdMask = 0xFFFF;
-inline std::uint32_t prod_diff(std::uint32_t end, std::uint32_t start) {
+inline std::uint32_t           prod_diff(std::uint32_t end, std::uint32_t start) {
     return (end - start) & kProdMask;
 }
 inline bool opcode_has_raddr(std::uint8_t op) {
@@ -280,8 +281,7 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
             prod = (prod + 1) & kProdMask;
             continue;
         }
-        const std::uint8_t opcode =
-            be32toh(*reinterpret_cast<const std::uint32_t*>(wqe)) & 0xFF;
+        const std::uint8_t  opcode = be32toh(*reinterpret_cast<const std::uint32_t*>(wqe)) & 0xFF;
         const std::uint32_t wqebbs = (ds + 3) >> 2;
 
         const bool has_raddr = opcode_has_raddr(opcode);
@@ -301,7 +301,7 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
         const std::uint32_t av_ds = is_dci ? 1u : 0u;
         const std::uint32_t raddr_ds = 1u + av_ds;
         const std::uint32_t op_ds = 2u + av_ds;  // data seg, inline header, or atomic seg
-        auto seg_at = [&](std::uint32_t which_ds) {
+        auto                seg_at = [&](std::uint32_t which_ds) {
             return wqe + static_cast<std::size_t>(which_ds) * 16;
         };
         if (has_raddr && ds > raddr_ds) {
@@ -310,8 +310,8 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
             rkey = be32toh(*reinterpret_cast<const std::uint32_t*>(r + 8));
         }
         if (has_data && ds > op_ds) {
-            const std::uint8_t*  d = seg_at(op_ds);
-            const std::uint32_t  bc = be32toh(*reinterpret_cast<const std::uint32_t*>(d));
+            const std::uint8_t* d = seg_at(op_ds);
+            const std::uint32_t bc = be32toh(*reinterpret_cast<const std::uint32_t*>(d));
             length = bc & 0x7FFFFFFF;
             // MLX5_INLINE_SEG (bit 31): the payload is inline and there is no
             // local descriptor — laddr/lkey stay 0. Otherwise it is a pointer
@@ -376,12 +376,12 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
         return;
 
     // Resolve the copy machinery once.
-    static PfnCtxSetCurrent   ctx_set = reinterpret_cast<PfnCtxSetCurrent>(
-        resolve2({"cuCtxSetCurrent"}));
-    static PfnStreamCreate    stream_create = reinterpret_cast<PfnStreamCreate>(
-        resolve2({"cuStreamCreate"}));
-    static PfnStreamSync      stream_sync = reinterpret_cast<PfnStreamSync>(
-        resolve2({"cuStreamSynchronize"}));
+    static PfnCtxSetCurrent ctx_set =
+        reinterpret_cast<PfnCtxSetCurrent>(resolve2({"cuCtxSetCurrent"}));
+    static PfnStreamCreate stream_create =
+        reinterpret_cast<PfnStreamCreate>(resolve2({"cuStreamCreate"}));
+    static PfnStreamSync stream_sync =
+        reinterpret_cast<PfnStreamSync>(resolve2({"cuStreamSynchronize"}));
     static PfnMemcpyDtoHAsync memcpy_fn = reinterpret_cast<PfnMemcpyDtoHAsync>(
         resolve2({"cuMemcpyDtoHAsync_v2", "cuMemcpyDtoHAsync"}));
     if (!ctx_set || !stream_create || !stream_sync || !memcpy_fn)
@@ -502,13 +502,15 @@ inline CuResult intercept_host_register(void* p, std::size_t bytesize, unsigned 
         if (s.uar_pages.count(p)) {
             s.skipped[p] = RegisterIntent{bytesize, flags};
             if (debug_on())
-                std::fprintf(stderr, "[hijack] cuMemHostRegister UAR p=%p flags=0x%x -> SKIP real\n",
-                             p, flags);
+                std::fprintf(stderr,
+                             "[hijack] cuMemHostRegister UAR p=%p flags=0x%x -> SKIP real\n", p,
+                             flags);
             return kCudaSuccess;
         }
     }
     if (debug_on())
-        std::fprintf(stderr, "[hijack] cuMemHostRegister p=%p flags=0x%x -> passthrough\n", p, flags);
+        std::fprintf(stderr, "[hijack] cuMemHostRegister p=%p flags=0x%x -> passthrough\n", p,
+                     flags);
     return real ? real(p, bytesize, flags) : kCudaErrorInvalidValue;
 }
 
@@ -530,7 +532,8 @@ inline CuResult intercept_host_get_device_pointer(CuDevicePtr* pdptr, void* p, u
         if (skip_it == s.skipped.end()) {
             if (debug_on())
                 std::fprintf(stderr,
-                             "[hijack] cuMemHostGetDevicePointer p=%p -> passthrough (not UAR)\n", p);
+                             "[hijack] cuMemHostGetDevicePointer p=%p -> passthrough (not UAR)\n",
+                             p);
             return real(pdptr, p, flags);  // not a UAR page we own — pass through
         }
         intent = skip_it->second;

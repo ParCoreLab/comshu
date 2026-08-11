@@ -43,7 +43,7 @@
 extern "C" {
 #include "duckdb.h"
 }
-#include "duck_mount.hpp"   // raw_columns.hpp + the shared mount policy
+#include "duck_mount.hpp"  // raw_columns.hpp + the shared mount policy
 #include "link_sql.hpp"
 #endif
 
@@ -251,29 +251,33 @@ template<> struct Table<Attribution> {
 // null MR has no memory at all, so neither can ever have a host address.
 static const char* ib_region_origin_name(std::uint8_t raw) {
     switch (static_cast<ibr::IbRegionOrigin>(raw)) {
-    case ibr::IbRegionOrigin::RegMr: return "reg_mr";
-    case ibr::IbRegionOrigin::Dmabuf: return "dmabuf";
-    case ibr::IbRegionOrigin::DeviceMemory: return "device_memory";
-    case ibr::IbRegionOrigin::NullMr: return "null_mr";
-    case ibr::IbRegionOrigin::Unknown: break;
+        case ibr::IbRegionOrigin::RegMr:
+            return "reg_mr";
+        case ibr::IbRegionOrigin::Dmabuf:
+            return "dmabuf";
+        case ibr::IbRegionOrigin::DeviceMemory:
+            return "device_memory";
+        case ibr::IbRegionOrigin::NullMr:
+            return "null_mr";
+        case ibr::IbRegionOrigin::Unknown:
+            break;
     }
     return "unknown";
 }
 
 template<> struct Table<ibr::IbMemRegion> {
     static constexpr const char* name = "ib_mem_region";
-    static constexpr const char* cols =
-        "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd,origin";
+    static constexpr const char* cols = "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd,origin";
     static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s,
                                      const rec::InternDictionary&) {
         // origin as a NAME, not the raw enumerator: an assertion that has to
         // spell `origin = 3` encodes a number nobody can check against the
         // header, which is how umem_binding earned its own string column.
-        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d,%s",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.mr, s.payload.pd,
-                     (unsigned long long)s.payload.range.base,
-                     (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
-                     s.payload.access, s.payload.dmabuf_fd, ib_region_origin_name(s.payload.origin));
+        std::fprintf(
+            f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d,%s", (unsigned long long)s.temporal.a.ticks,
+            s.payload.mr, s.payload.pd, (unsigned long long)s.payload.range.base,
+            (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
+            s.payload.access, s.payload.dmabuf_fd, ib_region_origin_name(s.payload.origin));
     }
 };
 
@@ -294,10 +298,14 @@ template<> struct Table<ibr::IbQueuePair> {
 // extended door" in words.
 static const char* ib_cq_origin_name(std::uint8_t raw) {
     switch (static_cast<ibr::IbCqOrigin>(raw)) {
-    case ibr::IbCqOrigin::CreateCq: return "create_cq";
-    case ibr::IbCqOrigin::CreateCqEx: return "create_cq_ex";
-    case ibr::IbCqOrigin::Mlx5dvCreateCq: return "mlx5dv_create_cq";
-    case ibr::IbCqOrigin::Unknown: break;
+        case ibr::IbCqOrigin::CreateCq:
+            return "create_cq";
+        case ibr::IbCqOrigin::CreateCqEx:
+            return "create_cq_ex";
+        case ibr::IbCqOrigin::Mlx5dvCreateCq:
+            return "mlx5dv_create_cq";
+        case ibr::IbCqOrigin::Unknown:
+            break;
     }
     return "unknown";
 }
@@ -310,8 +318,8 @@ template<> struct Table<ibr::IbCompletionQueue> {
     static void                  row(std::FILE* f, const Stamped<ibr::IbCompletionQueue>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.cq, s.payload.context, s.payload.channel, s.payload.cqe,
-                     s.payload.comp_vector, ib_cq_origin_name(s.payload.origin));
+                                      s.payload.cq, s.payload.context, s.payload.channel, s.payload.cqe,
+                                      s.payload.comp_vector, ib_cq_origin_name(s.payload.origin));
     }
 };
 
@@ -345,8 +353,8 @@ template<> struct Table<ibr::IbSharedRecvQueue> {
     static void                  row(std::FILE* f, const Stamped<ibr::IbSharedRecvQueue>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.srq, s.payload.pd, s.payload.max_wr, s.payload.max_sge,
-                     s.payload.srq_limit);
+                                      s.payload.srq, s.payload.pd, s.payload.max_wr, s.payload.max_sge,
+                                      s.payload.srq_limit);
     }
 };
 
@@ -355,9 +363,12 @@ template<> struct Table<ibr::IbSharedRecvQueue> {
 // against the header.
 static const char* ib_recv_origin_name(std::uint8_t raw) {
     switch (static_cast<ibr::IbRecvOrigin>(raw)) {
-    case ibr::IbRecvOrigin::QueuePair: return "qp";
-    case ibr::IbRecvOrigin::SharedRecvQueue: return "srq";
-    case ibr::IbRecvOrigin::Unknown: break;
+        case ibr::IbRecvOrigin::QueuePair:
+            return "qp";
+        case ibr::IbRecvOrigin::SharedRecvQueue:
+            return "srq";
+        case ibr::IbRecvOrigin::Unknown:
+            break;
     }
     return "unknown";
 }
@@ -385,8 +396,8 @@ template<> struct Table<ibr::IbAddressHandle> {
     static constexpr const char* cols =
         "ticks,ah,pd,dgid_prefix,dgid_iface,flow_label,dlid,sl,port_num,is_global,sgid_index,"
         "hop_limit,traffic_class";
-    static void                  row(std::FILE* f, const Stamped<ibr::IbAddressHandle>& s,
-                                     const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<ibr::IbAddressHandle>& s,
+                    const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,0x%llx,0x%llx,%u,%u,%u,%u,%u,%u,%u,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.ah, s.payload.pd,
                      (unsigned long long)s.payload.dgid_prefix,
@@ -403,7 +414,8 @@ template<> struct Table<ibr::IbDevice> {
     static constexpr const char* cols =
         "ticks,context,fw_ver,node_guid,sys_image_guid,vendor_id,vendor_part_id,hw_ver,"
         "phys_port_cnt";
-    static void row(std::FILE* f, const Stamped<ibr::IbDevice>& s, const rec::InternDictionary& in) {
+    static void row(std::FILE* f, const Stamped<ibr::IbDevice>& s,
+                    const rec::InternDictionary& in) {
         std::fprintf(f, "%llu,%u,%s,0x%llx,0x%llx,0x%x,%u,%u,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.context,
                      in.str(s.payload.fw_ver), (unsigned long long)s.payload.node_guid,
@@ -420,7 +432,7 @@ template<> struct Table<ibr::IbReqNotifyCq> {
     static void                  row(std::FILE* f, const Stamped<ibr::IbReqNotifyCq>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.cq,
-                     s.payload.solicited_only);
+                                      s.payload.solicited_only);
     }
 };
 
@@ -537,14 +549,22 @@ template<> struct Table<mxr::Mlx5Doorbell> {
 // RDMA_READ 0x10, ATOMIC_CS 0x11, ATOMIC_FA 0x12.
 inline const char* mlx5_wqe_opcode_name(std::uint8_t op) {
     switch (op) {
-        case 0x08: return "rdma_write";
-        case 0x0a: return "send";
-        case 0x10: return "rdma_read";
-        case 0x11: return "atomic_cs";
-        case 0x12: return "atomic_fa";
-        case 0x14: return "atomic_masked_cs";
-        case 0x15: return "atomic_masked_fa";
-        default:   return "?";
+        case 0x08:
+            return "rdma_write";
+        case 0x0a:
+            return "send";
+        case 0x10:
+            return "rdma_read";
+        case 0x11:
+            return "atomic_cs";
+        case 0x12:
+            return "atomic_fa";
+        case 0x14:
+            return "atomic_masked_cs";
+        case 0x15:
+            return "atomic_masked_fa";
+        default:
+            return "?";
     }
 }
 
@@ -572,12 +592,12 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
 // Nothing else depends on this order: the CSV files are written independently,
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
-    std::tuple<MemObject, EntityClose, GpuAccess, SourceLine, NodeIdentity, ClockAnchor, Attribution,
-               ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend,
-               ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
-               mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
-               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell,
-               mxr::Mlx5DeviceSend>;
+    std::tuple<MemObject, EntityClose, GpuAccess, SourceLine, NodeIdentity, ClockAnchor,
+               Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
+               ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
+               ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, mxr::Mlx5Umem,
+               mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
+               mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.
@@ -730,7 +750,7 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<GpuAccess>& s) {
         a.access_addrs[r.rank][s.payload.address]++;
         return;
     }
-    auto& by_handle = a.lives[r.rank];
+    auto&      by_handle = a.lives[r.rank];
     const auto it = by_handle.find(s.payload.object);
     if (it == by_handle.end()) {
         // The producer named an object we never saw recorded.
@@ -767,12 +787,8 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<GpuAccess>& s) {
 // feeds the containment path for unattributed addresses; this list is what the
 // handle path resolves against.
 void aggregate_life(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
-    a.lives[r.rank][s.payload.id].push_back({s.temporal.a.ticks,
-                                             ~0ull,
-                                             s.payload.range.base,
-                                             s.payload.range.size,
-                                             s.payload.device,
-                                             0});
+    a.lives[r.rank][s.payload.id].push_back({s.temporal.a.ticks, ~0ull, s.payload.range.base,
+                                             s.payload.range.size, s.payload.device, 0});
 }
 
 // Close the most recent still-open lifetime of this subject. Most recent
@@ -913,7 +929,7 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
         for (const int rank : ranks_here) {
             const auto  addrs_it = addrs_by_rank->find(rank);
             const auto& addrs = addrs_it != addrs_by_rank->end() ? addrs_it->second : kNoAddrs;
-            auto objs_it = agg.objects.find(rank);
+            auto        objs_it = agg.objects.find(rank);
             // Copy the rank's objects: refs/ambiguous_refs are per (source,
             // rank), so the merged rows must not accumulate across sources.
             std::vector<CsvAgg::MemObj> objs;
@@ -1030,8 +1046,8 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
                     continue;
                 std::fprintf(f, "%d,%s,0x%llx,%llu,%u,%zu,%ld,%ld,%ld,%ld,%ld\n", rank, source,
                              (unsigned long long)o.base, (unsigned long long)o.size,
-                             o.lowest_device, o.devices.size(), o.emitters, o.refs,
-                             o.direct_refs, o.ambiguous_refs, o.nested_refs);
+                             o.lowest_device, o.devices.size(), o.emitters, o.refs, o.direct_refs,
+                             o.ambiguous_refs, o.nested_refs);
             }
             if (unresolved)
                 std::fprintf(f, "%d,%s,none,0,65535,0,0,%ld,0,0,0\n", rank, source, unresolved);
@@ -1178,8 +1194,7 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
 
     duckdb_database   db{};
     duckdb_connection con{};
-    if (duckdb_open(nullptr, &db) != DuckDBSuccess ||
-        duckdb_connect(db, &con) != DuckDBSuccess) {
+    if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
         std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
         return 1;
     }
@@ -1238,8 +1253,7 @@ int run_link(const fs::path& dir) {
     }
     duckdb_database   db{};
     duckdb_connection con{};
-    if (duckdb_open(nullptr, &db) != DuckDBSuccess ||
-        duckdb_connect(db, &con) != DuckDBSuccess) {
+    if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
         std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
         return 1;
     }
@@ -1262,8 +1276,7 @@ int run_link(const fs::path& dir) {
     std::size_t written = 0;
     for (const auto& t : link::kTables) {
         const auto out = (dir / (std::string(t.name) + ".parquet")).string();
-        if (duck_exec(con,
-                      "COPY (" + std::string(t.sql) + ") TO '" + out + "' (FORMAT PARQUET)",
+        if (duck_exec(con, "COPY (" + std::string(t.sql) + ") TO '" + out + "' (FORMAT PARQUET)",
                       t.name))
             written++;
         else
@@ -1314,8 +1327,7 @@ int run_sql(const fs::path& dir, const std::string& query) {
     }
     duckdb_database   db{};
     duckdb_connection con{};
-    if (duckdb_open(nullptr, &db) != DuckDBSuccess ||
-        duckdb_connect(db, &con) != DuckDBSuccess) {
+    if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
         std::fprintf(stderr, "pcomm-read: cannot open an in-memory DuckDB\n");
         return 1;
     }
@@ -1352,11 +1364,10 @@ int run_sql(const fs::path& dir, const std::string& query) {
     // seeks to offset 0, silently overwriting whatever the process already
     // wrote. Two --sql runs into one redirect lost the first, and so would any
     // `pcomm-read --sql ... > out.csv` that printed anything beforehand.
-    const auto tmp = fs::temp_directory_path() /
-                     ("pcomm-sql-" + std::to_string(::getpid()) + ".csv");
-    const bool ok =
-        duck_exec(con, "COPY (" + query + ") TO '" + tmp.string() + "' (FORMAT CSV, HEADER)",
-                  "query");
+    const auto tmp =
+        fs::temp_directory_path() / ("pcomm-sql-" + std::to_string(::getpid()) + ".csv");
+    const bool ok = duck_exec(
+        con, "COPY (" + query + ") TO '" + tmp.string() + "' (FORMAT CSV, HEADER)", "query");
     if (ok) {
         if (std::FILE* f = std::fopen(tmp.c_str(), "rb")) {
             char        buf[64 * 1024];

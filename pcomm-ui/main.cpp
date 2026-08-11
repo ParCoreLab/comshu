@@ -29,10 +29,10 @@ extern "C" {
 }
 #include "httplib.h"
 
-#include "duck_mount.hpp"  // shared with pcomm-read: the empty-table policy
+#include "duck_mount.hpp"    // shared with pcomm-read: the empty-table policy
 #include "capture_load.hpp"  // ... and reading a raw capture straight in
 #include "link_sql.hpp"      // ... and the derived layer, as views
-#include "ui_assets.hpp"   // generated: the built page, embedded
+#include "ui_assets.hpp"     // generated: the built page, embedded
 
 namespace fs = std::filesystem;
 
@@ -66,20 +66,30 @@ bool looks_like_select(const std::string& sql) {
     if (i == std::string::npos)
         return false;
     const std::string head = sql.substr(i);
-    return strncasecmp(head.c_str(), "SELECT", 6) == 0 ||
-           strncasecmp(head.c_str(), "WITH", 4) == 0;
+    return strncasecmp(head.c_str(), "SELECT", 6) == 0 || strncasecmp(head.c_str(), "WITH", 4) == 0;
 }
 
 std::string json_escape(const char* s) {
     std::string out;
     for (const char* p = s; p && *p; ++p) {
         switch (*p) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default: out += *p;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                out += *p;
         }
     }
     return out;
@@ -107,8 +117,8 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--bind") == 0)
             bind_addr = argv[i + 1];
     }
-    const bool loopback = bind_addr == "127.0.0.1" || bind_addr == "localhost" ||
-                          bind_addr == "::1";
+    const bool loopback =
+        bind_addr == "127.0.0.1" || bind_addr == "localhost" || bind_addr == "::1";
     if (!fs::is_directory(dir)) {
         std::fprintf(stderr, "pcomm-ui: not a directory: %s\n", dir.c_str());
         return 1;
@@ -116,8 +126,7 @@ int main(int argc, char** argv) {
 
     duckdb_database   db{};
     duckdb_connection con{};
-    if (duckdb_open(nullptr, &db) != DuckDBSuccess ||
-        duckdb_connect(db, &con) != DuckDBSuccess) {
+    if (duckdb_open(nullptr, &db) != DuckDBSuccess || duckdb_connect(db, &con) != DuckDBSuccess) {
         std::fprintf(stderr, "pcomm-ui: cannot open DuckDB\n");
         return 1;
     }
@@ -235,14 +244,14 @@ int main(int argc, char** argv) {
         const std::string& sql = req.body;
         if (!looks_like_select(sql)) {
             res.status = 400;
-            res.set_content(std::string("{\"error\":\"") + kReadOnlyErr + "\"}", "application/json");
+            res.set_content(std::string("{\"error\":\"") + kReadOnlyErr + "\"}",
+                            "application/json");
             return;
         }
         // LIMIT is applied by wrapping, not by trusting the caller to include
         // one: an accidental unbounded scan should be slow, not fatal to the
         // browser tab.
-        const auto capped =
-            "SELECT * FROM (" + sql + ") LIMIT " + std::to_string(kRowCap);
+        const auto capped = "SELECT * FROM (" + sql + ") LIMIT " + std::to_string(kRowCap);
 
         duckdb_result r;
         if (duckdb_query(con, capped.c_str(), &r) != DuckDBSuccess) {

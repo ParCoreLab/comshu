@@ -397,7 +397,7 @@ void pcomm_note_object(void* p, std::size_t size) {
         return;
     auto& tracer = pcomm::Tracer::instance();
     if (!tracer.has_recorder())
-        return;  /* nothing has started a capture; the app is running untraced */
+        return; /* nothing has started a capture; the app is running untraced */
     const auto base = reinterpret_cast<std::uint64_t>(p);
     auto&      rec = tracer.recorder();
     /* Interned in the Pointer domain — the same identity scheme ibverbs,
@@ -506,10 +506,11 @@ void pcomm_close_qp(void* p) {
     if (!registered && !type_is_declared(102) && !type_is_declared(210))
         return;
     auto& rec = tracer.recorder();
-    rec.record(rec.now_instant(),
-               pcomm::core::records::EntityClose{
-                   {}, {}, rec.intern(pcomm::rec::InternDomain::Pointer, addr),
-                   registered ? registered : kIbQueuePairTypeId});
+    rec.record(rec.now_instant(), pcomm::core::records::EntityClose{
+                                      {},
+                                      {},
+                                      rec.intern(pcomm::rec::InternDomain::Pointer, addr),
+                                      registered ? registered : kIbQueuePairTypeId});
 }
 
 }  // namespace
@@ -592,9 +593,9 @@ int ibv_destroy_qp_hook(void* qp) {
         // libibverbs, and real_dlsym on that handle gives its default, correctly
         // versioned symbol without going through the engine's interposition.
         if (pcomm::smart_dlsym::real_dlopen && pcomm::smart_dlsym::real_dlsym) {
-            void* h = pcomm::smart_dlsym::real_dlopen(
-                "libibverbs.so.1",
-                pcomm::smart_dlsym::DL_RTLD_NOW | pcomm::smart_dlsym::DL_RTLD_NOLOAD);
+            void* h = pcomm::smart_dlsym::real_dlopen("libibverbs.so.1",
+                                                      pcomm::smart_dlsym::DL_RTLD_NOW |
+                                                          pcomm::smart_dlsym::DL_RTLD_NOLOAD);
             if (h)
                 real = reinterpret_cast<PfnDestroyQp>(
                     pcomm::smart_dlsym::real_dlsym(h, "ibv_destroy_qp"));

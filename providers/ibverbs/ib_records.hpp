@@ -22,10 +22,10 @@ using core::RecordKind;
 // Which entry point produced a region. Values are pinned: they go on disk.
 enum class IbRegionOrigin : std::uint8_t {
     Unknown = 0,
-    RegMr = 1,        // ibv_reg_mr / ibv_reg_mr_iova2 — has a host address
-    Dmabuf = 2,       // ibv_reg_dmabuf_mr — address recoverable only sometimes
-    DeviceMemory = 3, // ibv_reg_dm_mr — on-NIC memory, NO host address exists
-    NullMr = 4,       // ibv_alloc_null_mr — no memory at all, by definition
+    RegMr = 1,         // ibv_reg_mr / ibv_reg_mr_iova2 — has a host address
+    Dmabuf = 2,        // ibv_reg_dmabuf_mr — address recoverable only sometimes
+    DeviceMemory = 3,  // ibv_reg_dm_mr — on-NIC memory, NO host address exists
+    NullMr = 4,        // ibv_alloc_null_mr — no memory at all, by definition
 };
 
 PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
@@ -119,7 +119,7 @@ PCOMM_RECORD(IbCompletionQueue, RecordKind::Entity, 104, "ib_completion_queue") 
     // object-ops slot that only exists once the context is installed. A deficit
     // that is entirely CreateCq rules the install window out; one that is
     // entirely CreateCqEx implicates it; neither means a third door.
-    std::uint8_t  origin;
+    std::uint8_t origin;
 };
 
 // EVENT — a QP state transition (ibv_modify_qp). The ->RTR transition carries
@@ -224,12 +224,12 @@ enum class IbRecvOrigin : std::uint8_t {
 PCOMM_RECORD(IbPostRecv, RecordKind::Event, 114, "ib_post_recv") {
     Handle        subject;  // interned ibv_qp* or ibv_srq* — see origin
     std::uint64_t wr_id;
-    std::uint64_t addr;     // first sge's addr; 0 when num_sge == 0
-    std::uint32_t lkey;     // first sge's lkey — joins to ib_mem_region.lkey
-    std::uint32_t length;   // total sg_list bytes, the capacity being offered
-    std::uint32_t qp_num;   // 0 when origin is SharedRecvQueue: an SRQ has none
+    std::uint64_t addr;    // first sge's addr; 0 when num_sge == 0
+    std::uint32_t lkey;    // first sge's lkey — joins to ib_mem_region.lkey
+    std::uint32_t length;  // total sg_list bytes, the capacity being offered
+    std::uint32_t qp_num;  // 0 when origin is SharedRecvQueue: an SRQ has none
     std::uint8_t  num_sge;
-    std::uint8_t  origin;   // IbRecvOrigin, stored as the underlying uint8
+    std::uint8_t  origin;  // IbRecvOrigin, stored as the underlying uint8
 };
 
 // ENTITY — a UD address handle (ibv_create_ah), lifetime [create, destroy).
@@ -249,8 +249,8 @@ PCOMM_RECORD(IbPostRecv, RecordKind::Event, 114, "ib_post_recv") {
 // Mlx5DevxQpConnect.dest_gid_prefix. A wire-order GID in a capture is a number
 // that compares unequal to itself across two readers.
 PCOMM_RECORD(IbAddressHandle, RecordKind::Entity, 118, "ib_address_handle") {
-    Handle        ah;  // interned ibv_ah*
-    Handle        pd;  // interned ibv_pd*
+    Handle        ah;           // interned ibv_ah*
+    Handle        pd;           // interned ibv_pd*
     std::uint64_t dgid_prefix;  // remote GID, high 8 bytes (0 unless is_global)
     std::uint64_t dgid_iface;   // remote GID, low 8 bytes
     std::uint32_t flow_label;
@@ -278,8 +278,8 @@ PCOMM_RECORD(IbAddressHandle, RecordKind::Entity, 118, "ib_address_handle") {
 // runs exactly once per context by construction, so every context gets exactly
 // one row. The door records the fact; it does not wait to be told it.
 PCOMM_RECORD(IbDevice, RecordKind::Entity, 120, "ib_device") {
-    Handle        context;  // interned ibv_context* — the subject
-    Handle        fw_ver;   // interned string
+    Handle        context;         // interned ibv_context* — the subject
+    Handle        fw_ver;          // interned string
     std::uint64_t node_guid;       // host order, see IbAddressHandle
     std::uint64_t sys_image_guid;  // host order
     std::uint32_t vendor_id;

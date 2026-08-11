@@ -316,7 +316,6 @@ UNION ALL
 SELECT * FROM verbs
 )sql"},
 
-
     // One row per local endpoint that exists, whether or not it moved bytes.
     // peer_rank is NULL rather than -1 here: an endpoint that was never
     // connected has no peer, which is a different statement from "we could not
@@ -440,8 +439,7 @@ inline std::size_t define(duckdb_connection con) {
         if (!duck::exec(con, v.sql, v.name))
             failed++;
     for (const auto& t : kTables)
-        if (!duck::exec(con,
-                        "CREATE OR REPLACE VIEW \"" + std::string(t.name) + "\" AS " + t.sql,
+        if (!duck::exec(con, "CREATE OR REPLACE VIEW \"" + std::string(t.name) + "\" AS " + t.sql,
                         t.name))
             failed++;
     return failed;

@@ -80,10 +80,10 @@ __global__ void put_slice(int* dst, const int* src, int n, int peer, int dst_off
 // One outgoing transfer. `dst` is a symmetric address, so it names the same
 // offset in every PE's heap and `peer` picks whose.
 struct Send {
-    int   peer;
-    int*  dst;
-    int   dst_off;   // 32-bit on purpose — see put_slice above
-    int   count;
+    int  peer;
+    int* dst;
+    int  dst_off;  // 32-bit on purpose — see put_slice above
+    int  count;
 };
 
 int main(int argc, char** argv) {
@@ -91,7 +91,10 @@ int main(int argc, char** argv) {
 
     int local = 0;
     for (const char* v : {"OMPI_COMM_WORLD_LOCAL_RANK", "SLURM_LOCALID"})
-        if (const char* e = getenv(v)) { local = atoi(e); break; }
+        if (const char* e = getenv(v)) {
+            local = atoi(e);
+            break;
+        }
     cudaSetDevice(local);
 
     MPI_Comm             comm = MPI_COMM_WORLD;
@@ -103,14 +106,14 @@ int main(int argc, char** argv) {
     const int npes = nvshmem_n_pes();
 
     const char* pattern = argc > 1 ? argv[1] : "hub";
-    const long  slot = argc > 2 ? atol(argv[2]) : 4096;   // ints per sender slot
+    const long  slot = argc > 2 ? atol(argv[2]) : 4096;  // ints per sender slot
     const int   iters = argc > 3 ? atoi(argv[3]) : 3;
 
     // Three DIFFERENT sizes, on purpose: an object table where every row is the
     // same size cannot show that size is a column worth having. Every PE
     // allocates all three identically — the symmetric heap requires it — and
     // the sizes come only from argv, so they are identical by construction.
-    const long recv_elems = (long)npes * slot;   // one slot per possible sender
+    const long recv_elems = (long)npes * slot;  // one slot per possible sender
     const long src_elems = slot;
     const long resp_elems = slot / 8;
 
@@ -128,7 +131,8 @@ int main(int argc, char** argv) {
     int* src = static_cast<int*>(nvshmem_malloc(src_elems * sizeof(int)));
     int* resp = static_cast<int*>(nvshmem_malloc(resp_elems * sizeof(int)));
     if (!recv || !src || !resp) {
-        if (mype == 0) fprintf(stderr, "asym_patterns: nvshmem_malloc failed\n");
+        if (mype == 0)
+            fprintf(stderr, "asym_patterns: nvshmem_malloc failed\n");
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     cudaMemset(src, 1, src_elems * sizeof(int));
@@ -165,14 +169,18 @@ int main(int argc, char** argv) {
         // no edge, and the ones that do span a 32x range, which is what puts
         // the log colour scale under load.
         for (int peer = 0; peer < npes; ++peer) {
-            if (peer == mype) continue;
+            if (peer == mype)
+                continue;
             const int h = (mype * 31 + peer * 17) % 11;
-            if (h < 5) continue;
-            const long n = slot >> (h - 5);   // slot/1 .. slot/32
-            if (n > 0) sends.push_back({peer, recv, (int)(mype * slot), (int)n});
+            if (h < 5)
+                continue;
+            const long n = slot >> (h - 5);  // slot/1 .. slot/32
+            if (n > 0)
+                sends.push_back({peer, recv, (int)(mype * slot), (int)n});
         }
     } else {
-        if (mype == 0) fprintf(stderr, "asym_patterns: unknown pattern '%s'\n", pattern);
+        if (mype == 0)
+            fprintf(stderr, "asym_patterns: unknown pattern '%s'\n", pattern);
         MPI_Abort(MPI_COMM_WORLD, 2);
     }
 
@@ -190,9 +198,10 @@ int main(int argc, char** argv) {
     // job log next to the captured one. Cheap, and it has already been the
     // fastest way to tell "the workload did not send" from "we did not record".
     long total = 0;
-    for (const Send& s : sends) total += s.count;
-    printf("asym_patterns[%s] PE %d/%d: %zu edges, %ld elems/iter, %d iters\n",
-           pattern, mype, npes, sends.size(), total, iters);
+    for (const Send& s : sends)
+        total += s.count;
+    printf("asym_patterns[%s] PE %d/%d: %zu edges, %ld elems/iter, %d iters\n", pattern, mype, npes,
+           sends.size(), total, iters);
     fflush(stdout);
 
     nvshmem_free(resp);

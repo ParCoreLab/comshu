@@ -169,8 +169,8 @@ public:
         // application that never calls nvshmem_malloc, or a buffer allocated
         // before we interposed.
         if (alloc->sym_delta != 0) {
-            const auto sym = static_cast<std::uint64_t>(
-                static_cast<std::int64_t>(a.address) + alloc->sym_delta);
+            const auto sym =
+                static_cast<std::uint64_t>(static_cast<std::int64_t>(a.address) + alloc->sym_delta);
             // The core's table is keyed by symmetric address, which is what the
             // translation produces — so a peer access lands on the very buffer
             // the application allocated, named identically on every PE.
@@ -317,9 +317,8 @@ public:
         if (object == core::kNullHandle)
             return;
         auto& rec = recorder();
-        rec.record(rec.now_instant(),
-                   core::records::EntityClose{
-                       {}, {}, object, core::records::MemObject::pcomm_type_id});
+        rec.record(rec.now_instant(), core::records::EntityClose{
+                                          {}, {}, object, core::records::MemObject::pcomm_type_id});
     }
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {

@@ -80,8 +80,7 @@ inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir) 
             present++;
         } else if (fs::exists(csv)) {
             if (exec(con, Raw::ddl, Raw::table) &&
-                exec(con,
-                     "COPY \"" + name + "\" FROM '" + csv.string() + "' (FORMAT CSV, HEADER)",
+                exec(con, "COPY \"" + name + "\" FROM '" + csv.string() + "' (FORMAT CSV, HEADER)",
                      Raw::table))
                 present++;
         } else {

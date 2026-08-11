@@ -96,7 +96,7 @@ template<typename... Args> struct HookSigs<void, Args...> {
     template<> struct pcomm::hook::HookTrait<ns::hook_name##_tag> {                                \
         using FuncPtr = ret_type (*)(__VA_ARGS__) noexcept_spec;                                   \
         using RetType = ret_type;                                                                  \
-        using Sigs = ::pcomm::hook::detail::HookSigs<ret_type, __VA_ARGS__>;                         \
+        using Sigs = ::pcomm::hook::detail::HookSigs<ret_type, __VA_ARGS__>;                       \
         using RunPredicateFn = typename Sigs::RunPredicateFn;                                      \
         static constexpr RunPredicateFn predicate_fn = pred;                                       \
         using PreCallback = typename Sigs::PreCallback;                                            \

@@ -99,8 +99,7 @@ void classify(const void* addr, int* mem_type, int* ordinal, int* err) {
 // still cannot be found, ABORT. Never hand the application a failure it did not
 // cause — a profiler that silently degrades what it observes is worse than one
 // that refuses to start.
-template <typename Fn>
-Fn next(const char* name) {
+template<typename Fn> Fn next(const char* name) {
     void* p = dlsym(RTLD_NEXT, name);
     if (!p) {
         for (const char* so : {"libmlx5.so.1", "libibverbs.so.1"}) {
@@ -126,8 +125,8 @@ Fn next(const char* name) {
 
 extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg(ibv_context* ctx, void* addr, size_t size,
                                                   uint32_t access) {
-    static auto real = next<mlx5dv_devx_umem* (*)(ibv_context*, void*, size_t, uint32_t)>(
-        "mlx5dv_devx_umem_reg");
+    static auto real =
+        next<mlx5dv_devx_umem* (*)(ibv_context*, void*, size_t, uint32_t)>("mlx5dv_devx_umem_reg");
     mlx5dv_devx_umem* out = real(ctx, addr, size, access);
     if (out) {
         int mem_type = -1, ordinal = -1, err = 0;
@@ -172,10 +171,11 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg(ibv_context* ctx, void* addr, 
 // point is exactly the class of change that broke the transport an hour ago,
 // and there is no reason to risk it to answer a question about routing.
 extern "C" CUresult cuGetProcAddress_v2(const char* symbol, void** pfn, int cudaVersion,
-                                        cuuint64_t flags,
+                                        cuuint64_t                      flags,
                                         CUdriverProcAddressQueryResult* symbolStatus) {
-    static auto real = next<CUresult (*)(const char*, void**, int, cuuint64_t,
-                                         CUdriverProcAddressQueryResult*)>("cuGetProcAddress_v2");
+    static auto real =
+        next<CUresult (*)(const char*, void**, int, cuuint64_t, CUdriverProcAddressQueryResult*)>(
+            "cuGetProcAddress_v2");
     CUresult rc = real(symbol, pfn, cudaVersion, flags, symbolStatus);
     if (symbol) {
         std::fprintf(log_file(), "cuproc %s rc=%d\n", symbol, static_cast<int>(rc));
@@ -185,9 +185,8 @@ extern "C" CUresult cuGetProcAddress_v2(const char* symbol, void** pfn, int cuda
 }
 
 extern "C" CUresult cuGetExportTable(const void** ppExportTable, const CUuuid* pExportTableId) {
-    static auto real =
-        next<CUresult (*)(const void**, const CUuuid*)>("cuGetExportTable");
-    CUresult rc = real(ppExportTable, pExportTableId);
+    static auto real = next<CUresult (*)(const void**, const CUuuid*)>("cuGetExportTable");
+    CUresult    rc = real(ppExportTable, pExportTableId);
     std::fprintf(log_file(), "cuexport rc=%d\n", static_cast<int>(rc));
     std::fflush(log_file());
     return rc;
@@ -208,21 +207,21 @@ extern "C" CUresult cuGetExportTable(const void** ppExportTable, const CUuuid* p
 // how this run reports it rather than guessing.
 extern "C" CUresult cuMemGetHandleForAddressRange(void* handle, CUdeviceptr dptr, size_t size,
                                                   CUmemRangeHandleType handleType,
-                                                  unsigned long long flags) {
+                                                  unsigned long long   flags) {
     static auto real =
         next<CUresult (*)(void*, CUdeviceptr, size_t, CUmemRangeHandleType, unsigned long long)>(
             "cuMemGetHandleForAddressRange");
     CUresult rc = real(handle, dptr, size, handleType, flags);
     if (rc == CUDA_SUCCESS && handle) {
         std::fprintf(log_file(), "dmabuf_range 0x%llx %zu fd=%d type=%d\n",
-                     static_cast<unsigned long long>(dptr), size,
-                     *static_cast<const int*>(handle), static_cast<int>(handleType));
+                     static_cast<unsigned long long>(dptr), size, *static_cast<const int*>(handle),
+                     static_cast<int>(handleType));
         std::fflush(log_file());
     }
     return rc;
 }
 
-extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg_ex(ibv_context* ctx,
+extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg_ex(ibv_context*         ctx,
                                                      mlx5dv_devx_umem_in* umem_in) {
     static auto real =
         next<mlx5dv_devx_umem* (*)(ibv_context*, mlx5dv_devx_umem_in*)>("mlx5dv_devx_umem_reg_ex");
@@ -247,8 +246,7 @@ extern "C" mlx5dv_devx_umem* mlx5dv_devx_umem_reg_ex(ibv_context* ctx,
 }
 
 extern "C" mlx5dv_devx_uar* mlx5dv_devx_alloc_uar(ibv_context* ctx, uint32_t flags) {
-    static auto real =
-        next<mlx5dv_devx_uar* (*)(ibv_context*, uint32_t)>("mlx5dv_devx_alloc_uar");
+    static auto real = next<mlx5dv_devx_uar* (*)(ibv_context*, uint32_t)>("mlx5dv_devx_alloc_uar");
     mlx5dv_devx_uar* out = real(ctx, flags);
     if (out) {
         std::fprintf(log_file(), "uar 0x%llx %u\n",
@@ -265,9 +263,8 @@ extern "C" mlx5dv_devx_uar* mlx5dv_devx_alloc_uar(ibv_context* ctx, uint32_t fla
 // fallback to the IBRC proxy transport.
 extern "C" mlx5dv_devx_obj* mlx5dv_devx_obj_create(ibv_context* ctx, const void* in, size_t inlen,
                                                    void* out, size_t outlen) {
-    static auto real =
-        next<mlx5dv_devx_obj* (*)(ibv_context*, const void*, size_t, void*, size_t)>(
-            "mlx5dv_devx_obj_create");
+    static auto real = next<mlx5dv_devx_obj* (*)(ibv_context*, const void*, size_t, void*, size_t)>(
+        "mlx5dv_devx_obj_create");
     mlx5dv_devx_obj* obj = real(ctx, in, inlen, out, outlen);
     if (obj && inlen >= 4) {
         // First 16 bits of a DEVX command buffer are the opcode, big-endian.

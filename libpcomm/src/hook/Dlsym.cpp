@@ -219,7 +219,8 @@ static void log_dlsym(const char* symbol, void* caller, void* result, void* glib
 }
 
 extern "C" void* dlsym(void* handle, const char* symbol) {
-    pcomm::smart_dlsym::trace_dlsym_entry("dlsym", symbol, nullptr);  // FIRST. Before init(), before anything.
+    pcomm::smart_dlsym::trace_dlsym_entry("dlsym", symbol,
+                                          nullptr);  // FIRST. Before init(), before anything.
     if (!pcomm::smart_dlsym::real_dlsym) {
         init();
     }
@@ -249,7 +250,8 @@ extern "C" void* dlsym(void* handle, const char* symbol) {
 }
 
 extern "C" void* dlvsym(void* handle, const char* symbol, const char* version) {
-    pcomm::smart_dlsym::trace_dlsym_entry("dlvsym", symbol, version);  // FIRST. Before init(), before anything.
+    pcomm::smart_dlsym::trace_dlsym_entry("dlvsym", symbol,
+                                          version);  // FIRST. Before init(), before anything.
     if (!pcomm::smart_dlsym::real_dlvsym) {
         init();
     }

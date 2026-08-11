@@ -55,14 +55,14 @@ struct Overwrite {
 };
 
 struct State {
-    std::mutex                             mutex;
-    PfnGetExportTable                      real_get_export_table{nullptr};
+    std::mutex                                 mutex;
+    PfnGetExportTable                          real_get_export_table{nullptr};
     std::unordered_map<std::string, Overwrite> overwrites;
-    bool                                   debug{false};
+    bool                                       debug{false};
 };
 
 inline State& state() {
-    static State s;
+    static State      s;
     static const bool init = [] {
         const char* v = std::getenv("PCOMM_HIJACK_DEBUG");
         s.debug = v && *v == '1';
@@ -155,7 +155,7 @@ inline CuResult get_export_table(const void** pp_table, const void* uuid) {
         return rc;
 
     // Find the table length by its 0xff..ff sentinel, then patch in place.
-    const auto sentinel = reinterpret_cast<void*>(~std::uintptr_t{0});
+    const auto  sentinel = reinterpret_cast<void*>(~std::uintptr_t{0});
     std::size_t patched = 0, i = 0;
     for (i = 0; table[i] != sentinel; ++i) {
         auto hit = real_to_repl.find(table[i]);
@@ -163,7 +163,7 @@ inline CuResult get_export_table(const void** pp_table, const void* uuid) {
             continue;
         auto page = reinterpret_cast<std::uintptr_t>(&table[i]) & ~std::uintptr_t{0xFFF};
         if (mprotect(reinterpret_cast<void*>(page), 4096, PROT_READ | PROT_WRITE) != 0)
-            continue;  // fail open: leave this entry as the real function
+            continue;                   // fail open: leave this entry as the real function
         table[i] = hit->second.second;  // the replacement
         {
             std::lock_guard<std::mutex> lk(s.mutex);

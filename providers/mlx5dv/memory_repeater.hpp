@@ -53,9 +53,7 @@ public:
     // hijack_addr: the fake host page the GPU rings. real_addr: the true UAR
     // host mapping to forward to. on_change: run before each forward.
     RepeaterHandle(DataType* hijack_addr, void* real_addr, CallbackType on_change)
-        : m_hijack_addr(hijack_addr),
-          m_real_addr(real_addr),
-          m_on_change(std::move(on_change)) {}
+        : m_hijack_addr(hijack_addr), m_real_addr(real_addr), m_on_change(std::move(on_change)) {}
 
     RepeaterHandle(const RepeaterHandle&) = delete;
     RepeaterHandle& operator=(const RepeaterHandle&) = delete;
@@ -78,33 +76,33 @@ public:
         // Never capture `this`: the handle is moved into a container after
         // start() and `this` is invalidated. Copy the pointers and the two
         // shared flags into the thread instead.
-        m_thread = std::make_unique<std::jthread>(
-            [hijack_addr = m_hijack_addr, real_addr = m_real_addr,
-             on_change = std::move(m_on_change), alive = m_alive, deliver = m_deliver] {
-                auto current = *hijack_addr;
-                while (*alive) {
-                    wait_mem(hijack_addr);
+        m_thread = std::make_unique<std::jthread>([hijack_addr = m_hijack_addr,
+                                                   real_addr = m_real_addr,
+                                                   on_change = std::move(m_on_change),
+                                                   alive = m_alive, deliver = m_deliver] {
+            auto current = *hijack_addr;
+            while (*alive) {
+                wait_mem(hijack_addr);
 
-                    // The ordering caveat above lives on this load.
-                    const DataType written = __atomic_load_n(hijack_addr, __ATOMIC_ACQUIRE);
-                    if (written == current)
-                        continue;  // spurious wakeup
+                // The ordering caveat above lives on this load.
+                const DataType written = __atomic_load_n(hijack_addr, __ATOMIC_ACQUIRE);
+                if (written == current)
+                    continue;  // spurious wakeup
 
-                    // Record before forwarding, so the callback reads the SQ
-                    // before the NIC can consume it. Deliver is a separate flag
-                    // from alive: a consumer can stop the callbacks while the
-                    // thread keeps forwarding the tail of stores that arrive
-                    // after teardown begins.
-                    if (*deliver && on_change)
-                        on_change(written);
+                // Record before forwarding, so the callback reads the SQ
+                // before the NIC can consume it. Deliver is a separate flag
+                // from alive: a consumer can stop the callbacks while the
+                // thread keeps forwarding the tail of stores that arrive
+                // after teardown begins.
+                if (*deliver && on_change)
+                    on_change(written);
 
-                    // Forward to the NIC. Unconditional: no branch a callback
-                    // fault could take reaches this store.
-                    __atomic_store_n(static_cast<std::uint64_t*>(real_addr), written,
-                                     __ATOMIC_RELEASE);
-                    current = written;
-                }
-            });
+                // Forward to the NIC. Unconditional: no branch a callback
+                // fault could take reaches this store.
+                __atomic_store_n(static_cast<std::uint64_t*>(real_addr), written, __ATOMIC_RELEASE);
+                current = written;
+            }
+        });
     }
 
     // Stop delivering callbacks; keep forwarding. Non-blocking, and safe to call

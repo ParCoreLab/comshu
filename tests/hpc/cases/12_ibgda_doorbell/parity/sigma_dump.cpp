@@ -40,9 +40,9 @@ namespace PE = Profiler::Events;
 
 // Only the mlx5dv family: this comparison is about the DEVX/IBGDA path, and an
 // event without a visit() is skipped by the reader.
-using EnabledEvents = Events::TypeList<PE::DoorbellRingData, PE::DoorbellRingControl,
-                                       PE::Mlx5dvMemoryRegistration, PE::Mlx5dvMemoryDereg,
-                                       PE::Mlx5dvUarAlloc, PE::Mlx5dvUarFree>;
+using EnabledEvents =
+    Events::TypeList<PE::DoorbellRingData, PE::DoorbellRingControl, PE::Mlx5dvMemoryRegistration,
+                     PE::Mlx5dvMemoryDereg, PE::Mlx5dvUarAlloc, PE::Mlx5dvUarFree>;
 
 class Dump : public Events::EventReaderBase<Dump, EnabledEvents> {
     using Base = EventReaderBase<Dump, EnabledEvents>;
@@ -53,8 +53,7 @@ public:
     // Required by EventReaderBase for every non-Meta event: it is the hook where
     // a reader would convert TSC to wall-clock. This comparison is timing-free
     // by design, so there is nothing to convert and it stays a no-op.
-    template<typename... Args>
-    void preprocess(Args&&...) {}
+    template<typename... Args> void preprocess(Args&&...) {}
 
     // kind, qp_num, prod_index, opcode, length, gpu_id — the doorbell rows are
     // what the parity claim is built on. `data` and `control` are kept as
@@ -63,8 +62,8 @@ public:
     void visit(Events::EventTrait<PE::DoorbellRingData>, const Events::EventFileHeader&,
                Events::EventHeader&&, PE::DoorbellRingData&& e) {
         std::printf("doorbell_data\t%u\t%u\t0x%02x\t%llu\t%d\n", e.qp_num, e.prod_index,
-                    static_cast<unsigned>(e.opcode),
-                    static_cast<unsigned long long>(e.bytes_sent), static_cast<int>(e.gpu_id));
+                    static_cast<unsigned>(e.opcode), static_cast<unsigned long long>(e.bytes_sent),
+                    static_cast<int>(e.gpu_id));
     }
 
     void visit(Events::EventTrait<PE::DoorbellRingControl>, const Events::EventFileHeader&,
@@ -108,9 +107,8 @@ int main(int argc, char** argv) {
     config.MetaEventsDirectory = config.OutputDirectory / "meta";
 
     std::printf("kind\tid\tprod_index\topcode\tbytes\tgpu_id\n");
-    Dump reader{config};
+    Dump              reader{config};
     const std::size_t total = reader.process();
-    std::fprintf(stderr, "sigma_dump: %zu events from %s\n", total,
-                 config.EventsDirectory.c_str());
+    std::fprintf(stderr, "sigma_dump: %zu events from %s\n", total, config.EventsDirectory.c_str());
     return 0;
 }

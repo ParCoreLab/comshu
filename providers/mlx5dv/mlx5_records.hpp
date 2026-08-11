@@ -153,7 +153,7 @@ PCOMM_RECORD(Mlx5QueuePair, RecordKind::Entity, 210, "mlx5_queue_pair") {
 // whole doorbell-hijack line of work exists to keep. `uar` joins Mlx5Uar; every
 // `qp_num` should join a Mlx5DevxQp some rank created.
 PCOMM_RECORD(Mlx5Doorbell, RecordKind::Event, 212, "mlx5_doorbell") {
-    Handle        uar;       // interned mlx5dv_devx_uar* (joins Mlx5Uar)
+    Handle        uar;  // interned mlx5dv_devx_uar* (joins Mlx5Uar)
     std::uint32_t qp_num;
     std::uint32_t prod_idx;  // producer index the doorbell announced
 };
@@ -164,14 +164,14 @@ PCOMM_RECORD(Mlx5Doorbell, RecordKind::Event, 212, "mlx5_doorbell") {
 // an IBGDA run the ib_post_send table is empty and this is the only send record
 // there is.
 PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
-    std::uint64_t laddr;    // local address (data segment)
-    std::uint64_t raddr;    // remote address (RDMA segment), 0 if none
+    std::uint64_t laddr;  // local address (data segment)
+    std::uint64_t raddr;  // remote address (RDMA segment), 0 if none
     std::uint32_t qp_num;
     std::uint32_t wqe_idx;  // producer index of this WQE
     std::uint32_t lkey;
-    std::uint32_t rkey;     // remote key, 0 if no RDMA segment
-    std::uint32_t length;   // bytes this WQE moves
-    std::uint8_t  opcode;   // mlx5 WQE opcode (0x08 RDMA_WRITE, 0x0a SEND, …)
+    std::uint32_t rkey;    // remote key, 0 if no RDMA segment
+    std::uint32_t length;  // bytes this WQE moves
+    std::uint8_t  opcode;  // mlx5 WQE opcode (0x08 RDMA_WRITE, 0x0a SEND, …)
 };
 
 }  // namespace pcomm::providers::mlx5dv::records
