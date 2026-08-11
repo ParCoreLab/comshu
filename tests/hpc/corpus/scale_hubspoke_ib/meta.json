@@ -1,0 +1,24 @@
+{
+  "case": "scale_hubspoke_ib",
+  "providers": [
+    "ib"
+  ],
+  "topology": "16 nodes x4 H100, NVSHMEM star over the NIC with P2P disabled: ranks 1-63 push a full slot to rank 0, rank 0 answers each with slot/8",
+  "golden": "none — assertions only, the same two case 16 runs at 4 ranks",
+  "workload": {
+    "ranks": 64,
+    "nodes": 16,
+    "gpus": 4,
+    "iters": 3,
+    "elems": 4096,
+    "elem_bytes": 4,
+    "app_buffer_bytes": 1048576
+  },
+  "workload_note": "`asym_patterns hub 4096 3` at 64 PEs with NVSHMEM_DISABLE_P2P=1, so intra-node peers use the NIC too and every one of the 126 edges is verbs traffic. Not a suite case — 16 nodes is not something to spend on every board run — but it carries case 16's two assertions verbatim, by symlink, because both are closed-form in params.ranks and therefore say the same thing at 4 ranks and at 64. app_buffer_bytes is npes*slot*4 = 1 MiB, the hub's receive buffer, which is 16x case 16's and the point of the run: one object written by 63 distinct peers into 63 disjoint bands.",
+  "expect_tables": [
+    "ib_post_send",
+    "ib_queue_pair",
+    "comm_edges",
+    "mem_object"
+  ]
+}
