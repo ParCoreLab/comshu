@@ -42,6 +42,10 @@
      * otherwise the accounting depends on which providers were selected. The
      * mlx5dv provider does NOT define this symbol; exactly one of ours may. */
     mlx5dv_create_cq;
+    /* Same story: libmlx5's context-open door, the earliest install point for
+     * the contexts UCX opens through it. Global for the same reason every ibv_*
+     * entry here is — interposition is being the first global definition. */
+    mlx5dv_open_device;
     pcomm_create_provider;
     pcomm_abi_version;
   local:

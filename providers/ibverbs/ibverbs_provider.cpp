@@ -433,6 +433,17 @@ Profiler::Profiler() {
         ensure_installed(ctx, "open_device");
     });
 
+    // The mlx5dv open door — the same install-at-open, for the contexts UCX's
+    // mlx5 transport opens through it rather than through ibv_open_device. This
+    // is the door that closes the entity_close_accounted deficit on cases 02/06/
+    // 07: without it those contexts first reached us at ibv_create_cq, blind to
+    // every create_cq_ex they had already issued. Its close is still
+    // ibv_close_device, which forget_context already handles, so a recycled
+    // context pointer is not mistaken for one already patched.
+    this->register_post<mlx5dv_open_device_tag>([](ibv_context* ctx, ibv_device*, void*, auto...) {
+        ensure_installed(ctx, "mlx5dv_open_device");
+    });
+
     // reg_mr_iova2 -> the same memory-region entity. `iova` is the virtual
     // offset the remote side addresses; `addr` is where the memory actually is,
     // and the classic path passes iova == addr, so the record keeps addr and the
@@ -1116,6 +1127,15 @@ extern "C" int ibv_close_device(ibv_context* context) {
 }
 extern "C" ibv_context* ibv_open_device(ibv_device* device) {
     return ibv::Profiler::invoke_preload<ibv::open_device_tag>(device);
+}
+// libmlx5's context-open door. A libmlx5 symbol interposed by the ibverbs
+// provider, deliberately, exactly like mlx5dv_create_cq below — the entity these
+// contexts create and destroy is accounted from here, so the open must be too.
+// The mlx5dv_context_attr* second argument is void* here and ABI-identical; the
+// C symbol has no mangling to disagree about, so libmlx5 and its callers cannot
+// tell the difference.
+extern "C" ibv_context* mlx5dv_open_device(ibv_device* device, void* mlx5_attr) {
+    return ibv::Profiler::invoke_preload<ibv::mlx5dv_open_device_tag>(device, mlx5_attr);
 }
 // Two jobs, and it had only the first for a long time. As COVERAGE: a CQ is
 // created from a context, not from a PD, so this is one of the doors through

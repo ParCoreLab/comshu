@@ -95,6 +95,21 @@ DEFINE_PRELOAD_HOOK(ibv, open_device, "ibv_open_device", ibv_context*, ibv_devic
 // is treated as already handled. That silently cost case 02 two of its eight
 // ranks (26880 sends -> 20160) until it was bisected against 055d18b.
 DEFINE_PRELOAD_HOOK(ibv, close_device, "ibv_close_device", int, ibv_context*);
+// libmlx5's context-open door, and the earliest install point for the contexts
+// that were arriving late. UCX's mlx5 transport (libuct_ib_mlx5.so) opens a
+// DEVX-capable context here rather than through ibv_open_device — the same
+// object entity_close_accounted found destroying CQs nothing created, because a
+// context first seen at ibv_create_cq ran uninstrumented through every
+// create_cq_ex (an object-ops slot) it issued before that. Hooking the open
+// gives those contexts a zero-length blind window, like ibv_open_device.
+//
+// An exported symbol (checked with readelf), unlike its create_qp_ex cousin, so
+// a plain preload hook reaches it. Third argument is mlx5dv_context_attr* in
+// mlx5dv.h and void* here, for the same reason mlx5dv_create_cq's is: keep the
+// mlx5dv.h dependency off the one provider that must build against only
+// libibverbs. It is passed through untouched and never dereferenced.
+DEFINE_PRELOAD_HOOK(ibv, mlx5dv_open_device, "mlx5dv_open_device", ibv_context*, ibv_device*,
+                    void*);
 // Memory registration, hooked at the one place every path funnels through.
 //
 // verbs.h makes `ibv_reg_mr` a macro over a static inline that calls the legacy
