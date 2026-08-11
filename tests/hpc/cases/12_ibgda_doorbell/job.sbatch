@@ -87,7 +87,7 @@ mpi() {  # mpi <out-dir> <extra pcomm args...>
     -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
     -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
     -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE \
-    "$PCOMM" -p mlx5dv "$@" -o "$out" -- "$APP" "$ELEMS" "$ITERS"
+    "$PCOMM" run -p mlx5dv "$@" -o "$out" -- "$APP" "$ELEMS" "$ITERS"
 }
 
 # ---- control run: hijack OFF ----------------------------------------------

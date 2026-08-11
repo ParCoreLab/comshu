@@ -53,7 +53,7 @@ run_pair untraced
 
 echo "############ traced with the ibverbs provider (raw-POD records, current)"
 OUT=$HOME/ibc-out; rm -rf "$OUT"; mkdir -p "$OUT"
-run_pair traced "$PCOMM" -p ib -o "$OUT" --
+run_pair traced "$PCOMM" run -p ib -o "$OUT" --
 
 echo "############ records actually written (2 per message: post_send + poll_cq)"
 for f in $(find "$OUT" -name '*.pcs' 2>/dev/null | sort); do

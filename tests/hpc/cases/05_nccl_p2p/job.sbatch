@@ -51,7 +51,7 @@ timeout "$DEADLINE" mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH 
   -x NCCL_P2P_DISABLE=0 -x NCCL_P2P_LEVEL=NVL \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  "$PCOMM" -p p2p -o "$OUT" -- "$APP" 262144 3
+  "$PCOMM" run -p p2p -o "$OUT" -- "$APP" 262144 3
 rc=$?
 echo "workload rc=$rc"
 if [ $rc -ne 0 ]; then

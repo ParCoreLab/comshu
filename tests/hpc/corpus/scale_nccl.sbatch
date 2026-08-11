@@ -52,7 +52,7 @@ mpirun -np 32 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=1 \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  "$PCOMM" -p ib -o "$OUT" -- "$APP" 8388608 20
+  "$PCOMM" run -p ib -o "$OUT" -- "$APP" 8388608 20
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM" read "$OUT"

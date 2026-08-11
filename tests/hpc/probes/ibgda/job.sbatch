@@ -98,7 +98,7 @@ timeout 400 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_KERNEL_NAME=put_to_next \
   -x LD_PRELOAD="$OUT/devx_probe.so" \
   -x PCOMM_PROBE_LOG="$OUT/logs/probe.txt" \
-  "$PCOMM" -p p2p -o "$OUT/capture" -- "$APP" 65536 3
+  "$PCOMM" run -p p2p -o "$OUT/capture" -- "$APP" 65536 3
 rc=$?; echo "mpirun exit=$rc"
 
 # The shim writes one file per rank (probe.txt.<rank>) — mpirun does not expand

@@ -56,7 +56,7 @@ OUT=$(pcomm_out nvshmem_coexist); rm -rf "$OUT"; mkdir -p "$OUT"
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
   -x PCOMM_KERNEL_NAME=put_to_next \
-  "$PCOMM" -p ib,p2p -o "$OUT" -- "$APP" 65536 3
+  "$PCOMM" run -p ib,p2p -o "$OUT" -- "$APP" 65536 3
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM" read "$OUT"

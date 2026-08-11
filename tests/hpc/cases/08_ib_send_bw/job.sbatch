@@ -43,11 +43,11 @@ devcmd='DEV=$(ibv_devinfo 2>/dev/null | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print
 
 # rank 0 = server (receives), rank 1 = client (posts the sends).
 srun --nodes=1 --ntasks=1 --nodelist="$server" --overlap bash -c \
-  "$devcmd; PCOMM_RANK=0 '$PCOMM' -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE" &
+  "$devcmd; PCOMM_RANK=0 '$PCOMM' run -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE" &
 SRV=$!
 sleep 6
 srun --nodes=1 --ntasks=1 --nodelist="$client" --overlap bash -c \
-  "$devcmd; PCOMM_RANK=1 '$PCOMM' -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE $server"
+  "$devcmd; PCOMM_RANK=1 '$PCOMM' run -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE $server"
 CLI=$?; wait $SRV; SRV_RC=$?
 echo "client_rc=$CLI server_rc=$SRV_RC"
 

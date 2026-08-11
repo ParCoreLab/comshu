@@ -103,7 +103,7 @@ OUT=$(pcomm_out hubspoke); rm -rf "$OUT"; mkdir -p "$OUT"
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
   -x PCOMM_KERNEL_NAME=put_slice \
-  "$PCOMM" -p p2p -o "$OUT" -- "$APP" hub 4096 3
+  "$PCOMM" run -p p2p -o "$OUT" -- "$APP" hub 4096 3
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM" read "$OUT"

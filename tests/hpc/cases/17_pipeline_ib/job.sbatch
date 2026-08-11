@@ -122,7 +122,7 @@ OUT=$(pcomm_out pipeline_ib); rm -rf "$OUT"; mkdir -p "$OUT"
 # and costs the capture, and these three exist to be usable while that is open.
 mpirun -np 4 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
-  "$PCOMM" -p ib -o "$OUT" -- "$APP" pipe 4096 3
+  "$PCOMM" run -p ib -o "$OUT" -- "$APP" pipe 4096 3
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM" read "$OUT"

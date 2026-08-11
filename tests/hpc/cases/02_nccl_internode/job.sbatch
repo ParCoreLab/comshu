@@ -33,7 +33,7 @@ fi
 
 OUT=$(pcomm_out nccl_internode); rm -rf "$OUT"; mkdir -p "$OUT"
 
-# NVLink P2P off ⇒ inter-node is pure IB; every rank wraps its app in `pcomm -p ib`.
+# NVLink P2P off ⇒ inter-node is pure IB; every rank wraps its app in `pcomm run -p ib`.
 # NCCL is pinned (Ring/Simple, fixed channels) so the capture is byte-repeatable
 # — without this NCCL picks channel counts from measured bandwidth and the QP /
 # send counts drift run-to-run, defeating the golden.
@@ -41,7 +41,7 @@ mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=1 \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  "$PCOMM" -p ib -o "$OUT" -- "$APP" 8388608 20
+  "$PCOMM" run -p ib -o "$OUT" -- "$APP" 8388608 20
 echo "mpirun exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM" read "$OUT"

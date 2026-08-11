@@ -126,7 +126,7 @@ timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
   -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
   -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
   -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE \
-  "$PCOMM" -p mlx5dv -o "$OUT" -- "$APP" 1024 2
+  "$PCOMM" run -p mlx5dv -o "$OUT" -- "$APP" 1024 2
 rc=$?; echo "mpirun exit=$rc"
 
 # A run that IBGDA declined to serve is a skip, not a failure: NVSHMEM exits

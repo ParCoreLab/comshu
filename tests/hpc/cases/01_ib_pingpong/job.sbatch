@@ -1,6 +1,6 @@
 #!/bin/bash
 # Case 01 — ib_pingpong: the baseline. Two nodes run ibv_rc_pingpong (server +
-# client) over real NDR InfiniBand under `pcomm -p ib`. Proves the hook engine
+# client) over real NDR InfiniBand under `pcomm run -p ib`. Proves the hook engine
 # still turns live verbs calls into records: MR / QP / modify_qp / post_send /
 # poll_cq on both endpoints. Smallest end-to-end signal that the tool works.
 #
@@ -29,7 +29,7 @@ devcmd='DEV=$(ibv_devinfo 2>/dev/null | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print
 
 # rank 0 = server (listens), backgrounded; rank 1 = client (connects OOB).
 srun --nodes=1 --ntasks=1 --nodelist="$server" --overlap bash -c \
-  "$devcmd; PCOMM_RANK=0 '$PCOMM' -p ib -o '$OUT' -- ibv_rc_pingpong -d \$DEV -n 20" &
+  "$devcmd; PCOMM_RANK=0 '$PCOMM' run -p ib -o '$OUT' -- ibv_rc_pingpong -d \$DEV -n 20" &
 SRV=$!
 # ibv_rc_pingpong's server listens on 18515 only once it is actually up, and a
 # fixed sleep is a guess about how long that takes. Job 44457178 lost the whole
@@ -51,7 +51,7 @@ for _ in $(seq 1 30); do
 done
 
 srun --nodes=1 --ntasks=1 --nodelist="$client" --overlap bash -c \
-  "$devcmd; PCOMM_RANK=1 '$PCOMM' -p ib -o '$OUT' -- ibv_rc_pingpong -d \$DEV -n 20 $server"
+  "$devcmd; PCOMM_RANK=1 '$PCOMM' run -p ib -o '$OUT' -- ibv_rc_pingpong -d \$DEV -n 20 $server"
 CLI=$?
 
 # Reap the server on the client's terms. It exits by itself on a successful

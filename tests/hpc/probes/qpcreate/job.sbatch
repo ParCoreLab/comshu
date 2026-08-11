@@ -46,11 +46,11 @@ devcmd='DEV=$(ibv_devinfo 2>/dev/null | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print
 # taken only by the passive side would otherwise be invisible, and that asymmetry
 # is exactly the kind of thing this probe exists to not assume.
 srun --nodes=1 --ntasks=1 --nodelist="$server" --overlap bash -c \
-  "$devcmd; PCOMM_TRACE_HOOKS=1 PCOMM_RANK=0 '$PCOMM' -p ib,devx -o '$OUT/cap' \
+  "$devcmd; PCOMM_TRACE_HOOKS=1 PCOMM_RANK=0 '$PCOMM' run -p ib,devx -o '$OUT/cap' \
    -- ib_send_bw -d \$DEV -n 20 -s 1024" >"$OUT/server.log" 2>&1 &
 sleep 4
 srun --nodes=1 --ntasks=1 --nodelist="$client" --overlap bash -c \
-  "$devcmd; PCOMM_TRACE_HOOKS=1 PCOMM_RANK=1 '$PCOMM' -p ib,devx -o '$OUT/cap' \
+  "$devcmd; PCOMM_TRACE_HOOKS=1 PCOMM_RANK=1 '$PCOMM' run -p ib,devx -o '$OUT/cap' \
    -- ib_send_bw -d \$DEV -n 20 -s 1024 $server" >"$OUT/client.log" 2>&1
 wait
 

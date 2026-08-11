@@ -66,7 +66,7 @@ timeout 300 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
   -x NVSHMEM_REMOTE_TRANSPORT -x NVSHMEM_IB_ENABLE_IBGDA \
   -x PCOMM_KERNEL_NAME=put_to_next \
-  "$PCOMM" -p ib,p2p -o "$OUT" -- "$APP" 65536 3
+  "$PCOMM" run -p ib,p2p -o "$OUT" -- "$APP" 65536 3
 rc=$?; echo "mpirun exit=$rc"
 if [ $rc -ne 0 ]; then
   echo "FAILED: workload did not complete (rc=$rc; 124 = timed out)."

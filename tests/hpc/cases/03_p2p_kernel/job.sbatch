@@ -36,7 +36,7 @@ OUT=$(pcomm_out p2p_kernel); rm -rf "$OUT"; mkdir -p "$OUT"
 # Single process, all GPUs → `-p p2p` runs in one pass (gpumem is exclusive but
 # alone). 4096 elems × 4 iters of ring peer stores. PCOMM_RANK=0 pins the rank
 # (no MPI here, so rank would otherwise fall back to pid → non-repeatable).
-PCOMM_RANK=0 "$PCOMM" -p p2p -o "$OUT" -- "$APP" 4096 4
+PCOMM_RANK=0 "$PCOMM" run -p p2p -o "$OUT" -- "$APP" 4096 4
 echo "app exit=$?"
 
 echo "=== captured streams ==="; "$PCOMM" read "$OUT"
