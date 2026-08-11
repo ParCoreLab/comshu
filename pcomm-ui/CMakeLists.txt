@@ -11,19 +11,35 @@ if(NOT EXISTS "${_httplib_dir}/httplib.h")
     "  run tools/get_httplib.sh (needs network — not available on MN5)")
 endif()
 
-# The page, embedded as a C++ raw string so the binary is self-contained: a UI
-# that needs a sibling file is a UI that breaks when it is copied to a login
-# node. Regenerated whenever index.html changes; never committed.
+# The built frontend, embedded byte for byte so the binary is self-contained: a
+# UI that needs a sibling directory is a UI that serves a blank page the first
+# time somebody scp's it to a login node. Regenerated whenever ui/dist changes;
+# never committed.
+#
+# ui/dist is the REAL app (ui/, Svelte) and is now the only page this server
+# knows. It used to embed a hand-written pcomm-ui/index.html — the step-3
+# matrix prototype — while the nine-panel app was reachable only by building it
+# and passing --dir. That made the default invocation show the weakest thing the
+# project had, so the prototype is gone and --dir is now purely a dev override.
+set(_ui_dist "${CMAKE_SOURCE_DIR}/ui/dist")
+if(NOT EXISTS "${_ui_dist}/index.html")
+  message(FATAL_ERROR
+    "pcomm-ui embeds the built frontend, and there is none at ${_ui_dist}.\n"
+    "  build it:  pnpm -C ui install && pnpm -C ui build\n"
+    "  (needs network for the first install — like get_duckdb.sh, not "
+    "available on MN5)")
+endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+# CONFIGURE_DEPENDS so a rebuilt bundle (Vite renames its hashed assets on every
+# content change) re-runs cmake rather than embedding the previous file list.
+file(GLOB_RECURSE _ui_dist_files CONFIGURE_DEPENDS "${_ui_dist}/*")
 set(_assets "${CMAKE_CURRENT_BINARY_DIR}/ui_assets.hpp")
 add_custom_command(
   OUTPUT  "${_assets}"
-  COMMAND ${CMAKE_COMMAND}
-          -DIN=${CMAKE_CURRENT_SOURCE_DIR}/index.html
-          -DOUT=${_assets}
-          -P ${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/index.html"
-          "${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake"
-  COMMENT "embedding pcomm-ui/index.html"
+  COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/embed_assets.py"
+          "${_ui_dist}" "${_assets}"
+  DEPENDS "${CMAKE_SOURCE_DIR}/tools/embed_assets.py" ${_ui_dist_files}
+  COMMENT "embedding ui/dist into pcomm-ui"
   VERBATIM)
 
 add_executable(pcomm_ui main.cpp "${_assets}")

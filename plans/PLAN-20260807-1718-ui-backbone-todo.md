@@ -492,6 +492,19 @@ hand-written page, and **per-rank traffic**. The built-in page stays as the
 zero-build fallback, and the server did not change to accommodate any of this —
 the `--dir` seam was already the whole interface.
 
+> **Superseded 2026-08-11.** "The built-in page stays as the zero-build
+> fallback" turned out to be the wrong call, and it went wrong in the way a
+> fallback usually does: it never fell back, it just *was* what everybody got.
+> `pcomm-ui <capture>` served the step-3 matrix prototype while the nine-panel
+> app required a `pnpm build` and a `--dir` nobody passes from memory — so the
+> default invocation showed the weakest thing the project had. `ui/dist` is now
+> embedded (`tools/embed_assets.py`, byte arrays rather than a raw string, so a
+> minified bundle cannot collide with the delimiter and a font can be carried
+> later), the prototype and `embed.cmake` are deleted, and `--dir` survives only
+> as the dev override for iterating without a rebuild. A missing `ui/dist` is a
+> configure-time error naming `pnpm -C ui build`, like `get_duckdb.sh` before
+> it.
+
 Verified against `scale_nccl-44445029` in both themes. The rank panel is also an
 independent check on the matrix: every rank sends 1.2 GB, receives 1.2 GB, and
 has exactly **2 peers**, which is what a ring means.

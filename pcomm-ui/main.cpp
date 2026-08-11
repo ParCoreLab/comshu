@@ -1,6 +1,6 @@
 // pcomm ui — serve an exported capture as a queryable page.
 //
-//   pcomm-ui <capture-or-export-dir> [--port N] [--dir <static-dir>] [--bind ADDR]
+//   pcomm-ui <capture-or-export-dir> [--port N] [--bind ADDR] [--dir <static-dir>]
 //
 // The export directory is one produced by `pcomm-read --parquet` and linked
 // with `--link`. This process never opens a `.pcs`: stream headers, schema
@@ -32,7 +32,7 @@ extern "C" {
 #include "duck_mount.hpp"    // shared with pcomm-read: the empty-table policy
 #include "capture_load.hpp"  // ... and reading a raw capture straight in
 #include "link_sql.hpp"      // ... and the derived layer, as views
-#include "ui_assets.hpp"     // generated: the built page, embedded
+#include "ui_assets.hpp"     // generated from ui/dist: the built app, embedded
 
 namespace fs = std::filesystem;
 
@@ -99,9 +99,11 @@ std::string json_escape(const char* s) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fputs("usage: pcomm-ui <dir> [--port N] [--dir <static-dir>]\n"
+        std::fputs("usage: pcomm-ui <dir> [--port N] [--bind ADDR] [--dir <static-dir>]\n"
                    "  <dir> is either a capture (one containing rank-* dirs) or a\n"
-                   "  `pcomm-read --parquet` export, ideally --link'ed\n",
+                   "  `pcomm-read --parquet` export, ideally --link'ed\n"
+                   "  the frontend is built in; --dir serves one from disk instead,\n"
+                   "  for iterating on ui/ without rebuilding this binary\n",
                    stderr);
         return 1;
     }
@@ -297,19 +299,33 @@ int main(int argc, char** argv) {
         res.set_content(out, "application/json");
     });
 
-    // A built frontend if one was given, the embedded page otherwise. The seam
-    // exists so the Svelte app can replace the built-in page without the server
-    // learning anything about it.
+    // The embedded app, unless --dir points at a directory to serve instead.
+    // That override exists for iterating on the frontend without a rebuild of
+    // this binary; everything else — including every copy that ends up on a
+    // login node — serves what is compiled in.
     if (!static_dir.empty())
         srv.set_mount_point("/", static_dir);
     else
-        srv.Get("/", [](const httplib::Request&, httplib::Response& res) {
-            res.set_content(pcomm::ui::kIndexHtml, "text/html");
+        srv.Get(".*", [](const httplib::Request& req, httplib::Response& res) {
+            // "/" means index.html; anything else is looked up literally. No
+            // SPA catch-all rewrite: the app puts its view in the URL FRAGMENT
+            // (#flow), which never reaches the server, so a path we do not have
+            // is a genuine 404 and should say so rather than returning the page
+            // with status 200 and letting it fail in the browser.
+            const std::string want = req.path == "/" ? "/index.html" : req.path;
+            for (const auto& a : pcomm::ui::kAssets)
+                if (want == a.path) {
+                    res.set_content(reinterpret_cast<const char*>(a.data), a.size, a.mime);
+                    return;
+                }
+            res.status = 404;
+            res.set_content("no such asset: " + req.path + "\n", "text/plain");
         });
 
     std::printf("pcomm-ui: %zu tables from %s\n", tables, dir.c_str());
     if (static_dir.empty())
-        std::printf("pcomm-ui: http://%s:%d/  (built-in page)\n", bind_addr.c_str(), port);
+        std::printf("pcomm-ui: http://%s:%d/  (%zu embedded assets)\n", bind_addr.c_str(), port,
+                    pcomm::ui::kAssetCount);
     else
         std::printf("pcomm-ui: http://%s:%d/  (serving %s)\n", bind_addr.c_str(), port,
                     static_dir.c_str());

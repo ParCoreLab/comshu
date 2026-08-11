@@ -1,18 +1,22 @@
 # ui/ — the pcomm frontend
 
-Svelte 5 + Vite + Tailwind. Built to `dist/`, which `pcomm-ui` serves.
+Svelte 5 + Vite + Tailwind. Built to `dist/`, which is **compiled into**
+`pcomm-ui` — the server has no other page, and a copy of the binary on a login
+node carries the whole app with it.
 
 ```bash
 pnpm install
-pnpm build                                   # -> ui/dist
+pnpm build                                   # -> ui/dist, embedded at cmake build time
 
-# serve a real capture through the built app
-pcomm-read <trace-dir> --parquet /tmp/x
-pcomm-read --link /tmp/x
-pcomm-ui /tmp/x --dir ui/dist                # http://127.0.0.1:8777
+pcomm-ui <trace-dir>                         # http://127.0.0.1:8777 — that is the whole flow
 
 pnpm dev                                     # vite on :5180, /query proxied to :8777
+pcomm-ui <trace-dir> --dir ui/dist           # serve from disk instead of the embedded copy
 ```
+
+`ui/dist` must exist when cmake configures `pcomm-ui`, or the build stops and
+says so. Rebuilding the bundle re-runs the embedder; no export step and no
+`--parquet`/`--link` first, since `pcomm-ui` loads a capture directly.
 
 `pnpm dev` proxies `/query` to a running `pcomm-ui` rather than mocking it. The
 data path is the part most worth exercising, and a fixture would be the one
