@@ -515,26 +515,39 @@ extern "C" void nvshmem_free(void* p) {
  * pcomm_install_ibv_destroy_qp_hook. */
 namespace {
 
-// The real ibv_destroy_qp, resolved through the RAW dlsym (smart_dlsym::
-// real_dlsym), never the engine's own interposed dlsym: this symbol is
-// registered in the smart_dlsym chain, so resolving it through the interposed
-// dlsym would hand back the hook and recurse. RTLD_NEXT is relative to the
-// engine, which is preloaded ahead of libibverbs, so this is the real symbol.
-int ibv_destroy_qp_real(void* qp) {
-    static auto real = reinterpret_cast<int (*)(void*)>(
-        pcomm::smart_dlsym::real_dlsym
-            ? pcomm::smart_dlsym::real_dlsym(pcomm::smart_dlsym::DL_RTLD_NEXT, "ibv_destroy_qp")
-            : nullptr);
-    return real ? real(qp) : -1;
+using PfnDestroyQp = int (*)(void*);
+
+// The real ibv_destroy_qp to forward to, set from the smart_dlsym chain's
+// `next` — the EXACT symbol the caller resolved, version included. This matters:
+// NVSHMEM resolves ibv_destroy_qp@IBVERBS_1.1 through dlvsym, and a bare
+// RTLD_NEXT lookup can land on a different (compat) implementation that then
+// faults on a QP the versioned one owns — the SIGSEGV observed on du04 case 09.
+PfnDestroyQp& real_destroy_qp() {
+    static PfnDestroyQp p = nullptr;
+    return p;
 }
 
 // Destroy, then record the close on success — a failed destroy freed nothing.
 // The void* is ABI-identical to ibv_qp* and never dereferenced, so the engine
-// stays vendor-header-free. Interning the pointer value the instant the real
-// call returns is safe: no other allocation runs before this thread returns to
-// the caller, so the handle still names this QP.
+// stays vendor-header-free. Both doors below land here, so a QP is closed
+// exactly once however it was reached. Interning the pointer value the instant
+// the real call returns is safe: no other allocation runs before this thread
+// returns to the caller, so the handle still names this QP.
 int ibv_destroy_qp_hook(void* qp) {
-    const int ret = ibv_destroy_qp_real(qp);
+    PfnDestroyQp real = real_destroy_qp();
+    if (!real) {
+        // No dlsym registration captured `next` yet — a pure-PLT caller like
+        // perftest. Fall back to the RAW dlsym (never the engine's interposed
+        // one, or this registered symbol resolves back to this hook and
+        // recurses); RTLD_NEXT from the engine reaches the real symbol.
+        real = reinterpret_cast<PfnDestroyQp>(
+            pcomm::smart_dlsym::real_dlsym
+                ? pcomm::smart_dlsym::real_dlsym(pcomm::smart_dlsym::DL_RTLD_NEXT,
+                                                 "ibv_destroy_qp")
+                : nullptr);
+        real_destroy_qp() = real;
+    }
+    const int ret = real ? real(qp) : -1;
     if (ret == 0)
         pcomm_close_qp(qp);
     return ret;
@@ -548,7 +561,8 @@ extern "C" int ibv_destroy_qp(void* qp) {
 }
 
 // The dlsym door: hand callers that resolve ibv_destroy_qp dynamically the same
-// hook. Modelled on core/dmabuf_registry.hpp's cuGetProcAddress registration.
+// hook, and capture the exact real symbol they resolved (its version included).
+// Modelled on core/dmabuf_registry.hpp's cuGetProcAddress registration.
 static void pcomm_install_ibv_destroy_qp_hook() {
     if (!pcomm::smart_dlsym::RegisteredSymbols)
         return;  // dlsym interposer not initialised; nothing resolves through us
@@ -557,10 +571,9 @@ static void pcomm_install_ibv_destroy_qp_hook() {
         return;
     installed = true;
     pcomm::smart_dlsym::register_symbol(
-        "ibv_destroy_qp",
-        [](void* /*next*/, void*, const char*) -> void* {
-            // next is ignored: ibv_destroy_qp_hook reaches the real symbol itself
-            // through the raw dlsym, and nothing else registers this symbol.
+        "ibv_destroy_qp", [](void* next, void*, const char*) -> void* {
+            if (next)
+                real_destroy_qp() = reinterpret_cast<PfnDestroyQp>(next);
             return reinterpret_cast<void*>(&ibv_destroy_qp_hook);
         });
 }
