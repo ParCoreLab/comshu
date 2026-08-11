@@ -39,14 +39,18 @@
 --
 -- 210 mlx5_queue_pair is the case that failure mode was warning about, and it
 -- had already happened. A queue pair created through mlx5dv_create_qp gets its
--- open record in the mlx5dv provider's range, while the close still comes from
--- ibverbs' ibv_destroy_qp carrying opener 102 — so every such QP was a
--- guaranteed "close names an entity no open record created" on any workload
--- that both creates through mlx5dv and tears down. It is an open record like
--- any other; leaving it out was an omission from this list, not a check.
--- (The opener recorded on the close is still 102, because that is the type the
--- CLOSING hook knows. This CTE is joined on subject alone, so the mismatch is
--- harmless — `opener` is a signpost for the reader, not part of the join.)
+-- open record in the mlx5dv provider's range, while the close comes from
+-- ibv_destroy_qp — so every such QP was a guaranteed "close names an entity no
+-- open record created" on any workload that both creates through mlx5dv and
+-- tears down. It is an open record like any other; leaving it out was an
+-- omission from this list, not a check.
+-- (The opener recorded on the close is 102, because that is the type the CLOSING
+-- hook knows. This CTE is joined on subject alone, so the mismatch is harmless —
+-- `opener` is a signpost for the reader, not part of the join. As of 2026-08-11
+-- ibv_destroy_qp is interposed by the ENGINE, not ibverbs, so this close is now
+-- recorded even on a `-p mlx5dv`-only run where ibverbs is absent — which is
+-- what makes the IBGDA cases (09/10/12) account their queue pairs at all. See
+-- PLAN-20260805-0053-entity-lifetimes.)
 WITH opens AS (
   SELECT rank, mr AS subject, 100 AS opener FROM ib_mem_region
   UNION ALL SELECT rank, qp, 102 FROM ib_queue_pair

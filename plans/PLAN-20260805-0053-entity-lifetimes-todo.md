@@ -28,6 +28,50 @@ entity to be closed, so "live at end == 0" is implied by an assertion that
 already runs everywhere, and a case-06 golden asserting 0 would add a number
 without adding a check. Case 06's per-rank symmetry assertion stays as it is.
 
+## 2026-08-11: the QP close is now engine-owned — mlx5dv-only runs account their queue pairs
+
+`entity_close_accounted` fired "entity opened and never closed (opener 210)" on
+the IBGDA cases (09/10/12, `-p mlx5dv`) and nowhere else. A `Mlx5QueuePair` is
+opened by the mlx5dv provider but destroyed through `ibv_destroy_qp`, whose close
+lived in the **ibverbs** provider — not loaded on an mlx5dv-only run, so nothing
+recorded the close. The mirror of the CQ deficit below, from the destroy side.
+
+The close door had to move to a component present in every provider selection,
+and since ibverbs and mlx5dv coexist by design, no provider can own
+`ibv_destroy_qp` alongside the other. The **engine** owns it now (like `dlsym`,
+the object registry, and the `MemObject` close from `nvshmem_free`). Four defects
+surfaced on the way, each found by measurement, not reasoning — worth keeping so
+they are not re-derived:
+
+1. **A `-p p2p` run has no QP opens**, so an unconditional engine close named
+   entities nothing created (cases 04/05/06 went red). Gated on a QP-open
+   provider being present: `type_is_declared(102) || type_is_declared(210)`. This
+   is `pcomm_close_object`'s registry check in another form.
+2. **NVSHMEM/NCCL reach `ibv_destroy_qp` entirely through `dlsym`/`dlvsym`**
+   (measured on du04: `[pcomm-entry] dlsym/dlvsym ibv_destroy_qp`), so the ELF
+   interposer never saw it. Registered in `smart_dlsym` like
+   `dmabuf_registry`'s `cuGetProcAddress`.
+3. **Forwarding to the real symbol is version-sensitive.** `RTLD_NEXT` lands on a
+   compat implementation and faults (a SIGSEGV inside `ibv_destroy_qp` during
+   `nvshmemid_hostlib_finalize`); `RTLD_DEFAULT` finds the engine's own exported
+   symbol and recurses. The dlsym path forwards to the chain's `next` (the exact
+   versioned symbol the caller resolved); the PLT path (perftest, pingpong)
+   resolves from libibverbs' own handle via `dlopen(NOLOAD)` — what
+   `PreloadHookManager` already does.
+
+Validated on both clusters: MN5 01–08 green (job 44506331), du04 09–12 green,
+`entity_close_accounted` passing on all. Commits `b63be06`, `a894345`, `170624f`,
+`58792c6`. The opener recorded on the close is `102` regardless of the creation
+door (the closing hook cannot know 102 vs 210), which is harmless — the assertion
+joins on subject alone.
+
+**Still open, one latent edge:** ibverbs and mlx5dv do not co-run in any case
+today; when they do, the gate lets the engine emit one close per destroy, which
+is correct, but a QP created via `ibv_create_qp` on an mlx5dv-only run (none
+observed) would be closed without an open. The gate is coarse (per-run, not
+per-QP); a true fix registers each opened QP handle, the same registry
+`PLAN-20260806-1329` builds for objects.
+
 ## Step 3 did its job, 2026-08-10: the CQ deficit was a third door
 
 `entity_close_accounted` went red on every ibverbs case that runs NVSHMEM
