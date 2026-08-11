@@ -1,7 +1,14 @@
 # PLAN — what the application allocated should not depend on which provider ran
 
 - **Created:** 2026-08-10 05:05 +03
-- **Status:** TODO — measured, designed, not started.
+- **Status:** SHIPPED. The core-owned registry, the engine-level `nvshmem_*`
+  interposers, `MemObject`/`EntityClose` emitted from the engine's own id range,
+  gpumem consulting `pcomm_engine_object_at`, and the `app_buffers_recorded`
+  assertion are all in the tree. Steps 1-5 are done. Two follow-ups are tracked
+  elsewhere and deliberately deferred: end-to-end cluster verification (the
+  720->520 schema move churned every golden's hash), and the reader resolving
+  accesses against the `[open, close)` window for reused addresses (that half is
+  `PLAN-20260805-0053-entity-lifetimes`, "What is actually left").
 - **Supersedes** the placement argument in
   `PLAN-20260806-1329-generic-memory-attribution-todo.md` ("Where the
   nvshmem_malloc interposer belongs"). That section concluded the current

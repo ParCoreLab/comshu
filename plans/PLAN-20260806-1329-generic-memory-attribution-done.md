@@ -1,7 +1,14 @@
 # PLAN — memory attribution belongs to the core, not to whichever provider happens to see the allocation
 
 - **Created:** 2026-08-06 13:29 +03
-- **Status:** TODO — design agreed, not started.
+- **Status:** SHIPPED. `device_of` is in `core/mem_attr.hpp` (RTLD_NOLOAD,
+  no negative caching, `kAttrDeviceOrdinal = 9`); `MemObject` moved 720->520 into
+  the internal range; ibverbs, mlx5dv and the engine all emit it, deduped by
+  interning the base in `InternDomain::Pointer`; dmabuf/memoryless doors withhold
+  it rather than fabricate a base-0 object. Steps 1-5 done. Step 6 (lifetime-
+  scoped range resolution in the reader) is deferred with
+  `PLAN-20260805-0053-entity-lifetimes`. The placement question this plan opened
+  was settled by `PLAN-20260810-0505` (core registry, not a provider).
 - **Depends on:** `PLAN-20260805-0053-entity-lifetimes-todo.md` for the *time*
   half. Steps 1-5 land without it and are useful without it; step 6 is what it
   unblocks.
