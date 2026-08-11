@@ -537,14 +537,20 @@ int ibv_destroy_qp_hook(void* qp) {
     PfnDestroyQp real = real_destroy_qp();
     if (!real) {
         // No dlsym registration captured `next` yet — a pure-PLT caller like
-        // perftest. Fall back to the RAW dlsym (never the engine's interposed
-        // one, or this registered symbol resolves back to this hook and
-        // recurses); RTLD_NEXT from the engine reaches the real symbol.
-        real = reinterpret_cast<PfnDestroyQp>(
-            pcomm::smart_dlsym::real_dlsym
-                ? pcomm::smart_dlsym::real_dlsym(pcomm::smart_dlsym::DL_RTLD_NEXT,
-                                                 "ibv_destroy_qp")
-                : nullptr);
+        // perftest/pingpong. Resolve from libibverbs' OWN handle, as
+        // PreloadHookManager does: RTLD_NEXT lands on a compat implementation
+        // (the du04/MN5 SIGSEGV) and RTLD_DEFAULT finds the engine's own exported
+        // ibv_destroy_qp and recurses. dlopen(NOLOAD) returns the already-loaded
+        // libibverbs, and real_dlsym on that handle gives its default, correctly
+        // versioned symbol without going through the engine's interposition.
+        if (pcomm::smart_dlsym::real_dlopen && pcomm::smart_dlsym::real_dlsym) {
+            void* h = pcomm::smart_dlsym::real_dlopen(
+                "libibverbs.so.1",
+                pcomm::smart_dlsym::DL_RTLD_NOW | pcomm::smart_dlsym::DL_RTLD_NOLOAD);
+            if (h)
+                real = reinterpret_cast<PfnDestroyQp>(
+                    pcomm::smart_dlsym::real_dlsym(h, "ibv_destroy_qp"));
+        }
         real_destroy_qp() = real;
     }
     const int ret = real ? real(qp) : -1;
