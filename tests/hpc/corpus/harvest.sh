@@ -14,8 +14,16 @@ OUT_ROOT="${PCOMM_REMOTE_OUT:-pcomm-suite}"     # relative to the remote $HOME
 CORPUS="${PCOMM_CORPUS:-$HOME/waste/pcomm/corpus}"
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=20"
 
-# The eight cases that run on MN5. 09-12 are du04-only (IBGDA); see README.
-CASES="ib_pingpong nccl_internode p2p_kernel nvshmem nccl_p2p nvshmem_coexist nvshmem_multinode ib_send_bw"
+# The fourteen cases that run on MN5. 09-12 are du04-only (IBGDA); see README.
+#
+# 13-18 (hub/pipe/skew, on NVLink and on IB) were missing from this list — and
+# therefore from the corpus — for as long as they have existed, which is exactly
+# backwards: they are the ONLY asymmetric workloads we have. Every other capture
+# here is a ring or a pair, so every object heatmap built against this corpus was
+# 512 accesses in each of 32 bins and a solid bar was indistinguishable from a
+# broken query. A UI panel designed without these is designed against flat data.
+CASES="ib_pingpong nccl_internode p2p_kernel nvshmem nccl_p2p nvshmem_coexist \
+nvshmem_multinode ib_send_bw hubspoke pipeline skew hubspoke_ib pipeline_ib skew_ib"
 JOB=""
 
 while [ $# -gt 0 ]; do
