@@ -863,12 +863,9 @@ Profiler::Profiler() {
         rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
                                               {}, {}, h(mr), rr::IbMemRegion::pcomm_type_id});
     });
-    this->register_post<destroy_qp_tag>([](int ret, ibv_qp* qp, auto...) {
-        if (ret != 0 || !qp)
-            return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
-                                              {}, {}, h(qp), rr::IbQueuePair::pcomm_type_id});
-    });
+    // ibv_destroy_qp's close is emitted by the engine, not here — see ib_hooks.hpp
+    // and src/engine.cpp. A QP created through mlx5dv_create_qp is destroyed
+    // through the same door, and only the engine is loaded in every selection.
 
     // qp_to_qp_ex -> patch this QP's wr_* pointers. Without it the application's
     // sends are invisible: they never reach ctx->ops.post_send, and nothing
@@ -1204,11 +1201,10 @@ extern "C" ibv_qp* ibv_create_qp(ibv_pd* pd, ibv_qp_init_attr* attr) {
         ibv::ensure_installed(pd->context, "create_qp");
     return ibv::Profiler::invoke_preload<ibv::create_qp_tag>(pd, attr);
 }
-extern "C" int ibv_destroy_qp(ibv_qp* qp) {
-    if (qp)
-        ibv::ensure_installed(qp->context, "destroy_qp");
-    return ibv::Profiler::invoke_preload<ibv::destroy_qp_tag>(qp);
-}
+// ibv_destroy_qp is defined by the engine (src/engine.cpp), which owns the QP
+// close for every provider selection. It is not an install door here: a QP
+// reaching destroy was created through ibv_create_qp or mlx5dv_create_qp, both of
+// which install their context, so nothing is lost by not installing at destroy.
 extern "C" int ibv_modify_qp(ibv_qp* qp, ibv_qp_attr* attr, int mask) {
     if (qp)
         ibv::ensure_installed(qp->context, "modify_qp");

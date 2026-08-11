@@ -29,7 +29,6 @@
     ibv_create_qp;
     ibv_reg_dmabuf_mr;
     ibv_dereg_mr;
-    ibv_destroy_qp;
     ibv_modify_qp;
     ibv_close_device;
     ibv_open_device;

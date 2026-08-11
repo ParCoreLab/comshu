@@ -277,5 +277,8 @@ DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_in
 // verbs_context::create_qp_ex, which `nm` cannot see because the caller is a
 // static inline. See the create_qp_ex hook above.
 DEFINE_PRELOAD_HOOK(ibv, qp_to_qp_ex, "ibv_qp_to_qp_ex", ibv_qp_ex*, ibv_qp*);
-DEFINE_PRELOAD_HOOK(ibv, destroy_qp, "ibv_destroy_qp", int, ibv_qp*);
+// ibv_destroy_qp is NOT hooked here. Its EntityClose is emitted by the ENGINE
+// (libpcomm_engine.so), because a QP opened via mlx5dv_create_qp (mlx5dv
+// provider) is destroyed through this same door, and only the engine is present
+// in every provider selection. See ibv_destroy_qp in src/engine.cpp.
 DEFINE_PRELOAD_HOOK(ibv, modify_qp, "ibv_modify_qp", int, ibv_qp*, ibv_qp_attr*, int);

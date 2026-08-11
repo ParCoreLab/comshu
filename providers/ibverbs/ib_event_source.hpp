@@ -21,11 +21,11 @@ class IbverbsEventSource
     : public pcomm::hook::CompositeHookManager<
           Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag, post_srq_recv_tag, req_notify_cq_tag, poll_cq_tag,
           create_qp_ex_tag, create_cq_ex_tag, create_srq_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag, create_cq_tag, destroy_cq_tag, mlx5dv_create_cq_tag, mlx5dv_open_device_tag, create_srq_tag, destroy_srq_tag, create_ah_tag, destroy_ah_tag, query_device_tag,
-          create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag> {
+          create_qp_tag, qp_to_qp_ex_tag, modify_qp_tag> {
     using Base = pcomm::hook::CompositeHookManager<
         Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag, post_srq_recv_tag, req_notify_cq_tag, poll_cq_tag,
         create_qp_ex_tag, create_cq_ex_tag, create_srq_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag, reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag, create_cq_tag, destroy_cq_tag, mlx5dv_create_cq_tag, mlx5dv_open_device_tag, create_srq_tag, destroy_srq_tag, create_ah_tag, destroy_ah_tag, query_device_tag,
-        create_qp_tag, qp_to_qp_ex_tag, destroy_qp_tag, modify_qp_tag>;
+        create_qp_tag, qp_to_qp_ex_tag, modify_qp_tag>;
 
 public:
     using Context = typename Base::Context;

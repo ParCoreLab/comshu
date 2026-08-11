@@ -409,6 +409,32 @@ void pcomm_close_object(void* p) {
                    {}, {}, object, pcomm::core::records::MemObject::pcomm_type_id});
 }
 
+/* Queue-pair teardown, closed unconditionally (on success) rather than via the
+ * object registry: a QP is opened by a provider, not by this engine, so there is
+ * no registry entry to gate on — a close naming a QP no open recorded is the
+ * missing-creation-door signal entity_close_accounted is built to surface, not a
+ * row to suppress. Subject is the interned QP pointer, which is unique across
+ * providers, so it matches whichever open recorded it. `opener` is the
+ * ib_queue_pair type id (102): the value the destroy door has always reported,
+ * and the assertion joins on subject alone, so it is a signpost, not part of the
+ * join. Named here rather than referenced from IbQueuePair because the engine is
+ * vendor-free and cannot include a provider's records. */
+void pcomm_close_qp(void* p) {
+    if (!p)
+        return;
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder())
+        return;
+    constexpr pcomm::core::RecordTypeId kIbQueuePairTypeId = 102;
+    auto&                               rec = tracer.recorder();
+    rec.record(rec.now_instant(),
+               pcomm::core::records::EntityClose{
+                   {}, {},
+                   rec.intern(pcomm::rec::InternDomain::Pointer,
+                              reinterpret_cast<std::uint64_t>(p)),
+                   kIbQueuePairTypeId});
+}
+
 }  // namespace
 
 extern "C" void* nvshmem_malloc(size_t size) {
@@ -440,6 +466,29 @@ extern "C" void nvshmem_free(void* p) {
     pcomm_close_object(p);
     if (real)
         real(p);
+}
+
+/* Queue-pair destruction. Interposed in the ENGINE and not in a provider,
+ * because a QP created through ibv_create_qp (ibverbs) and one created through
+ * mlx5dv_create_qp (mlx5dv) are BOTH torn down here, the two providers coexist
+ * by design, and interposition wants exactly one global definition of a symbol —
+ * so no provider can own this door and account both. The engine can: it is
+ * loaded and preloaded first in every provider selection. Before this, a
+ * `-p mlx5dv`-only IBGDA run (cases 09/10/12) left every Mlx5QueuePair opened and
+ * never closed, because the old owner, ibverbs, was not in the process at all.
+ *
+ * The argument is typed void* rather than ibv_qp* to keep the vendor header out
+ * of the vendor-free engine; it is ABI-identical (a pointer) and never
+ * dereferenced. Closed only on success and after the real call, matching the
+ * ibverbs hook it replaces: a failed destroy freed nothing, and interning the
+ * pointer value the instant real() returns is safe because no other allocation
+ * can run before this thread returns to the caller. */
+extern "C" int ibv_destroy_qp(void* qp) {
+    static auto real = pcomm_next_sym<int (*)(void*)>("ibv_destroy_qp");
+    const int   ret = real ? real(qp) : -1;
+    if (ret == 0)
+        pcomm_close_qp(qp);
+    return ret;
 }
 
 /* Innermost object containing `addr`, for providers that must resolve an access
