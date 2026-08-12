@@ -449,6 +449,30 @@ template<> struct Table<ibr::IbPollCq> {
     }
 };
 
+// The exact receive identity, from the hardware rather than from the
+// application's wr_id. See providers/ibverbs/ib_records.hpp for why these are
+// separate rows and not columns on the two tables above.
+template<> struct Table<ibr::IbSrqRecvSlot> {
+    static constexpr const char* name = "ib_srq_recv_slot";
+    static constexpr const char* cols = "ticks,srq,wr_id,addr,srqn,slot";
+    static void row(std::FILE* f, const Stamped<ibr::IbSrqRecvSlot>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%llu,%llu,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.srq, (unsigned long long)s.payload.wr_id,
+                     (unsigned long long)s.payload.addr, s.payload.srqn, s.payload.slot);
+    }
+};
+
+template<> struct Table<ibr::IbRecvCqe> {
+    static constexpr const char* name = "ib_recv_cqe";
+    static constexpr const char* cols = "ticks,cq,wr_id,srqn,wqe_counter,qp_num,byte_len";
+    static void row(std::FILE* f, const Stamped<ibr::IbRecvCqe>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%llu,%u,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.cq, (unsigned long long)s.payload.wr_id, s.payload.srqn,
+                     s.payload.wqe_counter, s.payload.qp_num, s.payload.byte_len);
+    }
+};
+
 // --- mlx5dv/DEVX (200-299) --------------------------------------------------
 // The tables that make a GPU-initiated run queryable at all. Under IBGDA the
 // ib_* tables above are empty, so these are not a supplement to them — they are
@@ -597,7 +621,8 @@ using TableRecords =
     std::tuple<MemObject, EntityClose, GpuAccess, SourceLine, NodeIdentity, ClockAnchor,
                Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
-               ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, mxr::Mlx5Umem,
+               ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
+               ibr::IbSrqRecvSlot, ibr::IbRecvCqe, mxr::Mlx5Umem,
                mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
                mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend>;
 

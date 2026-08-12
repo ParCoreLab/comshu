@@ -993,6 +993,43 @@ Profiler::Profiler() {
     // be joined to a completion by (qp, wr_id) the way a QP receive can, because
     // the QP is only decided when the message lands. The recv-completion
     // assertion scopes itself to origin='qp' for that reason, and says so.
+    // A PRE-hook, and the only one in this provider — the slot a WQE is about
+    // to occupy is readable only before the driver takes it. Afterwards the
+    // SRQ's head has moved and mlx5dv_srq reports where the NEXT post will go.
+    //
+    // Recorded here and not merged into the IbPostRecv row below because the
+    // two are not equally trustworthy: IbPostRecv is what the application asked
+    // for and is always known, while the slot is an mlx5-only reading that can
+    // fail. Keeping them separate means a capture where the slot is unavailable
+    // is a capture with fewer ib_srq_recv_slot rows, not one with a column full
+    // of sentinels that every query has to remember to filter.
+    //
+    // Post-only failure is why this cannot be done afterwards, and post-only
+    // success is why it is safe: if ibv_post_srq_recv ultimately fails, the
+    // slots were never consumed and the rows below name buffers that received
+    // nothing — harmless, because IbRecvCqe.wqe_counter only ever names slots
+    // that DID complete, and a slot with no completion is simply never joined.
+    this->register_pre<post_srq_recv_tag>(
+        [](ibv_srq* srq, ibv_recv_wr* wr, ibv_recv_wr**, std::uint64_t t) {
+            if (!srq || !wr)
+                return;
+            const auto tspan = span(t, t);
+            unsigned   n = 0;
+            for (; wr; wr = wr->next, ++n) {
+                const auto s = cqeprobe::srq_slot(srq, n);
+                if (!s.valid)
+                    return;  // not mlx5, or the ring could not be read: record nothing
+                const bool has_sge = wr->num_sge > 0 && wr->sg_list != nullptr;
+                rec().record(tspan, rr::IbSrqRecvSlot{{},
+                                                      {},
+                                                      h(srq),
+                                                      wr->wr_id,
+                                                      has_sge ? wr->sg_list[0].addr : 0u,
+                                                      s.srqn,
+                                                      s.slot});
+            }
+        });
+
     this->register_post<post_srq_recv_tag>([](int ret, ibv_srq* srq, ibv_recv_wr* wr, ibv_recv_wr**,
                                               std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !srq)
@@ -1109,6 +1146,29 @@ Profiler::Profiler() {
                                                  wc[i].qp_num,
                                                  static_cast<std::uint8_t>(wc[i].status),
                                                  static_cast<std::uint8_t>(wc[i].opcode)});
+
+                // The hardware's own identification of the WQE this receive
+                // consumed, when the CQE can be read AND agrees with the ibv_wc
+                // above. See ib_records.hpp for why this is a separate row
+                // rather than four more columns on the record just written.
+                //
+                // Receives only: a requester completion has no receive WQE to
+                // name, and >98% of completions are requester-side, so this
+                // branch is the difference between a free feature and a tax on
+                // every poll.
+                if (wc[i].status != IBV_WC_SUCCESS || !(wc[i].opcode & IBV_WC_RECV))
+                    continue;
+                const auto id = cqeprobe::read_recv_cqe(cq, ret, i, wc[i]);
+                if (!id.valid)
+                    continue;
+                rec().record(tspan, rr::IbRecvCqe{{},
+                                                  {},
+                                                  h(cq),
+                                                  wc[i].wr_id,
+                                                  id.srqn,
+                                                  id.wqe_counter,
+                                                  wc[i].qp_num,
+                                                  wc[i].byte_len});
             }
         });
 }

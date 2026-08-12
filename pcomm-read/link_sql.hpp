@@ -279,10 +279,29 @@ SELECT c.rank                AS recv_rank,
        m.range_base          AS range_base
 FROM ib_poll_cq c
 LEFT JOIN LATERAL (
-    -- The QP arm first because it is the stronger key; the SRQ arm answers only
-    -- when the QP arm has nothing. `min(addr)` is a representative, not a claim
-    -- — `addrs` is what says whether it was the only candidate.
+    -- THE HARDWARE'S ANSWER FIRST, when the capture has one.
+    --
+    -- ib_recv_cqe carries the wqe_counter the NIC stamped on this completion
+    -- and ib_srq_recv_slot carries the slot each posted buffer took, so
+    -- (rank, srqn, slot) names the buffer exactly and wr_id is not consulted at
+    -- all. This arm is absent from captures taken before those records existed
+    -- and from any non-mlx5 NIC, which is why the wr_id arms below are kept
+    -- rather than replaced: a derived table that only worked on new captures
+    -- would make every capture in the corpus unreadable to answer a question
+    -- they can already almost answer.
+    --
+    -- addrs = 1 by construction here. It is not an assumption — a slot holds
+    -- one buffer at a time, which is the entire reason this arm exists.
     SELECT addr, addrs FROM (
+        SELECT -1 AS pref, addr, addrs FROM (
+            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
+            FROM ib_recv_cqe q
+            JOIN ib_srq_recv_slot p
+              ON p.rank = q.rank AND p.srqn = q.srqn AND p.slot = q.wqe_counter
+            WHERE q.rank = c.rank AND q.cq = c.cq AND q.wr_id = c.wr_id
+              AND q.qp_num = c.qp_num AND q.srqn <> 0
+        ) x WHERE x.addr IS NOT NULL
+        UNION ALL
         SELECT 0 AS pref, addr, addrs FROM (
             SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
             FROM ib_post_recv p

@@ -318,4 +318,90 @@ PCOMM_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
     std::uint8_t  opcode;  // ibv_wc_opcode
 };
 
+// --- the hardware's own identification of a receive -------------------------
+//
+// WHY TWO NEW RECORDS RATHER THAN A FIELD ON THE TWO THAT EXIST.
+//
+// object_access attributes a two-sided SEND by recovering the receiver's buffer
+// through wr_id: the completion carries one, IbPostRecv carries (wr_id, addr),
+// and the join gives the address. It works today on every capture measured —
+// and it rests on a key the APPLICATION owns. wr_id is caller-chosen and
+// routinely recycled as a buffer index, and an SRQ receive can only be keyed on
+// (rank, wr_id) because an SRQ WQE is not bound to a queue pair until a message
+// lands. The corpus reads unambiguous because NVSHMEM happens to tag its
+// receives with buffer POINTERS (measured: wr_id=139798842146688 on MN5), which
+// are unique by construction. A library using small indices — which the API
+// invites — would collide on the first reuse.
+//
+// mlx5 does not have that problem, and never did: every CQE carries
+// `wqe_counter`, the index of the WQE the NIC consumed, and `srqn_uidx` naming
+// the queue. libmlx5 uses exactly those to look the wr_id UP
+// (`srq->wrid[wqe_ctr]`), so the field ibv_wc hands us is the OUTPUT of a table
+// lookup whose INPUT was already exact — and the driver discards the input.
+//
+// ADDITIVE, NOT A VERSION BUMP, and that is the whole design.
+//
+// The obvious move is IbPollCqV2 carrying the extra fields. It is the wrong
+// one. ib_poll_cq is the highest-volume record in the corpus — 894,186 rows in
+// scale_hubspoke_ib-44517390 — and widening it taxes every completion, of which
+// >98% are requester-side and have no receive to identify. It would also force
+// every reader to handle two layouts of the same table forever, because a
+// layout is immutable once a capture holds it.
+//
+// A separate event, emitted ONLY for receive completions, costs nothing on the
+// requester path (30 rows against 12,348 polls on the measured 2-rank run),
+// leaves ib_poll_cq and ib_post_recv byte-identical so every existing capture
+// and query keeps working, and makes the new information joinable rather than
+// mandatory. A capture from a non-mlx5 NIC simply has none of these rows, which
+// is the correct statement about it.
+//
+// SRQ ONLY, and that is a scope decision with a reason. A QP receive already
+// has an exact key — (rank, qp_num, wr_id) — because the endpoint is fixed when
+// the WQE is posted. The shared receive queue is the only place the key is
+// weak, so it is the only place worth paying for.
+//
+// See providers/ibverbs/cqe_probe.hpp for the measurement that established the
+// CQE is readable at all: 28,814 CQEs across ConnectX-7 and ConnectX-5, every
+// one agreeing with its ibv_wc.
+
+// EVENT — which SLOT of a shared receive queue a posted buffer went into.
+//
+// The post side of the exact join. Emitted from a PRE-hook on
+// ibv_post_srq_recv, because the slot a WQE is about to occupy is
+// mlx5dv_srq.head BEFORE the driver consumes it and the free list has moved on.
+//
+// `slot` is what IbRecvCqe.wqe_counter will name, and `addr` is the answer the
+// whole chain exists to produce. Both are recorded rather than one, so a
+// capture can be checked against itself: the wr_id here must agree with the
+// wr_id the completion reports for the same slot, and disagreement means the
+// slot arithmetic is wrong rather than quietly attributing bytes to the wrong
+// buffer.
+PCOMM_RECORD(IbSrqRecvSlot, RecordKind::Event, 122, "ib_srq_recv_slot") {
+    Handle        srq;    // interned ibv_srq*, the same subject IbPostRecv uses
+    std::uint64_t wr_id;  // joins to IbPostRecv.wr_id on the same rank
+    std::uint64_t addr;   // first sge's addr — the buffer this slot receives into
+    std::uint32_t srqn;   // mlx5 SRQ number; joins to IbRecvCqe.srqn
+    std::uint32_t slot;   // WQE index in the ring; joins to IbRecvCqe.wqe_counter
+};
+
+// EVENT — the CQE's own account of a receive completion, read from the ring.
+//
+// One row per successful IBV_WC_RECV whose CQE was read AND agreed with the
+// ibv_wc beside it. The agreement check is a precondition, not a diagnostic: a
+// row here asserts that the hardware named this WQE, so a row that might be
+// from a mis-addressed slot must not exist at all. Everything that fails the
+// check is simply absent, and ib_poll_cq still has the completion.
+//
+// `wr_id` is duplicated from the completion deliberately. It is the join back
+// to IbPostRecv for readers that do not want the slot, and it is the
+// cross-check described above for those that do.
+PCOMM_RECORD(IbRecvCqe, RecordKind::Event, 124, "ib_recv_cqe") {
+    Handle        cq;           // interned ibv_cq*, as IbPollCq.cq
+    std::uint64_t wr_id;        // as reported by the driver, for cross-checking
+    std::uint32_t srqn;         // 0 when the receive was not SRQ-fed
+    std::uint32_t wqe_counter;  // THE FIELD — the WQE index the NIC consumed
+    std::uint32_t qp_num;       // which QP took it; only known at completion
+    std::uint32_t byte_len;     // bytes that actually landed
+};
+
 }  // namespace pcomm::providers::ibverbs::records

@@ -53,6 +53,8 @@ PCOMM_SCHEMA_MATCH(ir::IbAddressHandle, fb::IbAddressHandle);
 PCOMM_SCHEMA_MATCH(ir::IbDevice, fb::IbDevice);
 PCOMM_SCHEMA_MATCH(ir::IbReqNotifyCq, fb::IbReqNotifyCq);
 PCOMM_SCHEMA_MATCH(ir::IbPollCq, fb::IbPollCq);
+PCOMM_SCHEMA_MATCH(ir::IbSrqRecvSlot, fb::IbSrqRecvSlot);
+PCOMM_SCHEMA_MATCH(ir::IbRecvCqe, fb::IbRecvCqe);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Umem, fb::Mlx5Umem);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Uar, fb::Mlx5Uar);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DevxCmd, fb::Mlx5DevxCmd);
@@ -389,6 +391,37 @@ int main() {
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x60), fb::TimePoint(1, 0x70), 0),
             31, 0xFEEDFACE, 4096, 0x1EFFD, 0, 1);
         expect_identical("IbPollCq", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbSrqRecvSlot> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x62}, {1, 0x72});
+        c.payload.srq = 33;
+        c.payload.wr_id = 0xC0FFEE11;
+        c.payload.addr = 0x7F1200340000;
+        c.payload.srqn = 0x2A;
+        c.payload.slot = 0x3B;
+        fb::IbSrqRecvSlot f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x62), fb::TimePoint(1, 0x72), 0),
+            33, 0xC0FFEE11, 0x7F1200340000, 0x2A, 0x3B);
+        expect_identical("IbSrqRecvSlot", &c, &f, sizeof(c));
+    }
+    {
+        // srqn and wqe_counter are adjacent uint32s, so they are given values
+        // that cannot be confused for each other — a swapped pair is precisely
+        // what a byte comparison exists to catch, and this record's whole
+        // purpose is that those two fields mean different things.
+        Stamped<ir::IbRecvCqe> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x64}, {1, 0x74});
+        c.payload.cq = 35;
+        c.payload.wr_id = 0xDEADBEEF01;
+        c.payload.srqn = 0x4C;
+        c.payload.wqe_counter = 0x5D;
+        c.payload.qp_num = 0x6EFFD;
+        c.payload.byte_len = 8192;
+        fb::IbRecvCqe f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x64), fb::TimePoint(1, 0x74), 0),
+            35, 0xDEADBEEF01, 0x4C, 0x5D, 0x6EFFD, 8192);
+        expect_identical("IbRecvCqe", &c, &f, sizeof(c));
     }
     // --- mlx5dv/DEVX (200-299) ---------------------------------------------
     // Values chosen to be distinguishable per field rather than round: a

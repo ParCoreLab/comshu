@@ -33,6 +33,14 @@ bool enabled() {
 // No mlx5dv headers at build time: the probe cannot exist, and says so once
 // rather than being silently absent — an absent diagnostic that looks like a
 // negative result is the failure mode this whole file is written against.
+//
+// The production entry points return `valid = false`, which their callers must
+// treat as "record nothing". A capture built this way simply has no
+// ib_recv_cqe or ib_srq_recv_slot rows, and every other table is unchanged —
+// the honest statement about a host whose NIC we cannot interrogate.
+RecvCqe read_recv_cqe(ibv_cq*, int, int, const ibv_wc&) { return {}; }
+SrqSlot srq_slot(ibv_srq*, unsigned) { return {}; }
+
 void on_poll(ibv_cq*, int, ibv_wc*) {
     if (!enabled())
         return;
@@ -183,6 +191,85 @@ inline const Ring& ring_for(ibv_cq* cq) {
         }
     }
     return rings().emplace(cq, r).first->second;
+}
+
+// --- the production path ----------------------------------------------------
+
+// The CQE for completion `i` of a batch of `ret`, or null when this CQ's ring
+// could not be mapped. Callers hold mu().
+const mlx5_cqe64* cqe_at(ibv_cq* cq, int ret, int i) {
+    const Ring& r = ring_for(cq);
+    if (!r.usable)
+        return nullptr;
+    const std::uint32_t ci =
+        be32toh(*reinterpret_cast<const volatile std::uint32_t*>(r.dbrec)) & 0xffffffu;
+    const std::uint32_t idx = (ci - static_cast<std::uint32_t>(ret) + i) & (r.cnt - 1);
+    const auto*         slot = static_cast<const std::uint8_t*>(r.buf) + idx * r.size;
+    return reinterpret_cast<const mlx5_cqe64*>(r.size == 64 ? slot : slot + 64);
+}
+
+RecvCqe read_recv_cqe(ibv_cq* cq, int ret, int i, const ibv_wc& wc) {
+    if (!cq || ret <= 0 || i < 0 || i >= ret)
+        return {};
+    std::lock_guard<std::mutex> lk(mu());
+    const mlx5_cqe64*           cqe = cqe_at(cq, ret, i);
+    if (!cqe)
+        return {};
+
+    // The SAME cross-check the probe measured, now load-bearing rather than
+    // reported. 28,814 CQEs across two NIC generations agreed; this is what
+    // makes the 28,815th one that does not agree produce no row instead of a
+    // wrong one.
+    const std::uint32_t qpn = be32toh(cqe->sop_drop_qpn) & 0xffffffu;
+    const std::uint8_t  op = static_cast<std::uint8_t>(cqe->op_own >> 4);
+    if (qpn != wc.qp_num || !is_responder(op) || be32toh(cqe->byte_cnt) != wc.byte_len)
+        return {};
+
+    RecvCqe out;
+    out.srqn = be32toh(cqe->srqn_uidx) & 0xffffffu;
+    out.wqe_counter = be16toh(cqe->wqe_counter);
+    out.valid = true;
+    return out;
+}
+
+SrqSlot srq_slot(ibv_srq* srq, unsigned n) {
+    if (!srq)
+        return {};
+    static auto* init_obj = reinterpret_cast<int (*)(mlx5dv_obj*, std::uint64_t)>([] {
+        void* h = dlopen("libmlx5.so.1", RTLD_NOW | RTLD_NOLOAD);
+        if (!h)
+            h = dlopen("libmlx5.so.1", RTLD_NOW);
+        void* sym = h ? dlsym(h, "mlx5dv_init_obj") : nullptr;
+        return sym ? sym : dlsym(RTLD_DEFAULT, "mlx5dv_init_obj");
+    }());
+    if (!init_obj)
+        return {};
+
+    mlx5dv_srq out{};
+    mlx5dv_obj obj{};
+    obj.srq.in = srq;
+    obj.srq.out = &out;
+    if (init_obj(&obj, MLX5DV_OBJ_SRQ) != 0 || !out.buf || !out.stride)
+        return {};
+
+    // A POST CHAIN DOES NOT OCCUPY CONSECUTIVE SLOTS. libmlx5 keeps the SRQ's
+    // free WQEs as a linked list and takes the head each time
+    // (`srq->head = be16toh(next->next_wqe_index)`), so slot n is found by
+    // walking the list n times and not by adding n. Assuming otherwise would
+    // put every buffer after the first in a chain at the wrong index — and
+    // silently, because the index would still be a plausible one.
+    //
+    // The link lives in the first 4 bytes of each WQE:
+    //   struct mlx5_wqe_srq_next_seg { uint16_t rsvd0; __be16 next_wqe_index; ... }
+    // Read here rather than named from a vendored header because those four
+    // bytes are all of it, and third_party/mlx5 carries the PRM structs, not
+    // libmlx5's internal ones.
+    std::uint32_t slot = out.head;
+    for (unsigned k = 0; k < n; ++k) {
+        const auto* wqe = static_cast<const std::uint8_t*>(out.buf) + slot * out.stride;
+        slot = be16toh(*reinterpret_cast<const std::uint16_t*>(wqe + 2));
+    }
+    return {out.srqn, slot, true};
 }
 
 // One poll's worth of completions, checked against the CQEs they came from.

@@ -358,6 +358,31 @@ struct IbPollCq {
   opcode:uint8;
 }
 
+// type 122, Event. Which slot of a shared receive queue a posted buffer took.
+// The post half of an exact receive attribution: wr_id is the application's
+// key and may be recycled, `slot` is the hardware's and is not.
+struct IbSrqRecvSlot {
+  temporal:Temporal;
+  srq:uint32;
+  wr_id:uint64;
+  addr:uint64;
+  srqn:uint32;
+  slot:uint32;
+}
+
+// type 124, Event. The CQE's own account of a receive completion. Present only
+// where the raw mlx5 CQE was read AND agreed with the ibv_wc beside it, so a
+// row is an assertion that the hardware named this WQE.
+struct IbRecvCqe {
+  temporal:Temporal;
+  cq:uint32;
+  wr_id:uint64;
+  srqn:uint32;
+  wqe_counter:uint32;
+  qp_num:uint32;
+  byte_len:uint32;
+}
+
 // --- mlx5dv/DEVX provider records (200-299) --------------------------------
 //
 // The control plane IBGDA uses instead of verbs. A GPU-initiated NVSHMEM run

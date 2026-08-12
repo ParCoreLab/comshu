@@ -131,6 +131,38 @@ echo "=== per-rank summaries ==="
 grep '\[pcomm-cqeprobe\] rank=' "$LOG" | sort -u
 echo "=== sample CQE rows ==="
 grep '\[pcomm-cqeprobe\] rank=.* cqe idx=' "$LOG" | head -24
+echo "=== THE RECORDS: does the exact join actually resolve? ==="
+# The probe above proves the CQE is readable. This proves the two records built
+# on that reading agree with each other and with the wr_id path they replace.
+#
+# What to look for, in order:
+#   ib_recv_cqe = 0                  the records were not emitted at all
+#   slot_matched < ib_recv_cqe       a completion whose wqe_counter names no
+#                                    posted slot — the slot arithmetic is wrong,
+#                                    which is the failure this cannot be allowed
+#                                    to hide
+#   wr_id_disagrees > 0              the slot resolves to a DIFFERENT buffer
+#                                    than wr_id claims. Exactly one of the two
+#                                    is wrong and this run does not say which,
+#                                    but on every capture measured so far they
+#                                    agree, so any row here is news.
+"$PCOMM" export "$OUT2" --csv "$OUT2.csv" >/dev/null 2>&1
+"$PCOMM" sql "$OUT2.csv" "
+  SELECT (SELECT count(*) FROM ib_recv_cqe)                AS ib_recv_cqe,
+         (SELECT count(*) FROM ib_srq_recv_slot)           AS ib_srq_recv_slot,
+         (SELECT count(*) FROM ib_recv_cqe q
+            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srqn=q.srqn
+                                   AND p.slot=q.wqe_counter) AS slot_matched,
+         (SELECT count(*) FROM ib_recv_cqe q
+            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srqn=q.srqn
+                                   AND p.slot=q.wqe_counter
+           WHERE p.wr_id <> q.wr_id)                       AS wr_id_disagrees" 2>&1 | head -6
+
+echo "=== and what object_access made of it ==="
+"$PCOMM" link "$OUT2.csv" >/dev/null 2>&1
+"$PCOMM" sql "$OUT2.csv" \
+  "SELECT source, count(*) rows_, sum(CAST(exact AS INT)) exact_ FROM object_access GROUP BY 1 ORDER BY 1" 2>&1 | head -6
+
 echo "=== any mismatch at all ==="
 grep -E '\[pcomm-cqeprobe\].*(QPN-MISMATCH|CLASS-BAD|unusable|not resolvable|WITHOUT mlx5dv)' "$LOG" | head -20 \
   || echo "  (none)"

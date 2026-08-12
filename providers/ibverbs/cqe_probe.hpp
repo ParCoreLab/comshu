@@ -75,6 +75,8 @@
 // conflicting declarations of a C function and the build fails. So the probe
 // keeps mlx5dv.h to itself, and the provider sees only this declaration.
 
+#include <cstdint>
+
 #include <infiniband/verbs.h>
 
 namespace ibv::cqeprobe {
@@ -88,5 +90,44 @@ bool enabled();
  * probe is off, which is the default.
  */
 void on_poll(ibv_cq* cq, int ret, ibv_wc* wc);
+
+// --- the production path ----------------------------------------------------
+//
+// The probe above answers "is this readable" and prints. The two below answer
+// it for ONE completion and one post, and return the answer for recording.
+// Same arithmetic, same cross-check, no printing and no env gate: these run on
+// every capture, and where they cannot answer they say so rather than guessing.
+
+/** What the CQE said about a receive, when it could be read and believed. */
+struct RecvCqe {
+    std::uint32_t srqn = 0;
+    std::uint32_t wqe_counter = 0;
+    bool          valid = false;  // false: not mlx5, not readable, or disagreed
+};
+
+/**
+ * Read the CQE behind completion `i` of a batch of `ret`, and believe it only
+ * if it agrees with the ibv_wc the driver returned. Callers must not record
+ * anything when `valid` is false — a row that might name the wrong WQE is
+ * worse than no row, because the whole point of these records is exactness.
+ */
+RecvCqe read_recv_cqe(ibv_cq* cq, int ret, int i, const ibv_wc& wc);
+
+/** Where the next posted WQE will land in an SRQ ring, and that ring's number. */
+struct SrqSlot {
+    std::uint32_t srqn = 0;
+    std::uint32_t slot = 0;
+    bool          valid = false;
+};
+
+/**
+ * The slot `n` posts ahead of the SRQ's current head, following the ring's own
+ * free list — which is how libmlx5 assigns them, and why a post chain does not
+ * simply occupy consecutive indices.
+ *
+ * Must be called BEFORE ibv_post_srq_recv runs: afterwards the head has moved
+ * and the slots this call would report are the next post's, not this one's.
+ */
+SrqSlot srq_slot(ibv_srq* srq, unsigned n);
 
 }  // namespace ibv::cqeprobe

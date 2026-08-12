@@ -66,6 +66,10 @@ struct IbReqNotifyCq;
 
 struct IbPollCq;
 
+struct IbSrqRecvSlot;
+
+struct IbRecvCqe;
+
 struct Mlx5Umem;
 
 struct Mlx5Uar;
@@ -1614,6 +1618,116 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPollCq FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(IbPollCq, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbSrqRecvSlot FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t srq_;
+  int32_t padding0__;
+  uint64_t wr_id_;
+  uint64_t addr_;
+  uint32_t srqn_;
+  uint32_t slot_;
+
+ public:
+  IbSrqRecvSlot()
+      : temporal_(),
+        srq_(0),
+        padding0__(0),
+        wr_id_(0),
+        addr_(0),
+        srqn_(0),
+        slot_(0) {
+    (void)padding0__;
+  }
+  IbSrqRecvSlot(const pcomm::fb::Temporal &_temporal, uint32_t _srq, uint64_t _wr_id, uint64_t _addr, uint32_t _srqn, uint32_t _slot)
+      : temporal_(_temporal),
+        srq_(::flatbuffers::EndianScalar(_srq)),
+        padding0__(0),
+        wr_id_(::flatbuffers::EndianScalar(_wr_id)),
+        addr_(::flatbuffers::EndianScalar(_addr)),
+        srqn_(::flatbuffers::EndianScalar(_srqn)),
+        slot_(::flatbuffers::EndianScalar(_slot)) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t srq() const {
+    return ::flatbuffers::EndianScalar(srq_);
+  }
+  uint64_t wr_id() const {
+    return ::flatbuffers::EndianScalar(wr_id_);
+  }
+  uint64_t addr() const {
+    return ::flatbuffers::EndianScalar(addr_);
+  }
+  uint32_t srqn() const {
+    return ::flatbuffers::EndianScalar(srqn_);
+  }
+  uint32_t slot() const {
+    return ::flatbuffers::EndianScalar(slot_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbSrqRecvSlot, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbRecvCqe FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t cq_;
+  int32_t padding0__;
+  uint64_t wr_id_;
+  uint32_t srqn_;
+  uint32_t wqe_counter_;
+  uint32_t qp_num_;
+  uint32_t byte_len_;
+
+ public:
+  IbRecvCqe()
+      : temporal_(),
+        cq_(0),
+        padding0__(0),
+        wr_id_(0),
+        srqn_(0),
+        wqe_counter_(0),
+        qp_num_(0),
+        byte_len_(0) {
+    (void)padding0__;
+  }
+  IbRecvCqe(const pcomm::fb::Temporal &_temporal, uint32_t _cq, uint64_t _wr_id, uint32_t _srqn, uint32_t _wqe_counter, uint32_t _qp_num, uint32_t _byte_len)
+      : temporal_(_temporal),
+        cq_(::flatbuffers::EndianScalar(_cq)),
+        padding0__(0),
+        wr_id_(::flatbuffers::EndianScalar(_wr_id)),
+        srqn_(::flatbuffers::EndianScalar(_srqn)),
+        wqe_counter_(::flatbuffers::EndianScalar(_wqe_counter)),
+        qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        byte_len_(::flatbuffers::EndianScalar(_byte_len)) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t cq() const {
+    return ::flatbuffers::EndianScalar(cq_);
+  }
+  uint64_t wr_id() const {
+    return ::flatbuffers::EndianScalar(wr_id_);
+  }
+  uint32_t srqn() const {
+    return ::flatbuffers::EndianScalar(srqn_);
+  }
+  uint32_t wqe_counter() const {
+    return ::flatbuffers::EndianScalar(wqe_counter_);
+  }
+  uint32_t qp_num() const {
+    return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint32_t byte_len() const {
+    return ::flatbuffers::EndianScalar(byte_len_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbRecvCqe, 80);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5Umem FLATBUFFERS_FINAL_CLASS {
  private:
