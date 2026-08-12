@@ -126,9 +126,33 @@ inline const Ring& ring_for(ibv_cq* cq) {
     if (it != rings().end())
         return it->second;
 
-    Ring       r{};
-    static auto* init_obj = reinterpret_cast<int (*)(mlx5dv_obj*, std::uint64_t)>(
-        dlsym(RTLD_DEFAULT, "mlx5dv_init_obj"));
+    Ring r{};
+    // RTLD_DEFAULT IS NOT ENOUGH, and job 44542213 is why.
+    //
+    // libibverbs loads its hardware providers with dlopen and RTLD_LOCAL, so
+    // libmlx5's symbols are NOT in the global search scope of a process that
+    // did not link it itself. Under perftest the lookup succeeded — that binary
+    // pulls libmlx5 in directly — and under NVSHMEM it returned null on every
+    // rank: `mapped=0` on two processes that were otherwise polling 12,348
+    // completions through mlx5 hardware. The probe reported "cannot reach the
+    // CQ" and it would have been read as "the CQE is not there".
+    //
+    // So ask libmlx5 itself. RTLD_NOLOAD first, because by the time any CQ
+    // exists the provider is certainly loaded and we want ITS handle rather
+    // than a second mapping; the plain dlopen is the fallback for the case
+    // where it somehow is not.
+    static auto* init_obj = [] {
+        void* h = dlopen("libmlx5.so.1", RTLD_NOW | RTLD_NOLOAD);
+        if (!h)
+            h = dlopen("libmlx5.so.1", RTLD_NOW);
+        void* sym = h ? dlsym(h, "mlx5dv_init_obj") : nullptr;
+        if (!sym)  // last resort: a binary that did link it
+            sym = dlsym(RTLD_DEFAULT, "mlx5dv_init_obj");
+        std::fprintf(stderr, "[pcomm-cqeprobe] mlx5dv_init_obj via %s = %p\n",
+                     h ? "libmlx5.so.1" : "RTLD_DEFAULT", sym);
+        std::fflush(stderr);
+        return reinterpret_cast<int (*)(mlx5dv_obj*, std::uint64_t)>(sym);
+    }();
     stats().cqs_seen++;
     if (init_obj) {
         mlx5dv_cq  out{};
