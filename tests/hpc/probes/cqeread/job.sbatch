@@ -146,17 +146,30 @@ echo "=== THE RECORDS: does the exact join actually resolve? ==="
 #                                    is wrong and this run does not say which,
 #                                    but on every capture measured so far they
 #                                    agree, so any row here is news.
+#   reused_slots > 0                 the ring WRAPPED, so a slot names several
+#                                    buffers over the run. Not a failure — it is
+#                                    the case the time-ordered join was written
+#                                    for, and the first run that shows a nonzero
+#                                    here is the first that actually tests it.
+#                                    slot_matched counts pairs, so it exceeds
+#                                    recv_cqe once this is nonzero.
 "$PCOMM" export "$OUT2" --csv "$OUT2.csv" >/dev/null 2>&1
 "$PCOMM" sql "$OUT2.csv" "
-  SELECT (SELECT count(*) FROM ib_recv_cqe)                AS ib_recv_cqe,
-         (SELECT count(*) FROM ib_srq_recv_slot)           AS ib_srq_recv_slot,
+  WITH slotted AS (
+    SELECT * FROM ib_post_recv WHERE origin = 'srq' AND slot >= 0
+  )
+  SELECT (SELECT count(*) FROM ib_recv_cqe)  AS recv_cqe,
+         (SELECT count(*) FROM slotted)      AS posts_with_slot,
          (SELECT count(*) FROM ib_recv_cqe q
-            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srq=q.srq
-                                   AND p.slot=q.wqe_counter) AS slot_matched,
+            JOIN slotted p ON p.rank=q.rank AND p.subject=q.srq
+                          AND p.slot=q.wqe_counter)        AS slot_matched,
          (SELECT count(*) FROM ib_recv_cqe q
-            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srq=q.srq
-                                   AND p.slot=q.wqe_counter
-           WHERE p.wr_id <> q.wr_id)                       AS wr_id_disagrees" 2>&1 | head -6
+            JOIN slotted p ON p.rank=q.rank AND p.subject=q.srq
+                          AND p.slot=q.wqe_counter
+           WHERE p.wr_id <> q.wr_id)                       AS wr_id_disagrees,
+         (SELECT count(*) FROM (
+            SELECT rank, subject, slot FROM slotted
+            GROUP BY 1,2,3 HAVING count(*) > 1))           AS reused_slots" 2>&1 | head -6
 
 echo "=== and what object_access made of it ==="
 "$PCOMM" link "$OUT2.csv" >/dev/null 2>&1
