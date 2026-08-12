@@ -19,6 +19,7 @@
 #include "pcomm/engine_abi.h"
 #include "pcomm/tracer.hpp"
 
+#include "cqe_probe.hpp"
 #include "ib_event_source.hpp"
 #include "ib_records.hpp"
 #include "wr_builder.hpp"
@@ -1092,6 +1093,10 @@ Profiler::Profiler() {
     // poll_cq -> one row per reaped completion (predicate skips empty polls).
     this->register_post<poll_cq_tag>(
         [](int ret, ibv_cq* cq, int, ibv_wc* wc, std::uint64_t t0, std::uint64_t t1) {
+            // DIAGNOSTIC, gated on PCOMM_CQE_PROBE=1 and off by default: read
+            // the raw mlx5 CQE behind each of these completions and check it
+            // against them. See cqe_probe.hpp for the question it settles.
+            cqeprobe::on_poll(cq, ret, wc);
             if (ret <= 0 || !wc)
                 return;
             const auto tspan = span(t0, t1);

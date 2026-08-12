@@ -4,12 +4,26 @@
 
 find_library(IBVERBS_LIB NAMES ibverbs REQUIRED)
 
+# mlx5dv.h is OPTIONAL, and the option is the point: the CQE probe in
+# cqe_probe.hpp reads a Mellanox-specific ring layout, so a host without the
+# header still builds a provider — one whose probe says out loud that it is
+# unavailable rather than being quietly compiled out. libmlx5 is NOT linked;
+# mlx5dv_init_obj is resolved with dlsym at runtime, so this adds a header
+# dependency and no DT_NEEDED.
+include(CheckIncludeFileCXX)
+check_include_file_cxx("infiniband/mlx5dv.h" PCOMM_HAVE_MLX5DV_HEADER)
+
 add_library(ibverbs_trace SHARED
   ibverbs_provider.cpp
+  # Its own translation unit because it is the only one that may include
+  # mlx5dv.h — see the note at the bottom of cqe_probe.hpp.
+  cqe_probe.cpp
 )
 set_target_properties(ibverbs_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "ibverbs_trace")
 target_include_directories(ibverbs_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ibverbs_trace PRIVATE pcomm::pcomm pcomm::hook ${IBVERBS_LIB})
+target_compile_definitions(ibverbs_trace PRIVATE
+  PCOMM_HAVE_MLX5DV=$<BOOL:${PCOMM_HAVE_MLX5DV_HEADER}>)
 
 # The provider .so now has a DT_NEEDED on libpcomm_engine.so, so it must be
 # findable at runtime. $ORIGIN/../../libpcomm resolves correctly for both build
