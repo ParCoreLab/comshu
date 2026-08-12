@@ -53,7 +53,6 @@ PCOMM_SCHEMA_MATCH(ir::IbAddressHandle, fb::IbAddressHandle);
 PCOMM_SCHEMA_MATCH(ir::IbDevice, fb::IbDevice);
 PCOMM_SCHEMA_MATCH(ir::IbReqNotifyCq, fb::IbReqNotifyCq);
 PCOMM_SCHEMA_MATCH(ir::IbPollCq, fb::IbPollCq);
-PCOMM_SCHEMA_MATCH(ir::IbSrqRecvSlot, fb::IbSrqRecvSlot);
 PCOMM_SCHEMA_MATCH(ir::IbRecvCqe, fb::IbRecvCqe);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Umem, fb::Mlx5Umem);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Uar, fb::Mlx5Uar);
@@ -324,12 +323,14 @@ int main() {
         c.payload.addr = 0x7F0000112233;
         c.payload.lkey = 0x2B;
         c.payload.length = 8192;
+        c.payload.first_len = 4096;
         c.payload.qp_num = 0x1EFFB;
+        c.payload.slot = 0x3C;
         c.payload.num_sge = 1;
         c.payload.origin = static_cast<uint8_t>(ir::IbRecvOrigin::QueuePair);
         fb::IbPostRecv f(
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x80), fb::TimePoint(1, 0x90), 0),
-            41, 0xCAFEBABE, 0x7F0000112233, 0x2B, 8192, 0x1EFFB, 1,
+            41, 0xCAFEBABE, 0x7F0000112233, 0x2B, 8192, 4096, 0x1EFFB, 0x3C, 1,
             static_cast<uint8_t>(ir::IbRecvOrigin::QueuePair));
         expect_identical("IbPostRecv", &c, &f, sizeof(c));
     }
@@ -391,19 +392,6 @@ int main() {
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x60), fb::TimePoint(1, 0x70), 0),
             31, 0xFEEDFACE, 4096, 0x1EFFD, 0, 1);
         expect_identical("IbPollCq", &c, &f, sizeof(c));
-    }
-    {
-        Stamped<ir::IbSrqRecvSlot> c{};
-        c.temporal = pcomm::core::Temporal::interval({1, 0x62}, {1, 0x72});
-        c.payload.srq = 33;
-        c.payload.wr_id = 0xC0FFEE11;
-        c.payload.addr = 0x7F1200340000;
-        c.payload.srqn = 0x2A;
-        c.payload.slot = 0x3B;
-        fb::IbSrqRecvSlot f(
-            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x62), fb::TimePoint(1, 0x72), 0),
-            33, 0xC0FFEE11, 0x7F1200340000, 0x2A, 0x3B);
-        expect_identical("IbSrqRecvSlot", &c, &f, sizeof(c));
     }
     {
         // srq and wqe_counter are adjacent uint32s, so they are given values

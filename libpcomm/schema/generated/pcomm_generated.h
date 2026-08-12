@@ -66,8 +66,6 @@ struct IbReqNotifyCq;
 
 struct IbPollCq;
 
-struct IbSrqRecvSlot;
-
 struct IbRecvCqe;
 
 struct Mlx5Umem;
@@ -1280,7 +1278,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostRecv FLATBUFFERS_FINAL_CLASS {
   uint64_t addr_;
   uint32_t lkey_;
   uint32_t length_;
+  uint32_t first_len_;
   uint32_t qp_num_;
+  uint32_t slot_;
   uint8_t num_sge_;
   uint8_t origin_;
   int16_t padding1__;
@@ -1294,14 +1294,16 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostRecv FLATBUFFERS_FINAL_CLASS {
         addr_(0),
         lkey_(0),
         length_(0),
+        first_len_(0),
         qp_num_(0),
+        slot_(0),
         num_sge_(0),
         origin_(0),
         padding1__(0) {
     (void)padding0__;
     (void)padding1__;
   }
-  IbPostRecv(const pcomm::fb::Temporal &_temporal, uint32_t _subject, uint64_t _wr_id, uint64_t _addr, uint32_t _lkey, uint32_t _length, uint32_t _qp_num, uint8_t _num_sge, uint8_t _origin)
+  IbPostRecv(const pcomm::fb::Temporal &_temporal, uint32_t _subject, uint64_t _wr_id, uint64_t _addr, uint32_t _lkey, uint32_t _length, uint32_t _first_len, uint32_t _qp_num, uint32_t _slot, uint8_t _num_sge, uint8_t _origin)
       : temporal_(_temporal),
         subject_(::flatbuffers::EndianScalar(_subject)),
         padding0__(0),
@@ -1309,7 +1311,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostRecv FLATBUFFERS_FINAL_CLASS {
         addr_(::flatbuffers::EndianScalar(_addr)),
         lkey_(::flatbuffers::EndianScalar(_lkey)),
         length_(::flatbuffers::EndianScalar(_length)),
+        first_len_(::flatbuffers::EndianScalar(_first_len)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        slot_(::flatbuffers::EndianScalar(_slot)),
         num_sge_(::flatbuffers::EndianScalar(_num_sge)),
         origin_(::flatbuffers::EndianScalar(_origin)),
         padding1__(0) {
@@ -1334,8 +1338,14 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostRecv FLATBUFFERS_FINAL_CLASS {
   uint32_t length() const {
     return ::flatbuffers::EndianScalar(length_);
   }
+  uint32_t first_len() const {
+    return ::flatbuffers::EndianScalar(first_len_);
+  }
   uint32_t qp_num() const {
     return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint32_t slot() const {
+    return ::flatbuffers::EndianScalar(slot_);
   }
   uint8_t num_sge() const {
     return ::flatbuffers::EndianScalar(num_sge_);
@@ -1344,7 +1354,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostRecv FLATBUFFERS_FINAL_CLASS {
     return ::flatbuffers::EndianScalar(origin_);
   }
 };
-FLATBUFFERS_STRUCT_END(IbPostRecv, 88);
+FLATBUFFERS_STRUCT_END(IbPostRecv, 96);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbAddressHandle FLATBUFFERS_FINAL_CLASS {
  private:
@@ -1618,58 +1628,6 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPollCq FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(IbPollCq, 80);
-
-FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbSrqRecvSlot FLATBUFFERS_FINAL_CLASS {
- private:
-  pcomm::fb::Temporal temporal_;
-  uint32_t srq_;
-  int32_t padding0__;
-  uint64_t wr_id_;
-  uint64_t addr_;
-  uint32_t srqn_;
-  uint32_t slot_;
-
- public:
-  IbSrqRecvSlot()
-      : temporal_(),
-        srq_(0),
-        padding0__(0),
-        wr_id_(0),
-        addr_(0),
-        srqn_(0),
-        slot_(0) {
-    (void)padding0__;
-  }
-  IbSrqRecvSlot(const pcomm::fb::Temporal &_temporal, uint32_t _srq, uint64_t _wr_id, uint64_t _addr, uint32_t _srqn, uint32_t _slot)
-      : temporal_(_temporal),
-        srq_(::flatbuffers::EndianScalar(_srq)),
-        padding0__(0),
-        wr_id_(::flatbuffers::EndianScalar(_wr_id)),
-        addr_(::flatbuffers::EndianScalar(_addr)),
-        srqn_(::flatbuffers::EndianScalar(_srqn)),
-        slot_(::flatbuffers::EndianScalar(_slot)) {
-    (void)padding0__;
-  }
-  const pcomm::fb::Temporal &temporal() const {
-    return temporal_;
-  }
-  uint32_t srq() const {
-    return ::flatbuffers::EndianScalar(srq_);
-  }
-  uint64_t wr_id() const {
-    return ::flatbuffers::EndianScalar(wr_id_);
-  }
-  uint64_t addr() const {
-    return ::flatbuffers::EndianScalar(addr_);
-  }
-  uint32_t srqn() const {
-    return ::flatbuffers::EndianScalar(srqn_);
-  }
-  uint32_t slot() const {
-    return ::flatbuffers::EndianScalar(slot_);
-  }
-};
-FLATBUFFERS_STRUCT_END(IbSrqRecvSlot, 80);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbRecvCqe FLATBUFFERS_FINAL_CLASS {
  private:

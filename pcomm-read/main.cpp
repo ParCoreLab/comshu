@@ -381,13 +381,17 @@ static const char* ib_recv_origin_name(std::uint8_t raw) {
 template<> struct Table<ibr::IbPostRecv> {
     static constexpr const char* name = "ib_post_recv";
     static constexpr const char* cols =
-        "ticks,subject,wr_id,addr,lkey,length,qp_num,num_sge,origin";
+        "ticks,subject,wr_id,addr,lkey,length,first_len,qp_num,slot,num_sge,origin";
     static void row(std::FILE* f, const Stamped<ibr::IbPostRecv>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%llu,0x%llx,%u,%u,%u,%u,%s",
+        // kSlotUnknown is written as -1 rather than 4294967295: the column is a
+        // ring index and a reader that sums or maxes it should get an obviously
+        // wrong answer from the sentinel, not a plausible one.
+        std::fprintf(f, "%llu,%u,%llu,0x%llx,%u,%u,%u,%u,%lld,%u,%s",
                      (unsigned long long)s.temporal.a.ticks, s.payload.subject,
                      (unsigned long long)s.payload.wr_id, (unsigned long long)s.payload.addr,
-                     s.payload.lkey, s.payload.length, s.payload.qp_num, s.payload.num_sge,
-                     ib_recv_origin_name(s.payload.origin));
+                     s.payload.lkey, s.payload.length, s.payload.first_len, s.payload.qp_num,
+                     s.payload.slot == ibr::kSlotUnknown ? -1LL : (long long)s.payload.slot,
+                     s.payload.num_sge, ib_recv_origin_name(s.payload.origin));
     }
 };
 
@@ -452,17 +456,6 @@ template<> struct Table<ibr::IbPollCq> {
 // The exact receive identity, from the hardware rather than from the
 // application's wr_id. See providers/ibverbs/ib_records.hpp for why these are
 // separate rows and not columns on the two tables above.
-template<> struct Table<ibr::IbSrqRecvSlot> {
-    static constexpr const char* name = "ib_srq_recv_slot";
-    static constexpr const char* cols = "ticks,srq,wr_id,addr,srqn,slot";
-    static void row(std::FILE* f, const Stamped<ibr::IbSrqRecvSlot>& s,
-                    const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%llu,%llu,%u,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.srq, (unsigned long long)s.payload.wr_id,
-                     (unsigned long long)s.payload.addr, s.payload.srqn, s.payload.slot);
-    }
-};
-
 template<> struct Table<ibr::IbRecvCqe> {
     static constexpr const char* name = "ib_recv_cqe";
     static constexpr const char* cols = "ticks,cq,wr_id,srq,wqe_counter,qp_num,byte_len";
@@ -622,7 +615,7 @@ using TableRecords =
                Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
-               ibr::IbSrqRecvSlot, ibr::IbRecvCqe, mxr::Mlx5Umem,
+               ibr::IbRecvCqe, mxr::Mlx5Umem,
                mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
                mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend>;
 

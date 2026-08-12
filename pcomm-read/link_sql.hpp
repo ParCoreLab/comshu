@@ -275,6 +275,11 @@ SELECT c.rank                AS recv_rank,
        e.peer_rank           AS sender_rank,
        r.addr                AS addr,
        r.addrs               AS addrs,
+       -- Did the payload fit the entry we recorded? ib_post_recv keeps sge[0]
+       -- only, and a scatter list is filled in order, so bytes beyond that
+       -- entry's length landed somewhere this capture cannot name. num_sge = 1
+       -- can never spill: its single entry holds the whole posted length.
+       (r.num_sge > 1 AND c.byte_len > r.first_len) AS spilled,
        m.id                  AS object,
        m.range_base          AS range_base
 FROM ib_poll_cq c
@@ -292,25 +297,47 @@ LEFT JOIN LATERAL (
     --
     -- addrs = 1 by construction here. It is not an assumption — a slot holds
     -- one buffer at a time, which is the entire reason this arm exists.
-    SELECT addr, addrs FROM (
-        SELECT -1 AS pref, addr, addrs FROM (
-            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
+    SELECT addr, addrs, num_sge, first_len FROM (
+        SELECT -1 AS pref, addr, addrs, num_sge, first_len FROM (
+            -- THE MOST RECENT POST INTO THAT SLOT, NOT ANY POST INTO IT.
+            --
+            -- wqe_counter is a 16-bit ring index and a slot is REUSED as the
+            -- queue recycles, so (rank, srq, slot) names one buffer at a time
+            -- and several over a run. The first version of this arm ignored
+            -- that and would have picked min(addr) among every occupant the
+            -- slot ever had — the same silent mis-attribution that recycled
+            -- wr_id produces, reintroduced by the fix for it. It read as exact
+            -- only because the measured run posted 16,414 WQEs into rings of
+            -- 8,191 and 32,767 and never completed enough to wrap.
+            --
+            -- Ordering by post time and taking the last one at or before the
+            -- completion is exact under FIFO: a slot cannot be reposted until
+            -- its previous occupant has completed, so at most one occupant is
+            -- outstanding when a completion for it arrives.
+            SELECT p.addr AS addr, 1 AS addrs, p.num_sge AS num_sge,
+                   p.first_len AS first_len
             FROM ib_recv_cqe q
-            JOIN ib_srq_recv_slot p
-              ON p.rank = q.rank AND p.srq = q.srq AND p.slot = q.wqe_counter
+            JOIN ib_post_recv p
+              ON p.rank = q.rank AND p.subject = q.srq AND p.slot = q.wqe_counter
+             AND p.origin = 2 AND p.slot <> 4294967295 AND p.addr > 0
+             AND p.temporal_a_ticks <= q.temporal_a_ticks
             WHERE q.rank = c.rank AND q.cq = c.cq AND q.wr_id = c.wr_id
               AND q.qp_num = c.qp_num AND q.srq <> 0
+            ORDER BY p.temporal_a_ticks DESC
+            LIMIT 1
         ) x WHERE x.addr IS NOT NULL
         UNION ALL
-        SELECT 0 AS pref, addr, addrs FROM (
-            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
+        SELECT 0 AS pref, addr, addrs, num_sge, first_len FROM (
+            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs,
+                   max(p.num_sge) AS num_sge, min(p.first_len) AS first_len
             FROM ib_post_recv p
             WHERE p.origin = 1 AND p.addr > 0
               AND p.rank = c.rank AND p.qp_num = c.qp_num AND p.wr_id = c.wr_id
         ) q WHERE q.addr IS NOT NULL
         UNION ALL
-        SELECT 1 AS pref, addr, addrs FROM (
-            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
+        SELECT 1 AS pref, addr, addrs, num_sge, first_len FROM (
+            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs,
+                   max(p.num_sge) AS num_sge, min(p.first_len) AS first_len
             FROM ib_post_recv p
             WHERE p.origin = 2 AND p.addr > 0
               AND p.rank = c.rank AND p.wr_id = c.wr_id
@@ -468,7 +495,7 @@ verbs_recv AS (
            'verbs_recv'                             AS source,
            a.sender_rank::BIGINT                    AS actor_rank,
            rd.device::BIGINT                        AS actor_device,
-           (a.addrs = 1)                            AS exact
+           (a.addrs = 1 AND NOT a.spilled)          AS exact
     FROM _recv_attr a
     LEFT JOIN _rank_device rd ON rd.rank = a.sender_rank
     WHERE a.object IS NOT NULL
@@ -608,6 +635,31 @@ SELECT 'unattributed_recv_completions',
        coalesce(count(*), 0)::BIGINT,
        'successful recv completions resolving to no posted buffer or no known object'
 FROM _recv_attr WHERE addr IS NULL OR object IS NULL
+UNION ALL
+-- The QP arm asserts that (rank, qp_num, wr_id) names one buffer, and until now
+-- nothing checked it. It is the stronger key and it is still the application's:
+-- a QP that recycles a wr_id across two different buffers breaks it exactly as
+-- an SRQ does, and the arm would quietly take the lower address. Measured
+-- rather than assumed, for the same reason its SRQ counterpart is.
+SELECT 'ambiguous_qp_recv_keys',
+       coalesce(count(*), 0)::BIGINT,
+       'QP receive keys (qp_num, wr_id) that named more than one buffer'
+FROM (
+    SELECT rank, qp_num, wr_id
+    FROM ib_post_recv WHERE origin = 1 AND addr > 0
+    GROUP BY 1, 2, 3 HAVING count(DISTINCT addr) > 1
+)
+UNION ALL
+-- A receive whose bytes did not fit its FIRST scatter entry. ib_post_recv
+-- records sge[0] only, so those bytes ran into a buffer the capture cannot
+-- name and the object attribution for that row is short by the overflow.
+-- Scatter fills in order, so a receive is exactly attributed whenever
+-- byte_len <= the first entry's length — which is why num_sge > 1 alone is not
+-- the finding, and the length comparison is.
+SELECT 'recv_spilled_past_first_sge',
+       coalesce(count(*), 0)::BIGINT,
+       'receives whose bytes ran past sge[0] into a buffer the capture does not record'
+FROM _recv_attr WHERE spilled
 )sql"},
 };
 

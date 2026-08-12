@@ -11,7 +11,7 @@ class IbPostRecv(object):
 
     @classmethod
     def SizeOf(cls):
-        return 88
+        return 96
 
     # IbPostRecv
     def Init(self, buf, pos):
@@ -33,18 +33,24 @@ class IbPostRecv(object):
     # IbPostRecv
     def Length(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
     # IbPostRecv
-    def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
+    def FirstLen(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # IbPostRecv
-    def NumSge(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
     # IbPostRecv
-    def Origin(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(85))
+    def Slot(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    # IbPostRecv
+    def NumSge(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
+    # IbPostRecv
+    def Origin(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(93))
 
-def CreateIbPostRecv(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, subject, wrId, addr, lkey, length, qpNum, numSge, origin):
-    builder.Prep(8, 88)
+def CreateIbPostRecv(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, subject, wrId, addr, lkey, length, firstLen, qpNum, slot, numSge, origin):
+    builder.Prep(8, 96)
     builder.Pad(2)
     builder.PrependUint8(origin)
     builder.PrependUint8(numSge)
+    builder.PrependUint32(slot)
     builder.PrependUint32(qpNum)
+    builder.PrependUint32(firstLen)
     builder.PrependUint32(length)
     builder.PrependUint32(lkey)
     builder.PrependUint64(addr)

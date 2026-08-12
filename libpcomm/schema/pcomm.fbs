@@ -301,7 +301,9 @@ struct IbPostRecv {
   addr:uint64;         // first sge's addr; 0 when num_sge == 0
   lkey:uint32;         // first sge's lkey; joins to IbMemRegion.lkey
   length:uint32;       // total sg_list bytes — capacity offered, not bytes received
+  first_len:uint32;    // sge[0]'s own length; byte_len > this means it spilled
   qp_num:uint32;       // 0 when origin is SharedRecvQueue
+  slot:uint32;         // SRQ ring index this WQE took; 0xFFFFFFFF = unknown
   num_sge:uint8;
   origin:uint8;        // IbRecvOrigin: which door posted it
 }
@@ -356,18 +358,6 @@ struct IbPollCq {
   qp_num:uint32;
   status:uint8;
   opcode:uint8;
-}
-
-// type 122, Event. Which slot of a shared receive queue a posted buffer took.
-// The post half of an exact receive attribution: wr_id is the application's
-// key and may be recycled, `slot` is the hardware's and is not.
-struct IbSrqRecvSlot {
-  temporal:Temporal;
-  srq:uint32;
-  wr_id:uint64;
-  addr:uint64;
-  srqn:uint32;
-  slot:uint32;
 }
 
 // type 124, Event. The CQE's own account of a receive completion. Present only

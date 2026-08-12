@@ -227,10 +227,39 @@ PCOMM_RECORD(IbPostRecv, RecordKind::Event, 114, "ib_post_recv") {
     std::uint64_t addr;    // first sge's addr; 0 when num_sge == 0
     std::uint32_t lkey;    // first sge's lkey — joins to ib_mem_region.lkey
     std::uint32_t length;  // total sg_list bytes, the capacity being offered
+    // The FIRST entry's own length, which `length` does not give when there is
+    // more than one. Attribution uses sge[0] and nothing else, so this is what
+    // says whether a receive actually fit the buffer we can name: a scatter
+    // list fills in order, so byte_len <= first_len means the payload landed
+    // entirely in the entry described by `addr`, and byte_len > first_len means
+    // the remainder went somewhere this capture cannot name. Without it the
+    // only available test is num_sge > 1, which flags every multi-entry receive
+    // including the overwhelming majority that fit.
+    std::uint32_t first_len;
     std::uint32_t qp_num;  // 0 when origin is SharedRecvQueue: an SRQ has none
+    // WHICH RING SLOT this WQE took, for an SRQ post whose ring could be read;
+    // kSlotUnknown otherwise. IbRecvCqe.wqe_counter names the same index, so
+    // (rank, subject, slot) identifies the buffer a completion consumed without
+    // consulting wr_id at all.
+    //
+    // A FIELD RATHER THAN A SECOND RECORD, and the first version got that
+    // wrong. This began as ib_srq_recv_slot, a separate stream carrying
+    // (srq, wr_id, addr, slot) — every field but the last already recorded
+    // HERE, from the same door, for the same work request. On the 64-rank
+    // capture that is ~1.06M rows duplicating 1.06M rows. The volume argument
+    // that keeps IbRecvCqe separate (>98% of completions are requester-side and
+    // have no receive to name) has no analogue here: every SRQ post needs both
+    // rows, so the duplication was total and merging is strictly smaller than
+    // keeping them apart. Type id 122 is retired rather than reused.
+    std::uint32_t slot;
     std::uint8_t  num_sge;
     std::uint8_t  origin;  // IbRecvOrigin, stored as the underlying uint8
 };
+
+// No slot could be read: not an SRQ post, not mlx5, or the ring was unreadable.
+// UINT32_MAX and not 0, because 0 is the first valid slot of every ring and a
+// capture full of zeroes would join to the first buffer ever posted.
+inline constexpr std::uint32_t kSlotUnknown = 0xFFFFFFFFu;
 
 // ENTITY — a UD address handle (ibv_create_ah), lifetime [create, destroy).
 //
@@ -320,7 +349,7 @@ PCOMM_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
 
 // --- the hardware's own identification of a receive -------------------------
 //
-// WHY TWO NEW RECORDS RATHER THAN A FIELD ON THE TWO THAT EXIST.
+// WHY A NEW RECORD RATHER THAN A FIELD ON THE ONE THAT EXISTS.
 //
 // object_access attributes a two-sided SEND by recovering the receiver's buffer
 // through wr_id: the completion carries one, IbPostRecv carries (wr_id, addr),
@@ -364,26 +393,6 @@ PCOMM_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
 // CQE is readable at all: 28,814 CQEs across ConnectX-7 and ConnectX-5, every
 // one agreeing with its ibv_wc.
 
-// EVENT — which SLOT of a shared receive queue a posted buffer went into.
-//
-// The post side of the exact join. Emitted from a PRE-hook on
-// ibv_post_srq_recv, because the slot a WQE is about to occupy is
-// mlx5dv_srq.head BEFORE the driver consumes it and the free list has moved on.
-//
-// `slot` is what IbRecvCqe.wqe_counter will name, and `addr` is the answer the
-// whole chain exists to produce. Both are recorded rather than one, so a
-// capture can be checked against itself: the wr_id here must agree with the
-// wr_id the completion reports for the same slot, and disagreement means the
-// slot arithmetic is wrong rather than quietly attributing bytes to the wrong
-// buffer.
-PCOMM_RECORD(IbSrqRecvSlot, RecordKind::Event, 122, "ib_srq_recv_slot") {
-    Handle        srq;    // interned ibv_srq*, the same subject IbPostRecv uses
-    std::uint64_t wr_id;  // joins to IbPostRecv.wr_id on the same rank
-    std::uint64_t addr;   // first sge's addr — the buffer this slot receives into
-    std::uint32_t srqn;   // mlx5 SRQ number; joins to IbRecvCqe.srqn
-    std::uint32_t slot;   // WQE index in the ring; joins to IbRecvCqe.wqe_counter
-};
-
 // EVENT — the CQE's own account of a receive completion, read from the ring.
 //
 // One row per successful IBV_WC_RECV whose CQE was read AND agreed with the
@@ -401,8 +410,9 @@ PCOMM_RECORD(IbSrqRecvSlot, RecordKind::Event, 122, "ib_srq_recv_slot") {
 // Measured on job 44542613: mlx5dv reported SRQ numbers 30002 and 42471 while
 // the CQEs beside them read 3 and 4, and joining on it matched nothing. The
 // association comes from ibv_qp->srq at creation instead — the only place it is
-// stated — so this is the same interned handle IbSrqRecvSlot.srq carries and
-// the join is a handle comparison rather than a number that means two things.
+// stated — so this is the same interned handle IbPostRecv.subject carries
+// for an SRQ post, and the join is a handle comparison rather than a number
+// that means two different things depending on the queue type.
 PCOMM_RECORD(IbRecvCqe, RecordKind::Event, 124, "ib_recv_cqe") {
     Handle        cq;           // interned ibv_cq*, as IbPollCq.cq
     std::uint64_t wr_id;        // as reported by the driver, for cross-checking

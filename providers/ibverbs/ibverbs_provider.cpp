@@ -31,6 +31,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <dlfcn.h>   // dladdr, for the MR caller diagnostic at the bottom
 #include <endian.h>  // be64toh — GIDs and GUIDs are big-endian on the wire
@@ -124,6 +125,14 @@ static std::uint32_t local_lid(ibv_qp* qp, const ibv_qp_attr* attr, int mask) {
 // render as slices with real durations instead of instants.
 static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
     return pcomm::core::Temporal::interval({0, t0}, {0, t1});
+}
+
+// Slots computed by the post_srq_recv PRE-hook, consumed by its post-hook.
+// Thread-local: the two halves run on one thread around one call, and this is
+// the hottest receive path in the capture, so a per-call allocation is not free.
+std::vector<std::uint32_t>& pending_srq_slots() {
+    static thread_local std::vector<std::uint32_t> v;
+    return v;
 }
 
 // (context, qp_num) -> the SRQ that queue pair draws its receives from.
@@ -1016,7 +1025,12 @@ Profiler::Profiler() {
                                         has_sge ? wr->sg_list[0].addr : 0u,
                                         has_sge ? wr->sg_list[0].lkey : 0u,
                                         length,
+                                        has_sge ? wr->sg_list[0].length : 0u,
                                         qp->qp_num,
+                                        // A QP receive queue is not a shared
+                                        // ring and needs no slot: (qp_num,
+                                        // wr_id) already identifies it exactly.
+                                        rr::kSlotUnknown,
                                         static_cast<std::uint8_t>(wr->num_sge),
                                         static_cast<std::uint8_t>(rr::IbRecvOrigin::QueuePair)});
         }
@@ -1035,49 +1049,39 @@ Profiler::Profiler() {
     // be joined to a completion by (qp, wr_id) the way a QP receive can, because
     // the QP is only decided when the message lands. The recv-completion
     // assertion scopes itself to origin='qp' for that reason, and says so.
-    // A PRE-hook, and the only one in this provider — the slot a WQE is about
-    // to occupy is readable only before the driver takes it. Afterwards the
-    // SRQ's head has moved and mlx5dv_srq reports where the NEXT post will go.
+    // THE SLOT IS READ BEFORE THE CALL AND RECORDED AFTER IT, which is why this
+    // door has both halves of a hook where every other one here has a post.
     //
-    // Recorded here and not merged into the IbPostRecv row below because the
-    // two are not equally trustworthy: IbPostRecv is what the application asked
-    // for and is always known, while the slot is an mlx5-only reading that can
-    // fail. Keeping them separate means a capture where the slot is unavailable
-    // is a capture with fewer ib_srq_recv_slot rows, not one with a column full
-    // of sentinels that every query has to remember to filter.
-    //
-    // Post-only failure is why this cannot be done afterwards, and post-only
-    // success is why it is safe: if ibv_post_srq_recv ultimately fails, the
-    // slots were never consumed and the rows below name buffers that received
-    // nothing — harmless, because IbRecvCqe.wqe_counter only ever names slots
-    // that DID complete, and a slot with no completion is simply never joined.
+    // mlx5dv_srq.head names where the NEXT posted WQE will go, so once
+    // ibv_post_srq_recv has run it reports the following post's slots and not
+    // this one's. But the row itself must be written afterwards: a post that
+    // FAILS consumed nothing, and recording from the pre-hook would put buffers
+    // in the capture that the queue never accepted. So the pre-hook stashes and
+    // the post-hook commits — thread-local because the two halves are the same
+    // thread by construction, and a per-call vector would allocate on the
+    // hottest receive path in the capture.
     this->register_pre<post_srq_recv_tag>(
-        [](ibv_srq* srq, ibv_recv_wr* wr, ibv_recv_wr**, std::uint64_t t) {
+        [](ibv_srq* srq, ibv_recv_wr* wr, ibv_recv_wr**, std::uint64_t) {
+            auto& slots = pending_srq_slots();
+            slots.clear();
             if (!srq || !wr)
                 return;
-            const auto tspan = span(t, t);
-            unsigned   n = 0;
-            for (; wr; wr = wr->next, ++n) {
+            for (unsigned n = 0; wr; wr = wr->next, ++n) {
                 const auto s = cqeprobe::srq_slot(srq, n);
-                if (!s.valid)
-                    return;  // not mlx5, or the ring could not be read: record nothing
-                const bool has_sge = wr->num_sge > 0 && wr->sg_list != nullptr;
-                rec().record(tspan, rr::IbSrqRecvSlot{{},
-                                                      {},
-                                                      h(srq),
-                                                      wr->wr_id,
-                                                      has_sge ? wr->sg_list[0].addr : 0u,
-                                                      s.srqn,
-                                                      s.slot});
+                slots.push_back(s.valid ? s.slot : rr::kSlotUnknown);
             }
         });
 
     this->register_post<post_srq_recv_tag>([](int ret, ibv_srq* srq, ibv_recv_wr* wr, ibv_recv_wr**,
                                               std::uint64_t t0, std::uint64_t t1) {
-        if (ret != 0 || !srq)
+        auto& slots = pending_srq_slots();
+        if (ret != 0 || !srq) {
+            slots.clear();
             return;
+        }
         const auto tspan = span(t0, t1);
-        for (; wr; wr = wr->next) {
+        std::size_t n = 0;
+        for (; wr; wr = wr->next, ++n) {
             // Guard before read, as in post_recv above.
             const bool    has_sge = wr->num_sge > 0 && wr->sg_list != nullptr;
             std::uint32_t length = 0;
@@ -1092,10 +1096,13 @@ Profiler::Profiler() {
                                     has_sge ? wr->sg_list[0].addr : 0u,
                                     has_sge ? wr->sg_list[0].lkey : 0u,
                                     length,
+                                    has_sge ? wr->sg_list[0].length : 0u,
                                     0u,
+                                    n < slots.size() ? slots[n] : rr::kSlotUnknown,
                                     static_cast<std::uint8_t>(wr->num_sge),
                                     static_cast<std::uint8_t>(rr::IbRecvOrigin::SharedRecvQueue)});
         }
+        slots.clear();
     });
 
     // create_srq / create_srq_ex -> the shared-receive-queue entity, so no
