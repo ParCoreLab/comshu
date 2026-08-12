@@ -1,6 +1,7 @@
 <script>
   import { query, num } from './lib/query.js';
   import Matrix from './panels/Matrix.svelte';
+  import Graph from './panels/Graph.svelte';
   import Ranks from './panels/Ranks.svelte';
   import Dendrogram from './panels/Dendrogram.svelte';
   import Sankey from './panels/Sankey.svelte';
@@ -20,6 +21,9 @@
   // once means eight scans of the same capture to show one of them.
   const VIEWS = [
     { id: 'matrix',  label: 'Matrix',     c: Matrix },
+    // Next to the matrix on purpose: same rows, read as shape instead of as
+    // numbers. See the header comment in Graph.svelte for why both exist.
+    { id: 'graph',   label: 'Graph',      c: Graph },
     { id: 'ranks',   label: 'Ranks',      c: Ranks },
     { id: 'cluster', label: 'Clustering', c: Dendrogram },
     { id: 'flow',    label: 'Flow',       c: Sankey },
