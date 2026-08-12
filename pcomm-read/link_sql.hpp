@@ -220,6 +220,96 @@ FROM _rtr r
 LEFT JOIN _owner o_peer
        ON o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
 )sql"},
+
+    // One row per successful two-sided RECEIVE completion, carrying the buffer
+    // it landed in and how confidently that buffer was named.
+    //
+    // WHY THE RECEIVER IS THE ONLY WITNESS. A SEND names no remote address —
+    // the receiver chooses the buffer by posting it — so the send-side branch
+    // of object_access cannot see this traffic and drops it at
+    // `remote_addr > 0`. Measured on scale_hubspoke_ib-44517390: 11,520 of the
+    // capture's sends are two-sided, 180 per rank, every one of them properly
+    // recorded and none of them attributable from the sender's rows. What the
+    // receiver has is the post (addr, wr_id) and the completion (wr_id,
+    // byte_len), which closes the loop locally; only the SENDER's identity has
+    // to come from the QP.
+    //
+    // OPCODE 128 ONLY, NEVER 129. A RECV_RDMA_WITH_IMM completion also consumes
+    // a receive WQE, but its payload went to the address the SENDER named — the
+    // posted buffer is spent carrying the immediate value alone. Attributing
+    // byte_len to the recv buffer there would put the bytes in the wrong object
+    // AND double-count them, since the send-side branch has already placed them
+    // correctly.
+    //
+    // TWO ARMS, AND THE WEAKER ONE IS NOT OPTIONAL. wr_id is chosen by the
+    // application and routinely recycled as a buffer index:
+    //
+    //   QP receives  key (rank, qp_num, wr_id) — precise; the endpoint is fixed
+    //                at post time.
+    //   SRQ receives key (rank, wr_id) only. An SRQ receive is not bound to a
+    //                queue pair until a message lands, so the post carries
+    //                qp_num = 0 while its completion carries a real one.
+    //
+    // Same rule, and the same reason for it, as recv_completion_accounted.sql —
+    // which learned it from 656 false violations on case 07. Measured on
+    // scale_hubspoke_ib-44517390, ALL 11,520 completions resolve through the SRQ
+    // arm and none through the QP arm, so the weaker key is not a corner case
+    // here: it is the only one that fires.
+    //
+    // `addrs` is what makes that safe to publish. It is the number of distinct
+    // buffers the key named, so 1 means the attribution is certain and anything
+    // higher means it is a pick. Rows are kept either way — dropping them would
+    // silently shrink totals, the failure the matrix's `?` column exists to
+    // prevent — and link_health counts the ones that are not certain.
+    //
+    // LEFT joins throughout, deliberately: a completion that resolves to no
+    // posted buffer, or to no known object, stays in this view with NULLs so it
+    // can be COUNTED. An inner join would make the capture look clean by
+    // deleting the evidence that it is not.
+    {"_recv_attr", R"sql(
+CREATE OR REPLACE VIEW _recv_attr AS
+SELECT c.rank                AS recv_rank,
+       c.qp_num              AS qp_num,
+       c.wr_id               AS wr_id,
+       c.byte_len            AS byte_len,
+       e.peer_rank           AS sender_rank,
+       r.addr                AS addr,
+       r.addrs               AS addrs,
+       m.id                  AS object,
+       m.range_base          AS range_base
+FROM ib_poll_cq c
+LEFT JOIN LATERAL (
+    -- The QP arm first because it is the stronger key; the SRQ arm answers only
+    -- when the QP arm has nothing. `min(addr)` is a representative, not a claim
+    -- — `addrs` is what says whether it was the only candidate.
+    SELECT addr, addrs FROM (
+        SELECT 0 AS pref, addr, addrs FROM (
+            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
+            FROM ib_post_recv p
+            WHERE p.origin = 1 AND p.addr > 0
+              AND p.rank = c.rank AND p.qp_num = c.qp_num AND p.wr_id = c.wr_id
+        ) q WHERE q.addr IS NOT NULL
+        UNION ALL
+        SELECT 1 AS pref, addr, addrs FROM (
+            SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
+            FROM ib_post_recv p
+            WHERE p.origin = 2 AND p.addr > 0
+              AND p.rank = c.rank AND p.wr_id = c.wr_id
+        ) s WHERE s.addr IS NOT NULL
+    ) a ORDER BY a.pref LIMIT 1
+) r ON TRUE
+LEFT JOIN _peer_of_qp e ON e.rank = c.rank AND e.qp_num = c.qp_num
+LEFT JOIN LATERAL (
+    SELECT o.id, o.range_base
+    FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
+    WHERE o.rank = c.rank
+      AND r.addr >= o.range_base
+      AND r.addr <  o.range_base + o.range_size
+    ORDER BY o.range_size
+    LIMIT 1
+) m ON TRUE
+WHERE c.opcode = 128 AND c.status = 0
+)sql"},
 };
 
 // Derived tables, materialised and written as Parquet in this order.
@@ -310,10 +400,65 @@ verbs AS (
     -- and every real access collapses into the last bin.
     WHERE s.remote_addr > 0
       AND e.peer_rank IS NOT NULL
+),
+-- THE TWO-SIDED HALF, read from the RECEIVER's records.
+--
+-- A SEND carries no remote address — the receiver picks the buffer, not the
+-- sender — so `verbs` above cannot see this traffic at all and drops it at
+-- `remote_addr > 0`. Measured on scale_hubspoke_ib-44517390: 11,520 of the
+-- capture's sends are two-sided, 180 per rank, and every one of them was
+-- invisible in the object view while being perfectly well recorded.
+--
+-- The receiver knows what the sender does not. It posted the buffer with
+-- ibv_post_recv (addr, wr_id) and reaped a completion carrying that same wr_id
+-- and the byte count that actually landed. So the address is recovered locally,
+-- on the receiving rank, and only the SENDER's identity needs the QP.
+--
+-- ONLY opcode 128 (IBV_WC_RECV), NEVER 129. A RECV_RDMA_WITH_IMM completion
+-- also consumes a receive WQE, but its payload went to the address the SENDER
+-- named — the posted buffer is spent carrying the immediate value alone.
+-- Attributing byte_len to the recv buffer there would put the bytes in the
+-- wrong object, and `verbs` above has already counted them correctly from the
+-- send side. Including 129 here would therefore both misplace and double-count.
+--
+-- `exact` IS EARNED PER ROW, not asserted for the branch. wr_id is chosen by
+-- the application and routinely recycled as a buffer index, so a completion
+-- names a post only as precisely as its key allows:
+--
+--   QP receives  key (rank, qp_num, wr_id) — precise, the endpoint is fixed.
+--   SRQ receives key (rank, wr_id) only. An SRQ receive is not bound to a queue
+--                pair until a message lands, so qp_num is 0 on the post and
+--                real on the completion. Same two-arm rule, and the same reason
+--                for it, as recv_completion_accounted.sql — which learned it
+--                from 656 false violations on case 07.
+--
+-- When a key maps to exactly one address the attribution is certain and exact
+-- is TRUE. When it maps to several the row is still emitted, with the lowest
+-- address and exact = FALSE, because dropping it would silently shrink totals —
+-- the failure mode the `?` column exists to prevent in the matrix. link_health
+-- counts those rows so an ambiguous capture cannot look like a clean one.
+-- The resolution itself lives in the `_recv_attr` VIEW rather than here, because
+-- link_health has to count what this branch could not attribute and a kTable
+-- cannot reference another kTable — they are COPYed to Parquet, not registered.
+-- One definition, two readers, exactly as _peer_of_qp was extracted.
+verbs_recv AS (
+    SELECT a.recv_rank                              AS owner_rank,
+           a.object                                 AS object,
+           a.addr - a.range_base                    AS obj_offset,
+           a.byte_len                               AS size,
+           'verbs_recv'                             AS source,
+           a.sender_rank::BIGINT                    AS actor_rank,
+           rd.device::BIGINT                        AS actor_device,
+           (a.addrs = 1)                            AS exact
+    FROM _recv_attr a
+    LEFT JOIN _rank_device rd ON rd.rank = a.sender_rank
+    WHERE a.object IS NOT NULL
 )
 SELECT * FROM p2p
 UNION ALL
 SELECT * FROM verbs
+UNION ALL
+SELECT * FROM verbs_recv
 )sql"},
 
     // One row per local endpoint that exists, whether or not it moved bytes.
@@ -424,6 +569,26 @@ FROM (
     LEFT JOIN _owner o ON o.lid  = r.dest_lid AND o.qp_num = r.dest_qp_num
     WHERE o.rank = s.rank
 )
+UNION ALL
+-- The receive branch of object_access recovers a buffer through a wr_id, which
+-- the application owns and may recycle. Where one key named several buffers the
+-- row is kept and marked inexact rather than dropped; this is the count that
+-- stops that being invisible. Zero means every recovered receive buffer was
+-- named by exactly one candidate — the state every capture measured so far is
+-- in — but that is a property of the workload's wr_id discipline, not a
+-- guarantee of the method, so it is measured per capture rather than assumed.
+SELECT 'ambiguous_recv_buffers',
+       coalesce(count(*), 0)::BIGINT,
+       'recv completions whose wr_id named more than one posted buffer — attributed to the lowest, marked inexact'
+FROM _recv_attr WHERE addrs > 1
+UNION ALL
+-- The other half of the same question: a two-sided receive whose bytes reached
+-- no object we can name. Either the receive was posted before the door was
+-- hooked, or its buffer lies outside every region the capture knows.
+SELECT 'unattributed_recv_completions',
+       coalesce(count(*), 0)::BIGINT,
+       'successful recv completions resolving to no posted buffer or no known object'
+FROM _recv_attr WHERE addr IS NULL OR object IS NULL
 )sql"},
 };
 
