@@ -127,6 +127,19 @@
       LEFT JOIN nd ow ON ow.rank = a.owner_rank
       LEFT JOIN (SELECT DISTINCT rank, id, range_size FROM mem_object) m
         ON m.rank = a.owner_rank AND m.id = a.object
+      -- NO LIMIT, deliberately. This query spans every actor and the panel then
+      -- filters to one tab, so a global ORDER BY n DESC with a LIMIT does not
+      -- shorten each tab a little — it drops the QUIETEST actors' rows outright
+      -- and says nothing, which is the failure the matrix keeps its unresolved column to
+      -- avoid. The 64-rank capture already uses 1,015 groups against the 2,000
+      -- the limit used to impose, so the next scale step would have started
+      -- silently lying.
+      --
+      -- The real ceiling is now the server's own kRowCap (100,000 rows), which
+      -- is two orders of magnitude above what this capture needs and applies to
+      -- every query alike. If a capture ever approaches it, the fix is to make
+      -- this query per-actor rather than to reinstate a cut here.
+      --
       -- BOTH verbs branches. They are the same quantity — bytes this actor put
       -- into that object — differing only in which end of the transfer knew the
       -- address, so unlike nvlink-vs-verbs they ARE addable. Keeping
@@ -134,8 +147,7 @@
       -- comm_edges credits with 13: the missing 9 were all two-sided.
       WHERE a.source IN ('verbs', 'verbs_recv')
       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
-      ORDER BY n DESC
-      LIMIT 2000`)
+      ORDER BY n DESC`)
       .then((r) => {
         vbRows = r;
         if (vbActor === null && r.length) {
