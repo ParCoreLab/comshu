@@ -1254,7 +1254,18 @@ static bool trace_mr_callers_enabled() {
     return on;
 }
 
-static void trace_mr_caller(const char* door, void* ret_addr) {
+// `length` is part of the dedup key, and that is not cosmetic. The per-(door,
+// library) table cannot say WHICH library registered a particular region, so
+// when entity_close_accounted reports "the 40-byte and 8 MiB regions on each
+// node leader are never closed" it cannot name their owner — and `reg_mr` has
+// two callers. Keying on size splits them, because the leak was identified BY
+// size in the first place. len=-1 means the door does not carry one.
+//
+// Bounded, because at scale this could otherwise print a line per distinct
+// allocation size on every rank: 256 distinct rows per process, then silence
+// with one final line saying so. A diagnostic that floods the job log is one
+// that gets turned off, and its last line is the one you needed.
+static void trace_mr_caller(const char* door, void* ret_addr, long length = -1) {
     if (!trace_mr_callers_enabled())
         return;
     Dl_info           info{};
@@ -1262,9 +1273,18 @@ static void trace_mr_caller(const char* door, void* ret_addr) {
     static std::mutex m;
     std::lock_guard<std::mutex>  lk(m);
     static std::set<std::string> seen;
-    if (!seen.insert(std::string(door) + "|" + who).second)
+    static bool                  capped = false;
+    if (capped)
         return;
-    std::fprintf(stderr, "[pcomm-mrcaller] %-20s <- %s\n", door, who);
+    if (!seen.insert(std::string(door) + "|" + who + "|" + std::to_string(length)).second)
+        return;
+    if (seen.size() > 256) {
+        capped = true;
+        std::fprintf(stderr, "[pcomm-mrcaller] (capped at 256 distinct door|lib|len rows)\n");
+        std::fflush(stderr);
+        return;
+    }
+    std::fprintf(stderr, "[pcomm-mrcaller] %-20s <- %s len=%ld\n", door, who, length);
     std::fflush(stderr);
 }
 
@@ -1525,7 +1545,7 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
 
 extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
                                      int fd, int access) {
-    trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0));
+    trace_mr_caller("reg_dmabuf_mr", __builtin_return_address(0), (long)length);
     if (pd)
         ibv::ensure_installed(pd->context, "reg_dmabuf_mr");
     auto* mr =
@@ -1534,7 +1554,7 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
     return mr;
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
-    trace_mr_caller("dereg_mr", __builtin_return_address(0));
+    trace_mr_caller("dereg_mr", __builtin_return_address(0), mr ? (long)mr->length : -1);
     if (mr)
         ibv::ensure_installed(mr->context, "dereg_mr");
     trace_unmatched_dereg(mr, __builtin_return_address(0));
@@ -1551,7 +1571,7 @@ extern "C" int ibv_dereg_mr(ibv_mr* mr) {
 // macro is also why "hook ibv_reg_mr" was never as simple as adding a name.
 #undef ibv_reg_mr
 extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access) {
-    trace_mr_caller("reg_mr", __builtin_return_address(0));
+    trace_mr_caller("reg_mr", __builtin_return_address(0), (long)length);
     if (pd)
         ibv::ensure_installed(pd->context, "reg_mr");
     struct Depth {
@@ -1568,7 +1588,7 @@ extern "C" ibv_mr* ibv_reg_mr(ibv_pd* pd, void* addr, size_t length, int access)
 // rdma-core builds that route — where the depth guard makes it record nothing.
 extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint64_t iova,
                                     unsigned int access) {
-    trace_mr_caller("reg_mr_iova2", __builtin_return_address(0));
+    trace_mr_caller("reg_mr_iova2", __builtin_return_address(0), (long)length);
     if (pd)
         ibv::ensure_installed(pd->context, "reg_mr_iova2");
     auto* mr = ibv::Profiler::invoke_preload<ibv::reg_mr_iova2_tag>(pd, addr, length, iova, access);

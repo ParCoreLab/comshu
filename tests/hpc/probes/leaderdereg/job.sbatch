@@ -68,6 +68,14 @@ APP="$HOME/asym_patterns-sm$PCOMM_SM"
 
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
+# Node count comes from the ALLOCATION, not from a literal, so the same file
+# bisects at any width: `sbatch --nodes=8 job.sbatch`. The #SBATCH above is only
+# the default. Hardcoding -np 8 here is how a bisect silently keeps measuring
+# the size it was written at.
+NODES="${SLURM_NNODES:-2}"
+NP=$((NODES * 4))
+echo "=== bisect point: $NODES nodes x 4 = $NP ranks ==="
+
 ROOT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/probe-leaderdereg-${SLURM_JOB_ID:-local}"
 rm -rf "$ROOT"; mkdir -p "$ROOT"
 
@@ -75,7 +83,7 @@ rm -rf "$ROOT"; mkdir -p "$ROOT"
 section() {
   label="$1"; shift
   out="$ROOT/$label"; mkdir -p "$out"
-  mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
+  mpirun -np "$NP" --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
     -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
     -x PCOMM_TRACE_MR_CALLERS=1 "$@" \
     "$PCOMM" run -p ib -o "$out/cap" -- "$APP" hub 4096 3 2>&1 | tee "$out/run.log"
@@ -120,6 +128,15 @@ for label in ("A", "B"):
     print(f"  total unclosed: {total}   leaders affected: "
           f"{sorted(r for r in opens if any((r, h) not in closed for h in opens[r]))}")
 PY
+
+# The sizes that matter, called out by name: the leak is two regions per node
+# leader, one of 40 bytes and one of 8388608. reg_mr has two callers, so this is
+# the line that names the owner rather than the door.
+echo "=== callers of the LEAKED sizes (40 and 8388608) ==="
+for s in A B; do
+  grep -hE 'pcomm-mrcaller.*len=(40|8388608)$' "$ROOT/$s/run.log" 2>/dev/null |
+    sort -u | sed "s/^/  $s /" ||:
+done
 
 echo "=== which library calls which MR door (both sections) ==="
 for s in A B; do
