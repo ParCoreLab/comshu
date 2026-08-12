@@ -1,8 +1,14 @@
 #pragma once
-// PROBE — is the raw mlx5 CQE still readable, and still CORRECT, once
-// ibv_poll_cq has returned?
+// Reading the raw mlx5 CQE, and what that buys.
 //
-// THE QUESTION, and why it is worth a job.
+// This file holds two things that grew in that order: a PROBE that answered
+// whether the CQE can be read at all, and the PRODUCTION readers that the
+// answer made possible. The probe is kept rather than deleted because it is the
+// only thing that can re-answer the question when a driver, a firmware or a NIC
+// generation changes, and because its cross-check is what the production path
+// now uses as a precondition.
+//
+// THE QUESTION IT ANSWERED, and why it was worth a job.
 //
 // object_access attributes a two-sided SEND by recovering the receiver's buffer
 // through `wr_id`: the completion carries a wr_id, ib_post_recv carries
@@ -62,12 +68,18 @@
 // feature and should not appear on RC traffic, but "should not" is why the
 // cross-check exists rather than an assertion.
 //
+// THE ANSWER, so nobody re-runs it to find out: 28,814 CQEs across MN5's
+// ConnectX-7 and du04's ConnectX-5, every one agreeing with its ibv_wc on
+// qp_num and requester/responder class, and on byte_len wherever a receive was
+// involved. The entry survives the driver consuming it, and the addressing
+// below is right. Jobs 44542213 / 44542243, and tests/hpc/probes/cqeread.
+//
 // Enabled by PCOMM_CQE_PROBE=1. Off, this costs one branch per poll.
 // POSITIVE CONTROL: any [pcomm-cqeprobe] line at all. A run with none did not
 // execute this code, and nothing it did not print is a finding.
 
 //
-// The IMPLEMENTATION is in cqe_probe.cpp and not here, and that is forced
+// The IMPLEMENTATION is in mlx5_cqe.cpp and not here, and that is forced
 // rather than stylistic: ibverbs_provider.cpp defines interposers for
 // mlx5dv_open_device and mlx5dv_create_cq with their mlx5-specific attribute
 // arguments typed `void*`, precisely so that it need not include mlx5dv.h.

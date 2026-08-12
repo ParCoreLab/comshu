@@ -1,7 +1,7 @@
-// Implementation of the CQE probe declared in cqe_probe.hpp — see that file for
+// Implementation of the CQE probe declared in mlx5_cqe.hpp — see that file for
 // the question this answers and for why the mlx5dv include lives here alone.
 
-#include "cqe_probe.hpp"
+#include "mlx5_cqe.hpp"
 
 #include <cstdint>
 #include <cstdio>

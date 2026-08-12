@@ -2,7 +2,7 @@
 # PROBE — is the raw mlx5 CQE readable, and correct, after ibv_poll_cq returns?
 #
 # Not a suite case. It answers one question and then either becomes a record or
-# gets deleted. See providers/ibverbs/cqe_probe.hpp for the full argument.
+# gets deleted. See providers/ibverbs/mlx5_cqe.hpp for the full argument.
 #
 # THE QUESTION. object_access now attributes two-sided SENDs by recovering the
 # receiver's buffer through wr_id — completion carries wr_id, ib_post_recv

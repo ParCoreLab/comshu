@@ -56,6 +56,21 @@ reads — so a stale corpus degrades in pieces rather than all at once, and
 `index.sh` records the schema hash per capture so the degradation is visible
 rather than inferred.
 
+**That has now happened, and it is worth reading as the worked example.**
+`ib_post_recv` gained `slot` and `first_len` (the exact receive attribution,
+2026-08-12), moving its stride from 88 to 96. Every capture taken before that
+still decodes completely EXCEPT that one stream, which is refused by name:
+
+```
+rank-0/114.pcs   114 event   stride 88   6ec51373f67692ca (other schema)
+```
+
+The visible consequence is that `object_access` loses its `verbs_recv` rows on
+those captures — two-sided sends stop being attributed — and `link_health`
+reports them as `unattributed_recv_completions` rather than quietly dropping
+them. On `scale_hubspoke_ib-44517390` that is 11,520 completions. Regenerating
+the capture restores it; nothing else in the capture is affected.
+
 ## Usage
 
 ```bash

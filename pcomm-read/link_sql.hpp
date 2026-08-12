@@ -241,8 +241,20 @@ LEFT JOIN _owner o_peer
     // AND double-count them, since the send-side branch has already placed them
     // correctly.
     //
-    // TWO ARMS, AND THE WEAKER ONE IS NOT OPTIONAL. wr_id is chosen by the
-    // application and routinely recycled as a buffer index:
+    // THREE ARMS, TRIED IN ORDER OF HOW MUCH THEY ASSUME.
+    //
+    //   hardware  (rank, srq, slot) from ib_recv_cqe + ib_post_recv.slot. The
+    //             NIC stamped the slot on the completion; wr_id is not
+    //             consulted. Absent from captures older than those records and
+    //             from every non-mlx5 NIC, which is why the two below stay.
+    //   QP        (rank, qp_num, wr_id) — precise, the endpoint is fixed at
+    //             post time.
+    //   SRQ       (rank, wr_id) alone. An SRQ receive is not bound to a queue
+    //             pair until a message lands, so the post carries qp_num = 0
+    //             while its completion carries a real one.
+    //
+    // The last two are the application's key. wr_id is chosen by the caller and
+    // routinely recycled as a buffer index:
     //
     //   QP receives  key (rank, qp_num, wr_id) — precise; the endpoint is fixed
     //                at post time.

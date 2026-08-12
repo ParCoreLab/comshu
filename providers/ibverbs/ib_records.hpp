@@ -389,7 +389,7 @@ PCOMM_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
 // the WQE is posted. The shared receive queue is the only place the key is
 // weak, so it is the only place worth paying for.
 //
-// See providers/ibverbs/cqe_probe.hpp for the measurement that established the
+// See providers/ibverbs/mlx5_cqe.hpp for the measurement that established the
 // CQE is readable at all: 28,814 CQEs across ConnectX-7 and ConnectX-5, every
 // one agreeing with its ibv_wc.
 
