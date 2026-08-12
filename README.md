@@ -11,6 +11,10 @@ and (later) ucTrace. Design docs live one level up: [`../UNIFICATION.md`](../UNI
 | Namespace | `pcomm::` (`core`, `rec`, `hook`, `attr`, `gpu`, `provider`) |
 | Env prefix | `PCOMM_*` |
 
+[`BUGS-FOUND.md`](BUGS-FOUND.md) — defects in other software that pcomm found,
+with the evidence that identified each and the explanations that were excluded.
+The claim a tool makes is what it found, not what it can in principle see.
+
 ## Layout
 
 ```
