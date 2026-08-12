@@ -246,10 +246,23 @@ SrqSlot srq_slot(ibv_srq* srq, unsigned n) {
         return {};
 
     mlx5dv_srq out{};
+    // srqn IS OPTIONAL OUTPUT AND MUST BE ASKED FOR. mlx5dv_get_srq fills it
+    // only when the caller sets this bit on the way in; without it the field is
+    // left at whatever the struct was initialised to. Zero-initialising the
+    // struct — the careful-looking thing — turns that into a plausible SRQ
+    // number rather than an obvious error, and job 44542534 recorded 32,828
+    // slot rows all claiming srqn=0 while the CQEs beside them reported 3 and
+    // 4. The join matched nothing, which is the good outcome: it failed loudly
+    // instead of attributing bytes through a wrong key.
+    out.comp_mask = MLX5DV_SRQ_MASK_SRQN;
     mlx5dv_obj obj{};
     obj.srq.in = srq;
     obj.srq.out = &out;
     if (init_obj(&obj, MLX5DV_OBJ_SRQ) != 0 || !out.buf || !out.stride)
+        return {};
+    // A capture whose slots all say srqn=0 cannot be joined to a completion, so
+    // refuse rather than fill a stream with rows nothing can use.
+    if (!(out.comp_mask & MLX5DV_SRQ_MASK_SRQN) || out.srqn == 0)
         return {};
 
     // A POST CHAIN DOES NOT OCCUPY CONSECUTIVE SLOTS. libmlx5 keeps the SRQ's
