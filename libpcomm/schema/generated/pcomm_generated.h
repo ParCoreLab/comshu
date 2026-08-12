@@ -1677,7 +1677,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbRecvCqe FLATBUFFERS_FINAL_CLASS {
   uint32_t cq_;
   int32_t padding0__;
   uint64_t wr_id_;
-  uint32_t srqn_;
+  uint32_t srq_;
   uint32_t wqe_counter_;
   uint32_t qp_num_;
   uint32_t byte_len_;
@@ -1688,18 +1688,18 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbRecvCqe FLATBUFFERS_FINAL_CLASS {
         cq_(0),
         padding0__(0),
         wr_id_(0),
-        srqn_(0),
+        srq_(0),
         wqe_counter_(0),
         qp_num_(0),
         byte_len_(0) {
     (void)padding0__;
   }
-  IbRecvCqe(const pcomm::fb::Temporal &_temporal, uint32_t _cq, uint64_t _wr_id, uint32_t _srqn, uint32_t _wqe_counter, uint32_t _qp_num, uint32_t _byte_len)
+  IbRecvCqe(const pcomm::fb::Temporal &_temporal, uint32_t _cq, uint64_t _wr_id, uint32_t _srq, uint32_t _wqe_counter, uint32_t _qp_num, uint32_t _byte_len)
       : temporal_(_temporal),
         cq_(::flatbuffers::EndianScalar(_cq)),
         padding0__(0),
         wr_id_(::flatbuffers::EndianScalar(_wr_id)),
-        srqn_(::flatbuffers::EndianScalar(_srqn)),
+        srq_(::flatbuffers::EndianScalar(_srq)),
         wqe_counter_(::flatbuffers::EndianScalar(_wqe_counter)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
         byte_len_(::flatbuffers::EndianScalar(_byte_len)) {
@@ -1714,8 +1714,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbRecvCqe FLATBUFFERS_FINAL_CLASS {
   uint64_t wr_id() const {
     return ::flatbuffers::EndianScalar(wr_id_);
   }
-  uint32_t srqn() const {
-    return ::flatbuffers::EndianScalar(srqn_);
+  uint32_t srq() const {
+    return ::flatbuffers::EndianScalar(srq_);
   }
   uint32_t wqe_counter() const {
     return ::flatbuffers::EndianScalar(wqe_counter_);

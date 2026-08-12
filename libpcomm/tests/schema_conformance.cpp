@@ -406,7 +406,7 @@ int main() {
         expect_identical("IbSrqRecvSlot", &c, &f, sizeof(c));
     }
     {
-        // srqn and wqe_counter are adjacent uint32s, so they are given values
+        // srq and wqe_counter are adjacent uint32s, so they are given values
         // that cannot be confused for each other — a swapped pair is precisely
         // what a byte comparison exists to catch, and this record's whole
         // purpose is that those two fields mean different things.
@@ -414,7 +414,7 @@ int main() {
         c.temporal = pcomm::core::Temporal::interval({1, 0x64}, {1, 0x74});
         c.payload.cq = 35;
         c.payload.wr_id = 0xDEADBEEF01;
-        c.payload.srqn = 0x4C;
+        c.payload.srq = 0x4C;
         c.payload.wqe_counter = 0x5D;
         c.payload.qp_num = 0x6EFFD;
         c.payload.byte_len = 8192;

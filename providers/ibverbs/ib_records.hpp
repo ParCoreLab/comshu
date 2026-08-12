@@ -395,10 +395,18 @@ PCOMM_RECORD(IbSrqRecvSlot, RecordKind::Event, 122, "ib_srq_recv_slot") {
 // `wr_id` is duplicated from the completion deliberately. It is the join back
 // to IbPostRecv for readers that do not want the slot, and it is the
 // cross-check described above for those that do.
+// `srq` IS THE QP'S SRQ AND NOT THE CQE'S srqn_uidx, which is the one thing
+// about this record that looks wrong and is not. That CQE field carries an
+// SRQN only for XRC; for an ordinary shared receive queue it is a user index.
+// Measured on job 44542613: mlx5dv reported SRQ numbers 30002 and 42471 while
+// the CQEs beside them read 3 and 4, and joining on it matched nothing. The
+// association comes from ibv_qp->srq at creation instead — the only place it is
+// stated — so this is the same interned handle IbSrqRecvSlot.srq carries and
+// the join is a handle comparison rather than a number that means two things.
 PCOMM_RECORD(IbRecvCqe, RecordKind::Event, 124, "ib_recv_cqe") {
     Handle        cq;           // interned ibv_cq*, as IbPollCq.cq
     std::uint64_t wr_id;        // as reported by the driver, for cross-checking
-    std::uint32_t srqn;         // 0 when the receive was not SRQ-fed
+    Handle        srq;          // interned ibv_srq*; 0 when the receive was not SRQ-fed
     std::uint32_t wqe_counter;  // THE FIELD — the WQE index the NIC consumed
     std::uint32_t qp_num;       // which QP took it; only known at completion
     std::uint32_t byte_len;     // bytes that actually landed

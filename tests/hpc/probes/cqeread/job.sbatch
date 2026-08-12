@@ -151,10 +151,10 @@ echo "=== THE RECORDS: does the exact join actually resolve? ==="
   SELECT (SELECT count(*) FROM ib_recv_cqe)                AS ib_recv_cqe,
          (SELECT count(*) FROM ib_srq_recv_slot)           AS ib_srq_recv_slot,
          (SELECT count(*) FROM ib_recv_cqe q
-            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srqn=q.srqn
+            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srq=q.srq
                                    AND p.slot=q.wqe_counter) AS slot_matched,
          (SELECT count(*) FROM ib_recv_cqe q
-            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srqn=q.srqn
+            JOIN ib_srq_recv_slot p ON p.rank=q.rank AND p.srq=q.srq
                                    AND p.slot=q.wqe_counter
            WHERE p.wr_id <> q.wr_id)                       AS wr_id_disagrees" 2>&1 | head -6
 

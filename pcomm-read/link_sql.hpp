@@ -297,9 +297,9 @@ LEFT JOIN LATERAL (
             SELECT min(p.addr) AS addr, count(DISTINCT p.addr) AS addrs
             FROM ib_recv_cqe q
             JOIN ib_srq_recv_slot p
-              ON p.rank = q.rank AND p.srqn = q.srqn AND p.slot = q.wqe_counter
+              ON p.rank = q.rank AND p.srq = q.srq AND p.slot = q.wqe_counter
             WHERE q.rank = c.rank AND q.cq = c.cq AND q.wr_id = c.wr_id
-              AND q.qp_num = c.qp_num AND q.srqn <> 0
+              AND q.qp_num = c.qp_num AND q.srq <> 0
         ) x WHERE x.addr IS NOT NULL
         UNION ALL
         SELECT 0 AS pref, addr, addrs FROM (

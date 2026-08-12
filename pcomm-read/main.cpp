@@ -465,10 +465,10 @@ template<> struct Table<ibr::IbSrqRecvSlot> {
 
 template<> struct Table<ibr::IbRecvCqe> {
     static constexpr const char* name = "ib_recv_cqe";
-    static constexpr const char* cols = "ticks,cq,wr_id,srqn,wqe_counter,qp_num,byte_len";
+    static constexpr const char* cols = "ticks,cq,wr_id,srq,wqe_counter,qp_num,byte_len";
     static void row(std::FILE* f, const Stamped<ibr::IbRecvCqe>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%llu,%u,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.cq, (unsigned long long)s.payload.wr_id, s.payload.srqn,
+                     s.payload.cq, (unsigned long long)s.payload.wr_id, s.payload.srq,
                      s.payload.wqe_counter, s.payload.qp_num, s.payload.byte_len);
     }
 };

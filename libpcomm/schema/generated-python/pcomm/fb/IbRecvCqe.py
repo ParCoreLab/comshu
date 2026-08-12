@@ -27,7 +27,7 @@ class IbRecvCqe(object):
     # IbRecvCqe
     def WrId(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(56))
     # IbRecvCqe
-    def Srqn(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
+    def Srq(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
     # IbRecvCqe
     def WqeCounter(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(68))
     # IbRecvCqe
@@ -35,12 +35,12 @@ class IbRecvCqe(object):
     # IbRecvCqe
     def ByteLen(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
 
-def CreateIbRecvCqe(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, cq, wrId, srqn, wqeCounter, qpNum, byteLen):
+def CreateIbRecvCqe(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, cq, wrId, srq, wqeCounter, qpNum, byteLen):
     builder.Prep(8, 80)
     builder.PrependUint32(byteLen)
     builder.PrependUint32(qpNum)
     builder.PrependUint32(wqeCounter)
-    builder.PrependUint32(srqn)
+    builder.PrependUint32(srq)
     builder.PrependUint64(wrId)
     builder.Pad(4)
     builder.PrependUint32(cq)

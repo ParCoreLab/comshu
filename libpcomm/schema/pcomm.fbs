@@ -377,7 +377,7 @@ struct IbRecvCqe {
   temporal:Temporal;
   cq:uint32;
   wr_id:uint64;
-  srqn:uint32;
+  srq:uint32;
   wqe_counter:uint32;
   qp_num:uint32;
   byte_len:uint32;

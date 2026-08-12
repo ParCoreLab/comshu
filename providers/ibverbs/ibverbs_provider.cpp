@@ -126,6 +126,46 @@ static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
     return pcomm::core::Temporal::interval({0, t0}, {0, t1});
 }
 
+// (context, qp_num) -> the SRQ that queue pair draws its receives from.
+//
+// WHY THIS MAP EXISTS, and why the obvious field could not be used instead.
+//
+// IbRecvCqe has to name the SRQ a completion consumed from, so it can join to
+// the slot rows recorded at post time. The CQE appears to carry it — the field
+// is literally called `srqn_uidx` — and it does not. Measured on job 44542613:
+// mlx5dv reports the true SRQ numbers 30002 and 42471, while the CQEs beside
+// them read 3 and 4. That union holds an SRQN only for XRC; for an ordinary
+// SRQ it is a user index, and libmlx5 never consults it because the QP already
+// knows its own SRQ (`qp->srq`).
+//
+// So the association is taken from the QP at creation, which is the only place
+// it is stated, and looked up at completion by the one identifier a wc carries.
+// Keyed by CONTEXT as well as qp_num, because qp_num is allocated per HCA and a
+// process with two devices open can hold the same number twice — the same
+// collision class that put impossible self-edges in comm_edges when it keyed
+// peers on qp_num without the lid.
+std::mutex&                                              qp_srq_mutex() {
+    static std::mutex m;
+    return m;
+}
+std::map<std::pair<const void*, std::uint32_t>, ibv_srq*>& qp_srq_map() {
+    static auto* m = new std::map<std::pair<const void*, std::uint32_t>, ibv_srq*>();  // leaked
+    return *m;
+}
+
+void note_qp_srq(ibv_qp* qp) {
+    if (!qp || !qp->srq || !qp->context)
+        return;
+    std::lock_guard<std::mutex> lk(qp_srq_mutex());
+    qp_srq_map()[{qp->context, qp->qp_num}] = qp->srq;
+}
+
+ibv_srq* srq_of_qp(const ibv_context* ctx, std::uint32_t qp_num) {
+    std::lock_guard<std::mutex> lk(qp_srq_mutex());
+    const auto                  it = qp_srq_map().find({ctx, qp_num});
+    return it == qp_srq_map().end() ? nullptr : it->second;
+}
+
 // --- the new work-request API ----------------------------------------------
 //
 // ibv_post_send hands the provider a fully-formed chain, so one hooked call
@@ -754,6 +794,7 @@ Profiler::Profiler() {
     this->register_post<create_qp_tag>([](ibv_qp* qp, ibv_pd* pd, ibv_qp_init_attr* a, auto...) {
         if (!qp)
             return;
+        note_qp_srq(qp);
         rec().record(pcomm::core::Temporal::none(),
                      rr::IbQueuePair{{},
                                      {},
@@ -776,6 +817,7 @@ Profiler::Profiler() {
         [](ibv_qp* qp, ibv_context*, ibv_qp_init_attr_ex* a, auto...) {
             if (!qp)
                 return;
+            note_qp_srq(qp);
             // Same mask discipline as modify_qp: ibv_qp_init_attr_ex fields are
             // only meaningful when comp_mask says the caller set them, and pd is
             // one of them. qp_type is a base field and always set.
@@ -1161,11 +1203,14 @@ Profiler::Profiler() {
                 const auto id = cqeprobe::read_recv_cqe(cq, ret, i, wc[i]);
                 if (!id.valid)
                     continue;
+                // The SRQ comes from the QP, not from the CQE — see the comment
+                // on qp_srq_map above for the measurement that forced that.
+                ibv_srq* srq = cq->context ? srq_of_qp(cq->context, wc[i].qp_num) : nullptr;
                 rec().record(tspan, rr::IbRecvCqe{{},
                                                   {},
                                                   h(cq),
                                                   wc[i].wr_id,
-                                                  id.srqn,
+                                                  srq ? h(srq) : pcomm::core::Handle{},
                                                   id.wqe_counter,
                                                   wc[i].qp_num,
                                                   wc[i].byte_len});
