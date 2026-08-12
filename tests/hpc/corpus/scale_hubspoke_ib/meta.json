@@ -20,5 +20,8 @@
     "ib_queue_pair",
     "comm_edges",
     "mem_object"
-  ]
+  ],
+  "expect_fail_asserts": {
+    "entity_close_accounted": "hcoll leaks two memory regions per node leader, and it is not ours to fix. Measured over four allocations (plans/PLAN-20260812-0250-hcoll-mcast-leaks-two-mrs): hmca_mcast_vmc.so registers regions of 40, 8388608 and 20971520 bytes and deregisters only the 20971520 one, so exactly 2 ib_mem_region per rank with rank % 4 == 0 are opened and never closed — 32 of them here. It is a leak and not a missing door: every ibv_dereg_mr that library makes is visible in the caller trace, including the balanced one, and a free after finalize would still have printed a line. hcoll's multicast enables itself by node count, clean at 4 nodes and leaking at 8, so no suite case reaches it and this marker is one case wide. sql_check reports XPASS if HPC-X ever fixes it, which is the signal to delete this."
+  }
 }

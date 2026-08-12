@@ -2,7 +2,19 @@
 # PROBE — two ib_mem_regions per NODE LEADER are opened and never closed.
 #
 # Not a suite case. It answers one question and then either becomes a fix or
-# gets deleted.
+# gets deleted. It became a fix, and it is KEPT rather than deleted because it
+# is the only thing that can re-answer this when HPC-X changes.
+#
+# ANSWERED, 2026-08-12 — see plans/PLAN-20260812-0250-hcoll-mcast-leaks-two-mrs.
+# hcoll'"'"'s multicast component (hmca_mcast_vmc.so) registers regions of 40,
+# 8388608 and 20971520 bytes and deregisters only the 20971520 one. It is a
+# LEAK, not a missing door: every ibv_dereg_mr that library makes is visible,
+# and a free after finalize would still have printed one. Measured clean at
+# 2x4 (44516867) and 4x4 (44517375), leaking at 8x4 (44517372) and 16x4
+# (44514759) — hcoll multicast enables itself by node count, and neither
+# DISABLE_P2P setting ever mattered.
+#
+# Re-run it as `sbatch --nodes=N` if HPC-X is upgraded or the threshold moves.
 #
 # THE FINDING IT EXPLAINS. Job 44514759 (64 PEs, 16 nodes x 4,
 # NVSHMEM_DISABLE_P2P=1, -p ib) is green on everything structural — the 126-edge

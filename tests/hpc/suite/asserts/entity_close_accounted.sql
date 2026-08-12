@@ -111,6 +111,20 @@ UNION ALL
 -- A third reading exists and should be ruled out first: a close that happened
 -- after the last flush. That would make this flaky rather than red, and the
 -- 4/4 exactness above is the evidence it does not happen today.
+--
+-- ONE INSTANCE OF THE SECOND READING IS KNOWN, and it is recorded here so the
+-- next person to meet it at scale does not spend three jobs on it again.
+-- Above 4 nodes, HPC-X's hcoll multicast component (hmca_mcast_vmc.so)
+-- registers three regions per NODE LEADER and deregisters one, leaving exactly
+-- 2 unclosed ib_mem_region on every rank with local rank 0 — 40 bytes and
+-- 8388608 bytes, origin=reg_mr. A library exiting without freeing its own
+-- buffers: legal, harmless, not ours. It is NOT exempted here, because a
+-- global exemption for opener 100 would have hidden the two real defects this
+-- file was written for (the CQ third door, and the 474 unmatched closes). It
+-- is marked expect_fail on the one capture that crosses the threshold —
+-- tests/hpc/corpus/scale_hubspoke_ib — and nowhere else. Evidence, and the
+-- reason it is a leak rather than a door we miss:
+-- plans/PLAN-20260812-0250-hcoll-mcast-leaks-two-mrs.
 SELECT 'entity opened and never closed (opener ' || o.opener || ')',
        o.rank, o.subject, 0 AS closes, count(*) AS opens
 FROM opens o
