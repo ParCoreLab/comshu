@@ -116,6 +116,13 @@ echo "arm2 mpirun exit=$?"
 # Printed here rather than left to the reader's grep, because a probe whose
 # result needs reconstructing from a 3000-line job log is one that gets
 # misquoted. These greps run against THIS job's own output file.
+#
+# `set +x` FIRST, and it is not tidiness. With tracing on, bash echoes each
+# command — including the grep pattern — into the very file being searched, so
+# the mismatch check matched its own trace and job 44542243 reported "1
+# mismatch" against 14,957 CQEs that all agreed. That is the exact false
+# positive this probe's own header warns about, committed by the probe.
+set +x
 LOG="$SLURM_SUBMIT_DIR/pcomm-probe-cqeread.$SLURM_JOB_ID.out"
 sync; sleep 2
 echo "=== POSITIVE CONTROL: probe lines present? ==="
