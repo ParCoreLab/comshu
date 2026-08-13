@@ -58,8 +58,69 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcod
     }
 }
 
-// Keeps the injected function from being optimized away ("BLACK MAGIC DONT
+// Kernel ENTRY/EXIT timestamp, for the capture where CUPTI is unavailable.
+//
+// This is the whole gpumem half of PLAN-20260813-0600: NVBit dlopens libcupti
+// and takes the process's one CUPTI subscriber, so a gpumem capture cannot use
+// the activity API and has to read the clock itself. %globaltimer is that
+// clock — nanoseconds, device-wide, and measured at 131 ns per kernel for this
+// pair on an H100 (1.1 % on a launch-bound microbenchmark, and nothing next to
+// the module lifting NVBit is already charging).
+//
+// ONE THREAD PER BLOCK pushes, not one per warp and not one per grid:
+//
+//   per warp  would be a firehose — the thing this whole channel is careful
+//             about — for a number that is warp-invariant.
+//   per grid  (block 0 only) is cheaper still and WRONG: block 0 is not
+//             guaranteed to start first or retire last, so its span is not the
+//             kernel's. The host reduces min(entry)/max(exit) across blocks,
+//             which is the kernel's actual occupancy window.
+//
+// %globaltimer is its own clock domain, NOT the host TSC and NOT CLOCK_REALTIME
+// — measured drift -13.9 ppm (H100) / +5.7 ppm (A100), opposite signs, so it is
+// anchored per GPU on the host side and resolved by pcomm-read's per-(rank,
+// domain) fit like any other domain.
+extern "C" __device__ __noinline__ void pcomm_kernel_stamp(int is_end, int dev_id,
+                                                           uint64_t launch_id,
+                                                           uint64_t pchannel_dev) {
+    // Thread 0 of each block, and only when it is the first active lane, so a
+    // divergent entry point still pushes exactly once.
+    if (threadIdx.x != 0 || threadIdx.y != 0 || threadIdx.z != 0)
+        return;
+
+    pcomm_gpu_access_t r;
+    // Zeroed rather than partially filled: the access drain skips lanes whose
+    // addr is 0, and a span record that leaked a non-zero addrs[] into that
+    // path would be decoded as memory traffic if the -2 branch were ever
+    // missed.
+    for (int i = 0; i < 32; i++)
+        r.addrs[i] = 0;
+
+    uint64_t t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+
+    r.lane_id = PCOMM_SPAN_LANE_ID;
+    r.dev_id = dev_id;
+    r.instr_index = 0;
+    r.access_size = 0;
+    PCOMM_SPAN_LAUNCH(r) = launch_id;
+    PCOMM_SPAN_TICKS(r) = t;
+    PCOMM_SPAN_IS_END(r) = is_end;
+    PCOMM_SPAN_BLOCK(r) =
+        blockIdx.x + blockIdx.y * (uint64_t)gridDim.x + (uint64_t)gridDim.x * gridDim.y * blockIdx.z;
+
+    ChannelDev* channel_dev = (ChannelDev*)pchannel_dev;
+#ifndef PCOMM_INJECT_NO_PUSH
+    channel_dev->push(&r, sizeof(pcomm_gpu_access_t));
+#else
+    (void)channel_dev;
+    asm volatile("" ::"r"(r.dev_id) : "memory");
+#endif
+}
+
+// Keeps the injected functions from being optimized away ("BLACK MAGIC DONT
 // REMOVE", per the original).
 __global__ void pcomm_trickery() {
     pcomm_instrument_mem(0, 0, 0, 0, 0, 0, 0, 0);
+    pcomm_kernel_stamp(0, 0, 0, 0);
 }

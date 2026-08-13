@@ -14,6 +14,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <ctime>
 #include <cstdio>
 #include <dlfcn.h>
 #include <cstdlib>
@@ -35,6 +36,24 @@
 
 #include "dev_common.h"
 #include "engine.hpp"
+
+#include "pcomm/core/ids.hpp"
+#include "pcomm/core/vocab.hpp"
+#include "pcomm/engine_abi.h"
+
+// Defined HERE rather than in inject_funcs.cu, even though it is a sibling of
+// the injected code: launching a __global__ across a translation unit needs
+// relocatable device code and gets it, but inject_funcs.cu is compiled with
+// -maxrregcount=24 --keep-device-functions for the injection path, and a tool
+// kernel has no business inheriting those. It is two instructions; it lives
+// where it is launched.
+__global__ void pcomm_read_globaltimer(uint64_t* out) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        uint64_t t;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+        *out = t;
+    }
+}
 
 using pcomm::attr::RawAccess;
 using pcomm::core::MemOp;
@@ -112,6 +131,47 @@ bool                   g_skip_callback = false;
 bool                   g_shutdown_done = false;
 uint32_t               g_next_instr_index = 0;
 uint64_t               g_grid_launch_id = 0;
+
+// --- Kernel lifetimes, the gpumem half of PLAN-20260813-0600 ---------------
+//
+// Read once at init from the same variable the CUPTI backend consults, so the
+// two sources are configured by one switch and can never both be on: with NVBit
+// in the process, CUPTI cannot register at all, and the launcher clears the
+// variable for that combination anyway.
+bool g_kernel_timing = false;
+
+// What only the HOST knows about a launch: which function, and its geometry.
+// The device supplies only (launch_id, block, timestamp) — passing a name
+// through the channel would mean a string per launch on the hot path.
+struct LaunchMeta {
+    std::string name;
+    uint32_t    grid[3]{};
+    uint16_t    block[3]{};
+    int         dev_id{-1};
+};
+
+// launch_id -> what the device reported, reduced as it arrives.
+//
+// min(entry) / max(exit) ACROSS BLOCKS is the kernel's real occupancy window.
+// Taking block 0's pair instead would be cheaper and wrong — nothing orders
+// block 0 first or last — and the difference is exactly the tail this view is
+// for.
+struct LaunchSpan {
+    uint64_t t0 = UINT64_MAX;
+    uint64_t t1 = 0;
+    int      dev_id = -1;
+    uint32_t blocks_seen = 0;
+};
+
+pthread_mutex_t                        g_span_mutex = PTHREAD_MUTEX_INITIALIZER;
+std::unordered_map<uint64_t, LaunchMeta> g_launch_meta;   // written by the callback thread
+std::unordered_map<uint64_t, LaunchSpan> g_launch_span;   // written by the recv thread
+
+// (globaltimer, CLOCK_REALTIME) per device, sampled at first launch and at
+// teardown. Two points per GPU is what pcomm-read's per-(rank, domain) fit
+// needs, and per-GPU is not optional: drift measured at -13.9 ppm on H100 and
+// +5.7 ppm on A100, opposite signs.
+std::unordered_set<int> g_gpu_anchored;
 
 struct MutexLock {
     explicit MutexLock(pthread_mutex_t& m) : m_m(&m) { pthread_mutex_lock(m_m); }
@@ -362,6 +422,35 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
         cudaGetDevice(&dev_id);
 
         const std::vector<Instr*>& instrs = nvbit_get_instrs(ctx, f);
+
+        // Kernel entry/exit timestamps — its OWN loop, before the memory one,
+        // and that separation is required rather than tidy. The loop below
+        // `continue`s on any instruction that is not a global memory reference,
+        // so an EXIT would never reach an injection placed inside it; it also
+        // applies the PCOMM_INSTR_LO/HI bisect window, which must not silently
+        // disable kernel timing while someone is bisecting an unrelated hang.
+        //
+        // Two injection sites per function: the first instruction, and every
+        // EXIT (a function can have several). This is the gpumem half of
+        // PLAN-20260813-0600 — NVBit holds the process's only CUPTI subscriber,
+        // so with gpumem loaded the clock has to be read in-kernel instead.
+        // Measured at 131 ns/kernel on an H100, against module lifting that
+        // already costs ~435 s.
+        if (g_kernel_timing && !instrs.empty()) {
+            for (std::size_t i = 0; i < instrs.size(); i++) {
+                Instr*     instr = instrs[i];
+                const bool is_exit = std::strncmp(instr->getOpcode(), "EXIT", 4) == 0;
+                if (i != 0 && !is_exit)
+                    continue;
+                nvbit_insert_call(instr, "pcomm_kernel_stamp", IPOINT_BEFORE);
+                nvbit_add_call_arg_const_val32(instr, is_exit ? 1 : 0);
+                nvbit_add_call_arg_const_val32(instr, dev_id);
+                nvbit_add_call_arg_launch_val64(instr, 0);  // grid launch id
+                nvbit_add_call_arg_const_val64(instr,
+                                               (uint64_t)G().ctx_state[ctx]->channel_dev);
+            }
+        }
+
         for (auto instr : instrs) {
             // Only GLOBAL (and GENERIC, which resolves to global at run time)
             // can be communication. LOCAL is per-thread stack and spilled
@@ -458,7 +547,78 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
     }
 }
 
-void handle_launch(CUcontext ctx, CUfunction func) {
+// Launch pcomm_read_globaltimer and pair its result with CLOCK_REALTIME.
+//
+// The host clock is read on BOTH sides of the device read and the midpoint is
+// used, because the pairing is only as tight as that bracket — measured at
+// 30-170 us on an idle H100. That is wide next to an 11 us kernel, which is why
+// two anchors far apart are what matter: the fit recovers the RATE from their
+// separation, and the bracket error stays a fixed offset rather than a skew.
+//
+// Called from the CUDA-callback thread with g_mutex held and g_skip_callback
+// set, so our own launch does not recurse into nvbit_at_cuda_event — the same
+// contract handle_alloc's cudaGetDevice already relies on.
+// BEST OF N, not one shot, and the buffer is allocated once. Both matter, and
+// the first version of this had neither:
+//
+// The pairing is only as good as the host bracket around the device read, and
+// under NVBit that bracket is wide and erratic — the first implementation
+// cudaMalloc'd inside it and took a single sample, and the resulting fit
+// reported +111.7 ppm of "drift" on a GPU the clean probe measured at -13.9.
+// That was not the clock moving, it was the anchor being read badly, and
+// because a two-point fit turns offset error at either end into RATE error, it
+// showed up as skew over the whole capture rather than as a constant shift.
+//
+// Keeping the tightest of N brackets is the cheap fix: the noise is one-sided
+// (a bracket can only be too wide, never too narrow), so the minimum is the
+// best estimator available without a proper round-trip protocol.
+void sample_gpu_anchor(int dev_id) {
+    static uint64_t* d_out = nullptr;  // one per process; the tool leaks by design
+    if (!d_out && cudaMalloc(&d_out, sizeof(uint64_t)) != cudaSuccess) {
+        d_out = nullptr;
+        return;
+    }
+    const auto ns = [](const timespec& t) {
+        return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec;
+    };
+
+    uint64_t best_window = UINT64_MAX, best_ticks = 0, best_wall = 0;
+    cudaDeviceSynchronize();  // once, outside the measured region
+    for (int i = 0; i < 8; i++) {
+        timespec a{}, b{};
+        clock_gettime(CLOCK_REALTIME, &a);
+        pcomm_read_globaltimer<<<1, 1>>>(d_out);
+        if (cudaDeviceSynchronize() != cudaSuccess)
+            return;
+        clock_gettime(CLOCK_REALTIME, &b);
+        uint64_t ticks = 0;
+        if (cudaMemcpy(&ticks, d_out, sizeof(ticks), cudaMemcpyDeviceToHost) != cudaSuccess ||
+            ticks == 0)
+            continue;
+        const uint64_t window = ns(b) - ns(a);
+        if (window < best_window) {
+            best_window = window;
+            best_ticks = ticks;
+            best_wall = ns(a) + window / 2;
+        }
+    }
+    if (!best_ticks)
+        return;
+    if (std::getenv("PCOMM_VERBOSE"))
+        std::fprintf(stderr, "[pcomm-nvbit] gpu %d anchor: window=%lluns\n", dev_id,
+                     (unsigned long long)best_window);
+    pcomm_engine_clock_anchor((uint16_t)(pcomm::core::kDomainGpuTimerBase + dev_id), best_ticks,
+                              best_wall);
+}
+
+// Grid/block dimensions, as the launch API reported them. Carried in a struct
+// rather than six parameters so the three launch entry points below cannot get
+// the order wrong between them.
+struct LaunchGeom {
+    unsigned gx = 0, gy = 0, gz = 0, bx = 0, by = 0, bz = 0;
+};
+
+void handle_launch(CUcontext ctx, CUfunction func, LaunchGeom geom = {}) {
     // Attribute any regions mapped since the last launch, here rather than on
     // the drain path — see refresh_mapped_regions for why this is the only
     // moment that works. Cheap: an integer compare unless a region appeared.
@@ -493,6 +653,29 @@ void handle_launch(CUcontext ctx, CUfunction func) {
         // we instrument it, so that filtering cannot shift the id sequence and
         // move existing goldens.
         const uint64_t launch_id = g_grid_launch_id++;
+
+        // Remember what only the host can see about this launch. Recorded for
+        // the launched function only, not for every related one: the related
+        // set is other specialisations that share a module, and none of them is
+        // what actually ran.
+        if (g_kernel_timing && f == func) {
+            int dev_id = -1;
+            cudaGetDevice(&dev_id);
+            if (g_gpu_anchored.insert(dev_id).second)
+                sample_gpu_anchor(dev_id);
+            LaunchMeta m;
+            if (const char* n = nvbit_get_func_name(ctx, f, /*mangled=*/true))
+                m.name = n;
+            m.grid[0] = geom.gx;
+            m.grid[1] = geom.gy;
+            m.grid[2] = geom.gz;
+            m.block[0] = (uint16_t)geom.bx;
+            m.block[1] = (uint16_t)geom.by;
+            m.block[2] = (uint16_t)geom.bz;
+            m.dev_id = dev_id;
+            MutexLock lk(g_span_mutex);
+            g_launch_meta.emplace(launch_id, std::move(m));
+        }
 
         // NB: these run for every related function, not just instrumented ones.
         // Skipping them for unfiltered functions was measured (job 43971039)
@@ -603,6 +786,27 @@ void* recv_thread_fun(void* args) {
                 done = true;
                 break;
             }
+            // Kernel entry/exit stamp, not a memory access. Reduced here rather
+            // than emitted: a record can only be written once the LAST block of
+            // that launch has retired, and nothing in the stream says which
+            // block that was — so the reduction is closed at teardown instead.
+            // See emit_kernel_spans().
+            if (ma->lane_id == PCOMM_SPAN_LANE_ID) {
+                const uint64_t id = PCOMM_SPAN_LAUNCH(*ma);
+                const uint64_t t = PCOMM_SPAN_TICKS(*ma);
+                MutexLock      lk(g_span_mutex);
+                LaunchSpan&    s = g_launch_span[id];
+                if (PCOMM_SPAN_IS_END(*ma)) {
+                    if (t > s.t1)
+                        s.t1 = t;
+                } else {
+                    if (t < s.t0)
+                        s.t0 = t;
+                    s.blocks_seen++;
+                }
+                s.dev_id = ma->dev_id;
+                continue;
+            }
 
             for (int lane = 0; lane < 32; lane++) {
                 if (ma->addrs[lane] == 0)
@@ -666,12 +870,66 @@ __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
     ch_dev->flush();
 }
 
+// Close the per-launch reduction and hand every kernel to the engine.
+//
+// DEFERRED TO TEARDOWN on purpose. A launch's window is only known once its
+// last block has retired, and nothing in the channel says which block that was
+// — there is no "kernel done" marker to emit on. Holding the map instead costs
+// ~64 bytes per launch, which is nothing against the ring it shares a process
+// with, and makes the emitted span exact rather than a guess about arrival
+// order.
+//
+// A second anchor per GPU is taken here, so the domain has the two points
+// pcomm-read needs to fit rate as well as offset. Without it the fit falls back
+// to 1.0 ns/tick and the measured 5.7-13.9 ppm drift becomes skew.
+void emit_kernel_spans() {
+    if (!g_kernel_timing)
+        return;
+    // NB: the closing anchors are NOT sampled here. This runs after the last
+    // context has been destroyed, and sample_gpu_anchor launches a kernel — it
+    // would fail, or worse resurrect a context at exit. They are taken in
+    // nvbit_at_ctx_term instead, while the context is still alive.
+    MutexLock lk(g_span_mutex);
+    std::size_t emitted = 0, unmatched = 0;
+    for (const auto& [id, s] : g_launch_span) {
+        // A span needs both ends. An entry with no exit means the kernel was
+        // still running at teardown, or its exit records were lost with the
+        // context — either way the window is unknown and inventing one would be
+        // worse than the absence.
+        if (s.t0 == UINT64_MAX || s.t1 == 0 || s.t1 < s.t0) {
+            unmatched++;
+            continue;
+        }
+        auto it = g_launch_meta.find(id);
+        const LaunchMeta* m = it == g_launch_meta.end() ? nullptr : &it->second;
+        const int dev = m && m->dev_id >= 0 ? m->dev_id : s.dev_id;
+        pcomm_engine_record_kernel(
+            s.t0, s.t1, (uint16_t)(pcomm::core::kDomainGpuTimerBase + (dev < 0 ? 0 : dev)),
+            m ? m->name.c_str() : nullptr,
+            /*correlation=*/id,
+            // No stream: NVBit's launch callback does not carry one for every
+            // entry point, and a fabricated 0 would claim every kernel shared a
+            // lane. 0 here means "unknown", as it does for correlation.
+            /*stream=*/0, (uint16_t)(dev < 0 ? 0 : dev),
+            (uint8_t)pcomm::core::KernelSource::NvbitGlobaltimer, m ? m->grid : nullptr,
+            m ? m->block : nullptr);
+        emitted++;
+    }
+    if (std::getenv("PCOMM_VERBOSE") || unmatched)
+        std::fprintf(stderr, "[pcomm-nvbit] kernel spans: %zu emitted, %zu incomplete\n", emitted,
+                     unmatched);
+}
+
 // --- NVBit entry points ------------------------------------------------------
 
 void nvbit_at_init() {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
     if (const char* k = std::getenv("PCOMM_KERNEL_NAME"))
         G().kernel_filter = k;
+    // Same switch the CUPTI backend reads, and read ONCE: the instrumentation
+    // loop runs per instruction over modules with hundreds of specialisations,
+    // so a getenv in it would be a real cost.
+    g_kernel_timing = pcomm_engine_kernel_timing_wanted() != 0;
     g_engine = new pcomm::gpumem::Engine();
 }
 
@@ -687,14 +945,21 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 
     if (!is_exit && (cbid == API_CUDA_cuLaunchKernel_ptsz || cbid == API_CUDA_cuLaunchKernel)) {
         auto* p = (cuLaunchKernel_params*)params;
-        handle_launch(ctx, p->f);
+        handle_launch(ctx, p->f,
+                      {p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
+                       p->blockDimZ});
     } else if (!is_exit && cbid == API_CUDA_cuLaunchKernelEx) {
         auto* p = (cuLaunchKernelEx_params*)params;
-        handle_launch(ctx, p->f);
+        // cuLaunchKernelEx carries the grid in a config struct instead.
+        handle_launch(ctx, p->f,
+                      {p->config->gridDimX, p->config->gridDimY, p->config->gridDimZ,
+                       p->config->blockDimX, p->config->blockDimY, p->config->blockDimZ});
     } else if (!is_exit && (cbid == API_CUDA_cuLaunchCooperativeKernel ||
                             cbid == API_CUDA_cuLaunchCooperativeKernel_ptsz)) {
         auto* p = (cuLaunchCooperativeKernel_params*)params;
-        handle_launch(ctx, p->f);
+        handle_launch(ctx, p->f,
+                      {p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
+                       p->blockDimZ});
     } else if (is_exit && cbid == API_CUDA_cuMemAlloc_v2) {
         auto* p = (cuMemAlloc_v2_params*)params;
         handle_alloc(*p->dptr, p->bytesize);
@@ -794,6 +1059,17 @@ void nvbit_at_ctx_term(CUcontext ctx) {
         state->recv_abort.store(true, std::memory_order_relaxed);
     }
 
+    // The CLOSING clock anchor for every GPU this run touched, taken HERE
+    // because this is the last moment the context is alive — emit_kernel_spans
+    // runs after the context is gone and could not launch the sampling kernel.
+    // Two anchors far apart per domain is what lets pcomm-read fit the rate as
+    // well as the offset, and the rate is the part that matters: globaltimer
+    // drifts 5.7-13.9 ppm against the wall clock, which over a 7 s capture is
+    // ~97 us of skew against kernels lasting tens of microseconds.
+    if (g_kernel_timing && flush == cudaSuccess)
+        for (int dev : g_gpu_anchored)
+            sample_gpu_anchor(dev);
+
     state->channel_host.destroy(false);
     cudaFree(state->channel_dev);
     g_skip_callback = false;
@@ -804,6 +1080,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     // sinks, intern tables) is still alive. nvbit_at_term is too late.
     if (G().ctx_state.empty() && g_engine && !g_shutdown_done) {
         g_shutdown_done = true;
+        emit_kernel_spans();  // before shutdown(): it needs the recorder alive
         g_engine->shutdown();
     }
 }
