@@ -247,28 +247,35 @@ int pcomm_engine_kernel_timing_wanted(void) {
     return 1;
 }
 
-// How much to record. See pcomm::core::TraceMode for why the default is Simple
-// and what the modes cost.
+// How much to record. See pcomm::core::TraceMode for what the modes cost.
 //
-// An unrecognised value is a LOUD default rather than a silent one: "mode=smple"
-// quietly recording everything is how a run costs 13 % and nobody knows why.
+// FULL IS THE DEFAULT, and every fallback below lands on it too. The asymmetry
+// that decides this: overhead is recoverable and data is not. A capture that
+// cost 13 % can be taken again cheaply the moment you know you did not need the
+// completions; a capture that silently omitted them cannot be taken again at
+// all once the job, the allocation and the machine state are gone. On a system
+// where a run means a queue slot, the expensive mistake is the missing stream,
+// not the wasted percent.
+//
+// So an unrecognised value is still a LOUD default rather than a silent one —
+// it says so on stderr — but it now defaults to recording MORE, not less.
+// "mode=smple" should cost you time, never evidence.
 int pcomm_engine_trace_mode(void) {
     static const int mode = [] {
         const char* v = std::getenv("PCOMM_TRACE_MODE");
         if (!v || !*v)
-            return static_cast<int>(pcomm::core::TraceMode::Simple);
+            return static_cast<int>(pcomm::core::TraceMode::Full);
         if (std::strcmp(v, "full") == 0 || std::strcmp(v, "2") == 0)
             return static_cast<int>(pcomm::core::TraceMode::Full);
         if (std::strcmp(v, "simple") == 0 || std::strcmp(v, "1") == 0)
             return static_cast<int>(pcomm::core::TraceMode::Simple);
         if (std::strcmp(v, "aggregate") == 0 || std::strcmp(v, "0") == 0) {
-            std::fprintf(stderr,
-                         "pcomm: PCOMM_TRACE_MODE=aggregate is not implemented yet "
-                         "(it needs a counter record — see core/vocab.hpp); using simple\n");
-            return static_cast<int>(pcomm::core::TraceMode::Simple);
+            std::fprintf(stderr, "pcomm: PCOMM_TRACE_MODE=aggregate is not implemented yet "
+                                 "(it needs a counter record — see core/vocab.hpp); using full\n");
+            return static_cast<int>(pcomm::core::TraceMode::Full);
         }
-        std::fprintf(stderr, "pcomm: PCOMM_TRACE_MODE=%s is not a mode; using simple\n", v);
-        return static_cast<int>(pcomm::core::TraceMode::Simple);
+        std::fprintf(stderr, "pcomm: PCOMM_TRACE_MODE=%s is not a mode; using full\n", v);
+        return static_cast<int>(pcomm::core::TraceMode::Full);
     }();
     return mode;
 }

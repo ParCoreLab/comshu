@@ -57,11 +57,19 @@ enum class KernelSource : std::uint8_t { Cupti = 0, NvbitGlobaltimer = 1, HostSu
 // 64-rank hub capture is 5.86 M poll_cq rows beside 5.83 M post_send — 45 % of
 // every timeline event, for a stream that mostly says "the completion landed".
 //
-// SIMPLE IS THE DEFAULT, and the choice is deliberate: a capture answers "who
-// talked to whom, when, how much" from the requests alone. Completions add
-// when the hardware finished and what it reported — real, and needed for
-// latency work, receive attribution and the CQE probe, but not for the
-// question most captures are opened to answer.
+// FULL IS THE DEFAULT, and Simple is the opt-in. The cost above is real, and
+// it is still the wrong thing to optimise by default, because the two mistakes
+// are not symmetric: a capture that cost 13 % can be taken again cheaply, while
+// a capture missing the stream you turn out to need cannot be taken again at
+// all once the job and the allocation are gone. A queue slot is the scarce
+// resource here, not a percent of wall time.
+//
+// Simple is worth reaching for deliberately — a capture answers "who talked to
+// whom, when, how much" from the requests alone, so at scale, or on a run whose
+// question is known in advance, dropping completions removes 45 % of the rows
+// for nothing lost. What it costs is latency work, receive attribution and the
+// CQE probe, all of which need to know when the hardware finished and what it
+// reported.
 enum class TraceMode : std::uint8_t {
     // Structure and volume, no per-operation events. NOT IMPLEMENTED YET: it
     // needs a counter record, because entities alone would leave comm_edges

@@ -200,16 +200,18 @@ int pcomm_engine_kernel_timing_wanted(void);
  * consult it ONCE and cache the answer — it cannot change mid-run, and the
  * call sites that read it are the hottest paths in the process.
  *
- * Defaults to SIMPLE. That is a behaviour change for anyone LD_PRELOADing a
- * provider by hand and expecting completions; PCOMM_TRACE_MODE=full restores
- * them.
+ * Defaults to FULL, which is what every capture before this flag existed
+ * recorded — so nothing changes for a caller who does not set it, and Simple is
+ * reached for on purpose. See core/vocab.hpp for why the default sits on the
+ * expensive side: overhead can be paid again, a missing stream cannot.
  *
- * NOT YET RECORDED IN THE CAPTURE, and that is a gap worth closing before this
- * ships: a capture with no ib_poll_cq stream is currently indistinguishable
- * from a run that reaped no completions, so a reader cannot tell "not recorded"
- * from "did not happen" — the exact ambiguity link_health exists to remove
- * everywhere else. It wants a field on an existing artifact row, which is a
- * schema change and therefore its own step. */
+ * NOT YET RECORDED IN THE CAPTURE, and that gap now matters less than it did
+ * while Simple was the default — an unset mode means full, so the streams are
+ * there — but it is still open: a capture taken with PCOMM_TRACE_MODE=simple
+ * has no ib_poll_cq stream, and a reader cannot tell that from a run that
+ * reaped no completions. That is the exact ambiguity link_health exists to
+ * remove everywhere else. It wants a field on an existing artifact row, which
+ * is a schema change and therefore its own step. */
 int pcomm_engine_trace_mode(void);
 
 #ifdef __cplusplus
