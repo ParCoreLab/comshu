@@ -145,6 +145,73 @@ int pcomm_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size, uint32
  * anything. */
 void pcomm_engine_note_qp(void* qp, uint16_t opener_type_id);
 
+/* Record one kernel EXECUTION window. See core/records.hpp GpuKernel (530).
+ *
+ * The record is the ENGINE's, in its own 500-599 range, but the engine cannot
+ * be the one that measures it: the vendor binding needs cupti.h or NVBit, and
+ * this translation unit may not pull in a vendor header (see the invariant at
+ * the top of engine.cpp). So the measurement arrives here from whichever
+ * backend could take it, and the engine owns the identity, the interning and
+ * the stream.
+ *
+ * That indirection is not tidiness, it is forced. Measured 2026-08-13
+ * (tests/hpc/probes/kerneltime): NVBit dlopens libcupti and takes the
+ * process's single CUPTI subscriber, so a capture has CUPTI *or* gpumem and
+ * never both, while "when did kernels run" has to be answerable under either.
+ * One record, two instruments, `source` saying which — the same
+ * independent-emitters rule MemObject already follows.
+ *
+ * `t0`/`t1` are raw ticks in `domain`, NOT converted: the caller supplies the
+ * domain its clock belongs to (1 for CUPTI's CLOCK_REALTIME ns, 2+gpu for a
+ * globaltimer) and must also have emitted ClockAnchors for it, or pcomm-read
+ * drops the rows and link_health counts them.
+ *
+ * `name` is a NUL-terminated demangled symbol or NULL; the engine interns it.
+ * `grid` is 3 uint32, `block` 3 uint16; either may be NULL when the source does
+ * not report launch geometry. */
+void pcomm_engine_record_kernel(uint64_t t0, uint64_t t1, uint16_t domain, const char* name,
+                                uint64_t correlation, uint64_t stream, uint16_t device,
+                                uint8_t source, const uint32_t* grid, const uint16_t* block);
+
+/* Record a clock anchor for a non-default domain: (local_ticks, wall_ns)
+ * sampled at the same moment. Two per domain per run — start and end — is what
+ * pcomm-read's per-(rank, domain) fit needs to recover offset AND rate.
+ *
+ * Domain 0 (host TSC) is anchored by the engine itself. This exists for the
+ * domains only a backend can sample: CUPTI's timebase, and a per-GPU
+ * globaltimer whose drift was measured at -13.9 ppm on H100 and +5.7 ppm on
+ * A100 — opposite signs, so a shared constant is not an option. */
+void pcomm_engine_clock_anchor(uint16_t domain, uint64_t local_ticks, uint64_t wall_ns);
+
+/* Should this process take CUPTI?
+ *
+ * Returns 0 when something else already owns the CUDA callback subscriber — in
+ * practice NVBit, loaded by the gpumem provider. Enabling CUPTI anyway does not
+ * degrade that capture, it EMPTIES it: measured on MN5 job 44546506 arm E, the
+ * real libgpumem_trace.so produced four rank directories and zero .pcs files,
+ * silently. The launcher knows the provider list and sets this; a backend must
+ * consult it before calling cuptiActivityRegisterCallbacks. */
+int pcomm_engine_kernel_timing_wanted(void);
+
+/* How much this run wants recorded: 0 = aggregate, 1 = simple, 2 = full.
+ * Matches pcomm::core::TraceMode, which carries the reasoning and the numbers.
+ *
+ * Read from PCOMM_TRACE_MODE, set by `pcomm run --mode`. A provider should
+ * consult it ONCE and cache the answer — it cannot change mid-run, and the
+ * call sites that read it are the hottest paths in the process.
+ *
+ * Defaults to SIMPLE. That is a behaviour change for anyone LD_PRELOADing a
+ * provider by hand and expecting completions; PCOMM_TRACE_MODE=full restores
+ * them.
+ *
+ * NOT YET RECORDED IN THE CAPTURE, and that is a gap worth closing before this
+ * ships: a capture with no ib_poll_cq stream is currently indistinguishable
+ * from a run that reaped no completions, so a reader cannot tell "not recorded"
+ * from "did not happen" — the exact ambiguity link_health exists to remove
+ * everywhere else. It wants a field on an existing artifact row, which is a
+ * schema change and therefore its own step. */
+int pcomm_engine_trace_mode(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

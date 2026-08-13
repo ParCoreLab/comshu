@@ -18,6 +18,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -169,6 +170,108 @@ int pcomm_engine_acquire(const char* output_dir, int rank, int verbose) {
 
 void pcomm_engine_release(void) {
     pcomm::Tracer::instance().stop();
+}
+
+// --- kernel lifetimes -------------------------------------------------------
+//
+// The engine owns GpuKernel (530) but measures nothing: the instruments live
+// behind vendor headers this file may not include. See engine_abi.h for why
+// there are two of them and why neither can be the only one.
+
+void pcomm_engine_record_kernel(std::uint64_t t0, std::uint64_t t1, std::uint16_t domain,
+                                const char* name, std::uint64_t correlation, std::uint64_t stream,
+                                std::uint16_t device, std::uint8_t source, const std::uint32_t* grid,
+                                const std::uint16_t* block) {
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder())
+        return;  // nothing has started a capture
+    auto& rec = tracer.recorder();
+
+    // KernelName, the domain that already exists for exactly this — so two
+    // backends observing the same kernel mint the same handle and the rows
+    // merge rather than double, the identity rule MemObject's base follows.
+    const auto sym = (name && *name) ? rec.intern(pcomm::rec::InternDomain::KernelName, name)
+                                     : pcomm::core::kNullHandle;
+
+    // Interval, always: [a, b] is the execution window. A source that only has
+    // one instant must still say so through `source`, not by collapsing b onto
+    // a, because a zero-width kernel and a submission timestamp are different
+    // claims and the reader has to be able to tell them apart.
+    rec.record(pcomm::core::Temporal::interval({domain, t0}, {domain, t1}),
+               pcomm::core::records::GpuKernel{
+                   {},
+                   {},
+                   correlation,
+                   stream,
+                   sym,
+                   // static_cast around the WHOLE ternary: the conditional
+                   // operator applies the usual arithmetic conversions, so
+                   // `cond ? uint16 : uint16` is still an int, and a braced
+                   // initializer refuses to narrow it back.
+                   static_cast<std::uint32_t>(grid ? grid[0] : 0),
+                   static_cast<std::uint32_t>(grid ? grid[1] : 0),
+                   static_cast<std::uint32_t>(grid ? grid[2] : 0),
+                   device,
+                   static_cast<std::uint16_t>(block ? block[0] : 0),
+                   static_cast<std::uint16_t>(block ? block[1] : 0),
+                   static_cast<std::uint16_t>(block ? block[2] : 0),
+                   source,
+               });
+}
+
+void pcomm_engine_clock_anchor(std::uint16_t domain, std::uint64_t local_ticks,
+                               std::uint64_t wall_ns) {
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder())
+        return;
+    // mono_ns is sampled here rather than taken from the caller: it is a host
+    // clock, the caller is a GPU backend, and the only thing it is used for is
+    // cross-checking the wall clock against a non-settable one.
+    timespec mono{};
+    clock_gettime(CLOCK_MONOTONIC_RAW, &mono);
+    const auto mono_ns =
+        static_cast<std::uint64_t>(mono.tv_sec) * 1'000'000'000ull + mono.tv_nsec;
+    tracer.recorder().record(pcomm::core::Temporal::none(),
+                             pcomm::core::records::ClockAnchor{
+                                 {}, {}, domain, local_ticks, wall_ns, mono_ns});
+}
+
+// Set by the launcher, which is the only thing that knows the provider list
+// before any of them load. Default ON: a bare LD_PRELOAD of the engine with no
+// gpumem in sight should still time kernels. `pcomm run` clears it when gpumem
+// is selected — see the arm-E measurement quoted in engine_abi.h for what
+// happens if it does not.
+int pcomm_engine_kernel_timing_wanted(void) {
+    const char* v = std::getenv("PCOMM_KERNEL_TIMING");
+    if (v && (*v == '0' || *v == 'n' || *v == 'N'))
+        return 0;
+    return 1;
+}
+
+// How much to record. See pcomm::core::TraceMode for why the default is Simple
+// and what the modes cost.
+//
+// An unrecognised value is a LOUD default rather than a silent one: "mode=smple"
+// quietly recording everything is how a run costs 13 % and nobody knows why.
+int pcomm_engine_trace_mode(void) {
+    static const int mode = [] {
+        const char* v = std::getenv("PCOMM_TRACE_MODE");
+        if (!v || !*v)
+            return static_cast<int>(pcomm::core::TraceMode::Simple);
+        if (std::strcmp(v, "full") == 0 || std::strcmp(v, "2") == 0)
+            return static_cast<int>(pcomm::core::TraceMode::Full);
+        if (std::strcmp(v, "simple") == 0 || std::strcmp(v, "1") == 0)
+            return static_cast<int>(pcomm::core::TraceMode::Simple);
+        if (std::strcmp(v, "aggregate") == 0 || std::strcmp(v, "0") == 0) {
+            std::fprintf(stderr,
+                         "pcomm: PCOMM_TRACE_MODE=aggregate is not implemented yet "
+                         "(it needs a counter record — see core/vocab.hpp); using simple\n");
+            return static_cast<int>(pcomm::core::TraceMode::Simple);
+        }
+        std::fprintf(stderr, "pcomm: PCOMM_TRACE_MODE=%s is not a mode; using simple\n", v);
+        return static_cast<int>(pcomm::core::TraceMode::Simple);
+    }();
+    return mode;
 }
 
 pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind, std::uint32_t stride,
