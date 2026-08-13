@@ -1,0 +1,1 @@
+../../../cases/16_hubspoke_ib/asserts/star_over_the_nic.sql

@@ -1,0 +1,1 @@
+../../../cases/16_hubspoke_ib/asserts/answer_is_lighter.sql

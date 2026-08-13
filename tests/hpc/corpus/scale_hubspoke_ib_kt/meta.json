@@ -1,0 +1,30 @@
+{
+  "case": "scale_hubspoke_ib_kt",
+  "providers": [
+    "ib",
+    "cupti"
+  ],
+  "topology": "16 nodes x4 H100, NVSHMEM star over the NIC with P2P disabled: ranks 1-63 push a full slot to rank 0, rank 0 answers each with slot/8",
+  "golden": "none — assertions only, the same two case 16 runs at 4 ranks",
+  "workload": {
+    "ranks": 64,
+    "nodes": 16,
+    "gpus": 4,
+    "iters": 20,
+    "elems": 4096,
+    "elem_bytes": 4,
+    "app_buffer_bytes": 1048576
+  },
+  "workload_note": "`asym_patterns hub 4096 20` at 64 PEs with NVSHMEM_DISABLE_P2P=1 — scale_hubspoke_ib with kernel lifetimes added and iters raised from 3 to 20. The provider set is the only structural difference: `-p ib,cupti` puts gpu_kernel (530) execution spans on the same wall clock as ib_post_send/ib_poll_cq, so the timeline can distinguish a rank that was computing from a rank that was blocked. Kernel launches are edges x iters, so at 3 iterations a spoke contributed three spans and the lane was empty; 20 gives ~20 per spoke against the hub's ~1260, which is the same asymmetry the comm side shows. Byte totals therefore do NOT compare to scale_hubspoke_ib-44542856 and are not meant to.",
+  "no_nvbit": "Deliberate, and enforced by the build rather than by the launcher. CUPTI permits one subscriber per process and NVBit (loaded by gpumem) dlopens libcupti and takes it; the loser fails silently — job 44546506 arm E wrote four rank directories and zero .pcs files. This job runs against build-cupti, configured PCOMM_PROVIDER_GPUMEM=OFF, so the conflicting .so does not exist.",
+  "expect_tables": [
+    "ib_post_send",
+    "ib_queue_pair",
+    "comm_edges",
+    "mem_object",
+    "gpu_kernel"
+  ],
+  "expect_fail_asserts": {
+    "entity_close_accounted": "hcoll leaks two memory regions per node leader, and it is not ours to fix. Measured over four allocations (plans/PLAN-20260812-0250-hcoll-mcast-leaks-two-mrs): hmca_mcast_vmc.so registers regions of 40, 8388608 and 20971520 bytes and deregisters only the 20971520 one, so exactly 2 ib_mem_region per rank with rank % 4 == 0 are opened and never closed — 32 of them here. hcoll's multicast enables itself by node count, clean at 4 nodes and leaking at 8, so no suite case reaches it and this marker is one case wide."
+  }
+}
