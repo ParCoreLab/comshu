@@ -12,6 +12,12 @@ option(PCOMM_PROVIDER_IBVERBS "Build the ibverbs provider (needs libibverbs)" OF
 # control plane that IBGDA uses instead of verbs, and it needs libmlx5 as well.
 option(PCOMM_PROVIDER_MLX5DV  "Build the mlx5dv/DEVX provider (needs libmlx5)" OFF)
 
+# Kernel lifetimes, via CUPTI. Not a provider — it captures no transport — and
+# not part of the engine, which may not include a vendor header. Compiles no
+# device code, so unlike gpumem it needs no nvcc and no separate build tree;
+# its own CMakeLists skips the target (loudly) when CUPTI is not found.
+option(PCOMM_CUPTI "Build the CUPTI kernel-timing backend (needs libcupti)" OFF)
+
 # Parquet + SQL in pcomm-read, via DuckDB. OFF by default and that default is
 # load-bearing, not caution: MN5 has no network and no cmake outside `module
 # load` (verified 2026-08-09), and every suite case runs `pcomm-read --csv`
@@ -80,6 +86,9 @@ endif()
 
 add_subdirectory(libpcomm)
 add_subdirectory(providers)
+if(PCOMM_CUPTI)
+  add_subdirectory(gpu-backends/cupti)
+endif()
 # The halves of the one `pcomm` binary, before the binary that links them:
 # pcomm-read and pcomm-ui are OBJECT libraries, and pcomm/ names both targets.
 add_subdirectory(pcomm-read)
