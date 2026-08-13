@@ -75,6 +75,18 @@ static void record_device(ibv_context* ctx);
 static void remember_cq(const ibv_cq* cq);
 static void trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr);
 
+// How much this run records. Read ONCE — poll_cq is the hottest path in the
+// process (5.86 M rows in a 64-rank hub capture) and a getenv per completion
+// would be its own performance story.
+//
+// `record_completions` rather than a mode comparison at each site: the call
+// sites should say what they are asking, not re-derive the policy.
+static bool record_completions() noexcept {
+    static const bool on =
+        pcomm_engine_trace_mode() >= static_cast<int>(pcomm::core::TraceMode::Full);
+    return on;
+}
+
 static int& reg_mr_depth() noexcept {
     static thread_local int depth = 0;
     return depth;
@@ -1177,13 +1189,23 @@ Profiler::Profiler() {
     });
 
     // poll_cq -> one row per reaped completion (predicate skips empty polls).
+    //
+    // FULL ONLY, and this is the single biggest lever on capture cost. It is
+    // 5.86 M of the 12.93 M timeline events in a 64-rank hub capture — 45 % —
+    // and SigmaTrace's own measurements name this stream first when explaining
+    // why their Full mode costs 8-13 % against Simple's <1.5 %.
+    //
+    // The check is here rather than at install time on purpose: the trampoline
+    // must still run, because the CQE probe and the receive-attribution join
+    // both hang off this door, and unhooking it would take those with it. What
+    // Simple skips is the recording, which is the part that costs.
     this->register_post<poll_cq_tag>(
         [](int ret, ibv_cq* cq, int, ibv_wc* wc, std::uint64_t t0, std::uint64_t t1) {
             // DIAGNOSTIC, gated on PCOMM_CQE_PROBE=1 and off by default: read
             // the raw mlx5 CQE behind each of these completions and check it
             // against them. See mlx5_cqe.hpp for the question it settles.
             cqeprobe::on_poll(cq, ret, wc);
-            if (ret <= 0 || !wc)
+            if (ret <= 0 || !wc || !record_completions())
                 return;
             const auto tspan = span(t0, t1);
             for (int i = 0; i < ret; ++i) {

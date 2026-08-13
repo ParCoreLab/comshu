@@ -14,6 +14,7 @@
 //   pcomm run -p ib,p2p -- ./app args...  # co-run what can co-run, replay the rest
 //   pcomm list                            # what can I capture, and how?
 //
+#include <algorithm>
 #include <cerrno>
 #include <dlfcn.h>
 #include <cstdio>
@@ -88,13 +89,20 @@ const std::vector<Provider>& registry() {
          /*built*/ true,
          "GPU-initiated InfiniBand (IBGDA) — DEVX queue pairs, doorbell pages",
          "inter-node"},
+        // NOT exclusive, but it does have one hard conflict — see the gpumem
+        // check in build_passes(). CUPTI permits a single subscriber per
+        // process and NVBit (which gpumem loads) dlopens libcupti and takes it.
+        // That is a conflict with ONE other provider rather than with sharing
+        // the process, which `exclusive` cannot express: marking it exclusive
+        // would pointlessly replay the workload just to co-run with ibverbs,
+        // which it does happily.
         {"cupti",
          "libcupti_trace.so",
-         {"memcpy", "cupti"},
-         /*exclusive*/ true,
-         /*built*/ false,
-         "host-driven cudaMemcpy / copy-engine transfers (CUPTI)",
-         "host"},
+         {"kernel", "kernels", "cupti"},
+         /*exclusive*/ false,
+         /*built*/ true,
+         "GPU kernel execution windows — when each kernel actually ran",
+         "device"},
     };
     return r;
 }
@@ -208,6 +216,12 @@ void usage() {
                "`pcomm list`)\n"
                "  -o, --output DIR   trace output directory (default: pcomm-out)\n"
                "  -v, --verbose      verbose provider logging\n"
+               "  -m, --mode MODE    how much to record: simple (default) or full.\n"
+               "                     simple omits completions (poll_cq, recv_cqe) —\n"
+               "                     45% of a capture's rows, and the stream\n"
+               "                     SigmaTrace measured as the difference between\n"
+               "                     <1.5% and 8-13% overhead. Use full for latency\n"
+               "                     work, receive attribution or the CQE probe.\n"
                "      --list         show available providers and exit (= pcomm list)\n"
                "      --dry-run      print the run plan without executing\n"
                "      --enable-doorbell-hijack\n"
@@ -235,6 +249,11 @@ int pcomm::cli::run_main(int argc, char** argv) {
     init_exe_dir();
     std::vector<const Provider*> selected;
     std::string                  output_dir = "pcomm-out";
+    // Empty means "say nothing and let the engine default" — which is Simple.
+    // The launcher deliberately does not repeat that default: one place decides
+    // it (engine.cpp), so a hand-built LD_PRELOAD chain and `pcomm run` cannot
+    // disagree about what a capture with no mode set contains.
+    std::string                  trace_mode;
     bool                         verbose = false, dry_run = false;
     bool                         doorbell_hijack = false;
     std::vector<char*>           target;
@@ -277,6 +296,8 @@ int pcomm::cli::run_main(int argc, char** argv) {
             output_dir = argv[++i];
         else if (a == "-v" || a == "--verbose")
             verbose = true;
+        else if ((a == "-m" || a == "--mode") && i + 1 < argc)
+            trace_mode = argv[++i];
         else if (a == "--dry-run")
             dry_run = true;
         else if (a == "--enable-doorbell-hijack")
@@ -308,6 +329,52 @@ int pcomm::cli::run_main(int argc, char** argv) {
         return 1;
     }
     target.push_back(nullptr);
+
+    // ── cupti + gpumem: the one conflict `exclusive` cannot express ─────────
+    //
+    // CUPTI allows a single subscriber per process, and NVBit — which gpumem
+    // loads — dlopens libcupti and takes it. Whoever wins, the other loses, and
+    // the failure is asymmetric and silent in the direction that matters:
+    // measured on MN5 job 44546506 arm E, the real libgpumem_trace.so beside a
+    // CUPTI subscriber produced four rank directories and ZERO .pcs files. Not
+    // a crash — an empty capture, which reads exactly like a workload that did
+    // nothing.
+    //
+    // Dropping cupti rather than erroring out: gpumem is the provider that
+    // captures traffic, cupti only enriches the timeline, and `-p gpumem,cupti`
+    // is a reasonable thing to type without knowing any of the above. But it is
+    // said loudly, because a silently missing lane is the failure this whole
+    // check exists to prevent.
+    //
+    // The environment variable is the second half of the guard: the backend
+    // consults pcomm_engine_kernel_timing_wanted() before touching CUPTI, so
+    // even a hand-built LD_PRELOAD that includes both is safe.
+    {
+        // `canonical`, not aliases[0] — the latter is the printed short name
+        // ("kernel", "p2p") and matching on it silently never fires.
+        auto has = [&](std::string_view name) {
+            for (const Provider* p : selected)
+                if (name == p->canonical)
+                    return true;
+            return false;
+        };
+        if (has("cupti") && has("gpumem")) {
+            std::fprintf(stderr,
+                         "pcomm: dropping `cupti` — gpumem loads NVBit, which takes this "
+                         "process's\n"
+                         "       only CUPTI subscriber. Running both silently empties the "
+                         "gpumem\n"
+                         "       capture. Kernel lifetimes will be absent from this run.\n");
+            selected.erase(std::remove_if(selected.begin(), selected.end(),
+                                          [](const Provider* p) {
+                                              return std::string_view("cupti") == p->canonical;
+                                          }),
+                           selected.end());
+        }
+        // Always set, both ways: an inherited PCOMM_KERNEL_TIMING=0 from an
+        // earlier shell must not silently disable a run that did ask for cupti.
+        setenv("PCOMM_KERNEL_TIMING", has("cupti") ? "1" : "0", 1);
+    }
 
     // ── Plan the passes ─────────────────────────────────────────────────────
     // Non-exclusive providers all share one pass (one dlsym owner hosts them);
@@ -391,6 +458,8 @@ int pcomm::cli::run_main(int argc, char** argv) {
         setenv("LD_PRELOAD", preload.c_str(), 1);
         setenv("PCOMM_OUTPUT_DIR", out.c_str(), 1);
         setenv("PCOMM_VERBOSE", verbose ? "1" : "0", 1);
+        if (!trace_mode.empty())
+            setenv("PCOMM_TRACE_MODE", trace_mode.c_str(), 1);
         // The mlx5dv provider reads this and arms the UAR doorbell hijack. Only
         // that provider acts on it; harmless in a pass without it.
         if (doorbell_hijack)
