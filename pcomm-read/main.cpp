@@ -229,6 +229,32 @@ template<> struct Table<NodeIdentity> {
     }
 };
 
+// One row per kernel execution. `source` is carried rather than dropped
+// because it changes what the interval MEANS: HostSubmit rows are submission,
+// not execution, and trail the real thing by milliseconds — a consumer that
+// cannot tell them apart will draw them as lifetimes. Ticks are the [a, b]
+// pair, in the domain the source's ClockAnchor calibrates.
+template<> struct Table<GpuKernel> {
+    static constexpr const char* name = "gpu_kernel";
+    static constexpr const char* cols =
+        "ticks,end_ticks,domain,name,correlation,stream,device,source,grid_x,grid_y,grid_z,"
+        "block_x,block_y,block_z";
+    static void row(std::FILE* f, const Stamped<GpuKernel>& s, const rec::InternDictionary& in) {
+        // KernelName, explicitly. The single-argument in.str() defaults to
+        // InternDomain::String, and handles restart at 1 in EVERY domain — so
+        // that overload silently resolved a valid handle 1 to "" here. The
+        // dictionary's own header says as much; it is worth not rediscovering.
+        std::fprintf(f, "%llu,%llu,%u,%s,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks,
+                     (unsigned long long)s.temporal.b.ticks, s.temporal.a.domain,
+                     in.str(rec::InternDomain::KernelName, s.payload.name),
+                     (unsigned long long)s.payload.correlation,
+                     (unsigned long long)s.payload.stream, s.payload.device, s.payload.source,
+                     s.payload.grid_x, s.payload.grid_y, s.payload.grid_z, s.payload.block_x,
+                     s.payload.block_y, s.payload.block_z);
+    }
+};
+
 template<> struct Table<ClockAnchor> {
     static constexpr const char* name = "clock_anchor";
     static constexpr const char* cols = "domain,local_ticks,wall_ns,mono_ns";
@@ -611,7 +637,7 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
 // Nothing else depends on this order: the CSV files are written independently,
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
-    std::tuple<MemObject, EntityClose, GpuAccess, SourceLine, NodeIdentity, ClockAnchor,
+    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, ClockAnchor,
                Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
@@ -1427,30 +1453,77 @@ struct RankClock {
     }
 };
 
-// Fits one RankClock per rank and picks the earliest anchored wall-ns as the
-// shared origin (0 if no rank has anchors).
-std::pair<std::vector<RankClock>, std::uint64_t> build_clocks(const std::vector<RankDir>& ranks) {
-    std::vector<RankClock> clk(ranks.size());
-    std::uint64_t          origin = ~0ull;
+// Fits RankClocks per (rank, DOMAIN) and picks the earliest anchored wall-ns as
+// the shared origin (0 if no rank has anchors).
+//
+// PER DOMAIN, and that is not defensive coding — a capture with kernel timing
+// has FOUR anchors per rank, not two: domain 0 (TSC) at start and end, and
+// domain 1 (CUPTI's CLOCK_REALTIME ns) nested between them. A fit that took
+// front() and back() and ignored `domain` would be reading a rate across two
+// unrelated clocks, and the only reason it produced the right answer on this
+// capture is that the engine happens to write the domain-0 pair outermost.
+// Nothing guarantees that order, and a domain-1 tick pushed through the TSC
+// fit lands ~1.8e18 ns away — the same class of error `_clock` avoids by
+// joining on (rank, domain), which is why link_sql.hpp has never had this bug.
+//
+// Domains a capture never anchors are simply absent from the map; a caller
+// asking for one gets `clock_for`'s identity fallback and can say so.
+struct RankClocks {
+    // Small and linear rather than a hash: a rank has at most a handful of
+    // domains (0, 1, and 2+gpu ordinal), so lookup is a two-element scan.
+    std::vector<std::pair<std::uint16_t, RankClock>> by_domain;
+
+    const RankClock* find(std::uint16_t domain) const {
+        for (const auto& [d, c] : by_domain)
+            if (d == domain)
+                return &c;
+        return nullptr;
+    }
+};
+
+std::pair<std::vector<RankClocks>, std::uint64_t> build_clocks(const std::vector<RankDir>& ranks) {
+    std::vector<RankClocks> clk(ranks.size());
+    std::uint64_t           origin = ~0ull;
     for (std::size_t i = 0; i < ranks.size(); ++i) {
         auto anchors = load_stream<ClockAnchor>(stream_path<ClockAnchor>(ranks[i]));
-        if (!anchors.empty()) {
-            const auto& a = anchors.front().payload;
-            clk[i].t0 = a.local_ticks;
-            clk[i].w0 = a.wall_ns;
-            if (anchors.size() >= 2) {
-                const auto& b = anchors.back().payload;
-                long double dt = static_cast<long double>(b.local_ticks) - a.local_ticks;
-                if (dt > 0)
-                    clk[i].ns_per_tick =
-                        static_cast<double>((static_cast<long double>(b.wall_ns) - a.wall_ns) / dt);
-            }
+        // First and last anchor PER DOMAIN, in stream order.
+        std::vector<std::pair<std::uint16_t, std::pair<ClockAnchor, ClockAnchor>>> ends;
+        for (const auto& s : anchors) {
+            const auto d = s.payload.domain;
+            auto       it = std::find_if(ends.begin(), ends.end(),
+                                         [d](const auto& e) { return e.first == d; });
+            if (it == ends.end())
+                ends.push_back({d, {s.payload, s.payload}});
+            else
+                it->second.second = s.payload;
+        }
+        for (const auto& [d, ab] : ends) {
+            const auto& [a, b] = ab;
+            RankClock c;
+            c.t0 = a.local_ticks;
+            c.w0 = a.wall_ns;
+            long double dt = static_cast<long double>(b.local_ticks) - a.local_ticks;
+            if (dt > 0)
+                c.ns_per_tick =
+                    static_cast<double>((static_cast<long double>(b.wall_ns) - a.wall_ns) / dt);
+            clk[i].by_domain.push_back({d, c});
             origin = std::min(origin, static_cast<std::uint64_t>(a.wall_ns));
         }
     }
     if (origin == ~0ull)
         origin = 0;
     return {std::move(clk), origin};
+}
+
+// The clock a record should be read through: its own domain's, or — when the
+// capture anchored no such domain — an identity clock, so the caller still
+// gets a number rather than a crash. Callers that care count the misses.
+inline const RankClock& clock_for(const RankClocks& rc, std::uint16_t domain, std::size_t& unanchored) {
+    static const RankClock identity{};
+    if (const auto* c = rc.find(domain))
+        return *c;
+    unanchored++;
+    return identity;
 }
 
 // --- Perfetto / Chrome JSON trace --------------------------------------------
@@ -1476,8 +1549,17 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
             std::fputs(",\n", f);
         first = false;
     };
-    auto us = [&](const RankClock& c, std::uint64_t tick) {
-        return static_cast<double>(c.wall_at(tick) - origin) / 1000.0;  // ns -> µs
+    // Each record is read through ITS OWN domain's fit — see build_clocks. A
+    // verbs record is domain 0; a kernel record is not, and pushing one through
+    // the other's rate is how a timeline becomes fiction.
+    std::size_t unanchored = 0;
+    auto        us = [&](const RankClocks& rc, const core::Temporal& t) {
+        return static_cast<double>(clock_for(rc, t.a.domain, unanchored).wall_at(t.a.ticks)
+                                          - origin)
+             / 1000.0;  // ns -> µs
+    };
+    auto dur_us = [&](const RankClocks& rc, const core::Temporal& t) {
+        return clock_for(rc, t.a.domain, unanchored).dur_ns(t) / 1000.0;
     };
 
     std::size_t n_ev = 0;
@@ -1501,7 +1583,7 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
         }
         for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
             sep();
-            double ts = us(c, s.temporal.a.ticks), d = c.dur_ns(s.temporal) / 1000.0;
+            double ts = us(c, s.temporal), d = dur_us(c, s.temporal);
             if (d > 0)
                 std::fprintf(
                     f,
@@ -1520,7 +1602,7 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
         }
         for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
             sep();
-            double ts = us(c, s.temporal.a.ticks), d = c.dur_ns(s.temporal) / 1000.0;
+            double ts = us(c, s.temporal), d = dur_us(c, s.temporal);
             if (d > 0)
                 std::fprintf(
                     f,
@@ -1590,7 +1672,21 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
     auto qp_uuid = [](int rank, std::uint32_t qp) {
         return (static_cast<std::uint64_t>(rank) + 1) * 0x100000000ull + qp;
     };
-    auto ns = [&](const RankClock& c, std::uint64_t tick) { return c.wall_at(tick) - origin; };
+    // Kernels get their own track per rank, sharing the QP tracks' parent so
+    // compute reads directly against comm — the same placement, and the same
+    // reason, as the timeline panel's lane order. The uuid space is disjoint
+    // from qp_uuid's by construction: a QP number is 32 bits, this sets bit 63.
+    auto kernel_uuid = [](int rank) {
+        return 0x8000000000000000ull + static_cast<std::uint64_t>(rank) + 1;
+    };
+    // Each record through its own domain's fit — see build_clocks.
+    std::size_t unanchored = 0;
+    auto        ns = [&](const RankClocks& rc, const core::Temporal& t) {
+        return clock_for(rc, t.a.domain, unanchored).wall_at(t.a.ticks) - origin;
+    };
+    auto dur = [&](const RankClocks& rc, const core::Temporal& t) {
+        return static_cast<std::uint64_t>(clock_for(rc, t.a.domain, unanchored).dur_ns(t));
+    };
 
     PB   trace;
     auto track = [&](std::uint64_t uuid, const std::string& name, std::uint64_t parent) {
@@ -1643,16 +1739,44 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
         for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
             char nm[24];
             std::snprintf(nm, sizeof nm, "send %uB", s.payload.length);
-            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal.a.ticks),
-                  static_cast<std::uint64_t>(c.dur_ns(s.temporal)), nm);
+            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal), dur(c, s.temporal), nm);
             n_ev++;
         }
         for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
-            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal.a.ticks),
-                  static_cast<std::uint64_t>(c.dur_ns(s.temporal)), "complete");
+            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal), dur(c, s.temporal),
+                  "complete");
             n_ev++;
         }
+        // Compute, beside the comm. Without this the trace can show that a rank
+        // stopped sending and can never say whether it was working — which is
+        // the whole reason gpu_kernel exists.
+        //
+        // source = 2 (HostSubmit) is excluded for the reason _tl_raw excludes
+        // it: those rows are the launch API call, not the execution, and they
+        // trail the real thing by milliseconds. They must not reach a track
+        // labelled "kernels".
+        auto kernels = load_stream<GpuKernel>(stream_path<GpuKernel>(r));
+        if (!kernels.empty()) {
+            track(kernel_uuid(r.rank), "kernels", rank_uuid(r.rank));
+            for (const auto& s : kernels) {
+                if (s.payload.source == 2)
+                    continue;
+                // Name it from the KernelName domain explicitly: interned
+                // handles restart at 1 in EVERY domain, so the defaulted
+                // one-argument str() resolves a valid handle to "" with no
+                // error. Table<GpuKernel> carries the same note.
+                const char* nm = r.str(rec::InternDomain::KernelName, s.payload.name);
+                slice(kernel_uuid(r.rank), ns(c, s.temporal), dur(c, s.temporal),
+                      (nm && *nm) ? nm : "kernel");
+                n_ev++;
+            }
+        }
     }
+    if (unanchored)
+        std::fprintf(stderr,
+                     "pcomm: %zu events had no clock anchor for their domain and are placed at "
+                     "their raw tick — the capture is missing a ClockAnchor row\n",
+                     unanchored);
 
     std::FILE* f = std::fopen(outfile.c_str(), "wb");
     if (!f) {

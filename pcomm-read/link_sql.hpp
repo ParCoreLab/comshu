@@ -36,6 +36,96 @@ struct View {
 };
 
 inline constexpr View kViews[] = {
+    // Per (rank, domain), the line that carries a raw tick onto the wall clock.
+    //
+    // This view exists because **TSC is not comparable across nodes**, and the
+    // timeline is the first consumer that puts every rank on one axis. Measured
+    // on scale_hubspoke_ib-44542856: the lowest tick any rank reports is
+    // 101546585120773 while a rank-0 anchor sits at 1677281742642415 — a 16x
+    // gap that is not 8 hours of runtime, it is two hosts that booted at
+    // different times. Plotting raw ticks on a shared axis would scatter a
+    // 7-second job across a fake day.
+    //
+    // Two anchors per rank is what the capture writes, and two points is
+    // exactly what a line needs, so this is a fit and not an approximation.
+    // ns_per_tick comes out at ~0.49998728 (a 2.0 GHz TSC) and differs in the
+    // 8th significant digit BETWEEN RANKS — which is why the fit is per-rank
+    // and a shared constant would drift ranks apart over a long run.
+    //
+    // The ELSE 1.0 branch is for a capture with one anchor (or two at the same
+    // tick): it keeps the arithmetic finite rather than producing inf, and such
+    // a rank is counted by link_health's timeline_unanchored companion instead
+    // of being quietly plotted at a lie.
+    //
+    // **t0 and w0 stay INTEGERS.** Only the slope is a DOUBLE, and it is only
+    // ever applied to a delta. See the arithmetic note on timeline_span: a
+    // wall-clock ns held in a float64 has a 256 ns ulp, which silently rounds
+    // every sub-microsecond span in this capture to zero width.
+    {"_clock", R"sql(
+CREATE OR REPLACE VIEW _clock AS
+SELECT rank,
+       domain,
+       min(local_ticks) AS t0,
+       min(wall_ns)     AS w0,
+       CASE WHEN max(local_ticks) > min(local_ticks)
+            THEN (max(wall_ns)::DOUBLE - min(wall_ns)::DOUBLE)
+               / (max(local_ticks)::DOUBLE - min(local_ticks)::DOUBLE)
+            ELSE 1.0 END AS ns_per_tick,
+       count(*)         AS anchors
+FROM clock_anchor
+GROUP BY rank, domain
+)sql"},
+
+    // Every event stream in one shape, tick-timed. Split from timeline_span so
+    // the union is written once and the clock join once; link_health needs the
+    // same rows to count what the join drops.
+    //
+    // Interval streams carry a and b; instant streams leave b at 0, which is
+    // why t1 is greatest(b, a) downstream rather than b. Streams absent from a
+    // capture contribute nothing — duck_mount mounts them as empty tables with
+    // the right columns, so this union needs no per-provider branch, which is
+    // the whole reason that policy exists.
+    {"_tl_raw", R"sql(
+CREATE OR REPLACE VIEW _tl_raw AS
+    SELECT rank, 'ib_post_send'     AS stream, temporal_a_domain AS domain,
+           temporal_a_ticks AS a, temporal_b_ticks AS b,
+           qp_num AS ep, length::BIGINT  AS bytes FROM ib_post_send
+UNION ALL
+    SELECT rank, 'ib_poll_cq',     temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+           qp_num, byte_len::BIGINT   FROM ib_poll_cq
+UNION ALL
+    SELECT rank, 'ib_post_recv',   temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+           qp_num, length::BIGINT     FROM ib_post_recv
+UNION ALL
+    SELECT rank, 'ib_recv_cqe',    temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+           qp_num, byte_len::BIGINT   FROM ib_recv_cqe
+UNION ALL
+    SELECT rank, 'mlx5_device_send', temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+           qp_num, length::BIGINT     FROM mlx5_device_send
+UNION ALL
+    SELECT rank, 'mlx5_doorbell',  temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+           qp_num, NULL::BIGINT       FROM mlx5_doorbell
+UNION ALL
+    SELECT rank, 'gpu_access',     temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+           run_device, size::BIGINT   FROM gpu_access
+UNION ALL
+    -- Compute, beside the comm. This is the row that lets a timeline answer
+    -- "was that rank stalled or working" instead of only "that rank went
+    -- quiet", and it is the reason gpu_kernel exists at all.
+    --
+    -- It arrives on its OWN clock domain (1 for CUPTI, 2+gpu for a device
+    -- globaltimer) and needs no special case here: _clock fits per
+    -- (rank, domain), so the join below places it exactly as it places TSC.
+    --
+    -- source = 2 (HostSubmit) is EXCLUDED. Those rows are the launch API call,
+    -- not the execution, and they trail the real thing by 9-13 ms against
+    -- kernels lasting tens of microseconds — drawn on a timeline they would be
+    -- confident fiction. They stay in the raw table for anyone studying launch
+    -- latency; they must not reach a lane labelled "kernel".
+    SELECT rank, 'gpu_kernel',     temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+           device, NULL::BIGINT      FROM gpu_kernel WHERE source <> 2
+)sql"},
+
     // (lid, qp_num) -> the rank that owns it. `claimants` is kept rather than
     // collapsed: two ranks claiming one (lid, qp_num) is a fabric-level
     // impossibility, so if it is ever > 1 the number is a finding about the
@@ -542,6 +632,53 @@ GROUP BY ALL
 ORDER BY r.rank, r.qp_num
 )sql"},
 
+    // Every event, on ONE clock, as a span. The table a timeline reads.
+    //
+    // The unit is a SPAN and not a point: measured on the 64-rank corpus, every
+    // host stream is temporal_kind = 2 (Interval), so a and b are both real and
+    // ib_post_send has a median duration of 244 ticks (~122 ns). Collapsing
+    // that to an instant would throw away the only column that distinguishes a
+    // send that returned immediately from one that blocked 84 us — which is the
+    // question a timeline is opened to answer.
+    //
+    // THE ARITHMETIC HERE IS EXACT ON PURPOSE, AND BOTH HALVES ARE LOAD-BEARING.
+    //
+    // 1. The subtraction is in HUGEINT, not UBIGINT. `ticks - t0` on a tick
+    //    below the first anchor does not go negative in UBIGINT, it wraps to
+    //    ~1.8e19 and lands the event 584 years away.
+    //
+    // 2. The DOUBLE touches ONLY the delta, never the absolute time. This one
+    //    cost a rewrite: the first version computed `(w0 + delta*rate)::BIGINT`
+    //    with w0 as a DOUBLE, and every duration in the capture came back 0 ns.
+    //    A wall-clock nanosecond is ~1.79e18, which needs 19 digits; float64
+    //    carries ~15.9, so the ulp up there is **256 ns** — verifiable as
+    //    `(1786575955340045312::DOUBLE + 122)::BIGINT` returning the input
+    //    unchanged. Median ib_post_send is 122 ns. Every span in this capture
+    //    was being rounded to zero width by an addition that looked harmless.
+    //    The delta is ~1e10 ticks at most, where float64 resolves far below a
+    //    nanosecond, so scaling it is safe; adding it back must be integer.
+    //    This is the same lesson query.js records for JSON numbers and UBIGINT
+    //    addresses, in a different arithmetic.
+    //
+    // The clock join is INNER on (rank, domain). A record whose domain no
+    // anchor covers cannot be placed on the wall clock at all, and plotting it
+    // somewhere plausible would be a fabrication — so it is dropped here and
+    // COUNTED in link_health.timeline_unanchored, which is the same trade
+    // unresolved_nvlink makes: a hole you can see beats a chart that looks
+    // complete.
+    {"timeline_span", R"sql(
+SELECT e.rank,
+       e.stream,
+       e.ep,
+       e.bytes,
+       (c.w0::HUGEINT
+          + ((e.a::HUGEINT - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT AS t0_ns,
+       (c.w0::HUGEINT
+          + ((greatest(e.b, e.a)::HUGEINT - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns
+FROM _tl_raw e
+JOIN _clock c ON c.rank = e.rank AND c.domain = e.domain
+)sql"},
+
     // The communication matrix, in rank space, across every transport.
     //
     // dst_rank = -1 means the peer could not be resolved — kept as a row rather
@@ -672,6 +809,28 @@ SELECT 'recv_spilled_past_first_sge',
        coalesce(count(*), 0)::BIGINT,
        'receives whose bytes ran past sge[0] into a buffer the capture does not record'
 FROM _recv_attr WHERE spilled
+UNION ALL
+-- Events timeline_span had to drop: no ClockAnchor covers their (rank, domain),
+-- so there is no line to carry their ticks onto the wall clock. The timeline
+-- shows the rest, and this is the count that stops the omission being invisible
+-- — a rank missing from the timeline entirely looks exactly like a rank that
+-- did no work. Expect this the day a provider emits a second clock domain (a
+-- GPU globaltimer, say) without anchoring it.
+SELECT 'timeline_unanchored',
+       coalesce(count(*), 0)::BIGINT,
+       'events whose (rank, domain) has no clock anchor — omitted from the timeline'
+FROM _tl_raw e
+LEFT JOIN _clock c ON c.rank = e.rank AND c.domain = e.domain
+WHERE c.rank IS NULL
+UNION ALL
+-- Kernel rows that are SUBMISSION rather than execution. Not an error — the
+-- HostSubmit source is a deliberate last resort — but the timeline drops them,
+-- so the count has to be visible or a capture with only submission timestamps
+-- looks like a capture with no kernels. See core/vocab.hpp KernelSource.
+SELECT 'kernel_rows_submission_only',
+       coalesce(count(*), 0)::BIGINT,
+       'kernel rows timed at launch, not execution — excluded from the timeline'
+FROM gpu_kernel WHERE source = 2
 )sql"},
 };
 
