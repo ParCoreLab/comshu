@@ -138,7 +138,7 @@ bool try_tsc_timebase() {
     uint64_t cupti_ts = 0;
     if (cuptiGetTimestamp(&cupti_ts) != CUPTI_SUCCESS)
         return false;
-    uint64_t after = pcomm::helpers::ts::RdtscTimestampSource::Now();
+    uint64_t   after = pcomm::helpers::ts::RdtscTimestampSource::Now();
     const bool bracketed = cupti_ts >= before && cupti_ts <= after + 10'000'000ull;
     if (!bracketed && g_verbose)
         std::fprintf(stderr,
@@ -188,18 +188,18 @@ void CUPTIAPI on_buffer_complete(CUcontext, uint32_t, uint8_t* buf, size_t, size
     while (cuptiActivityGetNextRecord(buf, valid, &rec) == CUPTI_SUCCESS) {
         if (rec->kind != CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)
             continue;
-        auto* k = reinterpret_cast<CUpti_ActivityKernel9*>(rec);
+        auto*          k = reinterpret_cast<CUpti_ActivityKernel9*>(rec);
         const uint32_t grid[3] = {static_cast<uint32_t>(k->gridX), static_cast<uint32_t>(k->gridY),
                                   static_cast<uint32_t>(k->gridZ)};
         const uint16_t block[3] = {static_cast<uint16_t>(k->blockX),
                                    static_cast<uint16_t>(k->blockY),
                                    static_cast<uint16_t>(k->blockZ)};
-        pcomm_engine_record_kernel(
-            k->start, k->end, g_domain, k->name, k->correlationId,
-            // streamId, not a CUstream: CUPTI reports the ordinal, which is
-            // what a timeline lane wants anyway.
-            k->streamId, static_cast<uint16_t>(k->deviceId),
-            static_cast<uint8_t>(pcomm::core::KernelSource::Cupti), grid, block);
+        pcomm_engine_record_kernel(k->start, k->end, g_domain, k->name, k->correlationId,
+                                   // streamId, not a CUstream: CUPTI reports the ordinal, which is
+                                   // what a timeline lane wants anyway.
+                                   k->streamId, static_cast<uint16_t>(k->deviceId),
+                                   static_cast<uint8_t>(pcomm::core::KernelSource::Cupti), grid,
+                                   block);
         g_kernels.fetch_add(1, std::memory_order_relaxed);
     }
     size_t dropped = 0;
@@ -295,9 +295,9 @@ CUresult cuInit(unsigned flags) {
 CUresult cuLaunchKernel(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx,
                         unsigned by, unsigned bz, unsigned shmem, CUstream s, void** params,
                         void** extra) {
-    static auto real = next<CUresult (*)(CUfunction, unsigned, unsigned, unsigned, unsigned,
-                                         unsigned, unsigned, unsigned, CUstream, void**, void**)>(
-        "cuLaunchKernel");
+    static auto real =
+        next<CUresult (*)(CUfunction, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned,
+                          unsigned, CUstream, void**, void**)>("cuLaunchKernel");
     arm("cuLaunchKernel");
     return real ? real(f, gx, gy, gz, bx, by, bz, shmem, s, params, extra)
                 : CUDA_ERROR_NOT_INITIALIZED;
@@ -316,9 +316,8 @@ CUresult cuLaunchKernelEx(const CUlaunchConfig* cfg, CUfunction f, void** params
 // arming points and not the only one.
 cudaError_t cudaLaunchKernel(const void* func, dim3 grid, dim3 block, void** args, size_t shmem,
                              cudaStream_t stream) {
-    static auto real =
-        next<cudaError_t (*)(const void*, dim3, dim3, void**, size_t, cudaStream_t)>(
-            "cudaLaunchKernel");
+    static auto real = next<cudaError_t (*)(const void*, dim3, dim3, void**, size_t, cudaStream_t)>(
+        "cudaLaunchKernel");
     arm("cudaLaunchKernel");
     return real ? real(func, grid, block, args, shmem, stream) : cudaErrorInitializationError;
 }

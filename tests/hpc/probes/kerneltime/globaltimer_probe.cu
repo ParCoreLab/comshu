@@ -104,18 +104,15 @@ int main(int argc, char** argv) {
                     ns_of(CLOCK_MONOTONIC_RAW));
         return std::pair<uint64_t, uint64_t>{h, mid};
     };
-    auto s0 = sample("t0");
-    struct timespec rq {
-        3, 0
-    };
+    auto            s0 = sample("t0");
+    struct timespec rq{3, 0};
     nanosleep(&rq, nullptr);
     auto s1 = sample("t1");
 
     const double dev_elapsed = double(s1.first - s0.first);
     const double host_elapsed = double(s1.second - s0.second);
     std::printf("GT_RATE dev_ns=%.0f host_ns=%.0f ratio=%.9f drift_ppm=%.3f\n", dev_elapsed,
-                host_elapsed, dev_elapsed / host_elapsed,
-                1e6 * (dev_elapsed / host_elapsed - 1.0));
+                host_elapsed, dev_elapsed / host_elapsed, 1e6 * (dev_elapsed / host_elapsed - 1.0));
 
     // ---- Q2: what does the instrumentation cost? -------------------------
     uint64_t *d_a = nullptr, *d_b = nullptr;

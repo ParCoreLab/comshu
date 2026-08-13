@@ -38,8 +38,12 @@ bool enabled() {
 // treat as "record nothing". A capture built this way simply has no
 // ib_recv_cqe or ib_srq_recv_slot rows, and every other table is unchanged —
 // the honest statement about a host whose NIC we cannot interrogate.
-RecvCqe read_recv_cqe(ibv_cq*, int, int, const ibv_wc&) { return {}; }
-SrqSlot srq_slot(ibv_srq*, unsigned) { return {}; }
+RecvCqe read_recv_cqe(ibv_cq*, int, int, const ibv_wc&) {
+    return {};
+}
+SrqSlot srq_slot(ibv_srq*, unsigned) {
+    return {};
+}
 
 void on_poll(ibv_cq*, int, ibv_wc*) {
     if (!enabled())
@@ -64,7 +68,9 @@ enum : std::uint8_t {
     kCqeRespSendImm = 3,
     kCqeRespSendInv = 4,
 };
-inline bool is_responder(std::uint8_t op) { return op >= kCqeRespWrImm && op <= kCqeRespSendInv; }
+inline bool is_responder(std::uint8_t op) {
+    return op >= kCqeRespWrImm && op <= kCqeRespSendInv;
+}
 
 struct Ring {
     void*         buf = nullptr;
@@ -114,23 +120,21 @@ inline void report() {
                  "[pcomm-cqeprobe] rank=%d cqs=%llu mapped=%llu polls=%llu completions=%llu\n", r,
                  (unsigned long long)s.cqs_seen, (unsigned long long)s.cqs_mapped,
                  (unsigned long long)s.polls, (unsigned long long)s.completions);
-    std::fprintf(stderr,
-                 "[pcomm-cqeprobe] rank=%d read=%llu qpn_ok=%llu class_ok=%llu len_ok=%llu/%llu\n",
-                 r, (unsigned long long)s.read, (unsigned long long)s.qpn_ok,
-                 (unsigned long long)s.class_ok, (unsigned long long)s.len_ok,
-                 (unsigned long long)s.len_checked);
+    std::fprintf(
+        stderr, "[pcomm-cqeprobe] rank=%d read=%llu qpn_ok=%llu class_ok=%llu len_ok=%llu/%llu\n",
+        r, (unsigned long long)s.read, (unsigned long long)s.qpn_ok, (unsigned long long)s.class_ok,
+        (unsigned long long)s.len_ok, (unsigned long long)s.len_checked);
     if (s.recv)
-        std::fprintf(stderr,
-                     "[pcomm-cqeprobe] rank=%d recv=%llu with_srqn=%llu wqe_counter=[%u,%u]\n", r,
-                     (unsigned long long)s.recv, (unsigned long long)s.recv_with_srqn, s.wqe_lo,
-                     s.wqe_hi);
+        std::fprintf(
+            stderr, "[pcomm-cqeprobe] rank=%d recv=%llu with_srqn=%llu wqe_counter=[%u,%u]\n", r,
+            (unsigned long long)s.recv, (unsigned long long)s.recv_with_srqn, s.wqe_lo, s.wqe_hi);
     std::fflush(stderr);
 }
 
 // The ring for one CQ, resolved once. A CQ that is not mlx5 (or a libmlx5 that
 // refuses) is marked unusable and never asked again.
 inline const Ring& ring_for(ibv_cq* cq) {
-    auto  it = rings().find(cq);
+    auto it = rings().find(cq);
     if (it != rings().end())
         return it->second;
 
@@ -179,8 +183,7 @@ inline const Ring& ring_for(ibv_cq* cq) {
             if (r.usable)
                 stats().cqs_mapped++;
             else
-                std::fprintf(stderr,
-                             "[pcomm-cqeprobe] cq %p unusable: cnt=%u size=%u dbrec=%p\n",
+                std::fprintf(stderr, "[pcomm-cqeprobe] cq %p unusable: cnt=%u size=%u dbrec=%p\n",
                              (void*)cq, r.cnt, r.size, (void*)r.dbrec);
         }
     } else {

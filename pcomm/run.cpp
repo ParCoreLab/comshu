@@ -157,7 +157,8 @@ std::string find_so(const Provider& p) {
             return (root / p.so).string();
     std::fprintf(stderr, "pcomm: %s provider library not found (%s)\n", p.aliases[0].c_str(), p.so);
     if (!p.built)
-        std::fprintf(stderr, "       (%s is planned, not yet built — see `pcomm list`)\n", p.canonical);
+        std::fprintf(stderr, "       (%s is planned, not yet built — see `pcomm list`)\n",
+                     p.canonical);
     std::exit(1);
 }
 
@@ -204,7 +205,7 @@ std::string engine_so_path() {
     if (!h)
         return {};
     using PathFn = const char* (*)();
-    auto fn = reinterpret_cast<PathFn>(dlsym(h, "pcomm_engine_so_path"));
+    auto        fn = reinterpret_cast<PathFn>(dlsym(h, "pcomm_engine_so_path"));
     const char* p = fn ? fn() : nullptr;
     return p ? std::string(p) : std::string();
 }
@@ -253,10 +254,10 @@ int pcomm::cli::run_main(int argc, char** argv) {
     // The launcher deliberately does not repeat that default: one place decides
     // it (engine.cpp), so a hand-built LD_PRELOAD chain and `pcomm run` cannot
     // disagree about what a capture with no mode set contains.
-    std::string                  trace_mode;
-    bool                         verbose = false, dry_run = false;
-    bool                         doorbell_hijack = false;
-    std::vector<char*>           target;
+    std::string        trace_mode;
+    bool               verbose = false, dry_run = false;
+    bool               doorbell_hijack = false;
+    std::vector<char*> target;
 
     auto add_selector = [&](std::string_view csv) {
         size_t start = 0;

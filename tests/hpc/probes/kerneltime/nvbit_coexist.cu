@@ -43,8 +43,8 @@ void nvbit_at_init() {
     std::fflush(stdout);
 }
 
-void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
-                         const char* /*name*/, void* params, CUresult*) {
+void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, const char* /*name*/,
+                         void* params, CUresult*) {
     pthread_mutex_lock(&g_mutex);
     if (g_skip) {
         pthread_mutex_unlock(&g_mutex);

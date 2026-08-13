@@ -37,7 +37,7 @@
 namespace {
 
 std::mutex            g_mu;
-std::vector<uint64_t> g_dur;    // kernel durations, ns
+std::vector<uint64_t> g_dur;                   // kernel durations, ns
 uint64_t              g_lo = ~0ull, g_hi = 0;  // span of kernel activity, ns
 std::atomic<uint64_t> g_count{0};
 std::atomic<uint64_t> g_dropped{0};
@@ -117,7 +117,7 @@ __attribute__((destructor)) void shim_fini() {
     if (!g_on)
         return;
     cuptiActivityFlushAll(1);
-    const double wall_s = double(now_ns() - g_t_start) / 1e9;
+    const double                wall_s = double(now_ns() - g_t_start) / 1e9;
     std::lock_guard<std::mutex> lk(g_mu);
     std::sort(g_dur.begin(), g_dur.end());
     const size_t n = g_dur.size();
@@ -128,8 +128,8 @@ __attribute__((destructor)) void shim_fini() {
     std::fprintf(stderr,
                  "SHIM kernels=%zu dropped=%" PRIu64 " activity_bytes=%" PRIu64
                  " wall_s=%.3f kernel_span_s=%.3f rate_per_s=%.0f gpu_busy_pct=%.2f\n",
-                 n, g_dropped.load(), g_bytes.load(), wall_s, span_s,
-                 span_s > 0 ? n / span_s : 0.0, span_s > 0 ? 100.0 * double(busy) / (span_s * 1e9) : 0.0);
+                 n, g_dropped.load(), g_bytes.load(), wall_s, span_s, span_s > 0 ? n / span_s : 0.0,
+                 span_s > 0 ? 100.0 * double(busy) / (span_s * 1e9) : 0.0);
     if (n)
         std::fprintf(stderr,
                      "SHIM dur_ns p50=%" PRIu64 " p90=%" PRIu64 " p99=%" PRIu64 " max=%" PRIu64

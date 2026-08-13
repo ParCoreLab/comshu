@@ -185,7 +185,7 @@ int main(int argc, char** argv) {
         std::sort(g_kernels.begin(), g_kernels.end(),
                   [](const KernelRec& a, const KernelRec& b) { return a.start < b.start; });
         std::vector<int64_t> cu_dur, d_dur, d_start;
-        const size_t n = std::min(g_kernels.size(), ev2_dur.size());
+        const size_t         n = std::min(g_kernels.size(), ev2_dur.size());
         for (size_t i = 0; i < n; i++) {
             cu_dur.push_back(int64_t(g_kernels[i].end - g_kernels[i].start));
             int64_t dd = ev2_dur[i] - cu_dur.back();

@@ -6,7 +6,7 @@
 
 namespace pcomm::core {
 
-using DomainId = std::uint16_t;      // clock domain (per CPU core / per GPU / per node)
+using DomainId = std::uint16_t;  // clock domain (per CPU core / per GPU / per node)
 
 // Clock domains. Every domain needs its own ClockAnchor pair (start and end) or
 // pcomm-read cannot place its records on the shared timeline and drops them —

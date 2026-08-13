@@ -251,11 +251,10 @@ int main() {
         c.payload.block_y = 0x6666;
         c.payload.block_z = 0x7777;
         c.payload.source = static_cast<std::uint8_t>(pcomm::core::KernelSource::NvbitGlobaltimer);
-        fb::GpuKernel f(
-            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1000), fb::TimePoint(1, 0x2000),
-                         0),
-            0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, 0x12345678u, 0x11111111u, 0x22222222u,
-            0x33333333u, 0x4444, 0x5555, 0x6666, 0x7777, 1);
+        fb::GpuKernel f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1000),
+                                     fb::TimePoint(1, 0x2000), 0),
+                        0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, 0x12345678u, 0x11111111u,
+                        0x22222222u, 0x33333333u, 0x4444, 0x5555, 0x6666, 0x7777, 1);
         expect_identical("GpuKernel", &c, &f, sizeof(c));
     }
     {

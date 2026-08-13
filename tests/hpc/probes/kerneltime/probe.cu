@@ -30,22 +30,24 @@
 #include <cupti.h>
 
 // ---------------------------------------------------------------- clocks
-static inline uint64_t rdtsc() { return __builtin_ia32_rdtsc(); }
+static inline uint64_t rdtsc() {
+    return __builtin_ia32_rdtsc();
+}
 static inline uint64_t ns_of(clockid_t c) {
     timespec t;
     clock_gettime(c, &t);
     return uint64_t(t.tv_sec) * 1000000000ull + t.tv_nsec;
 }
 
-#define CUPTI_CHECK(x)                                                                     \
-    do {                                                                                   \
-        CUptiResult _r = (x);                                                              \
-        if (_r != CUPTI_SUCCESS) {                                                         \
-            const char* _m = nullptr;                                                      \
-            cuptiGetResultString(_r, &_m);                                                 \
-            std::printf("CUPTI_FAIL %s -> %s\n", #x, _m ? _m : "?");                       \
-            return -1;                                                                     \
-        }                                                                                  \
+#define CUPTI_CHECK(x)                                                                             \
+    do {                                                                                           \
+        CUptiResult _r = (x);                                                                      \
+        if (_r != CUPTI_SUCCESS) {                                                                 \
+            const char* _m = nullptr;                                                              \
+            cuptiGetResultString(_r, &_m);                                                         \
+            std::printf("CUPTI_FAIL %s -> %s\n", #x, _m ? _m : "?");                               \
+            return -1;                                                                             \
+        }                                                                                          \
     } while (0)
 
 // ------------------------------------------------------- activity plumbing
@@ -84,8 +86,8 @@ static void CUPTIAPI on_buffer_complete(CUcontext, uint32_t, uint8_t* buf, size_
         while (cuptiActivityGetNextRecord(buf, valid, &rec) == CUPTI_SUCCESS) {
             if (rec->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
                 auto* k = (CUpti_ActivityKernel9*)rec;
-                g_kernels.push_back({k->start, k->end, k->correlationId,
-                                     (uint32_t)k->deviceId, (uint32_t)k->streamId});
+                g_kernels.push_back({k->start, k->end, k->correlationId, (uint32_t)k->deviceId,
+                                     (uint32_t)k->streamId});
             } else if (rec->kind == CUPTI_ACTIVITY_KIND_RUNTIME) {
                 auto* a = (CUpti_ActivityAPI*)rec;
                 g_api.push_back({a->start, a->end, a->correlationId});
@@ -118,8 +120,8 @@ static std::vector<HostStamp> g_host;
 // Run `iters` launches. `sync` picks the two regimes that matter:
 //   true  — launch, synchronize, launch. Submission ~= execution.
 //   false — a deep async queue, which is what a real comm workload does.
-static double run_workload(int iters, uint64_t cycles, bool sync, float* d_out,
-                           cudaStream_t s, bool stamp) {
+static double run_workload(int iters, uint64_t cycles, bool sync, float* d_out, cudaStream_t s,
+                           bool stamp) {
     const uint64_t t0 = ns_of(CLOCK_MONOTONIC_RAW);
     for (int i = 0; i < iters; i++) {
         uint64_t a = stamp ? rdtsc() : 0;
@@ -153,7 +155,7 @@ static void sample_clocks(const char* tag) {
 }
 
 int main(int argc, char** argv) {
-    const int iters = argc > 1 ? atoi(argv[1]) : 2000;
+    const int      iters = argc > 1 ? atoi(argv[1]) : 2000;
     const uint64_t cycles = argc > 2 ? strtoull(argv[2], nullptr, 10) : 20000;
 
     float* d_out = nullptr;
@@ -195,8 +197,8 @@ int main(int argc, char** argv) {
     std::printf("OVERHEAD async=%.2f%% sync=%.2f%%\n",
                 100.0 * (cupti_async - base_async) / base_async,
                 100.0 * (cupti_sync - base_sync) / base_sync);
-    std::printf("RECORDS kernels=%zu api=%zu dropped=%" PRIu64 "\n", g_kernels.size(),
-                g_api.size(), g_dropped);
+    std::printf("RECORDS kernels=%zu api=%zu dropped=%" PRIu64 "\n", g_kernels.size(), g_api.size(),
+                g_dropped);
 
     // ---- Q3: submission vs execution, correlated -------------------------
     // The RUNTIME record is the launch API call; the KERNEL record is the
@@ -212,9 +214,8 @@ int main(int argc, char** argv) {
     // async regime. Ordering by kernel start is enough to split them, since the
     // regimes are sequential in time.
     std::vector<KernelRec> ks = g_kernels;
-    std::sort(ks.begin(), ks.end(), [](const KernelRec& a, const KernelRec& b) {
-        return a.start < b.start;
-    });
+    std::sort(ks.begin(), ks.end(),
+              [](const KernelRec& a, const KernelRec& b) { return a.start < b.start; });
     for (size_t i = 0; i < ks.size(); i++) {
         auto it = api_by_corr.find(ks[i].correlation);
         if (it == api_by_corr.end())

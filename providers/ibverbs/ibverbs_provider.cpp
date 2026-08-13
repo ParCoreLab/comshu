@@ -165,7 +165,7 @@ std::vector<std::uint32_t>& pending_srq_slots() {
 // process with two devices open can hold the same number twice — the same
 // collision class that put impossible self-edges in comm_edges when it keyed
 // peers on qp_num without the lid.
-std::mutex&                                              qp_srq_mutex() {
+std::mutex& qp_srq_mutex() {
     static std::mutex m;
     return m;
 }
@@ -1091,7 +1091,7 @@ Profiler::Profiler() {
             slots.clear();
             return;
         }
-        const auto tspan = span(t0, t1);
+        const auto  tspan = span(t0, t1);
         std::size_t n = 0;
         for (; wr; wr = wr->next, ++n) {
             // Guard before read, as in post_recv above.

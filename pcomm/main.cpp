@@ -32,19 +32,18 @@ constexpr Verb kVerbs[] = {
     {"link", "<export>", "derive the rank-space tables over an export", PCOMM_HAVE_DUCKDB},
     {"sql", "<export> \"<query>\"", "query an export directly", PCOMM_HAVE_DUCKDB},
     {"types", "", "type-id -> table name, for this build", true},
-    {"ui", "<capture|export> [--port N]", "serve the capture as a page (127.0.0.1)",
-     PCOMM_HAVE_UI},
+    {"ui", "<capture|export> [--port N]", "serve the capture as a page (127.0.0.1)", PCOMM_HAVE_UI},
 };
 
 void usage() {
-    std::fputs("pcomm — capture and read GPU/network communication\n\nusage: pcomm <command> [args]\n\n",
-               stderr);
+    std::fputs(
+        "pcomm — capture and read GPU/network communication\n\nusage: pcomm <command> [args]\n\n",
+        stderr);
     for (const auto& v : kVerbs) {
         std::fprintf(stderr, "  %-7s %-34s %s%s\n", v.name, v.args, v.what,
                      v.available ? "" : "   [not in this build]");
     }
-    std::fputs("\n  pcomm <command> with no arguments prints that command's own usage.\n",
-               stderr);
+    std::fputs("\n  pcomm <command> with no arguments prints that command's own usage.\n", stderr);
 #if !PCOMM_HAVE_DUCKDB
     std::fputs("\n  This build has no DuckDB, so link/sql/ui are absent. To get them:\n"
                "    tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n"

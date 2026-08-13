@@ -180,8 +180,8 @@ void pcomm_engine_release(void) {
 
 void pcomm_engine_record_kernel(std::uint64_t t0, std::uint64_t t1, std::uint16_t domain,
                                 const char* name, std::uint64_t correlation, std::uint64_t stream,
-                                std::uint16_t device, std::uint8_t source, const std::uint32_t* grid,
-                                const std::uint16_t* block) {
+                                std::uint16_t device, std::uint8_t source,
+                                const std::uint32_t* grid, const std::uint16_t* block) {
     auto& tracer = pcomm::Tracer::instance();
     if (!tracer.has_recorder())
         return;  // nothing has started a capture
@@ -229,11 +229,10 @@ void pcomm_engine_clock_anchor(std::uint16_t domain, std::uint64_t local_ticks,
     // cross-checking the wall clock against a non-settable one.
     timespec mono{};
     clock_gettime(CLOCK_MONOTONIC_RAW, &mono);
-    const auto mono_ns =
-        static_cast<std::uint64_t>(mono.tv_sec) * 1'000'000'000ull + mono.tv_nsec;
-    tracer.recorder().record(pcomm::core::Temporal::none(),
-                             pcomm::core::records::ClockAnchor{
-                                 {}, {}, domain, local_ticks, wall_ns, mono_ns});
+    const auto mono_ns = static_cast<std::uint64_t>(mono.tv_sec) * 1'000'000'000ull + mono.tv_nsec;
+    tracer.recorder().record(
+        pcomm::core::Temporal::none(),
+        pcomm::core::records::ClockAnchor{{}, {}, domain, local_ticks, wall_ns, mono_ns});
 }
 
 // Set by the launcher, which is the only thing that knows the provider list

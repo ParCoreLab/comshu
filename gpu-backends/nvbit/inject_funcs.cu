@@ -80,9 +80,8 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcod
 // — measured drift -13.9 ppm (H100) / +5.7 ppm (A100), opposite signs, so it is
 // anchored per GPU on the host side and resolved by pcomm-read's per-(rank,
 // domain) fit like any other domain.
-extern "C" __device__ __noinline__ void pcomm_kernel_stamp(int is_end, int dev_id,
-                                                           uint64_t launch_id,
-                                                           uint64_t pchannel_dev) {
+extern "C" __device__ __noinline__ void
+pcomm_kernel_stamp(int is_end, int dev_id, uint64_t launch_id, uint64_t pchannel_dev) {
     // Thread 0 of each block, and only when it is the first active lane, so a
     // divergent entry point still pushes exactly once.
     if (threadIdx.x != 0 || threadIdx.y != 0 || threadIdx.z != 0)
@@ -106,8 +105,8 @@ extern "C" __device__ __noinline__ void pcomm_kernel_stamp(int is_end, int dev_i
     PCOMM_SPAN_LAUNCH(r) = launch_id;
     PCOMM_SPAN_TICKS(r) = t;
     PCOMM_SPAN_IS_END(r) = is_end;
-    PCOMM_SPAN_BLOCK(r) =
-        blockIdx.x + blockIdx.y * (uint64_t)gridDim.x + (uint64_t)gridDim.x * gridDim.y * blockIdx.z;
+    PCOMM_SPAN_BLOCK(r) = blockIdx.x + blockIdx.y * (uint64_t)gridDim.x +
+                          (uint64_t)gridDim.x * gridDim.y * blockIdx.z;
 
     ChannelDev* channel_dev = (ChannelDev*)pchannel_dev;
 #ifndef PCOMM_INJECT_NO_PUSH

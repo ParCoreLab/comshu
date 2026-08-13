@@ -245,9 +245,8 @@ template<> struct Table<GpuKernel> {
         // that overload silently resolved a valid handle 1 to "" here. The
         // dictionary's own header says as much; it is worth not rediscovering.
         std::fprintf(f, "%llu,%llu,%u,%s,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u",
-                     (unsigned long long)s.temporal.a.ticks,
-                     (unsigned long long)s.temporal.b.ticks, s.temporal.a.domain,
-                     in.str(rec::InternDomain::KernelName, s.payload.name),
+                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
+                     s.temporal.a.domain, in.str(rec::InternDomain::KernelName, s.payload.name),
                      (unsigned long long)s.payload.correlation,
                      (unsigned long long)s.payload.stream, s.payload.device, s.payload.source,
                      s.payload.grid_x, s.payload.grid_y, s.payload.grid_z, s.payload.block_x,
@@ -640,10 +639,9 @@ using TableRecords =
     std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, ClockAnchor,
                Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
-               ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion,
-               ibr::IbRecvCqe, mxr::Mlx5Umem,
-               mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
-               mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend>;
+               ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
+               mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
+               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.
@@ -1118,8 +1116,8 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     std::error_code ec;
     fs::create_directories(outdir, ec);
     if (!fs::is_directory(outdir)) {
-        std::fprintf(stderr, "pcomm: cannot use %s as an output directory: %s\n",
-                     outdir.c_str(), ec ? ec.message().c_str() : "not a directory");
+        std::fprintf(stderr, "pcomm: cannot use %s as an output directory: %s\n", outdir.c_str(),
+                     ec ? ec.message().c_str() : "not a directory");
         return 1;
     }
 
@@ -1284,8 +1282,8 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     duckdb_disconnect(&con);
     duckdb_close(&db);
 
-    std::printf("pcomm: %zu ranks, %zu tables, %zu rows -> %s/*.parquet%s\n", ranks.size(),
-                tables, rows_total, outdir.c_str(), failed ? " (SOME FAILED, see above)" : "");
+    std::printf("pcomm: %zu ranks, %zu tables, %zu rows -> %s/*.parquet%s\n", ranks.size(), tables,
+                rows_total, outdir.c_str(), failed ? " (SOME FAILED, see above)" : "");
     return failed ? 1 : 0;
 }
 using pcomm::duck::mount_raw_tables;
@@ -1307,7 +1305,8 @@ int run_link(const fs::path& dir) {
 
     const auto present = mount_raw_tables(con, dir);
     if (!present) {
-        std::fprintf(stderr, "pcomm: no raw .parquet tables in %s — run `pcomm export --parquet` first\n",
+        std::fprintf(stderr,
+                     "pcomm: no raw .parquet tables in %s — run `pcomm export --parquet` first\n",
                      dir.c_str());
         duckdb_disconnect(&con);
         duckdb_close(&db);
@@ -1490,8 +1489,8 @@ std::pair<std::vector<RankClocks>, std::uint64_t> build_clocks(const std::vector
         std::vector<std::pair<std::uint16_t, std::pair<ClockAnchor, ClockAnchor>>> ends;
         for (const auto& s : anchors) {
             const auto d = s.payload.domain;
-            auto       it = std::find_if(ends.begin(), ends.end(),
-                                         [d](const auto& e) { return e.first == d; });
+            auto       it =
+                std::find_if(ends.begin(), ends.end(), [d](const auto& e) { return e.first == d; });
             if (it == ends.end())
                 ends.push_back({d, {s.payload, s.payload}});
             else
@@ -1518,7 +1517,8 @@ std::pair<std::vector<RankClocks>, std::uint64_t> build_clocks(const std::vector
 // The clock a record should be read through: its own domain's, or — when the
 // capture anchored no such domain — an identity clock, so the caller still
 // gets a number rather than a crash. Callers that care count the misses.
-inline const RankClock& clock_for(const RankClocks& rc, std::uint16_t domain, std::size_t& unanchored) {
+inline const RankClock& clock_for(const RankClocks& rc, std::uint16_t domain,
+                                  std::size_t& unanchored) {
     static const RankClock identity{};
     if (const auto* c = rc.find(domain))
         return *c;
@@ -1554,9 +1554,9 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
     // the other's rate is how a timeline becomes fiction.
     std::size_t unanchored = 0;
     auto        us = [&](const RankClocks& rc, const core::Temporal& t) {
-        return static_cast<double>(clock_for(rc, t.a.domain, unanchored).wall_at(t.a.ticks)
-                                          - origin)
-             / 1000.0;  // ns -> µs
+        return static_cast<double>(clock_for(rc, t.a.domain, unanchored).wall_at(t.a.ticks) -
+                                          origin) /
+               1000.0;  // ns -> µs
     };
     auto dur_us = [&](const RankClocks& rc, const core::Temporal& t) {
         return clock_for(rc, t.a.domain, unanchored).dur_ns(t) / 1000.0;

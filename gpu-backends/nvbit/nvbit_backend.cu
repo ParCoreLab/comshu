@@ -163,9 +163,9 @@ struct LaunchSpan {
     uint32_t blocks_seen = 0;
 };
 
-pthread_mutex_t                        g_span_mutex = PTHREAD_MUTEX_INITIALIZER;
-std::unordered_map<uint64_t, LaunchMeta> g_launch_meta;   // written by the callback thread
-std::unordered_map<uint64_t, LaunchSpan> g_launch_span;   // written by the recv thread
+pthread_mutex_t                          g_span_mutex = PTHREAD_MUTEX_INITIALIZER;
+std::unordered_map<uint64_t, LaunchMeta> g_launch_meta;  // written by the callback thread
+std::unordered_map<uint64_t, LaunchSpan> g_launch_span;  // written by the recv thread
 
 // (globaltimer, CLOCK_REALTIME) per device, sampled at first launch and at
 // teardown. Two points per GPU is what pcomm-read's per-(rank, domain) fit
@@ -446,8 +446,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
                 nvbit_add_call_arg_const_val32(instr, is_exit ? 1 : 0);
                 nvbit_add_call_arg_const_val32(instr, dev_id);
                 nvbit_add_call_arg_launch_val64(instr, 0);  // grid launch id
-                nvbit_add_call_arg_const_val64(instr,
-                                               (uint64_t)G().ctx_state[ctx]->channel_dev);
+                nvbit_add_call_arg_const_val64(instr, (uint64_t)G().ctx_state[ctx]->channel_dev);
             }
         }
 
@@ -889,7 +888,7 @@ void emit_kernel_spans() {
     // context has been destroyed, and sample_gpu_anchor launches a kernel — it
     // would fail, or worse resurrect a context at exit. They are taken in
     // nvbit_at_ctx_term instead, while the context is still alive.
-    MutexLock lk(g_span_mutex);
+    MutexLock   lk(g_span_mutex);
     std::size_t emitted = 0, unmatched = 0;
     for (const auto& [id, s] : g_launch_span) {
         // A span needs both ends. An entry with no exit means the kernel was
@@ -900,9 +899,9 @@ void emit_kernel_spans() {
             unmatched++;
             continue;
         }
-        auto it = g_launch_meta.find(id);
+        auto              it = g_launch_meta.find(id);
         const LaunchMeta* m = it == g_launch_meta.end() ? nullptr : &it->second;
-        const int dev = m && m->dev_id >= 0 ? m->dev_id : s.dev_id;
+        const int         dev = m && m->dev_id >= 0 ? m->dev_id : s.dev_id;
         pcomm_engine_record_kernel(
             s.t0, s.t1, (uint16_t)(pcomm::core::kDomainGpuTimerBase + (dev < 0 ? 0 : dev)),
             m ? m->name.c_str() : nullptr,
@@ -945,9 +944,9 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 
     if (!is_exit && (cbid == API_CUDA_cuLaunchKernel_ptsz || cbid == API_CUDA_cuLaunchKernel)) {
         auto* p = (cuLaunchKernel_params*)params;
-        handle_launch(ctx, p->f,
-                      {p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
-                       p->blockDimZ});
+        handle_launch(
+            ctx, p->f,
+            {p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY, p->blockDimZ});
     } else if (!is_exit && cbid == API_CUDA_cuLaunchKernelEx) {
         auto* p = (cuLaunchKernelEx_params*)params;
         // cuLaunchKernelEx carries the grid in a config struct instead.
@@ -957,9 +956,9 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
     } else if (!is_exit && (cbid == API_CUDA_cuLaunchCooperativeKernel ||
                             cbid == API_CUDA_cuLaunchCooperativeKernel_ptsz)) {
         auto* p = (cuLaunchCooperativeKernel_params*)params;
-        handle_launch(ctx, p->f,
-                      {p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
-                       p->blockDimZ});
+        handle_launch(
+            ctx, p->f,
+            {p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY, p->blockDimZ});
     } else if (is_exit && cbid == API_CUDA_cuMemAlloc_v2) {
         auto* p = (cuMemAlloc_v2_params*)params;
         handle_alloc(*p->dptr, p->bytesize);

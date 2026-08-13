@@ -30,8 +30,8 @@ typedef struct {
 // firehose they share the ring with.
 //
 // Field mapping, by name so both sides cannot drift:
-#define PCOMM_SPAN_LANE_ID   (-2)
-#define PCOMM_SPAN_LAUNCH(r) ((r).addrs[0])      /* nvbit_set_at_launch id */
-#define PCOMM_SPAN_TICKS(r)  ((r).addrs[1])      /* %globaltimer, ns       */
-#define PCOMM_SPAN_IS_END(r) ((r).opcode_id)     /* 0 = entry, 1 = exit    */
-#define PCOMM_SPAN_BLOCK(r)  ((r).thread_index)  /* flat block index       */
+#define PCOMM_SPAN_LANE_ID (-2)
+#define PCOMM_SPAN_LAUNCH(r) ((r).addrs[0])    /* nvbit_set_at_launch id */
+#define PCOMM_SPAN_TICKS(r) ((r).addrs[1])     /* %globaltimer, ns       */
+#define PCOMM_SPAN_IS_END(r) ((r).opcode_id)   /* 0 = entry, 1 = exit    */
+#define PCOMM_SPAN_BLOCK(r) ((r).thread_index) /* flat block index       */
