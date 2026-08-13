@@ -32,7 +32,7 @@ thing never tested against a real capture.
 | Flow | `ib_post_send` + `mlx5_device_send` | sankey: transport → opcode → size class |
 | Objects | `mem_object` + `gpu_access` | per-object 1D access heatmap, after Snoopie's object view |
 | Source | `source_line` | **empty on every current capture** — needs gpumem with PC→line |
-| Timeline | event counts | deliberately not a timeline; hands off to Perfetto |
+| Timeline | `timeline_span` | canvas, pan + zoom; density bins zoomed out, real spans zoomed in |
 | Ask | any | SQL console; the NL layer will emit into this same path |
 
 The view lives in the URL fragment (`#flow`), so a view is linkable and survives
@@ -65,3 +65,13 @@ review.
 **Numbers arrive as strings.** A JSON number cannot hold a UBIGINT address
 without dropping the low bits, and those addresses are join keys. Cast what you
 need with `num()`; most wide columns should never be cast at all.
+
+**A wall-clock nanosecond is one of those wide columns.** It is ~1.79e18, and a
+float64 — which is what both a JS number and a SQL `DOUBLE` are — has a **256 ns
+ulp** at that magnitude. The timeline's median span is 122 ns, so the first
+version of it rounded every duration in the capture to zero width, in SQL and
+again in the panel. Both halves are fixed the same way: keep the absolute time
+in integers (`HUGEINT` in `timeline_span`, an un-`Number()`ed string in the
+panel) and let the float touch only small deltas. `(1786575955340045312::DOUBLE
++ 122)::BIGINT` returns its input unchanged — that is the whole bug in one
+expression, and it is worth running once before writing anything time-shaped.

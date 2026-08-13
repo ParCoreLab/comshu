@@ -36,7 +36,12 @@
 
   // The view lives in the URL fragment, so a view is linkable and survives a
   // reload — the cheapest thing that makes a tool shareable ("look at #flow").
-  const fromHash = () => VIEWS.find((v) => v.id === location.hash.slice(1))?.id ?? 'matrix';
+  //
+  // Split on ',' because a panel may append its own state after the id: the
+  // timeline writes `#time,<lo>,<hi>` so a zoom is linkable too. Everything
+  // after the first comma belongs to the panel and is opaque here.
+  const fromHash = () =>
+    VIEWS.find((v) => v.id === location.hash.slice(1).split(',')[0])?.id ?? 'matrix';
   let active = $state(fromHash());
   $effect(() => {
     const on = () => (active = fromHash());
