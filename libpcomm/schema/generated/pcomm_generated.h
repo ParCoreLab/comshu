@@ -42,6 +42,8 @@ struct EntityClose;
 
 struct NodeIdentity;
 
+struct GpuKernel;
+
 struct ClockAnchor;
 
 struct IbMemRegion;
@@ -839,6 +841,102 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NodeIdentity FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(NodeIdentity, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuKernel FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t correlation_;
+  uint64_t stream_;
+  uint32_t name_;
+  uint32_t grid_x_;
+  uint32_t grid_y_;
+  uint32_t grid_z_;
+  uint16_t device_;
+  uint16_t block_x_;
+  uint16_t block_y_;
+  uint16_t block_z_;
+  uint8_t source_;
+  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+
+ public:
+  GpuKernel()
+      : temporal_(),
+        correlation_(0),
+        stream_(0),
+        name_(0),
+        grid_x_(0),
+        grid_y_(0),
+        grid_z_(0),
+        device_(0),
+        block_x_(0),
+        block_y_(0),
+        block_z_(0),
+        source_(0),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  GpuKernel(const pcomm::fb::Temporal &_temporal, uint64_t _correlation, uint64_t _stream, uint32_t _name, uint32_t _grid_x, uint32_t _grid_y, uint32_t _grid_z, uint16_t _device, uint16_t _block_x, uint16_t _block_y, uint16_t _block_z, uint8_t _source)
+      : temporal_(_temporal),
+        correlation_(::flatbuffers::EndianScalar(_correlation)),
+        stream_(::flatbuffers::EndianScalar(_stream)),
+        name_(::flatbuffers::EndianScalar(_name)),
+        grid_x_(::flatbuffers::EndianScalar(_grid_x)),
+        grid_y_(::flatbuffers::EndianScalar(_grid_y)),
+        grid_z_(::flatbuffers::EndianScalar(_grid_z)),
+        device_(::flatbuffers::EndianScalar(_device)),
+        block_x_(::flatbuffers::EndianScalar(_block_x)),
+        block_y_(::flatbuffers::EndianScalar(_block_y)),
+        block_z_(::flatbuffers::EndianScalar(_block_z)),
+        source_(::flatbuffers::EndianScalar(_source)),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t correlation() const {
+    return ::flatbuffers::EndianScalar(correlation_);
+  }
+  uint64_t stream() const {
+    return ::flatbuffers::EndianScalar(stream_);
+  }
+  uint32_t name() const {
+    return ::flatbuffers::EndianScalar(name_);
+  }
+  uint32_t grid_x() const {
+    return ::flatbuffers::EndianScalar(grid_x_);
+  }
+  uint32_t grid_y() const {
+    return ::flatbuffers::EndianScalar(grid_y_);
+  }
+  uint32_t grid_z() const {
+    return ::flatbuffers::EndianScalar(grid_z_);
+  }
+  uint16_t device() const {
+    return ::flatbuffers::EndianScalar(device_);
+  }
+  uint16_t block_x() const {
+    return ::flatbuffers::EndianScalar(block_x_);
+  }
+  uint16_t block_y() const {
+    return ::flatbuffers::EndianScalar(block_y_);
+  }
+  uint16_t block_z() const {
+    return ::flatbuffers::EndianScalar(block_z_);
+  }
+  uint8_t source() const {
+    return ::flatbuffers::EndianScalar(source_);
+  }
+};
+FLATBUFFERS_STRUCT_END(GpuKernel, 96);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) ClockAnchor FLATBUFFERS_FINAL_CLASS {
  private:

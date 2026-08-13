@@ -24,6 +24,7 @@ type_id	kind	version	name
 520	entity	1	mem_object
 522	event	1	entity_close
 524	entity	1	node_identity
+530	event	1	gpu_kernel
 590	artifact	1	clock_anchor
 700	event	1	gpu_access
 740	artifact	1	source_line

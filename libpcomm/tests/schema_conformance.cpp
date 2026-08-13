@@ -39,6 +39,7 @@ PCOMM_SCHEMA_MATCH(cr::EntityClose, fb::EntityClose);
 PCOMM_SCHEMA_MATCH(cr::SourceLine, fb::SourceLine);
 PCOMM_SCHEMA_MATCH(cr::Attribution, fb::Attribution);
 PCOMM_SCHEMA_MATCH(cr::NodeIdentity, fb::NodeIdentity);
+PCOMM_SCHEMA_MATCH(cr::GpuKernel, fb::GpuKernel);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
 PCOMM_SCHEMA_MATCH(cr::InternKey, fb::InternKey);
 PCOMM_SCHEMA_MATCH(cr::InternString, fb::InternString);
@@ -232,6 +233,30 @@ int main() {
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
             0x0123456789ABCDEFull);
         expect_identical("NodeIdentity", &c, &f, sizeof(c));
+    }
+    {
+        // Every field distinct and non-zero: the tail hole after `source` is
+        // where a layout disagreement would hide, and a struct of mostly zeroes
+        // would compare equal across one.
+        Stamped<cr::GpuKernel> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1000}, {1, 0x2000});
+        c.payload.correlation = 0x1122334455667788ull;
+        c.payload.stream = 0x99AABBCCDDEEFF00ull;
+        c.payload.name = 0x12345678u;
+        c.payload.grid_x = 0x11111111u;
+        c.payload.grid_y = 0x22222222u;
+        c.payload.grid_z = 0x33333333u;
+        c.payload.device = 0x4444;
+        c.payload.block_x = 0x5555;
+        c.payload.block_y = 0x6666;
+        c.payload.block_z = 0x7777;
+        c.payload.source = static_cast<std::uint8_t>(pcomm::core::KernelSource::NvbitGlobaltimer);
+        fb::GpuKernel f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1000), fb::TimePoint(1, 0x2000),
+                         0),
+            0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, 0x12345678u, 0x11111111u, 0x22222222u,
+            0x33333333u, 0x4444, 0x5555, 0x6666, 0x7777, 1);
+        expect_identical("GpuKernel", &c, &f, sizeof(c));
     }
     {
         Stamped<cr::ClockAnchor> c{};

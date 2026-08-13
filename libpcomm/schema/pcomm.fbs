@@ -206,6 +206,32 @@ struct NodeIdentity {
   node_hash:uint64;
 }
 
+// type 530, Event. One kernel's EXECUTION window on the device.
+//
+// In the internal range rather than the reserved cupti 300s because that range
+// names an instrument and this record has two: NVBit takes the process's only
+// CUPTI subscriber slot, so a capture with gpumem loaded must get the same fact
+// from an injected globaltimer instead. `source` says which. See
+// core/records.hpp and core/vocab.hpp's KernelSource.
+//
+// [a, b] is EXECUTION. Submission is a different quantity — 9-13 ms away from
+// it on kernels lasting 11-20 us — and is only ever present as
+// source = HostSubmit.
+struct GpuKernel {
+  temporal:Temporal;
+  correlation:uint64;  // joins submission to execution; 0 when unavailable
+  stream:uint64;       // CUstream
+  name:uint32;         // interned demangled symbol
+  grid_x:uint32;
+  grid_y:uint32;
+  grid_z:uint32;
+  device:uint16;
+  block_x:uint16;
+  block_y:uint16;
+  block_z:uint16;
+  source:uint8;        // KernelSource: which instrument produced [a, b]
+}
+
 // type 590, Artifact. Clock-domain calibration anchor.
 struct ClockAnchor {
   temporal:Temporal;

@@ -180,6 +180,45 @@ PCOMM_RECORD(NodeIdentity, RecordKind::Entity, 524, "node_identity") {
     std::uint64_t node_hash;  // FNV-1a of the hostname; 0 if it could not be read
 };
 
+// EVENT — one kernel's EXECUTION, [start, end] on the device.
+//
+// Id 530, in the internal range beside MemObject/EntityClose/NodeIdentity, and
+// that placement is the argument. `id_range::cupti_lo = 300` was reserved for
+// this and it is the wrong home: it names an INSTRUMENT, and this record has
+// two of them. Measured (tests/hpc/probes/kerneltime, MN5 job 44546506): NVBit
+// dlopens libcupti and takes the process's single CUPTI subscriber slot, so
+// CUPTI capture and gpumem are mutually exclusive. A capture must still know
+// when kernels ran under either, which makes this the engine's record with
+// providers feeding it — the same conclusion object tracking reached in
+// PLAN-20260810-0505, for the same reason: "does this capture know X" must not
+// answer "only if you ran NVBit".
+//
+// **The interval is EXECUTION, never submission.** They are not near each
+// other: in the async regime every real workload uses, the launch API call
+// precedes execution by 9-13 ms while the kernels themselves last 11-20 us —
+// roughly 800x the kernel's own duration. A submission-timed row is legal here
+// only with `source = HostSubmit`, which exists so that row can be excluded
+// rather than silently drawn as a lifetime.
+//
+// Field order is largest-first so the struct packs to 48 B with one tail hole,
+// matching the FlatBuffers struct byte for byte (schema_conformance checks it).
+PCOMM_RECORD(GpuKernel, RecordKind::Event, 530, "gpu_kernel") {
+    // Joins a submission to its execution when both are recorded. CUPTI's
+    // correlationId natively; a launch-site counter for the other sources. 0
+    // when the source cannot supply one.
+    std::uint64_t correlation;
+    std::uint64_t stream;  // CUstream — the lane within a device
+    Handle        name;    // interned demangled symbol
+    std::uint32_t grid_x;
+    std::uint32_t grid_y;
+    std::uint32_t grid_z;
+    DeviceId      device;
+    std::uint16_t block_x;
+    std::uint16_t block_y;
+    std::uint16_t block_z;
+    std::uint8_t  source;  // KernelSource — which instrument produced [a, b]
+};
+
 PCOMM_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {
     DomainId      domain;
     Ticks         local_ticks;  // domain clock (TSC / GPU globaltimer)
