@@ -76,14 +76,22 @@
   // makes overlap-vs-serialisation readable at a glance. The rows arrive on
   // their own clock domain and are already aligned by _clock — see
   // PLAN-20260813-0600.
+  //
+  // ib_wr_flight sits directly under ib_post_send because it STARTS at a send:
+  // its left edge lines up with the mark above it, so "this send, that long"
+  // reads without tracing across the stack. It is the one lane that is a
+  // duration rather than an event — every other lane says something happened,
+  // this one says how long it took — which is why it earns the position next to
+  // the lane it explains rather than a slot at the bottom.
   const STREAMS = [
     'gpu_kernel',
-    'ib_post_send', 'mlx5_doorbell', 'mlx5_device_send',
+    'ib_post_send', 'ib_wr_flight', 'mlx5_doorbell', 'mlx5_device_send',
     'ib_post_recv', 'ib_recv_cqe', 'ib_poll_cq', 'gpu_access',
   ];
   const SHORT = {
     gpu_kernel: 'kernel',
-    ib_post_send: 'send', ib_poll_cq: 'poll', ib_post_recv: 'recv',
+    ib_post_send: 'send', ib_wr_flight: 'flight', ib_poll_cq: 'poll',
+    ib_post_recv: 'recv',
     ib_recv_cqe: 'cqe', mlx5_device_send: 'dsend', mlx5_doorbell: 'db',
     gpu_access: 'gpu',
   };
@@ -441,6 +449,11 @@
     return () => ro.disconnect();
   });
 
+  // A flight span's width IS the completion latency, and calling it "dur" makes
+  // the one lane that answers "how long did this take" read like the eight that
+  // answer "how long did this call take".
+  const durLabel = (stream) => (stream === 'ib_wr_flight' ? 'latency' : 'dur');
+
   const tip = $derived.by(() => {
     if (!hover) return null;
     const { r: d, rank, stream, asSpan } = hover;
@@ -454,12 +467,12 @@
       const epLabel = stream === 'gpu_kernel' ? 'gpu'
                     : stream === 'gpu_access' ? 'dev'
                     : 'qp';
-      return [head, `t ${fmtT(num(d.t0_ns))}`, `dur ${fmtDur(dur)}`,
+      return [head, `t ${fmtT(num(d.t0_ns))}`, `${durLabel(stream)} ${fmtDur(dur)}`,
               `${epLabel} ${d.ep}`,
               d.bytes === null ? null : bytes(num(d.bytes))].filter(Boolean);
     }
     return [head, `t ${fmtT(view.lo + (num(d.px) / PX) * (view.hi - view.lo))}`,
-            `${count(num(d.n))} events`, `max dur ${fmtDur(num(d.dmax))}`,
+            `${count(num(d.n))} events`, `max ${durLabel(stream)} ${fmtDur(num(d.dmax))}`,
             num(d.bytes) ? bytes(num(d.bytes)) : null].filter(Boolean);
   });
 
