@@ -3,6 +3,13 @@
 # record model. Requires libibverbs headers (infiniband/verbs.h).
 
 find_library(IBVERBS_LIB NAMES ibverbs REQUIRED)
+# The HEADERS are located, not assumed to be on the default include path. They
+# were: the provider linked against a found libibverbs.so while `#include
+# <infiniband/verbs.h>` relied on /usr/include, so a host with the runtime and
+# no -devel package configured cleanly and then failed at the first compile.
+# That is the host tools/get_devheaders.sh exists for — it extracts rdma-core
+# into .tools/sysroot, which reaches the compiler only through this.
+find_path(IBVERBS_INCLUDE_DIR infiniband/verbs.h REQUIRED)
 
 # mlx5dv.h is OPTIONAL, and the option is the point: the CQE probe in
 # mlx5_cqe.hpp reads a Mellanox-specific ring layout, so a host without the
@@ -10,8 +17,13 @@ find_library(IBVERBS_LIB NAMES ibverbs REQUIRED)
 # unavailable rather than being quietly compiled out. libmlx5 is NOT linked;
 # mlx5dv_init_obj is resolved with dlsym at runtime, so this adds a header
 # dependency and no DT_NEEDED.
+#
+# Checked WITH the located include dir, or a sysroot build would find verbs.h
+# and then decide mlx5dv.h is missing while it sits in the same directory.
 include(CheckIncludeFileCXX)
+set(CMAKE_REQUIRED_INCLUDES ${IBVERBS_INCLUDE_DIR})
 check_include_file_cxx("infiniband/mlx5dv.h" PCOMM_HAVE_MLX5DV_HEADER)
+unset(CMAKE_REQUIRED_INCLUDES)
 
 add_library(ibverbs_trace SHARED
   ibverbs_provider.cpp
@@ -20,7 +32,7 @@ add_library(ibverbs_trace SHARED
   mlx5_cqe.cpp
 )
 set_target_properties(ibverbs_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "ibverbs_trace")
-target_include_directories(ibverbs_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(ibverbs_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${IBVERBS_INCLUDE_DIR})
 target_link_libraries(ibverbs_trace PRIVATE pcomm::pcomm pcomm::hook ${IBVERBS_LIB})
 target_compile_definitions(ibverbs_trace PRIVATE
   PCOMM_HAVE_MLX5DV=$<BOOL:${PCOMM_HAVE_MLX5DV_HEADER}>)

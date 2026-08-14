@@ -8,6 +8,10 @@
 
 find_library(MLX5_LIB NAMES mlx5 REQUIRED)
 find_library(IBVERBS_LIB_FOR_MLX5 NAMES ibverbs REQUIRED)
+# Located rather than assumed, for the reason spelled out in the ibverbs
+# provider: a host can carry the runtime .so without the -devel headers, and
+# tools/get_devheaders.sh puts them somewhere only a find_path will reach.
+find_path(MLX5DV_INCLUDE_DIR infiniband/mlx5dv.h REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(mlx5dv_trace SHARED
@@ -19,6 +23,7 @@ add_library(mlx5dv_trace SHARED
 set_target_properties(mlx5dv_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "mlx5dv_trace")
 target_include_directories(mlx5dv_trace PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
+  ${MLX5DV_INCLUDE_DIR}
   ${CMAKE_SOURCE_DIR}/third_party/mlx5/include)
 target_link_libraries(mlx5dv_trace PRIVATE
   pcomm::pcomm pcomm::hook ${MLX5_LIB} ${IBVERBS_LIB_FOR_MLX5} ${CMAKE_DL_LIBS}
