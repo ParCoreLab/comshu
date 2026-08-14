@@ -3,7 +3,7 @@
 Step 0 of `plans/PLAN-20260807-1718-ui-backbone-todo.md`. The UI's derived
 tables, its partitioning, and every "is this fast enough" question are design
 decisions that need **real captures at real scale** to answer. Designing them
-against `tests/data/ib_pingpong-44368973` — 72 KB, two ranks — is how the
+against `tests/data/ib_pingpong-44578115` — 117 KB, two ranks — is how the
 `qp_num` collision class of bug gets rediscovered at demo time.
 
 ## The corpus lives outside the repo, and outside `~/pockt`

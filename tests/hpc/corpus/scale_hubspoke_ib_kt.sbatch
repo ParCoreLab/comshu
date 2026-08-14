@@ -61,6 +61,42 @@ ls -la "$PCOMM_BUILD/gpu-backends/cupti/libcupti_trace.so" || {
   exit 1
 }
 
+# THE BUILD MUST MATCH THE SOURCE THAT IS ABOUT TO BE READ BACK, and nothing
+# checked that. This job refuses a stale *app* binary twenty lines below —
+# "refusing to run a stale or missing binary" — while happily running a stale
+# *pcomm*, which is the same class of defect and the more expensive one: the app
+# being old makes the workload wrong, the tracer being old makes the CAPTURE
+# wrong, in a way only visible three schemas later.
+#
+# Measured, job 44578209: PCOMM_ROOT defaults to ~/pcomm-impl here while the
+# suite's common.sh defaults it to ~/proj/pcomm, so a run right after a sync
+# produced a 619 MB, 64-rank capture written by a schema three bumps behind the
+# tree — ib_post_send at stride 88, and none of ib_port / ib_qp_signalling /
+# ib_post_send_sg present at all. A capture that is merely OLD looks exactly
+# like a capture that is fine until something tries to read a field.
+#
+# Two checks, both cheap, because the hash itself is not reachable from outside
+# the binary: kSchemaHash is a numeric constant, so `strings | grep` for it
+# matches nothing (verified — that version of this guard would have blocked
+# every run instead of the stale ones).
+#
+#   1. the build must live inside the tree it will be read back with
+#   2. the binary must be newer than the schema it claims to write
+if [ "${PCOMM_BUILD#$PCOMM_ROOT/}" = "$PCOMM_BUILD" ]; then
+  echo "!! PCOMM_BUILD=$PCOMM_BUILD is not inside PCOMM_ROOT=$PCOMM_ROOT" >&2
+  echo "   the capture would be written by whatever schema that other tree holds." >&2
+  echo "   submit with:  PCOMM_ROOT=\$HOME/proj/pcomm sbatch \$0" >&2
+  exit 1
+fi
+_hdr="$PCOMM_ROOT/libpcomm/include/pcomm/rec/stream_header.hpp"
+if [ -e "$_hdr" ] && [ "$_hdr" -nt "$PCOMM_BUILD/pcomm/pcomm" ]; then
+  echo "!! $PCOMM_BUILD/pcomm/pcomm is OLDER than $_hdr" >&2
+  echo "   the schema changed after this build; the capture would silently lack fields." >&2
+  echo "   rebuild:  cmake --build $PCOMM_BUILD -j" >&2
+  exit 1
+fi
+echo "=== pcomm build: $PCOMM_BUILD (newer than the schema header, inside PCOMM_ROOT)"
+
 # Same arch-in-the-name discipline as the parent job: a cached binary from the
 # other machine is not a build error, it is a silent wrong answer.
 PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')

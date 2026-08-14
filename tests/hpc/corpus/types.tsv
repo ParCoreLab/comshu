@@ -10,7 +10,10 @@ type_id	kind	version	name
 116	event	1	ib_req_notify_cq
 118	entity	1	ib_address_handle
 120	entity	1	ib_device
+122	entity	1	ib_port
 124	event	1	ib_recv_cqe
+126	entity	1	ib_qp_signalling
+128	event	1	ib_post_send_sg
 200	entity	1	mlx5_umem
 202	entity	1	mlx5_uar
 204	event	1	mlx5_devx_cmd
