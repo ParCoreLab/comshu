@@ -50,6 +50,8 @@ struct IbMemRegion;
 
 struct IbQueuePair;
 
+struct IbQpSignalling;
+
 struct IbCompletionQueue;
 
 struct IbModifyQp;
@@ -58,9 +60,13 @@ struct IbSharedRecvQueue;
 
 struct IbPostSend;
 
+struct IbPostSendSg;
+
 struct IbPostRecv;
 
 struct IbAddressHandle;
+
+struct IbPort;
 
 struct IbDevice;
 
@@ -1116,6 +1122,54 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbQueuePair FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(IbQueuePair, 64);
 
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbQpSignalling FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t qp_;
+  uint32_t qp_num_;
+  uint8_t sq_sig_all_;
+  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+
+ public:
+  IbQpSignalling()
+      : temporal_(),
+        qp_(0),
+        qp_num_(0),
+        sq_sig_all_(0),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  IbQpSignalling(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint32_t _qp_num, uint8_t _sq_sig_all)
+      : temporal_(_temporal),
+        qp_(::flatbuffers::EndianScalar(_qp)),
+        qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        sq_sig_all_(::flatbuffers::EndianScalar(_sq_sig_all)),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t qp() const {
+    return ::flatbuffers::EndianScalar(qp_);
+  }
+  uint32_t qp_num() const {
+    return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint8_t sq_sig_all() const {
+    return ::flatbuffers::EndianScalar(sq_sig_all_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbQpSignalling, 64);
+
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbCompletionQueue FLATBUFFERS_FINAL_CLASS {
  private:
   pcomm::fb::Temporal temporal_;
@@ -1302,9 +1356,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSend FLATBUFFERS_FINAL_CLASS {
   uint32_t rkey_;
   uint32_t length_;
   uint32_t qp_num_;
+  uint32_t send_flags_;
   uint8_t opcode_;
   uint8_t num_sge_;
-  int16_t padding1__;
+  int16_t padding1__;  int32_t padding2__;
 
  public:
   IbPostSend()
@@ -1316,13 +1371,16 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSend FLATBUFFERS_FINAL_CLASS {
         rkey_(0),
         length_(0),
         qp_num_(0),
+        send_flags_(0),
         opcode_(0),
         num_sge_(0),
-        padding1__(0) {
+        padding1__(0),
+        padding2__(0) {
     (void)padding0__;
     (void)padding1__;
+    (void)padding2__;
   }
-  IbPostSend(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint64_t _wr_id, uint64_t _remote_addr, uint32_t _rkey, uint32_t _length, uint32_t _qp_num, uint8_t _opcode, uint8_t _num_sge)
+  IbPostSend(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint64_t _wr_id, uint64_t _remote_addr, uint32_t _rkey, uint32_t _length, uint32_t _qp_num, uint32_t _send_flags, uint8_t _opcode, uint8_t _num_sge)
       : temporal_(_temporal),
         qp_(::flatbuffers::EndianScalar(_qp)),
         padding0__(0),
@@ -1331,11 +1389,14 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSend FLATBUFFERS_FINAL_CLASS {
         rkey_(::flatbuffers::EndianScalar(_rkey)),
         length_(::flatbuffers::EndianScalar(_length)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        send_flags_(::flatbuffers::EndianScalar(_send_flags)),
         opcode_(::flatbuffers::EndianScalar(_opcode)),
         num_sge_(::flatbuffers::EndianScalar(_num_sge)),
-        padding1__(0) {
+        padding1__(0),
+        padding2__(0) {
     (void)padding0__;
     (void)padding1__;
+    (void)padding2__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -1358,6 +1419,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSend FLATBUFFERS_FINAL_CLASS {
   uint32_t qp_num() const {
     return ::flatbuffers::EndianScalar(qp_num_);
   }
+  uint32_t send_flags() const {
+    return ::flatbuffers::EndianScalar(send_flags_);
+  }
   uint8_t opcode() const {
     return ::flatbuffers::EndianScalar(opcode_);
   }
@@ -1365,7 +1429,80 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSend FLATBUFFERS_FINAL_CLASS {
     return ::flatbuffers::EndianScalar(num_sge_);
   }
 };
-FLATBUFFERS_STRUCT_END(IbPostSend, 88);
+FLATBUFFERS_STRUCT_END(IbPostSend, 96);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostSendSg FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t qp_;
+  int32_t padding0__;
+  uint64_t wr_id_;
+  uint64_t addr_;
+  uint32_t length_;
+  uint32_t lkey_;
+  uint32_t qp_num_;
+  uint8_t index_;
+  int8_t padding1__;  int16_t padding2__;
+
+ public:
+  IbPostSendSg()
+      : temporal_(),
+        qp_(0),
+        padding0__(0),
+        wr_id_(0),
+        addr_(0),
+        length_(0),
+        lkey_(0),
+        qp_num_(0),
+        index_(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  IbPostSendSg(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint64_t _wr_id, uint64_t _addr, uint32_t _length, uint32_t _lkey, uint32_t _qp_num, uint8_t _index)
+      : temporal_(_temporal),
+        qp_(::flatbuffers::EndianScalar(_qp)),
+        padding0__(0),
+        wr_id_(::flatbuffers::EndianScalar(_wr_id)),
+        addr_(::flatbuffers::EndianScalar(_addr)),
+        length_(::flatbuffers::EndianScalar(_length)),
+        lkey_(::flatbuffers::EndianScalar(_lkey)),
+        qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        index_(::flatbuffers::EndianScalar(_index)),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t qp() const {
+    return ::flatbuffers::EndianScalar(qp_);
+  }
+  uint64_t wr_id() const {
+    return ::flatbuffers::EndianScalar(wr_id_);
+  }
+  uint64_t addr() const {
+    return ::flatbuffers::EndianScalar(addr_);
+  }
+  uint32_t length() const {
+    return ::flatbuffers::EndianScalar(length_);
+  }
+  uint32_t lkey() const {
+    return ::flatbuffers::EndianScalar(lkey_);
+  }
+  uint32_t qp_num() const {
+    return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint8_t index() const {
+    return ::flatbuffers::EndianScalar(index_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbPostSendSg, 88);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPostRecv FLATBUFFERS_FINAL_CLASS {
  private:
@@ -1547,6 +1684,56 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbAddressHandle FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(IbAddressHandle, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbPort FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t context_;
+  uint32_t lid_;
+  uint8_t port_num_;
+  uint8_t state_;
+  int16_t padding0__;  int32_t padding1__;
+
+ public:
+  IbPort()
+      : temporal_(),
+        context_(0),
+        lid_(0),
+        port_num_(0),
+        state_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  IbPort(const pcomm::fb::Temporal &_temporal, uint32_t _context, uint32_t _lid, uint8_t _port_num, uint8_t _state)
+      : temporal_(_temporal),
+        context_(::flatbuffers::EndianScalar(_context)),
+        lid_(::flatbuffers::EndianScalar(_lid)),
+        port_num_(::flatbuffers::EndianScalar(_port_num)),
+        state_(::flatbuffers::EndianScalar(_state)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t context() const {
+    return ::flatbuffers::EndianScalar(context_);
+  }
+  uint32_t lid() const {
+    return ::flatbuffers::EndianScalar(lid_);
+  }
+  uint8_t port_num() const {
+    return ::flatbuffers::EndianScalar(port_num_);
+  }
+  uint8_t state() const {
+    return ::flatbuffers::EndianScalar(state_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbPort, 64);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbDevice FLATBUFFERS_FINAL_CLASS {
  private:

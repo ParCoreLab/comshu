@@ -18,11 +18,13 @@
 #include <algorithm>
 #include <cstring>
 #include <unistd.h>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -320,6 +322,88 @@ template<> struct Table<ibr::IbQueuePair> {
     }
 };
 
+// ibv_send_flags, spelled. SIGNALED is the bit the send->completion matching
+// depends on; the rest are kept because they change how a send is issued and a
+// raw 10 in a CSV is a value nobody can read.
+inline std::string send_flags_name(std::uint32_t v) {
+    if (!v)
+        return "none";
+    std::string out;
+    auto        bit = [&](std::uint32_t m, const char* n) {
+        if (v & m) {
+            if (!out.empty())
+                out += '|';
+            out += n;
+        }
+    };
+    bit(1, "fence");
+    bit(2, "signaled");
+    bit(4, "solicited");
+    bit(8, "inline");
+    bit(16, "ip_csum");
+    return out.empty() ? "none" : out;
+}
+
+// ibv_port_state, spelled. 4 is ACTIVE and is the only one that means traffic
+// can flow; a LID on a DOWN port explains an absence rather than reporting one.
+// Values from enum ibv_port_state, and they start at ZERO — this table was
+// written off by one and the first real capture printed MN5's active ports as
+// "armed", which is a plausible-looking lie rather than an obvious one. That is
+// the failure mode a name table has: nothing crashes, the wrong word just sits
+// there. Checked against infiniband/verbs.h.
+inline const char* port_state_name(std::uint8_t v) {
+    switch (v) {
+    case 0: return "nop";
+    case 1: return "down";
+    case 2: return "init";
+    case 3: return "armed";
+    case 4: return "active";
+    case 5: return "active_defer";
+    default: return "unknown";
+    }
+}
+
+template<> struct Table<ibr::IbPort> {
+    static constexpr const char* name = "ib_port";
+    static constexpr const char* cols = "ticks,context,port_num,lid,state";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbPort>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.context, s.payload.port_num, s.payload.lid,
+                     port_state_name(s.payload.state));
+    }
+};
+
+// One local buffer of a posted send. `addr` is printed as hex for the reason
+// every address in this file is: it is matched against mem_object ranges by
+// eye at least as often as by query.
+template<> struct Table<ibr::IbPostSendSg> {
+    static constexpr const char* name = "ib_post_send_sg";
+    static constexpr const char* cols = "ticks,qp,wr_id,idx,addr,length,lkey,qp_num";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbPostSendSg>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%llu,%u,0x%llx,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.qp,
+                     (unsigned long long)s.payload.wr_id, s.payload.index,
+                     (unsigned long long)s.payload.addr, s.payload.length, s.payload.lkey,
+                     s.payload.qp_num);
+    }
+};
+
+// sq_sig_all printed as the claim it makes rather than as a bit. "all" means
+// every work request on this queue pair completes, which is what certifies the
+// send->completion matching in _wr_flight; "selective" means the caller decided
+// per work request and the capture cannot say which.
+template<> struct Table<ibr::IbQpSignalling> {
+    static constexpr const char* name = "ib_qp_signalling";
+    static constexpr const char* cols = "ticks,qp,qp_num,sq_sig_all";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbQpSignalling>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%s", (unsigned long long)s.temporal.a.ticks, s.payload.qp,
+                     s.payload.qp_num, s.payload.sq_sig_all ? "all" : "selective");
+    }
+};
+
 // Names for IbCompletionQueue.origin. A raw 1/2 in a CSV is a value nobody
 // checks; these are what let an assertion say "no CQ arrived through the
 // extended door" in words.
@@ -363,12 +447,13 @@ template<> struct Table<ibr::IbModifyQp> {
 template<> struct Table<ibr::IbPostSend> {
     static constexpr const char* name = "ib_post_send";
     static constexpr const char* cols =
-        "ticks,qp,wr_id,remote_addr,rkey,length,qp_num,opcode,num_sge";
+        "ticks,qp,wr_id,remote_addr,rkey,length,qp_num,send_flags,opcode,num_sge";
     static void row(std::FILE* f, const Stamped<ibr::IbPostSend>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%llu,0x%llx,%u,%u,%u,%s,%u",
+        std::fprintf(f, "%llu,%u,%llu,0x%llx,%u,%u,%u,%s,%s,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.qp,
                      (unsigned long long)s.payload.wr_id, (unsigned long long)s.payload.remote_addr,
                      s.payload.rkey, s.payload.length, s.payload.qp_num,
+                     send_flags_name(s.payload.send_flags).c_str(),
                      wr_opcode_name(s.payload.opcode).c_str(), s.payload.num_sge);
     }
 };
@@ -640,6 +725,7 @@ using TableRecords =
                Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
+               ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
                mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend>;
 
@@ -1331,15 +1417,56 @@ int run_link(const fs::path& dir) {
     // The health table is derived like the others but reported here, because a
     // number nobody reads is a number nobody acts on. Every one of these should
     // be zero; a non-zero row is a defect in the link, not in the workload.
+    //
+    // THE TABLE IS NOT A TABLE HERE, and that is why this used to print
+    // nothing — ever. `link` COPYs each kTables entry straight to Parquet; it
+    // never CREATEs any of them as a relation, so `FROM link_health` resolved
+    // against a catalog that has no such name and the query failed with
+    // "Catalog Error: Table with name link_health does not exist!". The error
+    // went into a duckdb_result nobody inspected, so a run with findings and a
+    // run without looked identical. Found on kt-combined-44546852, where
+    // link_health holds wr_flight_unretired = 56656 and `pcomm link` reported a
+    // clean run.
+    //
+    // So the query runs against the same SQL that was just written, by name
+    // lookup into kTables rather than by catalog lookup. Reading it through
+    // duckdb_fetch_chunk rather than duckdb_row_count/duckdb_value_varchar is
+    // the second half: those are the deprecated row API, and this is the one
+    // that is not scheduled for removal.
+    const char* health_sql = nullptr;
+    for (const auto& t : link::kTables)
+        if (std::string_view(t.name) == "link_health")
+            health_sql = t.sql;
+
     duckdb_result res;
-    if (duckdb_query(con, "SELECT finding, n FROM link_health WHERE n > 0", &res) ==
-        DuckDBSuccess) {
-        for (idx_t row = 0; row < duckdb_row_count(&res); ++row) {
-            char* f = duckdb_value_varchar(&res, 0, row);
-            char* n = duckdb_value_varchar(&res, 1, row);
-            std::fprintf(stderr, "pcomm: link_health: %s = %s\n", f ? f : "?", n ? n : "?");
-            duckdb_free(f);
-            duckdb_free(n);
+    if (health_sql &&
+        duckdb_query(con,
+                     ("SELECT finding::VARCHAR, n::VARCHAR FROM (" + std::string(health_sql) +
+                      ") WHERE n > 0")
+                         .c_str(),
+                     &res) == DuckDBSuccess) {
+        auto text = [](duckdb_string_t s) {
+            return duckdb_string_is_inlined(s)
+                       ? std::string(s.value.inlined.inlined, s.value.inlined.length)
+                       : std::string(s.value.pointer.ptr, s.value.pointer.length);
+        };
+        while (duckdb_data_chunk chunk = duckdb_fetch_chunk(res)) {
+            const idx_t rows = duckdb_data_chunk_get_size(chunk);
+            auto*       fv = static_cast<duckdb_string_t*>(
+                duckdb_vector_get_data(duckdb_data_chunk_get_vector(chunk, 0)));
+            auto* nv = static_cast<duckdb_string_t*>(
+                duckdb_vector_get_data(duckdb_data_chunk_get_vector(chunk, 1)));
+            for (idx_t row = 0; row < rows; ++row) {
+                // Reported, not counted as a failure. `failed` drives the exit
+                // code and the "SOME FAILED" banner, and those mean a query did
+                // not run. A finding means a query ran and found something —
+                // including things that are properties of the capture rather
+                // than of the link, like a run that stopped with work in
+                // flight.
+                std::fprintf(stderr, "pcomm: link_health: %s = %s\n", text(fv[row]).c_str(),
+                             text(nv[row]).c_str());
+            }
+            duckdb_destroy_data_chunk(&chunk);
         }
     }
     duckdb_destroy_result(&res);
@@ -1526,9 +1653,410 @@ inline const RankClock& clock_for(const RankClocks& rc, std::uint16_t domain,
     return identity;
 }
 
+// --- one trace model, two encodings ------------------------------------------
+//
+// WHY THIS EXISTS. The Chrome-JSON and protobuf exporters used to answer the
+// same question in two hand-written passes, and they drifted exactly as far as
+// that invites: the JSON grew `args` the pftrace never had, the pftrace grew a
+// kernel lane and send->completion flows the JSON never had, and one capture
+// produced two traces that disagreed about what was in it. Neither drift was a
+// decision; both were a second pass nobody updated.
+//
+// So the model is built ONCE — clocks applied, work requests paired, kernels
+// filtered, lanes ordered, tracks reduced to the ones that carry something —
+// and the two encoders below choose syntax and nothing else. A future exporter
+// is a third encoder, not a third pass.
+//
+// This is the OPPOSITE call to the one made for _wr_flight in link_sql.hpp,
+// and deliberately: that rule is stated twice because its two callers live in
+// different worlds (one must run without DuckDB, one runs over Parquet) and
+// neither can adopt the other. These two callers live in the same file, take
+// the same input and run in the same build. Same reasoning, opposite answer.
+
+enum class Lane : std::uint8_t { Send, Complete, Kernel };
+
+// The endpoint id for the kernels lane. Real queue pairs are 24-bit in
+// practice, but the sentinel is picked from the top of the range rather than
+// from below so it cannot collide with a qp_num on any device.
+constexpr std::uint32_t KERNEL_EP = 0xFFFFFFFFu;
+
+// A slice with nothing left to resolve: no record lookup, no clock arithmetic,
+// no intern dictionary. Everything an encoder could want to write is here,
+// which is what stops one encoder from carrying a field the other forgot.
+struct Slice {
+    std::uint64_t t_ns{};
+    std::uint64_t dur_ns{};
+    int           rank{};
+    std::uint32_t ep{};
+    Lane          lane{};
+    const char*   name{};
+    std::uint64_t flow{};      // 0 = not part of a flow
+    bool          flow_end{};  // true on the completion that closes it
+    // The annotation payload — what makes a slice worth clicking on.
+    std::uint64_t wr_id{};
+    std::uint64_t remote_addr{};
+    std::uint32_t bytes{};
+    std::uint32_t rkey{};
+    std::uint8_t  opcode{};
+    std::uint8_t  status{};
+};
+
+// Bandwidth over time — the question a comm trace gets opened to answer that a
+// pile of slices cannot. A 4-byte send and a 4-MB send are the same mark on a
+// timeline and are not the same event.
+enum class Counter : std::uint8_t { BytesSent, SendRate };
+
+// SAMPLED ON A WINDOW, NOT PER EVENT, and the arithmetic is the reason. A
+// counter sample per send would add one packet per send — 5.8 M on
+// scale_hubspoke_ib_kt-44552862, a 25% packet increase to draw a line whose
+// screen resolution is a few thousand pixels. The window is chosen per rank
+// from its own extent so the sample count is bounded no matter how long the
+// run: TARGET_SAMPLES per rank, floored so a short capture does not sample at
+// nanosecond resolution.
+constexpr std::size_t   COUNTER_TARGET_SAMPLES = 2048;
+constexpr std::uint64_t COUNTER_MIN_WINDOW_NS = 1'000'000;  // 1 ms
+
+struct TraceStats {
+    std::size_t slices{};
+    std::size_t flows{};
+    std::size_t unmatched{};
+    std::size_t unanchored{};
+    std::size_t counters{};
+    std::size_t unsignalled_qps{};    // queue pairs refused for pairing
+    std::size_t unsignalled_sends{};  // sends on them, left with no flow
+};
+
+// Walk the capture and hand the caller, per rank: the rank, then each lane it
+// actually uses, then every slice in TIME ORDER.
+//
+// The ordering is not a courtesy to the encoders, it is load-bearing twice
+// over. Flow matching needs it, because a completion can only retire a send
+// already posted and reading the poll_cq stream whole after the post_send
+// stream whole guarantees the reverse. And the protobuf encoder needs it,
+// because Perfetto asks for monotonic timestamps within a sequence.
+template<class OnRank, class OnLane, class OnSlice, class OnCounter>
+TraceStats build_trace(const std::vector<RankDir>& ranks, const std::vector<RankClocks>& clk,
+                       std::uint64_t origin, OnRank on_rank, OnLane on_lane, OnSlice on_slice,
+                       OnCounter on_counter) {
+    TraceStats st;
+    // Each record through ITS OWN domain's fit — see build_clocks. A verbs
+    // record is domain 0; a kernel record is not, and pushing one through the
+    // other's rate is how a timeline becomes fiction.
+    auto ns = [&](const RankClocks& rc, const core::Temporal& t) {
+        return clock_for(rc, t.a.domain, st.unanchored).wall_at(t.a.ticks) - origin;
+    };
+    auto dur = [&](const RankClocks& rc, const core::Temporal& t) {
+        return static_cast<std::uint64_t>(clock_for(rc, t.a.domain, st.unanchored).dur_ns(t));
+    };
+
+    // A completion names the work request it retires by (qp_num, wr_id) — the
+    // same key ib_post_send stamped when it posted. The map holds a QUEUE per
+    // key rather than one entry because wr_id is caller-chosen and routinely
+    // recycled as a buffer index: completions on a queue pair retire in the
+    // order they were posted, so first-in-first-out matches the right
+    // generation under reuse instead of overwriting it.
+    //
+    // The same rule is stated in SQL as _wr_flight in link_sql.hpp, and
+    // tests/wr_flow_rule.sh is what keeps the two saying the same thing.
+    std::map<std::pair<std::uint32_t, std::uint64_t>, std::deque<std::uint64_t>> pending;
+    std::uint64_t next_flow = 1;
+
+    // Receive completions carry the RECEIVER's wr_id, which names an
+    // ib_post_recv and never a send. Pairing without checking this bit links a
+    // send to whatever unrelated receive happened to reuse the number.
+    constexpr std::uint8_t WC_RECV_BIT = 0x80;
+
+    struct Ev {
+        std::uint64_t t_ns;
+        std::uint64_t dur_ns;
+        std::uint32_t idx;
+        Lane          lane;
+    };
+
+    for (std::size_t i = 0; i < ranks.size(); ++i) {
+        const auto& r = ranks[i];
+        const auto& c = clk[i];
+
+        auto sends = load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r));
+        auto polls = load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r));
+        // Compute, beside the comm. Without this a trace can show that a rank
+        // stopped sending and can never say whether it was working — which is
+        // the whole reason gpu_kernel exists.
+        //
+        // source = 2 (HostSubmit) is excluded for the reason _tl_raw excludes
+        // it: those rows are the launch API call, not the execution, and they
+        // trail the real thing by milliseconds. They must not reach a lane
+        // labelled "kernels".
+        auto kernels = load_stream<GpuKernel>(stream_path<GpuKernel>(r));
+
+        std::vector<Ev> evs;
+        evs.reserve(sends.size() + polls.size() + kernels.size());
+        for (std::size_t k = 0; k < sends.size(); ++k)
+            evs.push_back({ns(c, sends[k].temporal), dur(c, sends[k].temporal),
+                           static_cast<std::uint32_t>(k), Lane::Send});
+        for (std::size_t k = 0; k < polls.size(); ++k)
+            evs.push_back({ns(c, polls[k].temporal), dur(c, polls[k].temporal),
+                           static_cast<std::uint32_t>(k), Lane::Complete});
+        for (std::size_t k = 0; k < kernels.size(); ++k)
+            if (kernels[k].payload.source != 2)
+                evs.push_back({ns(c, kernels[k].temporal), dur(c, kernels[k].temporal),
+                               static_cast<std::uint32_t>(k), Lane::Kernel});
+        std::stable_sort(evs.begin(), evs.end(),
+                         [](const Ev& a, const Ev& b) { return a.t_ns < b.t_ns; });
+
+        // Only lanes that carry something get declared. Declaring one per
+        // ib_queue_pair row instead put 13,461 empty lanes into a 14,387-lane
+        // capture — 93% of the track list, and the reason the kernels lane was
+        // impossible to find in it.
+        // WHICH QUEUE PAIRS MAY BE PAIRED AT ALL.
+        //
+        // FIFO matching is exact — not a heuristic — for one specific reason:
+        // a reliable-connected QP returns completions IN POSTING ORDER, which
+        // is a transport guarantee. So the Nth completion retires the Nth send
+        // and `wr_id` need not be unique. NVSHMEM posts every one of its 5.8 M
+        // work requests with wr_id = 1 and the pairing is still exact.
+        //
+        // THAT HOLDS ONLY IF EVERY WORK REQUEST IS SIGNALLED. An unsignalled WR
+        // produces no CQE; the next signalled completion retires it silently
+        // along with itself. Pairing Nth-to-Nth across those is not slightly
+        // off, it is wrong: it attributes a completion to a send that is not
+        // the one it retired, and prints a latency for it.
+        //
+        // Measured, which is why this guard exists: scale_hubspoke_ib_kt-
+        // 44552862 has equal counts on all 862 queue pairs and pairs exactly,
+        // while kt-combined-44546852 has 3,570 sends against 1,800 completions
+        // on every queue pair — NCCL signalling roughly every second WR. The
+        // second capture had been producing confident, wrong latencies.
+        //
+        // The capture cannot tell us WHICH WRs were signalled: ib_post_send
+        // carries no send_flags and ib_queue_pair no sq_sig_all. Counts are the
+        // only evidence available, so an inequality means "cannot pair this
+        // queue pair" rather than "pair it approximately". A hole you can see
+        // beats a number that looks like a measurement.
+        std::map<std::uint32_t, std::size_t> n_send, n_comp;
+        for (const auto& s : sends)
+            n_send[s.payload.qp_num]++;
+        for (const auto& p : polls)
+            if (!(p.payload.opcode & 0x80))
+                n_comp[p.payload.qp_num]++;
+        std::set<std::uint32_t> pairable;
+        for (const auto& [qp, ns_] : n_send) {
+            const auto it = n_comp.find(qp);
+            if (it != n_comp.end() && it->second == ns_)
+                pairable.insert(qp);
+            else {
+                st.unsignalled_qps++;
+                st.unsignalled_sends += ns_;
+            }
+        }
+
+        std::set<std::uint32_t> live_qps;
+        bool                    any_kernel = false;
+        for (const auto& e : evs) {
+            if (e.lane == Lane::Send)
+                live_qps.insert(sends[e.idx].payload.qp_num);
+            else if (e.lane == Lane::Complete)
+                live_qps.insert(polls[e.idx].payload.qp_num);
+            else
+                any_kernel = true;
+        }
+
+        on_rank(r.rank);
+        // Kernels first, so compute reads at the top of a rank's lanes rather
+        // than under a few hundred queue pairs — the same lane order, and the
+        // same reason, as STREAMS in the Timeline panel.
+        if (any_kernel)
+            on_lane(r.rank, KERNEL_EP, "kernels");
+        for (std::uint32_t qp : live_qps) {
+            char nm[24];
+            std::snprintf(nm, sizeof nm, "QP 0x%x", qp);
+            on_lane(r.rank, qp, nm);
+        }
+
+        // The counter window, from this rank's own extent. Emitted through the
+        // same callback stream as the slices and IN TIME ORDER with them, so an
+        // encoder that needs monotonic timestamps gets them without having to
+        // merge two sequences of its own.
+        // The window opens at the first SEND, not at the first event. Anchoring
+        // it to the first event put the first boundary a millisecond after a
+        // kernel that ran ten milliseconds before any traffic, so the first
+        // sample was emitted at a timestamp already behind the send that
+        // triggered it — one backwards packet per rank, every time.
+        const std::uint64_t span_ns =
+            evs.empty() ? 0 : evs.back().t_ns - evs.front().t_ns;
+        const std::uint64_t window =
+            std::max(COUNTER_MIN_WINDOW_NS, span_ns / COUNTER_TARGET_SAMPLES);
+        std::uint64_t win_end = 0;
+        bool          have_window = false;
+        std::uint64_t cum_bytes = 0;  // whole capture, for the cumulative track
+        std::uint64_t win_bytes = 0;  // this window only, for the rate track
+
+        auto flush_window = [&](std::uint64_t at) {
+            on_counter(r.rank, Counter::BytesSent, at, static_cast<std::int64_t>(cum_bytes));
+            // Bytes per window -> MB/s. Integer megabytes per second: the track
+            // is read for shape and magnitude, and a double here would buy
+            // precision the sampling has already spent.
+            const auto rate = static_cast<std::int64_t>(win_bytes * 1000000000ull /
+                                                        (window ? window : 1) / 1000000ull);
+            on_counter(r.rank, Counter::SendRate, at, rate);
+            st.counters += 2;
+            win_bytes = 0;
+        };
+
+        for (const auto& e : evs) {
+            // Close every window this event has passed, so a quiet stretch
+            // reads as zero rather than as a gap the UI interpolates across.
+            // Each boundary is emitted at win_end, and win_end is always past
+            // the previous event by construction, so these stay in order with
+            // the slices around them.
+            while (have_window && e.t_ns >= win_end) {
+                flush_window(win_end);
+                win_end += window;
+            }
+            Slice s;
+            s.t_ns = e.t_ns;
+            s.dur_ns = e.dur_ns;
+            s.rank = r.rank;
+            s.lane = e.lane;
+            switch (e.lane) {
+            case Lane::Send: {
+                const auto& p = sends[e.idx].payload;
+                s.ep = p.qp_num;
+                // The name is the OPERATION, with the size in an annotation
+                // rather than in the text. Encoding it into the name ("send
+                // 4096B") splits Perfetto's own `select name, sum(dur) group by
+                // name` into one row per message size, which turns the first
+                // question anyone asks of a trace into nonsense.
+                s.name = "send";
+                s.wr_id = p.wr_id;
+                s.remote_addr = p.remote_addr;
+                s.bytes = p.length;
+                s.rkey = p.rkey;
+                s.opcode = p.opcode;
+                if (pairable.count(p.qp_num)) {
+                    s.flow = next_flow++;
+                    pending[{p.qp_num, p.wr_id}].push_back(s.flow);
+                }
+                cum_bytes += p.length;
+                win_bytes += p.length;
+                if (!have_window) {
+                    have_window = true;
+                    win_end = e.t_ns + window;
+                }
+                break;
+            }
+            case Lane::Complete: {
+                const auto& p = polls[e.idx].payload;
+                s.ep = p.qp_num;
+                s.name = "complete";
+                s.wr_id = p.wr_id;
+                s.bytes = p.byte_len;
+                s.opcode = p.opcode;
+                s.status = p.status;
+                s.flow_end = true;
+                if (!(p.opcode & WC_RECV_BIT) && pairable.count(p.qp_num)) {
+                    auto it = pending.find({p.qp_num, p.wr_id});
+                    if (it != pending.end() && !it->second.empty()) {
+                        s.flow = it->second.front();
+                        it->second.pop_front();
+                        if (it->second.empty())
+                            pending.erase(it);
+                        st.flows++;
+                    } else {
+                        st.unmatched++;
+                    }
+                }
+                break;
+            }
+            case Lane::Kernel: {
+                const auto& p = kernels[e.idx].payload;
+                s.ep = KERNEL_EP;
+                // Name it from the KernelName domain explicitly: interned
+                // handles restart at 1 in EVERY domain, so the defaulted
+                // one-argument str() resolves a valid handle to "" with no
+                // error. Table<GpuKernel> carries the same note.
+                const char* kn = r.str(rec::InternDomain::KernelName, p.name);
+                s.name = (kn && *kn) ? kn : "kernel";
+                break;
+            }
+            }
+            on_slice(s);
+            st.slices++;
+        }
+        // The last partial window. Without it the cumulative track stops short
+        // of the total this rank actually sent, which is the one number on it
+        // anybody reads off the right-hand edge.
+        if (have_window)
+            flush_window(evs.back().t_ns);
+        // Sends still outstanding at the end of a rank belong to that rank, not
+        // to the next one: (qp_num, wr_id) is only unique within a process.
+        pending.clear();
+    }
+    return st;
+}
+
+// What both encoders say when a capture could not be placed on a wall clock, or
+// when a completion named no send. Shared so the two cannot report a different
+// story about the same capture.
+inline void report_trace_stats(const TraceStats& st) {
+    if (st.unanchored)
+        std::fprintf(stderr,
+                     "pcomm: %zu events had no clock anchor for their domain and are placed at "
+                     "their raw tick — the capture is missing a ClockAnchor row\n",
+                     st.unanchored);
+    // Unmatched send-side completions are a finding about the capture, not a
+    // rounding error: every one is a completion whose (qp_num, wr_id) named no
+    // post_send this capture recorded. A handful means a trace that starts
+    // mid-flight; a lot means the send path was not instrumented.
+    if (st.unmatched)
+        std::fprintf(stderr,
+                     "pcomm: %zu send-side completions matched no post_send by (qp_num, wr_id) "
+                     "and carry no flow\n",
+                     st.unmatched);
+    // Not a warning about the tool — a statement about the capture, and the
+    // reason a lane is missing rather than wrong.
+    if (st.unsignalled_qps)
+        std::fprintf(stderr,
+                     "pcomm: %zu queue pairs post more work requests than they complete "
+                     "(%zu sends) — unsignalled WRs, so no completion can be attributed to a "
+                     "specific send and these carry no flow\n",
+                     st.unsignalled_qps, st.unsignalled_sends);
+}
+
+// A JSON string body. Kernel names come from the capture's intern dictionary,
+// which is to say from whatever the application named its kernels — a demangled
+// C++ name is JSON-safe by luck rather than by rule, and one stray quote turns
+// the whole trace into a parse error at load time rather than a bad label.
+inline std::string json_escape(const char* s) {
+    std::string out;
+    for (const char* p = s; p && *p; ++p) {
+        switch (*p) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (static_cast<unsigned char>(*p) < 0x20) {
+                char esc[8];
+                std::snprintf(esc, sizeof esc, "\\u%04x", *p);
+                out += esc;
+            } else {
+                out += *p;
+            }
+        }
+    }
+    return out;
+}
+
 // --- Perfetto / Chrome JSON trace --------------------------------------------
-// One process per rank, one thread per QP; post_send/poll_cq become slices
-// (instants when the record carries no interval). Load in https://ui.perfetto.dev.
+// One process per rank, one thread per lane; every slice the model produces,
+// with its annotations. Load in https://ui.perfetto.dev.
+//
+// The JSON encoding has no flow ids here on purpose: Chrome's flow events are a
+// separate ph:"s"/"f" record pair rather than a field on the slice, and the
+// pftrace is the format that gets loaded when someone wants the arrows. What
+// the two DO share is every slice, every lane and every annotation.
 int export_perfetto(const fs::path& root, const fs::path& outfile) {
     auto ranks = scan_ranks(root);
     if (ranks.empty()) {
@@ -1549,81 +2077,70 @@ int export_perfetto(const fs::path& root, const fs::path& outfile) {
             std::fputs(",\n", f);
         first = false;
     };
-    // Each record is read through ITS OWN domain's fit — see build_clocks. A
-    // verbs record is domain 0; a kernel record is not, and pushing one through
-    // the other's rate is how a timeline becomes fiction.
-    std::size_t unanchored = 0;
-    auto        us = [&](const RankClocks& rc, const core::Temporal& t) {
-        return static_cast<double>(clock_for(rc, t.a.domain, unanchored).wall_at(t.a.ticks) -
-                                          origin) /
-               1000.0;  // ns -> µs
-    };
-    auto dur_us = [&](const RankClocks& rc, const core::Temporal& t) {
-        return clock_for(rc, t.a.domain, unanchored).dur_ns(t) / 1000.0;
+    // Chrome JSON has no track hierarchy: a lane is a thread of a process, so
+    // the rank is the pid and the endpoint is the tid. KERNEL_EP is 2^32-1,
+    // which is a valid tid and cannot collide with a queue pair.
+    auto lane_args = [&](const Slice& s) {
+        // Every field the model carries, on every slice, unconditionally. The
+        // JSON used to print a different arg set per lane and the pftrace
+        // printed none, which is how a reader ended up having to know which
+        // exporter they were looking at.
+        std::fprintf(f,
+                     ",\"args\":{\"wr\":%llu,\"bytes\":%u,\"opcode\":%u,\"status\":%u,"
+                     "\"rkey\":%u,\"remote_addr\":\"0x%llx\"}}",
+                     (unsigned long long)s.wr_id, s.bytes, s.opcode, s.status, s.rkey,
+                     (unsigned long long)s.remote_addr);
     };
 
-    std::size_t n_ev = 0;
-    for (std::size_t i = 0; i < ranks.size(); ++i) {
-        const auto& r = ranks[i];
-        const auto& c = clk[i];
-        sep();
-        std::fprintf(f,
-                     "{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":%d,"
-                     "\"args\":{\"name\":\"rank %d\"}}",
-                     r.rank, r.rank);
-        std::unordered_map<std::uint32_t, bool> seen;
-        for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
-            if (seen.emplace(s.payload.qp_num, true).second) {
-                sep();
+    const auto st = build_trace(
+        ranks, clk, origin,
+        [&](int rank) {
+            sep();
+            std::fprintf(f,
+                         "{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":%d,"
+                         "\"args\":{\"name\":\"rank %d\"}}",
+                         rank, rank);
+        },
+        [&](int rank, std::uint32_t ep, const char* name) {
+            sep();
+            std::fprintf(f,
+                         "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":%d,\"tid\":%u,"
+                         "\"args\":{\"name\":\"%s\"}}",
+                         rank, ep, name);
+        },
+        [&](const Slice& s) {
+            sep();
+            const double ts = static_cast<double>(s.t_ns) / 1000.0;  // ns -> µs
+            if (s.dur_ns)
                 std::fprintf(f,
-                             "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":%d,\"tid\":%u,"
-                             "\"args\":{\"name\":\"QP 0x%x\"}}",
-                             r.rank, s.payload.qp_num, s.payload.qp_num);
-            }
-        }
-        for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
-            sep();
-            double ts = us(c, s.temporal), d = dur_us(c, s.temporal);
-            if (d > 0)
-                std::fprintf(
-                    f,
-                    "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
-                    "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
-                    r.rank, s.payload.qp_num, ts, d, s.payload.length, s.payload.opcode,
-                    s.payload.length, (unsigned long long)s.payload.wr_id);
+                             "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
+                             "\"name\":\"%s\"",
+                             s.rank, s.ep, ts, static_cast<double>(s.dur_ns) / 1000.0,
+                             json_escape(s.name).c_str());
             else
-                std::fprintf(
-                    f,
-                    "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
-                    "\"name\":\"send %uB\",\"args\":{\"opcode\":%u,\"bytes\":%u,\"wr\":%llu}}",
-                    r.rank, s.payload.qp_num, ts, s.payload.length, s.payload.opcode,
-                    s.payload.length, (unsigned long long)s.payload.wr_id);
-            n_ev++;
-        }
-        for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
+                std::fprintf(f,
+                             "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
+                             "\"name\":\"%s\"",
+                             s.rank, s.ep, ts, json_escape(s.name).c_str());
+            lane_args(s);
+        },
+        [&](int rank, Counter kind, std::uint64_t t_ns, std::int64_t value) {
             sep();
-            double ts = us(c, s.temporal), d = dur_us(c, s.temporal);
-            if (d > 0)
-                std::fprintf(
-                    f,
-                    "{\"ph\":\"X\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,\"dur\":%.3f,"
-                    "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
-                    r.rank, s.payload.qp_num, ts, d, s.payload.status, s.payload.opcode,
-                    s.payload.byte_len);
-            else
-                std::fprintf(
-                    f,
-                    "{\"ph\":\"i\",\"s\":\"t\",\"pid\":%d,\"tid\":%u,\"ts\":%.3f,"
-                    "\"name\":\"complete\",\"args\":{\"status\":%u,\"opcode\":%u,\"bytes\":%u}}",
-                    r.rank, s.payload.qp_num, ts, s.payload.status, s.payload.opcode,
-                    s.payload.byte_len);
-            n_ev++;
-        }
-    }
+            // Chrome JSON counters are ph:"C" with the series in args. One
+            // counter name per rank; Perfetto stacks them under the process.
+            std::fprintf(f,
+                         "{\"ph\":\"C\",\"pid\":%d,\"ts\":%.3f,\"name\":\"%s\","
+                         "\"args\":{\"%s\":%lld}}",
+                         rank, static_cast<double>(t_ns) / 1000.0,
+                         kind == Counter::BytesSent ? "bytes sent" : "send MB/s",
+                         kind == Counter::BytesSent ? "bytes" : "MB/s", (long long)value);
+        });
+
     std::fputs("\n]}\n", f);
     std::fclose(f);
     std::printf("pcomm: %zu ranks, %zu events -> %s (load in ui.perfetto.dev)\n", ranks.size(),
-                n_ev, outfile.c_str());
+                st.slices, outfile.c_str());
+    report_trace_stats(st);
     return 0;
 }
 
@@ -1647,6 +2164,17 @@ struct PB {
         tag(field, 0);
         varint(v);
     }
+    // Fixed-width 64-bit (wire type 1), for the two fields that demand it:
+    // TrackEvent.flow_ids (47) and .terminating_flow_ids (48) are declared
+    // `repeated fixed64`. Their deprecated twins at 36 and 42 are the varint
+    // ones. Encoding a flow id as a varint under field 47 yields a packet
+    // Perfetto ingests without complaint and draws no arrow for, which is a
+    // silent failure worth one method to avoid.
+    void f64(int field, std::uint64_t v) {
+        tag(field, 1);
+        for (int i = 0; i < 8; ++i)
+            b.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+    }
     void str(int field, const std::string& s) {
         tag(field, 2);
         varint(s.size());
@@ -1667,7 +2195,13 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
     }
     auto [clk, origin] = build_clocks(ranks);
 
-    constexpr std::uint64_t SEQ = 1;
+    // Sequence 1 carries the track descriptors; every rank gets its own
+    // sequence for events. Perfetto asks that packets be timestamp-ordered
+    // WITHIN a sequence, not across the trace, so a sequence per rank is what
+    // lets 64 ranks interleave without any of them going backwards. The
+    // per-rank sort below is what makes each one actually monotonic.
+    constexpr std::uint64_t SEQ_DESC = 1;
+    auto rank_seq = [](std::size_t i) { return static_cast<std::uint64_t>(i) + 2; };
     auto rank_uuid = [](int rank) { return static_cast<std::uint64_t>(rank) + 1; };
     auto qp_uuid = [](int rank, std::uint32_t qp) {
         return (static_cast<std::uint64_t>(rank) + 1) * 0x100000000ull + qp;
@@ -1679,15 +2213,13 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
     auto kernel_uuid = [](int rank) {
         return 0x8000000000000000ull + static_cast<std::uint64_t>(rank) + 1;
     };
-    // Each record through its own domain's fit — see build_clocks.
-    std::size_t unanchored = 0;
-    auto        ns = [&](const RankClocks& rc, const core::Temporal& t) {
-        return clock_for(rc, t.a.domain, unanchored).wall_at(t.a.ticks) - origin;
+    // Counter tracks get a third disjoint uuid space: bit 62, two per rank.
+    // qp_uuid occupies (rank+1)<<32 | qp and kernel_uuid sets bit 63, so none
+    // of the three can collide however many ranks or queue pairs a run has.
+    auto counter_uuid = [](int rank, Counter k) {
+        return 0x4000000000000000ull + (static_cast<std::uint64_t>(rank) + 1) * 2 +
+               static_cast<std::uint64_t>(k);
     };
-    auto dur = [&](const RankClocks& rc, const core::Temporal& t) {
-        return static_cast<std::uint64_t>(clock_for(rc, t.a.domain, unanchored).dur_ns(t));
-    };
-
     PB   trace;
     auto track = [&](std::uint64_t uuid, const std::string& name, std::uint64_t parent) {
         PB td;
@@ -1697,86 +2229,160 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
             td.u64(5, parent);
         PB pkt;
         pkt.msg(60, td);
-        pkt.u64(10, SEQ);
+        pkt.u64(10, SEQ_DESC);
         trace.msg(1, pkt);
     };
-    auto slice = [&](std::uint64_t track_uuid, std::uint64_t t_ns, std::uint64_t dur_ns,
-                     const std::string& name) {
-        PB beg;
-        beg.u64(9, dur_ns ? 1u : 3u);
-        beg.u64(11, track_uuid);
-        beg.str(23, name);  // BEGIN|INSTANT
-        PB p1;
-        p1.u64(8, t_ns);
-        p1.msg(11, beg);
-        p1.u64(10, SEQ);
-        trace.msg(1, p1);
-        if (dur_ns) {
-            PB end;
-            end.u64(9, 2u);
-            end.u64(11, track_uuid);  // SLICE_END
-            PB p2;
-            p2.u64(8, t_ns + dur_ns);
-            p2.msg(11, end);
-            p2.u64(10, SEQ);
-            trace.msg(1, p2);
+    // A counter track. TrackDescriptor.counter is field 8; inside
+    // CounterDescriptor, unit is 3 (UNIT_SIZE_BYTES = 3), unit_name is 6 and
+    // is_incremental is 5. is_incremental stays FALSE: the samples below carry
+    // absolute values, and telling Perfetto they are deltas would make the
+    // cumulative track climb as the square of the traffic.
+    auto counter_track = [&](std::uint64_t uuid, const std::string& name, std::uint64_t parent,
+                             bool bytes) {
+        PB cd;
+        if (bytes)
+            cd.u64(3, 3);  // unit = UNIT_SIZE_BYTES
+        else
+            cd.str(6, "MB/s");  // unit_name
+        cd.u64(5, 0);           // is_incremental = false
+        PB td;
+        td.u64(1, uuid);
+        td.str(2, name);
+        td.u64(5, parent);
+        td.msg(8, cd);
+        PB pkt;
+        pkt.msg(60, td);
+        pkt.u64(10, SEQ_DESC);
+        trace.msg(1, pkt);
+    };
+    // One annotation. DebugAnnotation.name is field 10 (string) and the value
+    // fields are a oneof: uint_value 3, pointer_value 7. An address goes in as
+    // a pointer so Perfetto renders it as hex rather than as a 15-digit
+    // decimal nobody can match against an mr.
+    auto annot = [](PB& ev, const char* key, std::uint64_t v, bool pointer = false) {
+        PB da;
+        da.str(10, key);
+        da.u64(pointer ? 7 : 3, v);
+        ev.msg(4, da);  // TrackEvent.debug_annotations
+    };
+    // BEGIN and END are emitted as separate packets from a single ordered list
+    // rather than as a pair, because they are ordered independently: a slice
+    // lasting 17 ms ends long after the next slice begins, and emitting its END
+    // straight after its BEGIN walks the sequence backwards. Perfetto asks for
+    // monotonic timestamps within a sequence, and a pair cannot give that.
+    //
+    // The flow ids and the annotations both ride the BEGIN, because that is the
+    // packet Perfetto binds to the slice.
+    auto begin_pkt = [&](std::uint64_t seq, std::uint64_t track_uuid, const Slice& s) {
+        PB ev;
+        ev.u64(9, s.dur_ns ? 1u : 3u);  // SLICE_BEGIN | INSTANT
+        ev.u64(11, track_uuid);
+        ev.str(23, s.name);
+        if (s.flow)
+            ev.f64(s.flow_end ? 48 : 47, s.flow);
+        // The same fields the JSON encoder writes, from the same model. A
+        // pftrace slice used to carry nothing but a name, so clicking one in
+        // Perfetto answered no question at all.
+        if (s.lane != Lane::Kernel) {
+            annot(ev, "wr_id", s.wr_id);
+            annot(ev, "bytes", s.bytes);
+            annot(ev, "opcode", s.opcode);
+        }
+        if (s.lane == Lane::Send) {
+            if (s.remote_addr)
+                annot(ev, "remote_addr", s.remote_addr, /*pointer=*/true);
+            if (s.rkey)
+                annot(ev, "rkey", s.rkey);
+        }
+        if (s.lane == Lane::Complete)
+            annot(ev, "status", s.status);
+        PB pkt;
+        pkt.u64(8, s.t_ns);
+        pkt.msg(11, ev);
+        pkt.u64(10, seq);
+        trace.msg(1, pkt);
+    };
+    auto end_pkt = [&](std::uint64_t seq, std::uint64_t track_uuid, std::uint64_t t_ns) {
+        PB ev;
+        ev.u64(9, 2u);  // SLICE_END
+        ev.u64(11, track_uuid);
+        PB pkt;
+        pkt.u64(8, t_ns);
+        pkt.msg(11, ev);
+        pkt.u64(10, seq);
+        trace.msg(1, pkt);
+    };
+
+    // Perfetto wants each sequence monotonic, and build_trace hands slices over
+    // in start order — but a slice's END is ordered independently of the next
+    // slice's BEGIN, so the ENDs are buffered per rank and merged back in. The
+    // heap holds only what is still open, which on this corpus is single
+    // digits: the alternative, materialising both endpoints of every slice and
+    // sorting, costs an extra pass over 23 M packets to answer the same
+    // question.
+    struct Open {
+        std::uint64_t end_ns;
+        std::uint64_t track_uuid;
+    };
+    auto later = [](const Open& a, const Open& b) { return a.end_ns > b.end_ns; };
+    std::vector<Open> open;
+    std::uint64_t     seq = 0;
+    int               cur_rank = -1;
+    std::size_t       rank_ix = 0;
+
+    // Everything still open when a rank ends, in order. A rank's sequence must
+    // not carry a packet after the next rank starts writing to its own.
+    auto drain = [&](std::uint64_t until) {
+        while (!open.empty() && open.front().end_ns <= until) {
+            std::pop_heap(open.begin(), open.end(), later);
+            end_pkt(seq, open.back().track_uuid, open.back().end_ns);
+            open.pop_back();
         }
     };
 
-    std::size_t n_ev = 0;
-    for (std::size_t i = 0; i < ranks.size(); ++i) {
-        const auto& r = ranks[i];
-        const auto& c = clk[i];
-        track(rank_uuid(r.rank), "rank " + std::to_string(r.rank), 0);
-        std::unordered_map<std::uint32_t, bool> seen;
-        for (const auto& s : load_stream<ibr::IbQueuePair>(stream_path<ibr::IbQueuePair>(r))) {
-            if (seen.emplace(s.payload.qp_num, true).second) {
-                char nm[24];
-                std::snprintf(nm, sizeof nm, "QP 0x%x", s.payload.qp_num);
-                track(qp_uuid(r.rank, s.payload.qp_num), nm, rank_uuid(r.rank));
+    const auto st = build_trace(
+        ranks, clk, origin,
+        [&](int rank) {
+            drain(~0ull);  // close out the previous rank before switching sequence
+            open.clear();
+            cur_rank = rank;
+            seq = rank_seq(rank_ix++);
+            track(rank_uuid(rank), "rank " + std::to_string(rank), 0);
+            counter_track(counter_uuid(rank, Counter::BytesSent), "bytes sent",
+                          rank_uuid(rank), /*bytes=*/true);
+            counter_track(counter_uuid(rank, Counter::SendRate), "send MB/s", rank_uuid(rank),
+                          /*bytes=*/false);
+        },
+        [&](int rank, std::uint32_t ep, const char* name) {
+            track(ep == KERNEL_EP ? kernel_uuid(rank) : qp_uuid(rank, ep), name, rank_uuid(rank));
+        },
+        [&](const Slice& s) {
+            const auto uuid =
+                s.ep == KERNEL_EP ? kernel_uuid(s.rank) : qp_uuid(s.rank, s.ep);
+            drain(s.t_ns);
+            begin_pkt(seq, uuid, s);
+            if (s.dur_ns) {
+                open.push_back({s.t_ns + s.dur_ns, uuid});
+                std::push_heap(open.begin(), open.end(), later);
             }
-        }
-        for (const auto& s : load_stream<ibr::IbPostSend>(stream_path<ibr::IbPostSend>(r))) {
-            char nm[24];
-            std::snprintf(nm, sizeof nm, "send %uB", s.payload.length);
-            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal), dur(c, s.temporal), nm);
-            n_ev++;
-        }
-        for (const auto& s : load_stream<ibr::IbPollCq>(stream_path<ibr::IbPollCq>(r))) {
-            slice(qp_uuid(r.rank, s.payload.qp_num), ns(c, s.temporal), dur(c, s.temporal),
-                  "complete");
-            n_ev++;
-        }
-        // Compute, beside the comm. Without this the trace can show that a rank
-        // stopped sending and can never say whether it was working — which is
-        // the whole reason gpu_kernel exists.
-        //
-        // source = 2 (HostSubmit) is excluded for the reason _tl_raw excludes
-        // it: those rows are the launch API call, not the execution, and they
-        // trail the real thing by milliseconds. They must not reach a track
-        // labelled "kernels".
-        auto kernels = load_stream<GpuKernel>(stream_path<GpuKernel>(r));
-        if (!kernels.empty()) {
-            track(kernel_uuid(r.rank), "kernels", rank_uuid(r.rank));
-            for (const auto& s : kernels) {
-                if (s.payload.source == 2)
-                    continue;
-                // Name it from the KernelName domain explicitly: interned
-                // handles restart at 1 in EVERY domain, so the defaulted
-                // one-argument str() resolves a valid handle to "" with no
-                // error. Table<GpuKernel> carries the same note.
-                const char* nm = r.str(rec::InternDomain::KernelName, s.payload.name);
-                slice(kernel_uuid(r.rank), ns(c, s.temporal), dur(c, s.temporal),
-                      (nm && *nm) ? nm : "kernel");
-                n_ev++;
-            }
-        }
-    }
-    if (unanchored)
-        std::fprintf(stderr,
-                     "pcomm: %zu events had no clock anchor for their domain and are placed at "
-                     "their raw tick — the capture is missing a ClockAnchor row\n",
-                     unanchored);
+        },
+        [&](int rank, Counter kind, std::uint64_t t_ns, std::int64_t value) {
+            // Drain first: a counter sample lands between slices, and any END
+            // still open from before it must be written before it or the
+            // sequence walks backwards.
+            drain(t_ns);
+            PB ev;
+            ev.u64(9, 4u);  // TYPE_COUNTER
+            ev.u64(11, counter_uuid(rank, kind));
+            ev.u64(30, static_cast<std::uint64_t>(value));  // counter_value
+            PB pkt;
+            pkt.u64(8, t_ns);
+            pkt.msg(11, ev);
+            pkt.u64(10, seq);
+            trace.msg(1, pkt);
+        });
+    drain(~0ull);
+    (void)cur_rank;
 
     std::FILE* f = std::fopen(outfile.c_str(), "wb");
     if (!f) {
@@ -1785,8 +2391,10 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
     }
     std::fwrite(trace.b.data(), 1, trace.b.size(), f);
     std::fclose(f);
-    std::printf("pcomm: %zu ranks, %zu events -> %s (%zu bytes; load in ui.perfetto.dev)\n",
-                ranks.size(), n_ev, outfile.c_str(), trace.b.size());
+    std::printf("pcomm: %zu ranks, %zu events, %zu send->completion flows -> %s "
+                "(%zu bytes; load in ui.perfetto.dev)\n",
+                ranks.size(), st.slices, st.flows, outfile.c_str(), trace.b.size());
+    report_trace_stats(st);
     return 0;
 }
 

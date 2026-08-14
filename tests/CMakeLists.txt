@@ -76,3 +76,22 @@ add_test(NAME intern_table COMMAND intern_table_test)
 # schema_generated_current makes with flatc.
 add_test(NAME asserts_fire
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/hpc/suite/asserts_fire.sh)
+
+# The one rule this repository states twice: send->completion pairing, once in
+# C++ for the pftrace exporter (which must run without DuckDB) and once in SQL
+# for the derived layer (which must run over a Parquet export). Neither can
+# adopt the other, so this asserts they agree on a fixture instead. The script
+# skips loudly when the binary has no DuckDB, so it is registered unconditionally
+# rather than behind PCOMM_DUCKDB — a test that silently vanishes from half the
+# builds is how the assertion rot in the comment at the top of this file started.
+add_test(NAME flow_pairing_agree
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/flow_pairing_agree.sh
+                 $<TARGET_FILE:pcomm_launcher>
+                 ${CMAKE_CURRENT_SOURCE_DIR}/data/ib_pingpong-44578115)
+
+# And the rule itself, on a capture built so that every clause has something to
+# get wrong. flow_pairing_agree.sh above compares the two implementations, which
+# catches divergence and — demonstrated, not assumed — cannot catch a rule that
+# is wrong in BOTH, nor one whose fixture never expresses the defect.
+add_test(NAME wr_flow_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/wr_flow_rule.sh $<TARGET_FILE:pcomm_launcher>)

@@ -45,6 +45,9 @@ PCOMM_SCHEMA_MATCH(cr::InternKey, fb::InternKey);
 PCOMM_SCHEMA_MATCH(cr::InternString, fb::InternString);
 PCOMM_SCHEMA_MATCH(ir::IbMemRegion, fb::IbMemRegion);
 PCOMM_SCHEMA_MATCH(ir::IbQueuePair, fb::IbQueuePair);
+PCOMM_SCHEMA_MATCH(ir::IbQpSignalling, fb::IbQpSignalling);
+PCOMM_SCHEMA_MATCH(ir::IbPostSendSg, fb::IbPostSendSg);
+PCOMM_SCHEMA_MATCH(ir::IbPort, fb::IbPort);
 PCOMM_SCHEMA_MATCH(ir::IbCompletionQueue, fb::IbCompletionQueue);
 PCOMM_SCHEMA_MATCH(ir::IbModifyQp, fb::IbModifyQp);
 PCOMM_SCHEMA_MATCH(ir::IbPostSend, fb::IbPostSend);
@@ -173,12 +176,13 @@ int main() {
         c.payload.rkey = 0xCAFEBABE;
         c.payload.length = 4096;
         c.payload.qp_num = 0x1EFFD;
+        c.payload.send_flags = 0x0A;
         c.payload.opcode = 2;
         c.payload.num_sge = 1;
         fb::IbPostSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xAAAAull),
                                       fb::TimePoint(2, 0xBBBBull), 0),
                          0x0F0F0F0F, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, 0xCAFEBABE, 4096,
-                         0x1EFFD, 2, 1);
+                         0x1EFFD, 0x0A, 2, 1);
         expect_identical("IbPostSend", &c, &f, sizeof(c));
     }
     {
@@ -297,6 +301,44 @@ int main() {
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x30), fb::TimePoint(1, 0x40), 0),
             11, 12, 0x1EFFD, 2);
         expect_identical("IbQueuePair", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbQpSignalling> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x31}, {1, 0x41});
+        c.payload.qp = 13;
+        c.payload.qp_num = 0x1EFFE;
+        c.payload.sq_sig_all = 1;
+        fb::IbQpSignalling f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x31), fb::TimePoint(1, 0x41), 0),
+            13, 0x1EFFE, 1);
+        expect_identical("IbQpSignalling", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbPostSendSg> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x32}, {1, 0x42});
+        c.payload.qp = 14;
+        c.payload.wr_id = 0xA1A2A3A4A5A6A7A8ull;
+        c.payload.addr = 0xB1B2B3B4B5B6B7B8ull;
+        c.payload.length = 0x11223344;
+        c.payload.lkey = 0x55667788;
+        c.payload.qp_num = 0x1EFFC;
+        c.payload.index = 3;
+        fb::IbPostSendSg f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x32), fb::TimePoint(1, 0x42), 0),
+            14, 0xA1A2A3A4A5A6A7A8ull, 0xB1B2B3B4B5B6B7B8ull, 0x11223344, 0x55667788, 0x1EFFC, 3);
+        expect_identical("IbPostSendSg", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbPort> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x33}, {1, 0x43});
+        c.payload.context = 15;
+        c.payload.lid = 0xC0DE;
+        c.payload.port_num = 1;
+        c.payload.state = 4;
+        fb::IbPort f(
+            fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x33), fb::TimePoint(1, 0x43), 0),
+            15, 0xC0DE, 1, 4);
+        expect_identical("IbPort", &c, &f, sizeof(c));
     }
     {
         Stamped<ir::IbCompletionQueue> c{};

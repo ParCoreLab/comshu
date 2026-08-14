@@ -76,6 +76,182 @@ FROM clock_anchor
 GROUP BY rank, domain
 )sql"},
 
+    // A work request's time IN FLIGHT: posted at `a`, retired at `b`.
+    //
+    // This is the join that turns two lanes of unrelated marks into one
+    // operation with a latency. A completion names the work request it retires
+    // by (qp_num, wr_id) — the same pair ib_post_send stamped — so that is the
+    // key, and `gen` is what makes it exact rather than approximate: wr_id is
+    // caller-chosen and routinely recycled as a buffer index, so numbering both
+    // sides within (rank, qp_num, wr_id) by time and joining on the number
+    // matches the Nth post to the Nth completion. Completions on a queue pair
+    // retire in the order they were posted, which is what makes that correct
+    // and not merely plausible. Verified against the pftrace exporter's
+    // independent C++ implementation of the same rule on
+    // scale_hubspoke_ib_kt-44552862: both pair 5,830,890 of 5,830,890 sends.
+    //
+    // RECEIVE COMPLETIONS ARE EXCLUDED, and the bit test is the whole reason
+    // this is not a two-line join. A receive completion carries the RECEIVER's
+    // wr_id, which names an ib_post_recv and never a send; pairing without the
+    // IBV_WC_RECV check links sends to whatever unrelated receive happened to
+    // reuse the number. (The opcode of a FAILED completion is undefined per the
+    // verbs spec, so a status<>0 row can in principle land on either side of
+    // the test. They are kept — a failed send still retires its work request,
+    // and dropping them would leave the send unpaired and the lane a lie.)
+    //
+    // **MATERIALISED, not a view, and that is a measured decision.** The two
+    // window functions over 5.8 M rows cost 257 ms on that capture against a
+    // 28 ms baseline. _tl_raw feeds the Timeline, which re-queries on every pan
+    // and zoom behind a 90 ms debounce, so leaving this a view would put a
+    // quarter-second of window functions on the critical path of a drag. Paid
+    // once at capture load instead.
+    // Queue pairs whose completions can be attributed to a specific send.
+    //
+    // FIFO matching is exact rather than approximate because a reliable-
+    // connected QP returns completions IN POSTING ORDER — a transport
+    // guarantee, which is why a constant wr_id costs nothing. It holds only
+    // while EVERY work request is signalled: an unsignalled WR produces no CQE
+    // and is retired silently by the next completion, so Nth-to-Nth matching
+    // then attributes a completion to a send it did not retire.
+    //
+    // Equal counts are the only evidence a capture offers, because ib_post_send
+    // records no send_flags and ib_queue_pair no sq_sig_all. Measured:
+    // scale_hubspoke_ib_kt-44552862 matches on all 862 queue pairs;
+    // kt-combined-44546852 posts 3,570 and completes 1,800 on every one of its
+    // 32, and had been producing confident and wrong latencies.
+    // `sq_sig_all` is the queue pair's own declaration that it signals every
+    // work request — see ib_qp_signalling. It does not change the decision
+    // below (counts still rule), it explains it: a mismatch on a queue pair
+    // that declared sq_sig_all = 0 is certainly selective signalling, while a
+    // mismatch on one that declared 1 can only be a run that stopped with work
+    // in flight. LEFT JOIN because captures written before that record exists
+    // have none, and unknown must read as unknown rather than as 0.
+    {"_wr_pairable", R"sql(
+CREATE OR REPLACE VIEW _wr_pairable AS
+SELECT s.rank, s.qp_num, s.n AS sends, c.n AS comps, g.sq_sig_all,
+       f.n AS signalled
+FROM      (SELECT rank, qp_num, count(*) AS n FROM ib_post_send GROUP BY 1, 2) s
+FULL JOIN (SELECT rank, qp_num, count(*) AS n FROM ib_poll_cq
+           WHERE (opcode & 128) = 0 GROUP BY 1, 2) c
+       USING (rank, qp_num)
+LEFT JOIN (SELECT rank, qp_num, max(sq_sig_all) AS sq_sig_all
+           FROM ib_qp_signalling GROUP BY 1, 2) g
+       USING (rank, qp_num)
+-- How many work requests this queue pair asked to be completed. NULL only when
+-- the queue pair posted nothing; a queue pair with sq_sig_all = 1 typically
+-- reports 0 here and is pairable by the count branch anyway, since the QP
+-- signals everything regardless of what its work requests asked for.
+LEFT JOIN (SELECT rank, qp_num, count(*) AS n FROM ib_post_send
+           WHERE (send_flags & 2) <> 0 GROUP BY 1, 2) f
+       USING (rank, qp_num)
+)sql"},
+
+    // The SIGNALLED sends of a selectively signalling queue pair, numbered.
+    //
+    // This is the row set that pairs against completions when not every work
+    // request completes. An unsignalled WR produces no CQE and is retired by
+    // the next signalled one, so the completions line up one-for-one with the
+    // SIGNALLED sends — in posting order, by the same transport guarantee that
+    // makes the ordinary case work. Numbering them here gives the flight lane
+    // the same shape it has everywhere else.
+    //
+    // NO JOIN: send_flags is a column of ib_post_send, so this is a filter.
+    // It was briefly a companion record joined on (rank, qp_num, wr_id, ticks),
+    // where the ticks were load-bearing — wr_id is caller-chosen and routinely
+    // constant, so the natural key alone is a cartesian product. Putting the
+    // field on the row it describes removes the join and that hazard with it.
+    {"_wr_signalled", R"sql(
+CREATE OR REPLACE VIEW _wr_signalled AS
+SELECT rank, qp_num, wr_id, length, opcode,
+       temporal_a_domain AS domain, temporal_a_ticks AS a,
+       row_number() OVER (PARTITION BY rank, qp_num
+                          ORDER BY temporal_a_ticks) AS gen
+FROM ib_post_send
+WHERE (send_flags & 2) <> 0
+)sql"},
+
+    {"_wr_flight", R"sql(
+CREATE OR REPLACE TABLE _wr_flight AS
+WITH s AS (
+    SELECT rank, qp_num, wr_id, length, opcode,
+           temporal_a_domain AS domain, temporal_a_ticks AS a,
+           row_number() OVER (PARTITION BY rank, qp_num, wr_id
+                              ORDER BY temporal_a_ticks) AS gen
+    FROM ib_post_send
+), c AS (
+    SELECT rank, qp_num, wr_id, status, opcode AS wc_opcode,
+           temporal_a_ticks AS a,
+           row_number() OVER (PARTITION BY rank, qp_num, wr_id
+                              ORDER BY temporal_a_ticks) AS gen
+    FROM ib_poll_cq
+    WHERE (opcode & 128) = 0
+)
+-- wc_opcode is carried rather than discarded because it is what makes the
+-- exclusion above CHECKABLE. tests/flow_pairing_agree.sh asserts no paired row
+-- has the IBV_WC_RECV bit set: dropping the WHERE leaves the pair COUNT
+-- unchanged on any capture where a wr_id has one send and one completion, so a
+-- count comparison alone cannot see a send matched to the wrong completion.
+-- It also answers "which completions failed" without a second join.
+SELECT s.rank, s.qp_num, s.wr_id, s.length, s.opcode, s.domain,
+       s.a AS a, c.a AS b, c.status, c.wc_opcode
+FROM s JOIN c
+  ON  c.rank   = s.rank
+  AND c.qp_num = s.qp_num
+  AND c.wr_id  = s.wr_id
+  AND c.gen    = s.gen
+-- Only queue pairs that complete everything they post — see _wr_pairable. A
+-- queue pair using unsignalled work requests contributes NO rows on this
+-- branch; it is picked up by the UNION below when the capture recorded which
+-- of its work requests were signalled, and by nothing at all when it did not.
+JOIN _wr_pairable p
+  ON  p.rank = s.rank AND p.qp_num = s.qp_num AND p.sends = p.comps
+-- A completion cannot precede the send it retires. One that appears to means
+-- the capture began mid-flight and the first completion has no post in this
+-- trace; drawing it would give the lane a negative-width span. Dropped here and
+-- COUNTED in link_health.wr_flight_backwards, on the same trade the clock join
+-- makes: a hole you can see beats a chart that looks complete.
+WHERE c.a >= s.a
+
+UNION ALL
+
+-- The selectively signalling branch. Same rule, different left-hand side: the
+-- completions of such a queue pair line up with its SIGNALLED sends, not with
+-- all of them, so _wr_signalled supplies the rows and the generation.
+--
+-- The latency this produces belongs to the signalled work request, and it
+-- BOUNDS the unsignalled ones posted before it rather than describing them —
+-- they were retired by this same completion and the capture cannot say when
+-- each individually landed. That is a real limit of the transport, not of the
+-- instrument: the NIC never reported them.
+SELECT s.rank, s.qp_num, s.wr_id, s.length, s.opcode, s.domain,
+       s.a AS a, c.a AS b, c.status, c.wc_opcode
+FROM _wr_signalled s
+JOIN (
+    SELECT rank, qp_num, status, opcode AS wc_opcode,
+           temporal_a_ticks AS a,
+           row_number() OVER (PARTITION BY rank, qp_num
+                              ORDER BY temporal_a_ticks) AS gen
+    FROM ib_poll_cq
+    WHERE (opcode & 128) = 0
+) c
+  ON  c.rank   = s.rank
+  AND c.qp_num = s.qp_num
+  AND c.gen    = s.gen
+-- Same guards as the branch above: only where the signalled count matches the
+-- completion count, and never a completion that precedes its own send.
+-- `sends <> comps` is what keeps the two branches DISJOINT, and it is not
+-- decoration. A queue pair that completes everything AND marks every work
+-- request signalled satisfies both conditions, so without this every one of its
+-- sends appears in the flight lane twice — measured on the fixture the moment
+-- send_flags moved onto ib_post_send and qp 7 started reporting signalled = 4
+-- alongside sends = comps = 4.
+JOIN _wr_pairable p
+  ON  p.rank = s.rank AND p.qp_num = s.qp_num
+  AND p.sends <> p.comps
+  AND p.signalled = p.comps
+WHERE c.a >= s.a
+)sql"},
+
     // Every event stream in one shape, tick-timed. Split from timeline_span so
     // the union is written once and the clock join once; link_health needs the
     // same rows to count what the join drops.
@@ -93,6 +269,15 @@ CREATE OR REPLACE VIEW _tl_raw AS
 UNION ALL
     SELECT rank, 'ib_poll_cq',     temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
            qp_num, byte_len::BIGINT   FROM ib_poll_cq
+UNION ALL
+    -- The one lane that is a JOIN rather than a stream: a work request from its
+    -- post to its completion. Every other lane says an event happened; this one
+    -- says how long it took, which is the question a timeline gets opened to
+    -- answer. It needs no special case downstream because it arrives in exactly
+    -- the same shape — an interval on a rank in a clock domain — and _wr_flight
+    -- is materialised so this union stays as cheap as the others.
+    SELECT rank, 'ib_wr_flight',   domain, a, b,
+           qp_num, length::BIGINT     FROM _wr_flight
 UNION ALL
     SELECT rank, 'ib_post_recv',   temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
            qp_num, length::BIGINT     FROM ib_post_recv
@@ -180,6 +365,17 @@ SELECT DISTINCT rank, lid FROM (
     SELECT rank, src_lid AS lid FROM ib_modify_qp         WHERE src_lid <> 0
     UNION ALL
     SELECT rank, src_lid AS lid FROM mlx5_devx_qp_connect WHERE src_lid <> 0
+    UNION ALL
+    -- The port's own LID, which needs no traffic to exist. The two branches
+    -- above both require the rank to have TRANSITIONED a queue pair, so a rank
+    -- that opened a device and posted nothing had no LID anywhere and fell out
+    -- of _node_by_lid entirely — a hole shaped exactly like the rank you are
+    -- investigating when you ask why it went quiet. See ib_port.
+    --
+    -- Non-ACTIVE ports are included deliberately: a LID on a down port still
+    -- names the rank, and excluding it would restore the hole in the one case
+    -- where the port state is the answer.
+    SELECT rank, lid FROM ib_port WHERE lid <> 0
 )
 )sql"},
 
@@ -728,6 +924,34 @@ ORDER BY transport, src_rank, dst_rank
     // row is a defect in the link, not in the workload. This table exists so
     // the UI can *show* a hole rather than render a confident matrix over one —
     // "a wrong matrix that looks confident is worse than no matrix".
+    // One row per work request that was posted and retired, with the time it
+    // spent in flight. The Timeline draws this as a lane; this is the same
+    // relation with the clock applied and the latency named, for anyone asking
+    // the question in SQL rather than by eye — "which qp had the tail", "did
+    // latency move when the kernel started".
+    //
+    // latency_ns comes from the TICK delta scaled once, not from subtracting
+    // two converted wall-clock values. The second form rounds each endpoint to
+    // its own HUGEINT before subtracting and loses sub-microsecond spans, which
+    // is the same float64 trap _clock's comment describes, arriving a third
+    // time in a different arithmetic.
+    {"wr_flow", R"sql(
+SELECT f.rank,
+       f.qp_num,
+       f.wr_id,
+       f.length::BIGINT AS bytes,
+       f.opcode,
+       f.status,
+       f.wc_opcode,
+       (c.w0::HUGEINT
+          + ((f.a::HUGEINT - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT AS t0_ns,
+       (c.w0::HUGEINT
+          + ((f.b::HUGEINT - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns,
+       ((f.b::HUGEINT - f.a::HUGEINT)::DOUBLE * c.ns_per_tick)::BIGINT AS latency_ns
+FROM _wr_flight f
+JOIN _clock c ON c.rank = f.rank AND c.domain = f.domain
+)sql"},
+
     {"link_health", R"sql(
 SELECT 'colliding_endpoints' AS finding,
        count(*)              AS n,
@@ -831,6 +1055,61 @@ SELECT 'kernel_rows_submission_only',
        coalesce(count(*), 0)::BIGINT,
        'kernel rows timed at launch, not execution — excluded from the timeline'
 FROM gpu_kernel WHERE source = 2
+UNION ALL
+-- Sends this capture never saw retire. A few mean a trace that stopped with
+-- work in flight, which is ordinary; a lot mean the (qp_num, wr_id) key is not
+-- holding, and every one of them is a work request missing from the flight lane
+-- and from wr_flow. Without this row that lane would simply be short and look
+-- complete.
+SELECT 'wr_flight_unretired',
+       (SELECT count(*) FROM ib_post_send) - (SELECT count(*) FROM _wr_flight),
+       'work requests posted but never matched to a completion — absent from the flight lane'
+UNION ALL
+-- Queue pairs that post more work requests than they complete. These use
+-- UNSIGNALLED work requests: a WR posted without IBV_SEND_SIGNALED produces no
+-- completion and is retired silently by the next one, so no completion can be
+-- attributed to a specific send. They are excluded from the flight lane
+-- entirely rather than paired positionally, which would print a latency
+-- measured from the wrong send. Fixing this needs send_flags on ib_post_send,
+-- which the capture does not record.
+SELECT 'wr_flight_unsignalled_qps',
+       coalesce(count(*), 0)::BIGINT,
+       'queue pairs posting more WRs than they complete — unsignalled, so unpairable'
+FROM _wr_pairable WHERE coalesce(sends, 0) <> coalesce(comps, 0)
+UNION ALL
+-- Of those, the ones the capture can name the cause for. A queue pair that
+-- declared sq_sig_all = 0 and then completed fewer WRs than it posted IS doing
+-- selective signalling — no inference, the queue pair said so at creation. The
+-- remainder are unknown: either selective signalling on a capture written
+-- before ib_qp_signalling existed, or a run that stopped with work in flight.
+SELECT 'wr_flight_selective_signalling_qps',
+       coalesce(count(*), 0)::BIGINT,
+       'unpairable queue pairs that declared sq_sig_all = 0 — certainly selective signalling'
+FROM _wr_pairable
+WHERE coalesce(sends, 0) <> coalesce(comps, 0) AND sq_sig_all = 0
+UNION ALL
+-- Completions that appeared to precede their own post. See the WHERE in
+-- _wr_flight: these are dropped rather than drawn at negative width.
+SELECT 'wr_flight_backwards',
+       coalesce(count(*), 0)::BIGINT,
+       'completions timed before the send they retire — capture began mid-flight'
+FROM (
+    WITH s AS (
+        SELECT rank, qp_num, wr_id, temporal_a_ticks AS a,
+               row_number() OVER (PARTITION BY rank, qp_num, wr_id
+                                  ORDER BY temporal_a_ticks) AS gen
+        FROM ib_post_send
+    ), c AS (
+        SELECT rank, qp_num, wr_id, temporal_a_ticks AS a,
+               row_number() OVER (PARTITION BY rank, qp_num, wr_id
+                                  ORDER BY temporal_a_ticks) AS gen
+        FROM ib_poll_cq WHERE (opcode & 128) = 0
+    )
+    SELECT s.rank
+    FROM s JOIN c
+      ON c.rank = s.rank AND c.qp_num = s.qp_num AND c.wr_id = s.wr_id AND c.gen = s.gen
+    WHERE c.a < s.a
+)
 )sql"},
 };
 

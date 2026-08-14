@@ -144,6 +144,48 @@ PCOMM_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
 
 // EVENT — a work request posted to a QP (ibv_post_send). The comm firehose;
 // one row per work request in the posted chain.
+// ENTITY — a queue pair's SIGNALLING POLICY, as the caller declared it at
+// creation.
+//
+// WHY A RECORD FOR ONE BIT.
+//
+// A completion can be attributed to the send it retires because a reliable-
+// connected queue pair returns completions IN POSTING ORDER — a transport
+// guarantee, not a heuristic, and the reason a constant wr_id costs nothing.
+// NVSHMEM posts all 5.8 M work requests on scale_hubspoke_ib_kt-44552862 with
+// wr_id = 1 and the Nth completion still retires the Nth send exactly.
+//
+// That holds only while every work request is signalled. `sq_sig_all` is the
+// queue pair saying it will signal all of them regardless of what any
+// individual work request asks for, so it is the one field that can certify
+// the whole matching rule for a queue pair at a cost of one row.
+//
+// Without it a reader can only count: kt-combined-44546852 posts 3,570 and
+// completes 1,800 on every queue pair, which is either selective signalling or
+// a capture that stopped mid-flight, and counting cannot tell those apart. The
+// derived layer refuses to pair such a queue pair either way (see _wr_pairable
+// in link_sql.hpp) — this record is what turns "refused, cause unknown" into
+// "refused, and here is why".
+//
+// ADDITIVE, NOT A FIELD ON IbQueuePair, on exactly the reasoning IbRecvCqe
+// records below: a layout is immutable once a capture holds it, so widening
+// ib_queue_pair would force every reader to carry two layouts of that table
+// forever. One row per queue pair — 862 on the capture above, against 5.8 M
+// sends — so the additive record costs nothing measurable.
+//
+// IT DOES NOT MAKE SELECTIVE SIGNALLING PAIRABLE, and is not meant to. Doing
+// that needs `send_flags` per work request, which is dense data and therefore a
+// version bump of ib_post_send rather than another additive record. See
+// plans/PLAN-20260813-2238.
+PCOMM_RECORD(IbQpSignalling, RecordKind::Entity, 126, "ib_qp_signalling") {
+    Handle        qp;      // interned ibv_qp*, as IbQueuePair.qp
+    std::uint32_t qp_num;  // denormalised so the join is optional
+    // ibv_qp_init_attr.sq_sig_all, verbatim. 1 = every WR completes whatever
+    // its own send_flags say; 0 = the caller decides per work request, and the
+    // capture cannot tell which it chose.
+    std::uint8_t sq_sig_all;
+};
+
 PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
     Handle        qp;
     std::uint64_t wr_id;
@@ -151,6 +193,22 @@ PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
     std::uint32_t rkey;         // RDMA ops only
     std::uint32_t length;       // total sg_list bytes
     std::uint32_t qp_num;
+    // ibv_send_flags, verbatim. IBV_SEND_SIGNALED is the bit the
+    // send->completion matching depends on: an UNSIGNALLED work request
+    // produces no CQE and is retired silently by the next one, so without this
+    // field the Nth completion cannot be told which send it retired, and
+    // selectively signalling queue pairs (NCCL: 3,570 posted against 1,800
+    // completed on kt-combined-44546852) have no flows at all.
+    //
+    // Read WITH ib_qp_signalling.sq_sig_all, not instead of it: a queue pair
+    // created with sq_sig_all = 1 completes every work request whatever this
+    // field says.
+    //
+    // Inline rather than a companion record, and it costs 4 bytes on the
+    // highest-volume send record deliberately — see the PRE-ALPHA EXCEPTION in
+    // pcomm.fbs. A sparse side record would have kept captures written before
+    // this readable, which is not a design argument.
+    std::uint32_t send_flags;
     std::uint8_t  opcode;  // ibv_wr_opcode
     std::uint8_t  num_sge;
 };
@@ -170,6 +228,41 @@ PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
 // device grants at least it, so the argument is a request and the queried value
 // is the fact. When the query fails the requested values are kept, because a
 // row with approximate depths is worth more than no row at all.
+// EVENT — one scatter-gather entry of a posted send: the LOCAL buffer.
+//
+// WHAT IT ADDS. ib_post_send keeps the SUM of the sg_list lengths and nothing
+// else about it, so a send has no local address at all. Attribution therefore
+// works on the remote side only — `remote_addr` for RDMA ops, and zero for a
+// two-sided SEND, which makes every one of the 24,576 IBV_WR_SEND rows on
+// scale_hubspoke_ib_kt-44552862 invisible to object_access on the sending
+// side. The receive path already keeps sg_list[0].addr/lkey (see IbPostRecv);
+// this is the send path finally saying the same thing, for every entry rather
+// than the first.
+//
+// FULL MODE ONLY. This is one row per SGE against one per work request, on the
+// record that is already the second-highest-volume in the corpus. It rides the
+// same gate as ib_poll_cq for the same reason — see record_sge() in
+// ibverbs_provider.cpp.
+//
+// THE JOIN BACK IS (rank, qp_num, wr_id, temporal_a_ticks), AND THE TICKS ARE
+// NOT OPTIONAL. wr_id is caller-chosen and NVSHMEM sets it to 1 on every one of
+// 5.8 M sends, so joining on (rank, qp_num, wr_id) alone is a cartesian product
+// with a million rows on each side, not a lookup. Both records carry the
+// posting call's interval, so the tick disambiguates exactly as far as the send
+// rows themselves are disambiguated. That is exact unless one call posts two
+// work requests sharing a wr_id — measured on the corpus: one WR per call.
+// `index` orders the entries within a work request and makes two identical
+// SGEs distinguishable.
+PCOMM_RECORD(IbPostSendSg, RecordKind::Event, 128, "ib_post_send_sg") {
+    Handle        qp;  // interned ibv_qp*, as IbPostSend.qp
+    std::uint64_t wr_id;
+    std::uint64_t addr;  // the LOCAL buffer — the field ib_post_send lacks
+    std::uint32_t length;
+    std::uint32_t lkey;
+    std::uint32_t qp_num;
+    std::uint8_t  index;  // position in the sg_list, 0-based
+};
+
 PCOMM_RECORD(IbSharedRecvQueue, RecordKind::Entity, 108, "ib_shared_recv_queue") {
     Handle        srq;  // interned ibv_srq*
     Handle        pd;   // interned ibv_pd*
@@ -306,6 +399,30 @@ PCOMM_RECORD(IbAddressHandle, RecordKind::Entity, 118, "ib_address_handle") {
 // that do, do it once at startup on one context out of dozens. ensure_installed
 // runs exactly once per context by construction, so every context gets exactly
 // one row. The door records the fact; it does not wait to be told it.
+// ENTITY — one physical port of an HCA, and the LID it answers to.
+//
+// WHY, when ib_modify_qp already carries src_lid. Because that is the only
+// place a LID appears today, and it appears there only if a rank TRANSITIONS a
+// queue pair. A rank that opens a device and posts nothing — a spare, a rank
+// whose role is compute, a run captured before its first handshake — has no LID
+// anywhere in the capture, so _rank_lid has no row for it and _node_by_lid
+// cannot place it on a node. The topology then has a hole shaped like a rank
+// that did nothing, which is exactly the rank you are looking for when you are
+// asking why it did nothing.
+//
+// From ibv_query_port at device open, one row per physical port, so it costs
+// phys_port_cnt rows per rank and needs no traffic to exist.
+//
+// `state` is kept because a port that is DOWN explains an absence: the LID is
+// present and unusable, which is a different capture from a LID that never
+// appeared. It is the raw ibv_port_state, not a name — the reader spells it.
+PCOMM_RECORD(IbPort, RecordKind::Entity, 122, "ib_port") {
+    Handle        context;   // interned ibv_context*, as IbDevice.context
+    std::uint32_t lid;       // ibv_port_attr.lid, host order — as IbModifyQp.src_lid
+    std::uint8_t  port_num;  // 1-based, as ibverbs numbers them
+    std::uint8_t  state;     // ibv_port_state
+};
+
 PCOMM_RECORD(IbDevice, RecordKind::Entity, 120, "ib_device") {
     Handle        context;         // interned ibv_context* — the subject
     Handle        fw_ver;          // interned string

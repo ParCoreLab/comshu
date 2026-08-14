@@ -50,6 +50,10 @@ struct PendingWr {
     std::uint64_t remote_addr{0};  // RDMA opcodes only
     std::uint32_t rkey{0};         // RDMA opcodes only
     std::uint32_t length{0};       // total sg_list bytes
+    // ibv_qp_ex::wr_flags at the moment the opcode call was made. The caller
+    // assigns it there before calling ibv_wr_send/rdma_write/etc, exactly as it
+    // assigns wr_id, so it is read on the same call and for the same reason.
+    std::uint32_t send_flags{0};
     std::uint8_t  opcode{0};
     std::uint8_t  num_sge{0};
 };
@@ -68,10 +72,11 @@ public:
     // Any of the wr_<opcode> calls: closes the previous WR and opens a new one.
     // `wr_id` is read from the qp_ex struct by the caller, since the application
     // assigns it there before calling the opcode function.
-    void begin(WrOpcode op, std::uint64_t wr_id) {
+    void begin(WrOpcode op, std::uint64_t wr_id, std::uint32_t send_flags) {
         if (!m_started)
             return;  // opcode outside a batch: not ours to guess at
-        m_pending.push_back(PendingWr{wr_id, 0, 0, 0, static_cast<std::uint8_t>(op), 0});
+        m_pending.push_back(
+            PendingWr{wr_id, 0, 0, 0, send_flags, static_cast<std::uint8_t>(op), 0});
         m_open = true;
     }
 

@@ -31,6 +31,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <dlfcn.h>   // dladdr, for the MR caller diagnostic at the bottom
@@ -82,6 +83,16 @@ static void trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr);
 // `record_completions` rather than a mode comparison at each site: the call
 // sites should say what they are asking, not re-derive the policy.
 static bool record_completions() noexcept {
+    static const bool on =
+        pcomm_engine_trace_mode() >= static_cast<int>(pcomm::core::TraceMode::Full);
+    return on;
+}
+
+// Per-scatter-gather-entry sends, on the same gate and for the same reason as
+// completions: one row per SGE against one per work request, on a path that
+// already writes 5.8 M rows in a 64-rank hub capture. Read once — this is
+// consulted inside the post_send loop.
+static bool record_sge() noexcept {
     static const bool on =
         pcomm_engine_trace_mode() >= static_cast<int>(pcomm::core::TraceMode::Full);
     return on;
@@ -281,7 +292,10 @@ static void w_abort(ibv_qp_ex*);
 
 static void begin(ibv_qp_ex* qpx, WrOpcode op) {
     if (auto* s = slot_for(qpx))
-        s->builder.begin(op, qpx->wr_id);
+        // wr_flags beside wr_id: the application assigns both on the qp_ex
+        // struct before calling the opcode function, so this is the one moment
+        // either can be read.
+        s->builder.begin(op, qpx->wr_id, qpx->wr_flags);
 }
 
 static void w_start(ibv_qp_ex* qpx) {
@@ -404,6 +418,7 @@ static int w_complete(ibv_qp_ex* qpx) {
                                                      w.rkey,
                                                      w.length,
                                                      s->ops.qp_num,
+                                                     w.send_flags,
                                                      w.opcode,
                                                      w.num_sge});
     return ret;
@@ -823,6 +838,18 @@ Profiler::Profiler() {
                                      h(pd),
                                      qp->qp_num,
                                      static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
+        // The signalling policy, beside the queue pair rather than inside it.
+        // Only when the caller supplied an init_attr: sq_sig_all has no
+        // readback on ibv_qp, so inventing a 0 for the no-attr path would be a
+        // capture asserting "selective signalling" about a queue pair it never
+        // asked. Absent means unknown, which is the true statement.
+        if (a)
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbQpSignalling{{},
+                                            {},
+                                            h(qp),
+                                            qp->qp_num,
+                                            static_cast<std::uint8_t>(a->sq_sig_all)});
         // The close lives in the engine (ibv_destroy_qp tears down ibverbs' and
         // mlx5dv's queue pairs alike, so no provider may own it). Tell it this
         // open was recorded, so it closes this handle as an ib_queue_pair rather
@@ -850,6 +877,15 @@ Profiler::Profiler() {
                                          has_pd ? h(a->pd) : pcomm::core::Handle{},
                                          qp->qp_num,
                                          static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
+            // sq_sig_all is a BASE field of ibv_qp_init_attr_ex, not one of the
+            // comp_mask-gated ones, so it needs no mask test — unlike pd above.
+            if (a)
+                rec().record(pcomm::core::Temporal::none(),
+                             rr::IbQpSignalling{{},
+                                                {},
+                                                h(qp),
+                                                qp->qp_num,
+                                                static_cast<std::uint8_t>(a->sq_sig_all)});
             pcomm_engine_note_qp(qp, rr::IbQueuePair::pcomm_type_id);
         });
 
@@ -991,8 +1027,29 @@ Profiler::Profiler() {
                                                rkey,
                                                length,
                                                qp->qp_num,
+                                               wr->send_flags,
                                                static_cast<std::uint8_t>(wr->opcode),
                                                static_cast<std::uint8_t>(wr->num_sge)});
+            // The local buffers, one row each. Shares `tspan` with the work
+            // request above deliberately: that tick is half the join key, and
+            // recomputing a clock here would break it.
+            //
+            // `index` is the loop counter and not wr->num_sge, so a list longer
+            // than a byte can count still numbers its first 255 entries
+            // correctly rather than wrapping — num_sge saturates on the record
+            // above, this does not have to.
+            if (record_sge() && wr->sg_list) {
+                for (int i = 0; i < wr->num_sge && i < 256; ++i)
+                    rec().record(tspan, rr::IbPostSendSg{{},
+                                                         {},
+                                                         h(qp),
+                                                         wr->wr_id,
+                                                         wr->sg_list[i].addr,
+                                                         wr->sg_list[i].length,
+                                                         wr->sg_list[i].lkey,
+                                                         qp->qp_num,
+                                                         static_cast<std::uint8_t>(i)});
+            }
         }
     });
 
@@ -1540,6 +1597,28 @@ void ibv::record_device(ibv_context* ctx) {
                               ok ? a.vendor_part_id : 0u,
                               ok ? a.hw_ver : 0u,
                               ok ? a.phys_port_cnt : std::uint8_t{0}});
+    // One row per physical port. Ports are 1-based; a failed device query
+    // leaves phys_port_cnt at 0 and this loop simply does not run, which is the
+    // correct statement about a device we could not interrogate.
+    //
+    // A failed port query is skipped rather than emitted zeroed, unlike the
+    // device row above: an ib_device row with no identity still names a context
+    // that events reference, but an ib_port row with lid = 0 would be a claim
+    // that this port HAS lid 0 — and _node_by_lid would believe it.
+    if (ok) {
+        for (std::uint8_t p = 1; p <= a.phys_port_cnt; ++p) {
+            ibv_port_attr pa{};
+            if (ibv_query_port(ctx, p, &pa) != 0)
+                continue;
+            rec().record(pcomm::core::Temporal::none(),
+                         rr::IbPort{{},
+                                    {},
+                                    h(ctx),
+                                    static_cast<std::uint32_t>(pa.lid),
+                                    p,
+                                    static_cast<std::uint8_t>(pa.state)});
+        }
+    }
 }
 
 // DIAGNOSTIC, gated on PCOMM_TRACE_CTX_INSTALL=1. One line per door that ever

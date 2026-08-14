@@ -11,7 +11,7 @@ class IbPostSend(object):
 
     @classmethod
     def SizeOf(cls):
-        return 88
+        return 96
 
     # IbPostSend
     def Init(self, buf, pos):
@@ -35,15 +35,18 @@ class IbPostSend(object):
     # IbPostSend
     def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # IbPostSend
-    def Opcode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    def SendFlags(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
     # IbPostSend
-    def NumSge(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(85))
+    def Opcode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    # IbPostSend
+    def NumSge(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(89))
 
-def CreateIbPostSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, qp, wrId, remoteAddr, rkey, length, qpNum, opcode, numSge):
-    builder.Prep(8, 88)
-    builder.Pad(2)
+def CreateIbPostSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, qp, wrId, remoteAddr, rkey, length, qpNum, sendFlags, opcode, numSge):
+    builder.Prep(8, 96)
+    builder.Pad(6)
     builder.PrependUint8(numSge)
     builder.PrependUint8(opcode)
+    builder.PrependUint32(sendFlags)
     builder.PrependUint32(qpNum)
     builder.PrependUint32(length)
     builder.PrependUint32(rkey)

@@ -265,6 +265,18 @@ struct IbQueuePair {
   qp_type:uint8;
 }
 
+// type 126, Entity. A queue pair's signalling policy (ibv_qp_init_attr
+// .sq_sig_all). sq_sig_all = 1 certifies that every work request on this queue
+// pair completes, which is the precondition that makes Nth-send-to-Nth-
+// completion matching exact. Additive rather than a field on IbQueuePair: a
+// layout is immutable once a capture holds it. See ib_records.hpp.
+struct IbQpSignalling {
+  temporal:Temporal;
+  qp:uint32;
+  qp_num:uint32;
+  sq_sig_all:uint8;
+}
+
 // type 104, Entity. A completion queue, lifetime [create, destroy). The entity
 // IbPollCq.cq has referenced since ib_poll_cq existed, and which nothing
 // created until now. Hangs off a CONTEXT rather than a PD — the one ibverbs
@@ -312,8 +324,25 @@ struct IbPostSend {
   rkey:uint32;
   length:uint32;
   qp_num:uint32;
+  send_flags:uint32;
   opcode:uint8;
   num_sge:uint8;
+}
+
+// type 128, Event. One scatter-gather entry of a posted send — the LOCAL
+// buffer, which IbPostSend does not keep (it sums the lengths). Full mode only:
+// one row per SGE against one per work request. Joins back on
+// (rank, qp_num, wr_id, temporal_a_ticks); the ticks are required because wr_id
+// is caller-chosen and routinely constant. See ib_records.hpp.
+struct IbPostSendSg {
+  temporal:Temporal;
+  qp:uint32;
+  wr_id:uint64;
+  addr:uint64;
+  length:uint32;
+  lkey:uint32;
+  qp_num:uint32;
+  index:uint8;
 }
 
 // type 114, Event. One posted receive (ibv_post_recv / ibv_post_srq_recv).
@@ -351,6 +380,18 @@ struct IbAddressHandle {
   sgid_index:uint8;
   hop_limit:uint8;
   traffic_class:uint8;
+}
+
+// type 122, Entity. One physical port and its LID, from ibv_query_port at
+// device open. Exists so a rank that never transitions a queue pair still has a
+// LID — ib_modify_qp.src_lid is otherwise the only source, and it requires
+// traffic. See ib_records.hpp.
+struct IbPort {
+  temporal:Temporal;
+  context:uint32;
+  lid:uint32;
+  port_num:uint8;
+  state:uint8;
 }
 
 // type 120, Entity. The HCA behind one ibv_context. node_guid is the globally
