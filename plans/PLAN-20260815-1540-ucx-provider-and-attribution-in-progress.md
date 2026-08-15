@@ -14,7 +14,7 @@
 
 | site | access | hardware / role | UCX use in this plan |
 |---|---|---|---|
-| MareNostrum 5 | `ssh bsc` / `koc296797@alogin1.bsc.es` | SLURM, multinode H100, NDR IB | **Primary UCX oracle.** OpenMPI was measured loading `libucp`, `libuct`, verbs and mlx5 after a real two-node `MPI_Allreduce` (job 44578355). Build, correctness and attribution gates run here. |
+| MareNostrum 5 | `koc296797@alogin2.bsc.es` | SLURM, multinode H100, NDR IB | **Primary UCX oracle.** OpenMPI was measured loading `libucp`, `libuct`, verbs and mlx5 after a real two-node `MPI_Allreduce` (job 44578355). Build, correctness and attribution gates run here. |
 | du04 | `ssh missa18@a100`; if MagicDNS fails, `ssh -J mktips@100.64.0.8 missa18@172.20.31.90` | one node, A100 + ConnectX-5, no scheduler; uniquely supports IBGDA | Portability/control run across another UCX, CUDA, rdma-core and NIC generation. It cannot prove multinode UCX or replace MN5. |
 
 The split is load-bearing. du04 is the IBGDA machine; MN5 is the multinode UCX
@@ -152,6 +152,39 @@ This settles one gating question: public-symbol interposition is sufficient to
 observe the high-level MPI/UCX tagged path on MN5. It does **not** yet settle
 operation→QP nesting, direct put/get/AM coverage, request completion, or
 multi-lane endpoints; those remain the rest of Stage 0.
+
+### Measured 2026-08-15 — `ibv_post_send` is not UCX's send door on MN5
+
+Job 44635003 ran the same two-rank workload with the public-UCP scope probe and
+pcomm's ibverbs provider together. It completed successfully on two MN5 nodes
+and reproduced the deterministic UCP lifecycle/tag counts above. Both ranks
+reported:
+
+```
+[pcomm-ucx-nesting] summary outside=0
+```
+
+There were no per-UCP-call buckets because the hooked `ibv_post_send` path did
+not execute at all. The capture corroborates this: both ranks contain the
+verbs setup, QP/CQ, memory and `ib_post_recv` streams, but neither contains an
+`ib_post_send` (type 110) stream. This is not evidence that UCX sent no traffic;
+the MPI workload passed. It is evidence that MN5 UCX's mlx5 transport posts its
+send WQEs through a direct mlx5/UCT fast path below the public verbs operation.
+
+Therefore the proposed `ucp_*_nbx` → `ibv_post_send` nesting experiment is
+settled as the wrong observation point on this transport. It cannot distinguish
+synchronous issue from deferred progress and must not be used to declare an
+operation resolved or `no_verbs_observed`. The next Stage 0 arm must observe
+the actual host-driven mlx5 send/doorbell path and retain the same UCP scope
+labels. This is distinct from pcomm's existing mlx5dv doorbell hijack, which is
+for DEVX UARs/device-initiated traffic; first identify an exported or safely
+patchable host UCT/mlx5 door without relying on opaque structure offsets.
+
+Two preceding submissions produced no attribution evidence: 44630308 selected
+`nvc++` and failed to link GCC's `__builtin_ia32_rdtsc`; 44630851 built the
+provider but requested the CMake directory target `pcomm` instead of the
+executable target `pcomm_launcher`. The checked-in batch script now pins GCC,
+uses a job-specific build tree and builds the explicit launcher target.
 
 ## Stage 1 — provider vertical slice
 
