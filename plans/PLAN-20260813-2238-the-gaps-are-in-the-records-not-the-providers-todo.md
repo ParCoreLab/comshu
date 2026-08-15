@@ -181,13 +181,16 @@ queue pair contributes no LID and falls out of `_node_by_lid`. Additive entity,
 
 ## Stage B — the UCX provider (libfabric is closed)
 
-Confirmed above: OpenMPI on MN5 uses UCX. The provider is ~the size of the
-existing ibverbs one and lives or dies on the endpoint→QP mapping, which must be
-designed in from the first record rather than bolted on — without it the
-provider produces a second, parallel timeline that never joins the verbs one.
-SigmaTrace's `UcpEpQpMapping` exists for exactly this and is the piece to copy.
+Confirmed above: OpenMPI on MN5 uses UCX. The provider lives or dies on
+cross-layer attribution: without a defensible UCX-operation→verbs-QP relation it
+produces a second, parallel timeline that never joins the traffic already in the
+corpus.
 
-Not started. The `libucp` check that gated it has now been done.
+SigmaTrace defines and reads `UcpEpQpMapping`, but the tree at `8d8141a` has no
+emitter for it. It is therefore evidence for the *needed relation*, not an
+implementation to copy or a parity oracle we can assume works. Stage B now has
+its own measurement-led plan:
+`PLAN-20260815-1540-ucx-provider-and-attribution-in-progress.md`.
 
 ---
 
