@@ -17,7 +17,7 @@ set -euo pipefail
 
 ROOT="${PCOMM_ROOT:-$SLURM_SUBMIT_DIR}"
 HERE="$ROOT/tests/hpc/probes/ucx_api_coverage"
-BUILD="${PCOMM_BUILD:-$ROOT/build-ucx-nesting}"
+BUILD="${PCOMM_BUILD:-$ROOT/build-ucx-nesting-$SLURM_JOB_ID}"
 OUT="${PCOMM_UCX_API_OUT:-$HERE/nesting-$SLURM_JOB_ID}"
 mkdir -p "$OUT"
 
@@ -26,7 +26,9 @@ SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7
 MPI="$SDK/comm_libs/mpi"
 export OMPI_CC=gcc
 
-cmake -S "$ROOT" -B "$BUILD" -DPCOMM_BUILD_TESTS=OFF \
+CC=gcc CXX=g++ cmake -S "$ROOT" -B "$BUILD" \
+    -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+    -DPCOMM_BUILD_TESTS=OFF \
     -DPCOMM_PROVIDER_IBVERBS=ON >/dev/null
 cmake --build "$BUILD" -j 2 --target pcomm ibverbs_trace
 g++ -std=c++20 -shared -fPIC -O2 -Wall -Wextra -Werror \
