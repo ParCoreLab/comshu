@@ -30,7 +30,7 @@ CC=gcc CXX=g++ cmake -S "$ROOT" -B "$BUILD" \
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
     -DPCOMM_BUILD_TESTS=OFF \
     -DPCOMM_PROVIDER_IBVERBS=ON >/dev/null
-cmake --build "$BUILD" -j 2 --target pcomm ibverbs_trace
+cmake --build "$BUILD" -j 2 --target pcomm_launcher ibverbs_trace
 g++ -std=c++20 -shared -fPIC -O2 -Wall -Wextra -Werror \
     -o "$OUT/libucx_calls.so" "$HERE/ucx_calls.cpp" -ldl
 "$MPI/bin/mpicc" -O2 -Wall -Wextra -Werror -o "$OUT/mpi_calls" "$HERE/mpi_calls.c"
