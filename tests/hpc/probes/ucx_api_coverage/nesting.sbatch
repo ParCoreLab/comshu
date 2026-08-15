@@ -21,7 +21,7 @@ BUILD="${PCOMM_BUILD:-$ROOT/build-ucx-nesting}"
 OUT="${PCOMM_UCX_API_OUT:-$HERE/nesting-$SLURM_JOB_ID}"
 mkdir -p "$OUT"
 
-module load gcc/13.2.0 nvidia-hpc-sdk/25.7 >/dev/null 2>&1
+module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1
 SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7
 MPI="$SDK/comm_libs/mpi"
 export OMPI_CC=gcc
