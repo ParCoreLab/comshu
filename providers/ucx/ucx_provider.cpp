@@ -51,6 +51,13 @@ static ClassifiedStatus classify(ucs_status_ptr_t value) {
 }
 
 Profiler::Profiler() {
+    const pcomm::Config cfg = pcomm::Config::from_env();
+    if (pcomm_engine_declare_provider("ucx", pcomm::core::id_range::ucx_lo,
+                                      pcomm::core::id_range::ucx_hi,
+                                      PCOMM_ENGINE_ABI_VERSION) != 0)
+        return;
+    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+
     register_post<init_version_tag>([](ucs_status_t status, unsigned major, unsigned minor,
                                        const ucp_params_t*, const ucp_config_t*, ucp_context_h* out,
                                        auto begin, auto end) {
