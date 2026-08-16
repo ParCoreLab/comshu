@@ -61,3 +61,72 @@ DEFINE_PRELOAD_HOOK(ucx, mem_unmap, "ucp_mem_unmap", ucs_status_t, ucp_context_h
 DEFINE_PRELOAD_HOOK_PRED(
     ucx, worker_progress, "ucp_worker_progress",
     [](unsigned progressed, ucp_worker_h) { return progressed > 0; }, unsigned, ucp_worker_h);
+
+// --- the doors MN5's stack actually references ------------------------------
+//
+// Everything above this line is the surface SigmaTrace hooks. That turned out to
+// be the wrong target, and the measurement is worth stating because it inverts
+// the obvious assumption: the modern `_nbx` API is NOT what most of MN5's stack
+// calls. Read from the ELF dynamic symbol tables of the installed HPC-X 2.22.1
+// libraries (2026-08-16, alogin2, no allocation needed — every one of these is
+// an UND reference, so the code path exists in a library already measured to be
+// loaded):
+//
+//   mca_pml_ucx.so   MPI point-to-point  ucp_tag_send_nb, ucp_tag_send_sync_nb,
+//                                        ucp_tag_recv_nb, ucp_tag_msg_recv_nb
+//                                        (AND the _nbx pair)
+//   mca_osc_ucx.so   MPI one-sided       ucp_put_nbi, ucp_get_nbi,
+//                                        ucp_atomic_post, ucp_atomic_fetch_nb
+//                                        — and NO _nbx RMA call at all
+//   mca_spml_ucx.so  OpenSHMEM           ucp_put_nbx, ucp_get_nbx, ucp_ep_destroy
+//   hmca_bcol_ucx_p2p.so  hcoll          ucp_tag_send_nb, ucp_tag_recv_nb,
+//                                        ucp_ep_close_nb
+//   libsmx-3.10.so   SHARP               ucp_tag_send_nb, ucp_tag_msg_recv_nb
+//   libnccl-net.so   NCCL plugin         ucp_am_send_nb, ucp_get_nb, ucp_put_nbi
+//   libucc_tl_ucp.so UCC collectives     the _nbx set (already covered)
+//
+// The consequence that matters: **MPI RMA never touches ucp_put_nbx or
+// ucp_get_nbx on this machine.** A workload built on MPI_Put/MPI_Get would have
+// produced an empty ucx_rma table and looked like a transport that did no
+// one-sided traffic, which is the worst kind of wrong — a confident zero.
+//
+// These are hooked on a static reference rather than on an observed call, which
+// is weaker evidence than a probe run and much stronger than "the API exists".
+// The asymmetry justifies it: hooking a door that never fires costs one dlsym,
+// while missing one costs a silently incomplete capture — and for the endpoint
+// close doors below it costs entity accounting outright.
+
+// THREE more ways to close an endpoint, and ucx_endpoint was leaking on all of
+// them. Only ucp_ep_close_nbx was hooked, while hcoll and the NCCL plugin close
+// through ucp_ep_close_nb, OpenSHMEM and MPI one-sided through ucp_ep_destroy,
+// and libmca_common_ucx through ucp_disconnect_nb. An entity whose open is
+// recorded and whose close is not stays live forever in the capture, and since
+// the allocator reuses the address, the NEXT endpoint at that address is
+// indistinguishable from it — the exact defect ibv_close_device and
+// ibv_dereg_mr exist to prevent, which cost case 02 two of its eight ranks.
+DEFINE_PRELOAD_HOOK(ucx, ep_close_nb, "ucp_ep_close_nb", ucs_status_ptr_t, ucp_ep_h, unsigned);
+DEFINE_PRELOAD_HOOK(ucx, ep_destroy, "ucp_ep_destroy", void, ucp_ep_h);
+DEFINE_PRELOAD_HOOK(ucx, disconnect_nb, "ucp_disconnect_nb", ucs_status_ptr_t, ucp_ep_h);
+
+// The one-sided doors MPI actually uses. `_nbi` is blocking-immediate: it
+// returns a plain status and never a request, so a row from here is complete
+// when it is written — which is why UcxDoor rides on the record rather than
+// being inferred from status_class.
+DEFINE_PRELOAD_HOOK(ucx, put_nbi, "ucp_put_nbi", ucs_status_t, ucp_ep_h, const void*, size_t,
+                    uint64_t, ucp_rkey_h);
+DEFINE_PRELOAD_HOOK(ucx, get_nbi, "ucp_get_nbi", ucs_status_t, ucp_ep_h, void*, size_t, uint64_t,
+                    ucp_rkey_h);
+DEFINE_PRELOAD_HOOK(ucx, get_nb, "ucp_get_nb", ucs_status_ptr_t, ucp_ep_h, void*, size_t, uint64_t,
+                    ucp_rkey_h, ucp_send_callback_t);
+
+// The legacy tagged doors. `ucp_tag_send_sync_nb` is not a duplicate of
+// `ucp_tag_send_nb`: it is what MPI_Ssend becomes, completing only once the
+// receiver has matched, so folding the two together would erase the difference
+// between a send that buffered and a send that waited for its peer. UcxDoor
+// keeps them apart.
+DEFINE_PRELOAD_HOOK(ucx, tag_send_nb, "ucp_tag_send_nb", ucs_status_ptr_t, ucp_ep_h, const void*,
+                    size_t, ucp_datatype_t, ucp_tag_t, ucp_send_callback_t);
+DEFINE_PRELOAD_HOOK(ucx, tag_send_sync_nb, "ucp_tag_send_sync_nb", ucs_status_ptr_t, ucp_ep_h,
+                    const void*, size_t, ucp_datatype_t, ucp_tag_t, ucp_send_callback_t);
+DEFINE_PRELOAD_HOOK(ucx, tag_recv_nb, "ucp_tag_recv_nb", ucs_status_ptr_t, ucp_worker_h, void*,
+                    size_t, ucp_datatype_t, ucp_tag_t, ucp_tag_t, ucp_tag_recv_callback_t);

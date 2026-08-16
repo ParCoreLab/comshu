@@ -36,10 +36,13 @@ class UcxTagSend(object):
     def Status(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # UcxTagSend
     def StatusClass(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    # UcxTagSend
+    def Door(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(85))
 
-def CreateUcxTagSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, endpoint, buffer, request, count, tag, status, statusClass):
+def CreateUcxTagSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, endpoint, buffer, request, count, tag, status, statusClass, door):
     builder.Prep(8, 88)
-    builder.Pad(3)
+    builder.Pad(2)
+    builder.PrependUint8(door)
     builder.PrependUint8(statusClass)
     builder.PrependInt32(status)
     builder.PrependUint64(tag)

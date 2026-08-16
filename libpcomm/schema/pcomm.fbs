@@ -580,6 +580,7 @@ struct UcxTagSend {
   tag:uint64;
   status:int32;
   status_class:uint8;
+  door:uint8;
 }
 
 // type 608, Event. A tagged receive POSTED — count is the capacity offered, not
@@ -594,6 +595,7 @@ struct UcxTagRecv {
   tag_mask:uint64;
   status:int32;
   status_class:uint8;
+  door:uint8;
 }
 
 // type 610, Event. A one-sided put or get; `op` discriminates (RmaOp).
@@ -608,6 +610,7 @@ struct UcxRma {
   status:int32;
   status_class:uint8;
   op:uint8;
+  door:uint8;
 }
 
 // type 612, Event. An active-message send; header and payload keep separate

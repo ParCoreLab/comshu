@@ -14,6 +14,15 @@
     ucp_mem_map;
     ucp_mem_unmap;
     ucp_worker_progress;
+    ucp_ep_close_nb;
+    ucp_ep_destroy;
+    ucp_disconnect_nb;
+    ucp_put_nbi;
+    ucp_get_nbi;
+    ucp_get_nb;
+    ucp_tag_send_nb;
+    ucp_tag_send_sync_nb;
+    ucp_tag_recv_nb;
     pcomm_create_provider;
     pcomm_abi_version;
   local:

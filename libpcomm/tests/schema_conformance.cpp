@@ -200,10 +200,11 @@ int main() {
         c.payload.tag = 0x99AABBCCDDEEFF00ull;
         c.payload.status = -17;
         c.payload.status_class = 2;
+        c.payload.door = static_cast<uint8_t>(ur::UcxDoor::LegacySync);
         fb::UcxTagSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x707),
                                       fb::TimePoint(2, 0x808), 0),
                          0x99, 0xAA, 0xBB, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull,
-                         -17, 2);
+                         -17, 2, static_cast<uint8_t>(ur::UcxDoor::LegacySync));
         expect_identical("UcxTagSend", &c, &f, sizeof(c));
     }
     {
@@ -217,10 +218,12 @@ int main() {
         c.payload.tag_mask = 0xFFFFFFFFFFFF0000ull;
         c.payload.status = -3;
         c.payload.status_class = 1;
+        c.payload.door = static_cast<uint8_t>(ur::UcxDoor::Legacy);
         fb::UcxTagRecv f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x909),
                                       fb::TimePoint(2, 0xA0A), 0),
                          0xCC, 0xDD, 0xEE, 0x0102030405060708ull, 0x1122334455667788ull,
-                         0xFFFFFFFFFFFF0000ull, -3, 1);
+                         0xFFFFFFFFFFFF0000ull, -3, 1,
+                         static_cast<uint8_t>(ur::UcxDoor::Legacy));
         expect_identical("UcxTagRecv", &c, &f, sizeof(c));
     }
     {
@@ -235,10 +238,12 @@ int main() {
         c.payload.status = 0;
         c.payload.status_class = 0;
         c.payload.op = static_cast<uint8_t>(ur::RmaOp::Get);
+        c.payload.door = static_cast<uint8_t>(ur::UcxDoor::Nbi);
         fb::UcxRma f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xB0B),
                                   fb::TimePoint(2, 0xC0C), 0),
                      0x11, 0x22, 0x33, 0x44, 0x8877665544332211ull, 0x00007F0011223344ull, 0, 0,
-                     static_cast<uint8_t>(ur::RmaOp::Get));
+                     static_cast<uint8_t>(ur::RmaOp::Get),
+                     static_cast<uint8_t>(ur::UcxDoor::Nbi));
         expect_identical("UcxRma", &c, &f, sizeof(c));
     }
     {

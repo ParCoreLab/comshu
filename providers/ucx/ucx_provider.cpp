@@ -60,6 +60,70 @@ static ClassifiedStatus classify(ucs_status_ptr_t value) {
     return {h(value), UCS_INPROGRESS, rr::StatusClass::Request};
 }
 
+
+// ONE emit path per operation, shared by every door that reaches it. The legacy
+// and modern entry points differ only in their argument lists and in the UcxDoor
+// they stamp, so giving each its own record-building code would be four more
+// places for the field order to drift silently. See UcxDoor.
+static void emit_tag_send(ucp_ep_h endpoint, const void* buffer, size_t count, ucp_tag_t tag,
+                          ucs_status_ptr_t result, rr::UcxDoor door, std::uint64_t begin,
+                          std::uint64_t end) {
+    const auto s = classify(result);
+    rec().record(span(begin, end), rr::UcxTagSend{{},
+                                                  {},
+                                                  h(endpoint),
+                                                  h(buffer),
+                                                  s.request,
+                                                  count,
+                                                  tag,
+                                                  s.status,
+                                                  static_cast<std::uint8_t>(s.kind),
+                                                  static_cast<std::uint8_t>(door)});
+}
+
+static void emit_tag_recv(ucp_worker_h worker, void* buffer, size_t count, ucp_tag_t tag,
+                          ucp_tag_t tag_mask, ucs_status_ptr_t result, rr::UcxDoor door,
+                          std::uint64_t begin, std::uint64_t end) {
+    const auto s = classify(result);
+    rec().record(span(begin, end), rr::UcxTagRecv{{},
+                                                  {},
+                                                  h(worker),
+                                                  h(buffer),
+                                                  s.request,
+                                                  count,
+                                                  tag,
+                                                  tag_mask,
+                                                  s.status,
+                                                  static_cast<std::uint8_t>(s.kind),
+                                                  static_cast<std::uint8_t>(door)});
+}
+
+static void emit_rma(ucp_ep_h endpoint, const void* buffer, size_t count,
+                     std::uint64_t remote_addr, ucp_rkey_h rkey, ClassifiedStatus s, rr::RmaOp op,
+                     rr::UcxDoor door, std::uint64_t begin, std::uint64_t end) {
+    rec().record(span(begin, end), rr::UcxRma{{},
+                                              {},
+                                              h(endpoint),
+                                              h(buffer),
+                                              s.request,
+                                              h(rkey),
+                                              count,
+                                              remote_addr,
+                                              s.status,
+                                              static_cast<std::uint8_t>(s.kind),
+                                              static_cast<std::uint8_t>(op),
+                                              static_cast<std::uint8_t>(door)});
+}
+
+// A `_nbi` call returns a plain status and never a request: the operation is
+// issued and there is nothing left to wait on, so it classifies as Immediate on
+// success and Error otherwise, and never as Request.
+static ClassifiedStatus classify_status(ucs_status_t status) {
+    if (status == UCS_OK)
+        return {};
+    return {pcomm::core::kNullHandle, static_cast<std::int32_t>(status), rr::StatusClass::Error};
+}
+
 Profiler::Profiler() {
     const pcomm::Config cfg = pcomm::Config::from_env();
     if (pcomm_engine_declare_provider("ucx", pcomm::core::id_range::ucx_lo,
@@ -100,68 +164,26 @@ Profiler::Profiler() {
     register_post<tag_send_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
                                        const void* buffer, size_t count, ucp_tag_t tag,
                                        const ucp_request_param_t*, auto begin, auto end) {
-        const auto s = classify(result);
-        rec().record(span(begin, end),
-                     rr::UcxTagSend{{},
-                                    {},
-                                    h(endpoint),
-                                    h(buffer),
-                                    s.request,
-                                    count,
-                                    tag,
-                                    s.status,
-                                    static_cast<std::uint8_t>(s.kind)});
+        emit_tag_send(endpoint, buffer, count, tag, result, rr::UcxDoor::Nbx, begin, end);
     });
     // A receive names its WORKER, not an endpoint: the match is by tag across
     // every peer, so there is no endpoint to record. See UcxTagRecv.
     register_post<tag_recv_nbx_tag>([](ucs_status_ptr_t result, ucp_worker_h worker, void* buffer,
                                        size_t count, ucp_tag_t tag, ucp_tag_t tag_mask,
                                        const ucp_request_param_t*, auto begin, auto end) {
-        const auto s = classify(result);
-        rec().record(span(begin, end), rr::UcxTagRecv{{},
-                                                      {},
-                                                      h(worker),
-                                                      h(buffer),
-                                                      s.request,
-                                                      count,
-                                                      tag,
-                                                      tag_mask,
-                                                      s.status,
-                                                      static_cast<std::uint8_t>(s.kind)});
+        emit_tag_recv(worker, buffer, count, tag, tag_mask, result, rr::UcxDoor::Nbx, begin, end);
     });
     register_post<put_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, const void* buffer,
                                   size_t count, std::uint64_t remote_addr, ucp_rkey_h rkey,
                                   const ucp_request_param_t*, auto begin, auto end) {
-        const auto s = classify(result);
-        rec().record(span(begin, end),
-                     rr::UcxRma{{},
-                                {},
-                                h(endpoint),
-                                h(buffer),
-                                s.request,
-                                h(rkey),
-                                count,
-                                remote_addr,
-                                s.status,
-                                static_cast<std::uint8_t>(s.kind),
-                                static_cast<std::uint8_t>(rr::RmaOp::Put)});
+        emit_rma(endpoint, buffer, count, remote_addr, rkey, classify(result), rr::RmaOp::Put,
+                 rr::UcxDoor::Nbx, begin, end);
     });
     register_post<get_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, void* buffer,
                                   size_t count, std::uint64_t remote_addr, ucp_rkey_h rkey,
                                   const ucp_request_param_t*, auto begin, auto end) {
-        const auto s = classify(result);
-        rec().record(span(begin, end),
-                     rr::UcxRma{{},
-                                {},
-                                h(endpoint),
-                                h(buffer),
-                                s.request,
-                                h(rkey),
-                                count,
-                                remote_addr,
-                                s.status,
-                                static_cast<std::uint8_t>(s.kind),
-                                static_cast<std::uint8_t>(rr::RmaOp::Get)});
+        emit_rma(endpoint, buffer, count, remote_addr, rkey, classify(result), rr::RmaOp::Get,
+                 rr::UcxDoor::Nbx, begin, end);
     });
     register_post<am_send_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, unsigned am_id,
                                       const void*, size_t header_length, const void* buffer,
@@ -224,6 +246,66 @@ Profiler::Profiler() {
                 return;
             rec().record(span(begin, end), rr::UcxWorkerProgress{{}, {}, h(worker), progressed});
         });
+
+    // --- the doors MN5's stack actually calls; see ucx_hooks.hpp -------------
+    // Three more endpoint close doors. Without them ucx_endpoint leaks: hcoll
+    // and the NCCL plugin close through ucp_ep_close_nb, OpenSHMEM and MPI
+    // one-sided through ucp_ep_destroy, libmca_common_ucx through
+    // ucp_disconnect_nb. All four closes are the SAME entity, so they emit the
+    // same EntityClose against UcxEndpoint rather than each minting its own.
+    register_pre<ep_close_nb_tag>([](ucp_ep_h endpoint, unsigned, auto) {
+        close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
+    });
+    register_pre<ep_destroy_tag>([](ucp_ep_h endpoint, auto) {
+        close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
+    });
+    register_pre<disconnect_nb_tag>([](ucp_ep_h endpoint, auto) {
+        close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
+    });
+
+    // The one-sided doors MPI actually uses. mca_osc_ucx references only these,
+    // never the _nbx pair, so without them MPI_Put/MPI_Get produce an empty
+    // ucx_rma table — a confident zero rather than a gap.
+    register_post<put_nbi_tag>([](ucs_status_t status, ucp_ep_h endpoint, const void* buffer,
+                                  size_t length, std::uint64_t remote_addr, ucp_rkey_h rkey,
+                                  auto begin, auto end) {
+        emit_rma(endpoint, buffer, length, remote_addr, rkey, classify_status(status),
+                 rr::RmaOp::Put, rr::UcxDoor::Nbi, begin, end);
+    });
+    register_post<get_nbi_tag>([](ucs_status_t status, ucp_ep_h endpoint, void* buffer,
+                                  size_t length, std::uint64_t remote_addr, ucp_rkey_h rkey,
+                                  auto begin, auto end) {
+        emit_rma(endpoint, buffer, length, remote_addr, rkey, classify_status(status),
+                 rr::RmaOp::Get, rr::UcxDoor::Nbi, begin, end);
+    });
+    register_post<get_nb_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, void* buffer,
+                                 size_t length, std::uint64_t remote_addr, ucp_rkey_h rkey,
+                                 ucp_send_callback_t, auto begin, auto end) {
+        emit_rma(endpoint, buffer, length, remote_addr, rkey, classify(result), rr::RmaOp::Get,
+                 rr::UcxDoor::Legacy, begin, end);
+    });
+
+    // The legacy tagged doors. mca_pml_ucx, hcoll and SHARP all reference them,
+    // and ucp_tag_send_sync_nb is kept distinct because it is MPI_Ssend: it
+    // completes only once the receiver has matched.
+    register_post<tag_send_nb_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
+                                      const void* buffer, size_t count, ucp_datatype_t,
+                                      ucp_tag_t tag, ucp_send_callback_t, auto begin, auto end) {
+        emit_tag_send(endpoint, buffer, count, tag, result, rr::UcxDoor::Legacy, begin, end);
+    });
+    register_post<tag_send_sync_nb_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
+                                           const void* buffer, size_t count, ucp_datatype_t,
+                                           ucp_tag_t tag, ucp_send_callback_t, auto begin,
+                                           auto end) {
+        emit_tag_send(endpoint, buffer, count, tag, result, rr::UcxDoor::LegacySync, begin, end);
+    });
+    register_post<tag_recv_nb_tag>([](ucs_status_ptr_t result, ucp_worker_h worker, void* buffer,
+                                      size_t count, ucp_datatype_t, ucp_tag_t tag,
+                                      ucp_tag_t tag_mask, ucp_tag_recv_callback_t, auto begin,
+                                      auto end) {
+        emit_tag_recv(worker, buffer, count, tag, tag_mask, result, rr::UcxDoor::Legacy, begin,
+                      end);
+    });
 }
 
 template class UcxEventSource<Profiler>;
@@ -290,6 +372,49 @@ extern "C" ucs_status_t ucp_mem_unmap(ucp_context_h context, ucp_mem_h memh) {
 }
 extern "C" unsigned ucp_worker_progress(ucp_worker_h worker) {
     return ucx::Profiler::invoke_preload<ucx::worker_progress_tag>(worker);
+}
+extern "C" ucs_status_ptr_t ucp_ep_close_nb(ucp_ep_h endpoint, unsigned mode) {
+    return ucx::Profiler::invoke_preload<ucx::ep_close_nb_tag>(endpoint, mode);
+}
+extern "C" void ucp_ep_destroy(ucp_ep_h endpoint) {
+    ucx::Profiler::invoke_preload<ucx::ep_destroy_tag>(endpoint);
+}
+extern "C" ucs_status_ptr_t ucp_disconnect_nb(ucp_ep_h endpoint) {
+    return ucx::Profiler::invoke_preload<ucx::disconnect_nb_tag>(endpoint);
+}
+extern "C" ucs_status_t ucp_put_nbi(ucp_ep_h endpoint, const void* buffer, size_t length,
+                                    uint64_t remote_addr, ucp_rkey_h rkey) {
+    return ucx::Profiler::invoke_preload<ucx::put_nbi_tag>(endpoint, buffer, length, remote_addr,
+                                                           rkey);
+}
+extern "C" ucs_status_t ucp_get_nbi(ucp_ep_h endpoint, void* buffer, size_t length,
+                                    uint64_t remote_addr, ucp_rkey_h rkey) {
+    return ucx::Profiler::invoke_preload<ucx::get_nbi_tag>(endpoint, buffer, length, remote_addr,
+                                                           rkey);
+}
+extern "C" ucs_status_ptr_t ucp_get_nb(ucp_ep_h endpoint, void* buffer, size_t length,
+                                        uint64_t remote_addr, ucp_rkey_h rkey,
+                                        ucp_send_callback_t cb) {
+    return ucx::Profiler::invoke_preload<ucx::get_nb_tag>(endpoint, buffer, length, remote_addr,
+                                                          rkey, cb);
+}
+extern "C" ucs_status_ptr_t ucp_tag_send_nb(ucp_ep_h endpoint, const void* buffer, size_t count,
+                                             ucp_datatype_t datatype, ucp_tag_t tag,
+                                             ucp_send_callback_t cb) {
+    return ucx::Profiler::invoke_preload<ucx::tag_send_nb_tag>(endpoint, buffer, count, datatype,
+                                                               tag, cb);
+}
+extern "C" ucs_status_ptr_t ucp_tag_send_sync_nb(ucp_ep_h endpoint, const void* buffer,
+                                                  size_t count, ucp_datatype_t datatype,
+                                                  ucp_tag_t tag, ucp_send_callback_t cb) {
+    return ucx::Profiler::invoke_preload<ucx::tag_send_sync_nb_tag>(endpoint, buffer, count,
+                                                                    datatype, tag, cb);
+}
+extern "C" ucs_status_ptr_t ucp_tag_recv_nb(ucp_worker_h worker, void* buffer, size_t count,
+                                             ucp_datatype_t datatype, ucp_tag_t tag,
+                                             ucp_tag_t tag_mask, ucp_tag_recv_callback_t cb) {
+    return ucx::Profiler::invoke_preload<ucx::tag_recv_nb_tag>(worker, buffer, count, datatype,
+                                                               tag, tag_mask, cb);
 }
 
 namespace pcomm::providers {

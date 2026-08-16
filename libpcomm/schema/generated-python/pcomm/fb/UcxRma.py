@@ -40,10 +40,13 @@ class UcxRma(object):
     def StatusClass(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
     # UcxRma
     def Op(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(85))
+    # UcxRma
+    def Door(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(86))
 
-def CreateUcxRma(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, endpoint, buffer, request, rkey, count, remoteAddr, status, statusClass, op):
+def CreateUcxRma(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, endpoint, buffer, request, rkey, count, remoteAddr, status, statusClass, op, door):
     builder.Prep(8, 88)
-    builder.Pad(2)
+    builder.Pad(1)
+    builder.PrependUint8(door)
     builder.PrependUint8(op)
     builder.PrependUint8(statusClass)
     builder.PrependInt32(status)

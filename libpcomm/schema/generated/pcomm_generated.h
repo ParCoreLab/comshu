@@ -2575,7 +2575,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
   uint64_t tag_;
   int32_t status_;
   uint8_t status_class_;
-  int8_t padding1__;  int16_t padding2__;
+  uint8_t door_;
+  int16_t padding1__;
 
  public:
   UcxTagSend()
@@ -2588,13 +2589,12 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
         tag_(0),
         status_(0),
         status_class_(0),
-        padding1__(0),
-        padding2__(0) {
+        door_(0),
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
-  UcxTagSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, int32_t _status, uint8_t _status_class)
+  UcxTagSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, int32_t _status, uint8_t _status_class, uint8_t _door)
       : temporal_(_temporal),
         endpoint_(::flatbuffers::EndianScalar(_endpoint)),
         buffer_(::flatbuffers::EndianScalar(_buffer)),
@@ -2604,11 +2604,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
         tag_(::flatbuffers::EndianScalar(_tag)),
         status_(::flatbuffers::EndianScalar(_status)),
         status_class_(::flatbuffers::EndianScalar(_status_class)),
-        padding1__(0),
-        padding2__(0) {
+        door_(::flatbuffers::EndianScalar(_door)),
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -2634,6 +2633,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
   uint8_t status_class() const {
     return ::flatbuffers::EndianScalar(status_class_);
   }
+  uint8_t door() const {
+    return ::flatbuffers::EndianScalar(door_);
+  }
 };
 FLATBUFFERS_STRUCT_END(UcxTagSend, 88);
 
@@ -2649,7 +2651,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagRecv FLATBUFFERS_FINAL_CLASS {
   uint64_t tag_mask_;
   int32_t status_;
   uint8_t status_class_;
-  int8_t padding1__;  int16_t padding2__;
+  uint8_t door_;
+  int16_t padding1__;
 
  public:
   UcxTagRecv()
@@ -2663,13 +2666,12 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagRecv FLATBUFFERS_FINAL_CLASS {
         tag_mask_(0),
         status_(0),
         status_class_(0),
-        padding1__(0),
-        padding2__(0) {
+        door_(0),
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
-  UcxTagRecv(const pcomm::fb::Temporal &_temporal, uint32_t _worker, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, uint64_t _tag_mask, int32_t _status, uint8_t _status_class)
+  UcxTagRecv(const pcomm::fb::Temporal &_temporal, uint32_t _worker, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, uint64_t _tag_mask, int32_t _status, uint8_t _status_class, uint8_t _door)
       : temporal_(_temporal),
         worker_(::flatbuffers::EndianScalar(_worker)),
         buffer_(::flatbuffers::EndianScalar(_buffer)),
@@ -2680,11 +2682,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagRecv FLATBUFFERS_FINAL_CLASS {
         tag_mask_(::flatbuffers::EndianScalar(_tag_mask)),
         status_(::flatbuffers::EndianScalar(_status)),
         status_class_(::flatbuffers::EndianScalar(_status_class)),
-        padding1__(0),
-        padding2__(0) {
+        door_(::flatbuffers::EndianScalar(_door)),
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -2713,6 +2714,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagRecv FLATBUFFERS_FINAL_CLASS {
   uint8_t status_class() const {
     return ::flatbuffers::EndianScalar(status_class_);
   }
+  uint8_t door() const {
+    return ::flatbuffers::EndianScalar(door_);
+  }
 };
 FLATBUFFERS_STRUCT_END(UcxTagRecv, 96);
 
@@ -2728,7 +2732,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
   int32_t status_;
   uint8_t status_class_;
   uint8_t op_;
-  int16_t padding0__;
+  uint8_t door_;
+  int8_t padding0__;
 
  public:
   UcxRma()
@@ -2742,10 +2747,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
         status_(0),
         status_class_(0),
         op_(0),
+        door_(0),
         padding0__(0) {
     (void)padding0__;
   }
-  UcxRma(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _rkey, uint64_t _count, uint64_t _remote_addr, int32_t _status, uint8_t _status_class, uint8_t _op)
+  UcxRma(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _rkey, uint64_t _count, uint64_t _remote_addr, int32_t _status, uint8_t _status_class, uint8_t _op, uint8_t _door)
       : temporal_(_temporal),
         endpoint_(::flatbuffers::EndianScalar(_endpoint)),
         buffer_(::flatbuffers::EndianScalar(_buffer)),
@@ -2756,6 +2762,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
         status_(::flatbuffers::EndianScalar(_status)),
         status_class_(::flatbuffers::EndianScalar(_status_class)),
         op_(::flatbuffers::EndianScalar(_op)),
+        door_(::flatbuffers::EndianScalar(_door)),
         padding0__(0) {
     (void)padding0__;
   }
@@ -2788,6 +2795,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
   }
   uint8_t op() const {
     return ::flatbuffers::EndianScalar(op_);
+  }
+  uint8_t door() const {
+    return ::flatbuffers::EndianScalar(door_);
   }
 };
 FLATBUFFERS_STRUCT_END(UcxRma, 88);

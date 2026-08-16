@@ -16,6 +16,27 @@ enum class StatusClass : std::uint8_t {
     Request = 2,    // a real request pointer
 };
 
+// WHICH ENTRY POINT a row came through. Values are pinned: they go on disk.
+//
+// This is not bookkeeping about UCX trivia. `ucp_tag_send_sync_nb` is what
+// MPI_Ssend becomes and completes only once the receiver has matched, so a row
+// from it means something different from an ordinary send that merely buffered;
+// and `_nbi` returns a plain status with no request at all, so its rows are
+// complete when written while an `_nbx` row may still be in flight. Folding
+// these together would erase both distinctions and leave nothing in the record
+// able to recover them.
+//
+// It also answers the coverage question directly: which doors a given machine's
+// stack really drives is a per-installation fact (MN5's MPI one-sided path uses
+// only `_nbi`), and with this field a capture states it rather than requiring a
+// readelf sweep to guess it.
+enum class UcxDoor : std::uint8_t {
+    Nbx = 0,         // the modern *_nbx entry point
+    Legacy = 1,      // the pre-nbx *_nb entry point
+    LegacySync = 2,  // ucp_tag_send_sync_nb — completes on receiver match
+    Nbi = 3,         // ucp_put_nbi / ucp_get_nbi — no request, status only
+};
+
 PCOMM_RECORD(UcxContext, RecordKind::Entity, 600, "ucx_context") {
     Handle context;
     std::uint32_t api_major;
@@ -40,6 +61,7 @@ PCOMM_RECORD(UcxTagSend, RecordKind::Event, 606, "ucx_tag_send") {
     std::uint64_t tag;
     std::int32_t  status;        // UCS_OK or the decoded error status
     std::uint8_t  status_class;  // StatusClass
+    std::uint8_t  door;          // UcxDoor
 };
 
 // EVENT — a tagged receive was POSTED. Not a receive that completed, and the
@@ -62,6 +84,7 @@ PCOMM_RECORD(UcxTagRecv, RecordKind::Event, 608, "ucx_tag_recv") {
     std::uint64_t tag_mask;  // which bits of `tag` the match tests
     std::int32_t  status;
     std::uint8_t  status_class;
+    std::uint8_t  door;  // UcxDoor
 };
 
 // Which one-sided operation a UcxRma row describes. Values are pinned: they go
@@ -87,7 +110,8 @@ PCOMM_RECORD(UcxRma, RecordKind::Event, 610, "ucx_rma") {
     std::uint64_t remote_addr;
     std::int32_t  status;
     std::uint8_t  status_class;
-    std::uint8_t  op;  // RmaOp
+    std::uint8_t  op;    // RmaOp
+    std::uint8_t  door;  // UcxDoor
 };
 
 // EVENT — an active-message send. The header and the payload keep separate

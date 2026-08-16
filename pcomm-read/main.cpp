@@ -753,6 +753,24 @@ template<> struct Table<ucr::UcxEndpoint> {
     }
 };
 
+// UcxDoor in words. Which entry point a row came through is not trivia: on MN5
+// the MPI one-sided path calls only the `_nbi` doors and never the `_nbx` ones,
+// so "which doors does this machine's stack actually drive" is a per-install
+// fact a capture should state rather than require a readelf sweep to recover.
+static const char* ucx_door_name(std::uint8_t raw) {
+    switch (static_cast<ucr::UcxDoor>(raw)) {
+        case ucr::UcxDoor::Nbx:
+            return "nbx";
+        case ucr::UcxDoor::Legacy:
+            return "nb";
+        case ucr::UcxDoor::LegacySync:
+            return "sync_nb";
+        case ucr::UcxDoor::Nbi:
+            return "nbi";
+    }
+    return "?";
+}
+
 // StatusClass in words, for the reason ib_cq_origin_name and port_state_name
 // exist: a raw 0/1/2 in a CSV is a value nobody checks. The three cases are the
 // three things ucp_tag_send_nbx can return — it completed inline (nullptr), it
@@ -776,10 +794,11 @@ static const char* ucx_status_class_name(std::uint8_t raw) {
 template<> struct Table<ucr::UcxTagSend> {
     static constexpr const char* name = "ucx_tag_send";
     static constexpr const char* cols =
-        "ticks,endpoint,buffer,request,count,tag,status,status_class";
+        "ticks,door,endpoint,buffer,request,count,tag,status,status_class";
     static void row(std::FILE* f, const Stamped<ucr::UcxTagSend>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%llu,0x%llx,%d,%s", (unsigned long long)s.temporal.a.ticks,
+        std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,%d,%s",
+                     (unsigned long long)s.temporal.a.ticks, ucx_door_name(s.payload.door),
                      s.payload.endpoint, s.payload.buffer, s.payload.request,
                      (unsigned long long)s.payload.count, (unsigned long long)s.payload.tag,
                      s.payload.status, ucx_status_class_name(s.payload.status_class));
@@ -792,11 +811,12 @@ template<> struct Table<ucr::UcxTagSend> {
 template<> struct Table<ucr::UcxTagRecv> {
     static constexpr const char* name = "ucx_tag_recv";
     static constexpr const char* cols =
-        "ticks,worker,buffer,request,capacity,tag,tag_mask,status,status_class";
+        "ticks,door,worker,buffer,request,capacity,tag,tag_mask,status,status_class";
     static void row(std::FILE* f, const Stamped<ucr::UcxTagRecv>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%llu,0x%llx,0x%llx,%d,%s",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.worker, s.payload.buffer,
+        std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,0x%llx,%d,%s",
+                     (unsigned long long)s.temporal.a.ticks, ucx_door_name(s.payload.door),
+                     s.payload.worker, s.payload.buffer,
                      s.payload.request, (unsigned long long)s.payload.count,
                      (unsigned long long)s.payload.tag, (unsigned long long)s.payload.tag_mask,
                      s.payload.status, ucx_status_class_name(s.payload.status_class));
@@ -819,10 +839,11 @@ static const char* ucx_rma_op_name(std::uint8_t raw) {
 template<> struct Table<ucr::UcxRma> {
     static constexpr const char* name = "ucx_rma";
     static constexpr const char* cols =
-        "ticks,op,endpoint,buffer,request,rkey,count,remote_addr,status,status_class";
+        "ticks,op,door,endpoint,buffer,request,rkey,count,remote_addr,status,status_class";
     static void row(std::FILE* f, const Stamped<ucr::UcxRma>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%s,%u,%u,%u,%u,%llu,0x%llx,%d,%s",
+        std::fprintf(f, "%llu,%s,%s,%u,%u,%u,%u,%llu,0x%llx,%d,%s",
                      (unsigned long long)s.temporal.a.ticks, ucx_rma_op_name(s.payload.op),
+                     ucx_door_name(s.payload.door),
                      s.payload.endpoint, s.payload.buffer, s.payload.request, s.payload.rkey,
                      (unsigned long long)s.payload.count,
                      (unsigned long long)s.payload.remote_addr, s.payload.status,
