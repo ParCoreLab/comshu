@@ -207,6 +207,41 @@ co-runnable with the real MPI/UCX path and that its lifecycle accounting is
 not merely a compile-time or synthetic-app result. It does not claim operation
 completion or operation→QP attribution; those remain Stage 2/3 work.
 
+### Reviewed 2026-08-16 — two lists, and the build that nobody built
+
+The MN5 counts above were re-verified by parsing the capture rather than by
+dividing file size by stride: 133/127 `ucx_tag_send`, 5 endpoints, 3 workers,
+4 contexts per rank, agreeing exactly. The review found two defects behind them,
+both the same shape — a generated list and a hand-written list describing the
+same thing, with nothing keeping them in step.
+
+**`pcomm-read` did not compile at all** under `-DPCOMM_DUCKDB=ON`. Its provider
+include directories were spelled out by hand (ibverbs, mlx5dv, in two places)
+while the generated `raw_columns.hpp` derives its `#include` lines from a GLOB
+over the same files, so `providers/ucx` made the generator emit a header no
+target could find. It survived because the only consumer of that header is
+behind `PCOMM_DUCKDB=ON`: the pre-commit gate builds the core config, which has
+no DuckDB, and the MN5 job built only `pcomm_launcher` and `ucx_trace`. **The
+configuration that broke is the one no gate builds** — worth remembering next
+time a gate is described as green. One glob now feeds both.
+
+**The records were write-only in half the reader.** Parquet and SQL are
+generated from that same glob and had the UCX tables immediately; CSV,
+`--pftrace` and `pcomm types` come from `TableRecords`, a hand-maintained tuple,
+which never got them. A build of the provider's own tree therefore rejected its
+own capture with `type 600 is unknown to this build ... a capture from a newer
+schema, or a provider this build does not know` — both halves false, and
+pointing at a version skew that does not exist. Stage 1's scope above already
+listed "reader table ... changes required by the normal record gate"; that item
+had not been done, and the gate did not notice because no gate reads a UCX
+capture. Now done and verified against job 44675611's capture.
+
+The nesting instrument in `providers/ibverbs/ibverbs_provider.cpp` is **removed**
+along with `nesting.sbatch`, its question having been answered by job 44635003
+above. The finding moved to the probe's README. `ucx_calls.cpp` keeps
+`pcomm_ucx_api_probe_current` for whatever observes the host-side mlx5 send door
+in Stage 3.
+
 ## Stage 1 — provider vertical slice
 
 Add `providers/ucx/`, built only by `PCOMM_PROVIDER_UCX=ON`, with UCX headers and
