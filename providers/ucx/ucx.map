@@ -23,6 +23,11 @@
     ucp_tag_send_nb;
     ucp_tag_send_sync_nb;
     ucp_tag_recv_nb;
+    ucp_tag_probe_nb;
+    ucp_tag_msg_recv_nb;
+    ucp_atomic_post;
+    ucp_atomic_fetch_nb;
+    ucp_atomic_op_nbx;
     pcomm_create_provider;
     pcomm_abi_version;
   local:

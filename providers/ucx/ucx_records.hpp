@@ -35,6 +35,8 @@ enum class UcxDoor : std::uint8_t {
     Legacy = 1,      // the pre-nbx *_nb entry point
     LegacySync = 2,  // ucp_tag_send_sync_nb — completes on receiver match
     Nbi = 3,         // ucp_put_nbi / ucp_get_nbi — no request, status only
+    LegacyMsg = 4,   // ucp_tag_msg_recv_nb — keyed by message handle, not tag
+    LegacyPost = 5,  // ucp_atomic_post — fire and forget, no result at all
 };
 
 PCOMM_RECORD(UcxContext, RecordKind::Entity, 600, "ucx_context") {
@@ -82,9 +84,40 @@ PCOMM_RECORD(UcxTagRecv, RecordKind::Event, 608, "ucx_tag_recv") {
     std::uint64_t count;  // capacity OFFERED, not bytes delivered
     std::uint64_t tag;
     std::uint64_t tag_mask;  // which bits of `tag` the match tests
+    // Set ONLY on the ucp_tag_msg_recv_nb path (door = LegacyMsg), where it is
+    // the interned ucp_tag_message_h and `tag`/`tag_mask` are 0 because that
+    // door genuinely has neither — it receives a message already matched by an
+    // earlier probe. Join it to ucx_tag_probe.message to recover the tag AND
+    // the true delivered length.
+    //
+    // THAT JOIN MUST BE TEMPORAL, not a plain equality: the handle is a pointer
+    // into UCX's request mpool and is recycled, which was observed directly
+    // while validating this design (UCX printed its own mpool-reuse warning in
+    // the same run). "The most recent probe with this handle at or before this
+    // receive" is the rule; matching on the value alone will pair a receive with
+    // a long-dead probe as soon as the pool wraps.
+    Handle        message;
     std::int32_t  status;
     std::uint8_t  status_class;
     std::uint8_t  door;  // UcxDoor
+};
+
+// EVENT — a probe that FOUND a message. Probes that find nothing are dropped at
+// the hook, for the reason ibv_poll_cq drops empty polls: a probe loop spins.
+//
+// This record is worth having beyond its role as the tag source for
+// ucp_tag_msg_recv_nb, because `length` is the one TRUE byte count anywhere in
+// the UCX record family. Every other size here is capacity offered or a raw
+// datatype count; this one is how big the message actually is, straight out of
+// ucp_tag_recv_info_t, known before the receive is even posted.
+PCOMM_RECORD(UcxTagProbe, RecordKind::Event, 618, "ucx_tag_probe") {
+    Handle        worker;
+    Handle        message;     // interned ucp_tag_message_h — the join key
+    std::uint64_t sender_tag;  // the FULL tag of the matched message
+    std::uint64_t length;      // TRUE message bytes, not a capacity
+    std::uint64_t tag;         // what the caller asked for
+    std::uint64_t tag_mask;
+    std::uint8_t  removed;  // the `remove` argument: 1 = dequeued for msg_recv
 };
 
 // Which one-sided operation a UcxRma row describes. Values are pinned: they go
@@ -162,6 +195,56 @@ PCOMM_RECORD(UcxMemMap, RecordKind::Entity, 614, "ucx_mem_map") {
 PCOMM_RECORD(UcxWorkerProgress, RecordKind::Event, 616, "ucx_worker_progress") {
     Handle        worker;
     std::uint32_t progressed;  // callbacks dispatched by this call
+};
+
+// The atomic operation, NORMALISED. UCX numbers the same operations differently
+// in each of its three atomic doors, so the raw opcode is not merely opaque —
+// it is ambiguous. Measured from the headers:
+//
+//   value  ucp_atomic_post_op_t  ucp_atomic_fetch_op_t  ucp_atomic_op_t
+//     0    ADD                   FADD                   ADD
+//     1    AND                   SWAP                   SWAP
+//     2    OR                    CSWAP                  CSWAP
+//     3    XOR                   FAND                   AND
+//
+// So `op = 1` means AND, SWAP and SWAP depending on which door wrote it. Storing
+// the raw byte would put a value on disk that cannot be read without also
+// reading `door` and a mapping table that lives nowhere — the "plausible-looking
+// lie" failure mode that port_state_name already cost this project once. These
+// are mapped at the hook instead, and `door` stays for provenance rather than
+// for decoding.
+enum class UcxAtomicOp : std::uint8_t {
+    Add = 0,
+    And = 1,
+    Or = 2,
+    Xor = 3,
+    Swap = 4,
+    CompareSwap = 5,
+    Unknown = 255,  // an opcode this build's UCX headers did not define
+};
+
+// EVENT — a remote atomic. Both MPI one-sided (ucp_atomic_post,
+// ucp_atomic_fetch_nb) and UCC (ucp_atomic_op_nbx) issue these, so without this
+// record an MPI RMA capture is missing the operations that make it RMA.
+//
+// `fetching` is the difference between an operation that returns the previous
+// value and one that does not, which is not recoverable from `op`: ADD is
+// fire-and-forget through ucp_atomic_post and fetching through
+// ucp_atomic_fetch_nb's FADD, and through ucp_atomic_op_nbx it is whichever the
+// caller's reply buffer says. Read from the field_mask there, never assumed.
+PCOMM_RECORD(UcxAtomic, RecordKind::Event, 620, "ucx_atomic") {
+    Handle        endpoint;
+    Handle        buffer;  // operand/result buffer where the door has one
+    Handle        request;
+    Handle        rkey;
+    std::uint64_t value;        // immediate operand (post/fetch doors); 0 for nbx
+    std::uint64_t remote_addr;  // the target of the atomic
+    std::uint64_t op_size;      // operand bytes — 4 or 8
+    std::int32_t  status;
+    std::uint8_t  status_class;
+    std::uint8_t  op;        // UcxAtomicOp, normalised
+    std::uint8_t  door;      // UcxDoor
+    std::uint8_t  fetching;  // 1 = returns the previous value
 };
 
 }  // namespace pcomm::providers::ucx::records

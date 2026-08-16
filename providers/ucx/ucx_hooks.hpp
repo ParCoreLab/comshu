@@ -130,3 +130,39 @@ DEFINE_PRELOAD_HOOK(ucx, tag_send_sync_nb, "ucp_tag_send_sync_nb", ucs_status_pt
                     const void*, size_t, ucp_datatype_t, ucp_tag_t, ucp_send_callback_t);
 DEFINE_PRELOAD_HOOK(ucx, tag_recv_nb, "ucp_tag_recv_nb", ucs_status_ptr_t, ucp_worker_h, void*,
                     size_t, ucp_datatype_t, ucp_tag_t, ucp_tag_t, ucp_tag_recv_callback_t);
+
+// The probe/msg_recv pair, and the reason they are hooked TOGETHER.
+//
+// ucp_tag_msg_recv_nb carries a ucp_tag_message_h and no tag at all, so on its
+// own it cannot fill ucx_tag_recv's key without inventing one. The tag is not
+// lost, though — it was handed to the caller by the probe that produced the
+// handle, in ucp_tag_recv_info_t. So the probe is hooked as the tag's source and
+// the two are joined by the message handle in the reader.
+//
+// Validated end to end on the self transport before being written: a probe
+// returned msg=0x1fe23d40 with sender_tag=0xabcd and length=48, and
+// ucp_tag_msg_recv_nb was then called with that exact handle. The handle is an
+// exact key; the join is temporal because UCX recycles it (see UcxTagRecv).
+//
+// Probes that find nothing are dropped at the hook. A probe loop spins exactly
+// like an empty ibv_poll_cq, and the same predicate answer applies.
+DEFINE_PRELOAD_HOOK_PRED(
+    ucx, tag_probe_nb, "ucp_tag_probe_nb",
+    [](ucp_tag_message_h found, ucp_worker_h, ucp_tag_t, ucp_tag_t, int,
+       ucp_tag_recv_info_t*) { return found != nullptr; },
+    ucp_tag_message_h, ucp_worker_h, ucp_tag_t, ucp_tag_t, int, ucp_tag_recv_info_t*);
+DEFINE_PRELOAD_HOOK(ucx, tag_msg_recv_nb, "ucp_tag_msg_recv_nb", ucs_status_ptr_t, ucp_worker_h,
+                    void*, size_t, ucp_datatype_t, ucp_tag_message_h, ucp_tag_recv_callback_t);
+
+// The atomics. mca_osc_ucx (MPI one-sided) uses the first two, libucc_tl_ucp and
+// mca_atomic_ucx the third — so without these an MPI RMA capture is missing the
+// operations that make it RMA. Three doors, three DIFFERENT opcode numberings;
+// see UcxAtomicOp for why they are normalised rather than stored raw.
+DEFINE_PRELOAD_HOOK(ucx, atomic_post, "ucp_atomic_post", ucs_status_t, ucp_ep_h,
+                    ucp_atomic_post_op_t, uint64_t, size_t, uint64_t, ucp_rkey_h);
+DEFINE_PRELOAD_HOOK(ucx, atomic_fetch_nb, "ucp_atomic_fetch_nb", ucs_status_ptr_t, ucp_ep_h,
+                    ucp_atomic_fetch_op_t, uint64_t, void*, size_t, uint64_t, ucp_rkey_h,
+                    ucp_send_callback_t);
+DEFINE_PRELOAD_HOOK(ucx, atomic_op_nbx, "ucp_atomic_op_nbx", ucs_status_ptr_t, ucp_ep_h,
+                    ucp_atomic_op_t, const void*, size_t, uint64_t, ucp_rkey_h,
+                    const ucp_request_param_t*);

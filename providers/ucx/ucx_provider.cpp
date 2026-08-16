@@ -83,7 +83,8 @@ static void emit_tag_send(ucp_ep_h endpoint, const void* buffer, size_t count, u
 
 static void emit_tag_recv(ucp_worker_h worker, void* buffer, size_t count, ucp_tag_t tag,
                           ucp_tag_t tag_mask, ucs_status_ptr_t result, rr::UcxDoor door,
-                          std::uint64_t begin, std::uint64_t end) {
+                          std::uint64_t begin, std::uint64_t end,
+                          const void* message = nullptr) {
     const auto s = classify(result);
     rec().record(span(begin, end), rr::UcxTagRecv{{},
                                                   {},
@@ -93,9 +94,67 @@ static void emit_tag_recv(ucp_worker_h worker, void* buffer, size_t count, ucp_t
                                                   count,
                                                   tag,
                                                   tag_mask,
+                                                  message ? h(message) : pcomm::core::kNullHandle,
                                                   s.status,
                                                   static_cast<std::uint8_t>(s.kind),
                                                   static_cast<std::uint8_t>(door)});
+}
+
+// The three atomic opcode spaces, mapped to one. See UcxAtomicOp: the raw values
+// collide across doors, so this mapping is the only thing that makes the field
+// readable, and it is done here rather than in the reader because only the hook
+// knows which door it came from.
+static rr::UcxAtomicOp map_post_op(ucp_atomic_post_op_t op) {
+    switch (op) {
+        case UCP_ATOMIC_POST_OP_ADD: return rr::UcxAtomicOp::Add;
+        case UCP_ATOMIC_POST_OP_AND: return rr::UcxAtomicOp::And;
+        case UCP_ATOMIC_POST_OP_OR:  return rr::UcxAtomicOp::Or;
+        case UCP_ATOMIC_POST_OP_XOR: return rr::UcxAtomicOp::Xor;
+        default: return rr::UcxAtomicOp::Unknown;
+    }
+}
+static rr::UcxAtomicOp map_fetch_op(ucp_atomic_fetch_op_t op) {
+    switch (op) {
+        case UCP_ATOMIC_FETCH_OP_FADD:  return rr::UcxAtomicOp::Add;
+        case UCP_ATOMIC_FETCH_OP_SWAP:  return rr::UcxAtomicOp::Swap;
+        case UCP_ATOMIC_FETCH_OP_CSWAP: return rr::UcxAtomicOp::CompareSwap;
+        case UCP_ATOMIC_FETCH_OP_FAND:  return rr::UcxAtomicOp::And;
+        case UCP_ATOMIC_FETCH_OP_FOR:   return rr::UcxAtomicOp::Or;
+        case UCP_ATOMIC_FETCH_OP_FXOR:  return rr::UcxAtomicOp::Xor;
+        default: return rr::UcxAtomicOp::Unknown;
+    }
+}
+static rr::UcxAtomicOp map_nbx_op(ucp_atomic_op_t op) {
+    switch (op) {
+        case UCP_ATOMIC_OP_ADD:   return rr::UcxAtomicOp::Add;
+        case UCP_ATOMIC_OP_SWAP:  return rr::UcxAtomicOp::Swap;
+        case UCP_ATOMIC_OP_CSWAP: return rr::UcxAtomicOp::CompareSwap;
+        case UCP_ATOMIC_OP_AND:   return rr::UcxAtomicOp::And;
+        case UCP_ATOMIC_OP_OR:    return rr::UcxAtomicOp::Or;
+        case UCP_ATOMIC_OP_XOR:   return rr::UcxAtomicOp::Xor;
+        default: return rr::UcxAtomicOp::Unknown;
+    }
+}
+
+static void emit_atomic(ucp_ep_h endpoint, const void* buffer, ClassifiedStatus s,
+                        std::uint64_t value, std::uint64_t remote_addr, ucp_rkey_h rkey,
+                        std::uint64_t op_size, rr::UcxAtomicOp op, rr::UcxDoor door,
+                        bool fetching, std::uint64_t begin, std::uint64_t end) {
+    rec().record(span(begin, end),
+                 rr::UcxAtomic{{},
+                               {},
+                               h(endpoint),
+                               buffer ? h(buffer) : pcomm::core::kNullHandle,
+                               s.request,
+                               h(rkey),
+                               value,
+                               remote_addr,
+                               op_size,
+                               s.status,
+                               static_cast<std::uint8_t>(s.kind),
+                               static_cast<std::uint8_t>(op),
+                               static_cast<std::uint8_t>(door),
+                               static_cast<std::uint8_t>(fetching ? 1 : 0)});
 }
 
 static void emit_rma(ucp_ep_h endpoint, const void* buffer, size_t count,
@@ -123,6 +182,33 @@ static ClassifiedStatus classify_status(ucs_status_t status) {
         return {};
     return {pcomm::core::kNullHandle, static_cast<std::int32_t>(status), rr::StatusClass::Error};
 }
+
+
+// UCX IMPLEMENTS ITS LEGACY DOORS ON TOP OF THE MODERN ONES, and because our
+// interposers are global that internal call lands on ours too. Measured on the
+// self transport before this guard existed: a program issuing three tagged sends
+// (one _nbx, two _nb) produced FIVE ucx_tag_send rows — each legacy send once as
+// `nb` and again as `nbx`, same tag, same length, microseconds apart. Receives
+// did the same.
+//
+// This is the ibv_reg_mr / ibv_reg_mr_iova2 defect exactly (see ib_hooks.hpp),
+// down to the remedy: a thread-local depth counter, with the OUTER door as the
+// recorder and the nested inner call suppressed. The outer one is also the
+// truthful one — it is the door the application actually called, which is the
+// whole point of UcxDoor.
+//
+// A counter rather than a flag because nothing promises the nesting is only one
+// deep, and it is per-thread because the nesting is per-call-stack. Whether a
+// given UCX build routes a given legacy door through its modern twin is a fact
+// observable at run time; which UCX build you are on is not.
+static int& legacy_depth() noexcept {
+    static thread_local int depth = 0;
+    return depth;
+}
+
+// True when this call is UCX's own, made from inside a legacy door we are
+// already recording.
+static bool nested_in_legacy() noexcept { return legacy_depth() > 0; }
 
 Profiler::Profiler() {
     const pcomm::Config cfg = pcomm::Config::from_env();
@@ -164,6 +250,8 @@ Profiler::Profiler() {
     register_post<tag_send_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
                                        const void* buffer, size_t count, ucp_tag_t tag,
                                        const ucp_request_param_t*, auto begin, auto end) {
+        if (nested_in_legacy())
+            return;
         emit_tag_send(endpoint, buffer, count, tag, result, rr::UcxDoor::Nbx, begin, end);
     });
     // A receive names its WORKER, not an endpoint: the match is by tag across
@@ -171,17 +259,23 @@ Profiler::Profiler() {
     register_post<tag_recv_nbx_tag>([](ucs_status_ptr_t result, ucp_worker_h worker, void* buffer,
                                        size_t count, ucp_tag_t tag, ucp_tag_t tag_mask,
                                        const ucp_request_param_t*, auto begin, auto end) {
+        if (nested_in_legacy())
+            return;
         emit_tag_recv(worker, buffer, count, tag, tag_mask, result, rr::UcxDoor::Nbx, begin, end);
     });
     register_post<put_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, const void* buffer,
                                   size_t count, std::uint64_t remote_addr, ucp_rkey_h rkey,
                                   const ucp_request_param_t*, auto begin, auto end) {
+        if (nested_in_legacy())
+            return;
         emit_rma(endpoint, buffer, count, remote_addr, rkey, classify(result), rr::RmaOp::Put,
                  rr::UcxDoor::Nbx, begin, end);
     });
     register_post<get_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, void* buffer,
                                   size_t count, std::uint64_t remote_addr, ucp_rkey_h rkey,
                                   const ucp_request_param_t*, auto begin, auto end) {
+        if (nested_in_legacy())
+            return;
         emit_rma(endpoint, buffer, count, remote_addr, rkey, classify(result), rr::RmaOp::Get,
                  rr::UcxDoor::Nbx, begin, end);
     });
@@ -269,20 +363,52 @@ Profiler::Profiler() {
     register_post<put_nbi_tag>([](ucs_status_t status, ucp_ep_h endpoint, const void* buffer,
                                   size_t length, std::uint64_t remote_addr, ucp_rkey_h rkey,
                                   auto begin, auto end) {
+        --legacy_depth();
         emit_rma(endpoint, buffer, length, remote_addr, rkey, classify_status(status),
                  rr::RmaOp::Put, rr::UcxDoor::Nbi, begin, end);
     });
     register_post<get_nbi_tag>([](ucs_status_t status, ucp_ep_h endpoint, void* buffer,
                                   size_t length, std::uint64_t remote_addr, ucp_rkey_h rkey,
                                   auto begin, auto end) {
+        --legacy_depth();
         emit_rma(endpoint, buffer, length, remote_addr, rkey, classify_status(status),
                  rr::RmaOp::Get, rr::UcxDoor::Nbi, begin, end);
     });
     register_post<get_nb_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, void* buffer,
                                  size_t length, std::uint64_t remote_addr, ucp_rkey_h rkey,
                                  ucp_send_callback_t, auto begin, auto end) {
+        --legacy_depth();
         emit_rma(endpoint, buffer, length, remote_addr, rkey, classify(result), rr::RmaOp::Get,
                  rr::UcxDoor::Legacy, begin, end);
+    });
+
+    // Every legacy door opens the nesting scope on ENTRY and closes it on exit,
+    // so the modern door it is implemented over recognises its own call and
+    // stays quiet. See legacy_depth().
+    register_pre<tag_send_nb_tag>([](ucp_ep_h, const void*, size_t, ucp_datatype_t, ucp_tag_t,
+                                     ucp_send_callback_t, auto) { ++legacy_depth(); });
+    register_pre<tag_send_sync_nb_tag>([](ucp_ep_h, const void*, size_t, ucp_datatype_t, ucp_tag_t,
+                                          ucp_send_callback_t, auto) { ++legacy_depth(); });
+    register_pre<tag_recv_nb_tag>([](ucp_worker_h, void*, size_t, ucp_datatype_t, ucp_tag_t,
+                                     ucp_tag_t, ucp_tag_recv_callback_t, auto) {
+        ++legacy_depth();
+    });
+    register_pre<get_nb_tag>([](ucp_ep_h, void*, size_t, std::uint64_t, ucp_rkey_h,
+                                ucp_send_callback_t, auto) { ++legacy_depth(); });
+    register_pre<put_nbi_tag>([](ucp_ep_h, const void*, size_t, std::uint64_t, ucp_rkey_h, auto) {
+        ++legacy_depth();
+    });
+    register_pre<get_nbi_tag>([](ucp_ep_h, void*, size_t, std::uint64_t, ucp_rkey_h, auto) {
+        ++legacy_depth();
+    });
+    register_pre<atomic_post_tag>([](ucp_ep_h, ucp_atomic_post_op_t, std::uint64_t, size_t,
+                                     std::uint64_t, ucp_rkey_h, auto) { ++legacy_depth(); });
+    register_pre<atomic_fetch_nb_tag>([](ucp_ep_h, ucp_atomic_fetch_op_t, std::uint64_t, void*,
+                                         size_t, std::uint64_t, ucp_rkey_h, ucp_send_callback_t,
+                                         auto) { ++legacy_depth(); });
+    register_pre<tag_msg_recv_nb_tag>([](ucp_worker_h, void*, size_t, ucp_datatype_t,
+                                         ucp_tag_message_h, ucp_tag_recv_callback_t, auto) {
+        ++legacy_depth();
     });
 
     // The legacy tagged doors. mca_pml_ucx, hcoll and SHARP all reference them,
@@ -291,20 +417,84 @@ Profiler::Profiler() {
     register_post<tag_send_nb_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
                                       const void* buffer, size_t count, ucp_datatype_t,
                                       ucp_tag_t tag, ucp_send_callback_t, auto begin, auto end) {
+        --legacy_depth();
         emit_tag_send(endpoint, buffer, count, tag, result, rr::UcxDoor::Legacy, begin, end);
     });
     register_post<tag_send_sync_nb_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
                                            const void* buffer, size_t count, ucp_datatype_t,
                                            ucp_tag_t tag, ucp_send_callback_t, auto begin,
                                            auto end) {
+        --legacy_depth();
         emit_tag_send(endpoint, buffer, count, tag, result, rr::UcxDoor::LegacySync, begin, end);
     });
     register_post<tag_recv_nb_tag>([](ucs_status_ptr_t result, ucp_worker_h worker, void* buffer,
                                       size_t count, ucp_datatype_t, ucp_tag_t tag,
                                       ucp_tag_t tag_mask, ucp_tag_recv_callback_t, auto begin,
                                       auto end) {
+        --legacy_depth();
         emit_tag_recv(worker, buffer, count, tag, tag_mask, result, rr::UcxDoor::Legacy, begin,
                       end);
+    });
+
+    // The probe is the TAG SOURCE for ucp_tag_msg_recv_nb, which carries none.
+    // Empty probes never reach here — the hook predicate drops them.
+    register_post<tag_probe_nb_tag>([](ucp_tag_message_h found, ucp_worker_h worker, ucp_tag_t tag,
+                                       ucp_tag_t tag_mask, int remove, ucp_tag_recv_info_t* info,
+                                       auto begin, auto end) {
+        rec().record(span(begin, end),
+                     rr::UcxTagProbe{{},
+                                     {},
+                                     h(worker),
+                                     h(found),
+                                     info ? info->sender_tag : 0,
+                                     info ? info->length : 0,
+                                     tag,
+                                     tag_mask,
+                                     static_cast<std::uint8_t>(remove ? 1 : 0)});
+    });
+    // tag and tag_mask are 0 here and that is not a gap being papered over: this
+    // door receives a message ALREADY matched, so it genuinely has neither. The
+    // message handle is the join key back to the probe that does. See UcxTagRecv.
+    register_post<tag_msg_recv_nb_tag>([](ucs_status_ptr_t result, ucp_worker_h worker,
+                                          void* buffer, size_t count, ucp_datatype_t,
+                                          ucp_tag_message_h message, ucp_tag_recv_callback_t,
+                                          auto begin, auto end) {
+        --legacy_depth();
+        emit_tag_recv(worker, buffer, count, 0, 0, result, rr::UcxDoor::LegacyMsg, begin, end,
+                      message);
+    });
+
+    // The atomics. ucp_atomic_post never returns a result, so it is never
+    // fetching; ucp_atomic_fetch_nb always is; ucp_atomic_op_nbx is whichever
+    // the caller's reply buffer says, read from the field mask rather than
+    // guessed.
+    register_post<atomic_post_tag>([](ucs_status_t status, ucp_ep_h endpoint,
+                                      ucp_atomic_post_op_t op, std::uint64_t value, size_t op_size,
+                                      std::uint64_t remote_addr, ucp_rkey_h rkey, auto begin,
+                                      auto end) {
+        --legacy_depth();
+        emit_atomic(endpoint, nullptr, classify_status(status), value, remote_addr, rkey, op_size,
+                    map_post_op(op), rr::UcxDoor::LegacyPost, false, begin, end);
+    });
+    register_post<atomic_fetch_nb_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
+                                          ucp_atomic_fetch_op_t op, std::uint64_t value,
+                                          void* fetch_result, size_t op_size,
+                                          std::uint64_t remote_addr, ucp_rkey_h rkey,
+                                          ucp_send_callback_t, auto begin, auto end) {
+        --legacy_depth();
+        emit_atomic(endpoint, fetch_result, classify(result), value, remote_addr, rkey, op_size,
+                    map_fetch_op(op), rr::UcxDoor::Legacy, true, begin, end);
+    });
+    register_post<atomic_op_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
+                                        ucp_atomic_op_t op, const void* buffer, size_t count,
+                                        std::uint64_t remote_addr, ucp_rkey_h rkey,
+                                        const ucp_request_param_t* param, auto begin, auto end) {
+        const bool fetching =
+            param && (param->op_attr_mask & UCP_OP_ATTR_FIELD_REPLY_BUFFER) != 0;
+        if (nested_in_legacy())
+            return;
+        emit_atomic(endpoint, buffer, classify(result), 0, remote_addr, rkey, count,
+                    map_nbx_op(op), rr::UcxDoor::Nbx, fetching, begin, end);
     });
 }
 
@@ -415,6 +605,39 @@ extern "C" ucs_status_ptr_t ucp_tag_recv_nb(ucp_worker_h worker, void* buffer, s
                                              ucp_tag_t tag_mask, ucp_tag_recv_callback_t cb) {
     return ucx::Profiler::invoke_preload<ucx::tag_recv_nb_tag>(worker, buffer, count, datatype,
                                                                tag, tag_mask, cb);
+}
+extern "C" ucp_tag_message_h ucp_tag_probe_nb(ucp_worker_h worker, ucp_tag_t tag,
+                                               ucp_tag_t tag_mask, int remove,
+                                               ucp_tag_recv_info_t* info) {
+    return ucx::Profiler::invoke_preload<ucx::tag_probe_nb_tag>(worker, tag, tag_mask, remove,
+                                                                info);
+}
+extern "C" ucs_status_ptr_t ucp_tag_msg_recv_nb(ucp_worker_h worker, void* buffer, size_t count,
+                                                 ucp_datatype_t datatype,
+                                                 ucp_tag_message_h message,
+                                                 ucp_tag_recv_callback_t cb) {
+    return ucx::Profiler::invoke_preload<ucx::tag_msg_recv_nb_tag>(worker, buffer, count, datatype,
+                                                                   message, cb);
+}
+extern "C" ucs_status_t ucp_atomic_post(ucp_ep_h endpoint, ucp_atomic_post_op_t op,
+                                        uint64_t value, size_t op_size, uint64_t remote_addr,
+                                        ucp_rkey_h rkey) {
+    return ucx::Profiler::invoke_preload<ucx::atomic_post_tag>(endpoint, op, value, op_size,
+                                                               remote_addr, rkey);
+}
+extern "C" ucs_status_ptr_t ucp_atomic_fetch_nb(ucp_ep_h endpoint, ucp_atomic_fetch_op_t op,
+                                                 uint64_t value, void* result, size_t op_size,
+                                                 uint64_t remote_addr, ucp_rkey_h rkey,
+                                                 ucp_send_callback_t cb) {
+    return ucx::Profiler::invoke_preload<ucx::atomic_fetch_nb_tag>(endpoint, op, value, result,
+                                                                   op_size, remote_addr, rkey, cb);
+}
+extern "C" ucs_status_ptr_t ucp_atomic_op_nbx(ucp_ep_h endpoint, ucp_atomic_op_t op,
+                                               const void* buffer, size_t count,
+                                               uint64_t remote_addr, ucp_rkey_h rkey,
+                                               const ucp_request_param_t* param) {
+    return ucx::Profiler::invoke_preload<ucx::atomic_op_nbx_tag>(endpoint, op, buffer, count,
+                                                                 remote_addr, rkey, param);
 }
 
 namespace pcomm::providers {

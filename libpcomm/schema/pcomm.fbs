@@ -593,9 +593,24 @@ struct UcxTagRecv {
   count:uint64;
   tag:uint64;
   tag_mask:uint64;
+  message:uint32;
   status:int32;
   status_class:uint8;
   door:uint8;
+}
+
+// type 618, Event. A probe that FOUND a message. `length` is the one true byte
+// count in the UCX family; `message` joins to UcxTagRecv.message (temporally —
+// UCX recycles the handle).
+struct UcxTagProbe {
+  temporal:Temporal;
+  worker:uint32;
+  message:uint32;
+  sender_tag:uint64;
+  length:uint64;
+  tag:uint64;
+  tag_mask:uint64;
+  removed:uint8;
 }
 
 // type 610, Event. A one-sided put or get; `op` discriminates (RmaOp).
@@ -644,4 +659,23 @@ struct UcxWorkerProgress {
   temporal:Temporal;
   worker:uint32;
   progressed:uint32;
+}
+
+// type 620, Event. A remote atomic. `op` is NORMALISED across the three UCX
+// opcode spaces, which number the same operations differently — see
+// UcxAtomicOp in providers/ucx/ucx_records.hpp.
+struct UcxAtomic {
+  temporal:Temporal;
+  endpoint:uint32;
+  buffer:uint32;
+  request:uint32;
+  rkey:uint32;
+  value:uint64;
+  remote_addr:uint64;
+  op_size:uint64;
+  status:int32;
+  status_class:uint8;
+  op:uint8;
+  door:uint8;
+  fetching:uint8;
 }

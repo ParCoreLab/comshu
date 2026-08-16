@@ -11,7 +11,7 @@ class UcxTagRecv(object):
 
     @classmethod
     def SizeOf(cls):
-        return 96
+        return 104
 
     # UcxTagRecv
     def Init(self, buf, pos):
@@ -35,18 +35,21 @@ class UcxTagRecv(object):
     # UcxTagRecv
     def TagMask(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # UcxTagRecv
-    def Status(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    def Message(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
     # UcxTagRecv
-    def StatusClass(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
+    def Status(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
     # UcxTagRecv
-    def Door(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(93))
+    def StatusClass(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(96))
+    # UcxTagRecv
+    def Door(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(97))
 
-def CreateUcxTagRecv(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, worker, buffer, request, count, tag, tagMask, status, statusClass, door):
-    builder.Prep(8, 96)
-    builder.Pad(2)
+def CreateUcxTagRecv(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, worker, buffer, request, count, tag, tagMask, message, status, statusClass, door):
+    builder.Prep(8, 104)
+    builder.Pad(6)
     builder.PrependUint8(door)
     builder.PrependUint8(statusClass)
     builder.PrependInt32(status)
+    builder.PrependUint32(message)
     builder.PrependUint64(tagMask)
     builder.PrependUint64(tag)
     builder.PrependUint64(count)

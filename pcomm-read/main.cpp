@@ -767,6 +767,10 @@ static const char* ucx_door_name(std::uint8_t raw) {
             return "sync_nb";
         case ucr::UcxDoor::Nbi:
             return "nbi";
+        case ucr::UcxDoor::LegacyMsg:
+            return "msg_recv_nb";
+        case ucr::UcxDoor::LegacyPost:
+            return "post";
     }
     return "?";
 }
@@ -811,15 +815,16 @@ template<> struct Table<ucr::UcxTagSend> {
 template<> struct Table<ucr::UcxTagRecv> {
     static constexpr const char* name = "ucx_tag_recv";
     static constexpr const char* cols =
-        "ticks,door,worker,buffer,request,capacity,tag,tag_mask,status,status_class";
+        "ticks,door,worker,buffer,request,capacity,tag,tag_mask,message,status,status_class";
     static void row(std::FILE* f, const Stamped<ucr::UcxTagRecv>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,0x%llx,%d,%s",
+        std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,0x%llx,%u,%d,%s",
                      (unsigned long long)s.temporal.a.ticks, ucx_door_name(s.payload.door),
                      s.payload.worker, s.payload.buffer,
                      s.payload.request, (unsigned long long)s.payload.count,
                      (unsigned long long)s.payload.tag, (unsigned long long)s.payload.tag_mask,
-                     s.payload.status, ucx_status_class_name(s.payload.status_class));
+                     s.payload.message, s.payload.status,
+                     ucx_status_class_name(s.payload.status_class));
     }
 };
 
@@ -888,6 +893,65 @@ template<> struct Table<ucr::UcxWorkerProgress> {
     }
 };
 
+// The probe is where a tagged receive's identity comes from on the
+// ucp_tag_msg_recv_nb path, and `length` is the one column in the whole UCX
+// family that is a real byte count rather than a capacity. Join
+// ucx_tag_recv.message -> ucx_tag_probe.message, taking the most recent probe at
+// or before the receive: UCX recycles the handle, so a plain equality join pairs
+// a receive with a dead probe once the pool wraps.
+template<> struct Table<ucr::UcxTagProbe> {
+    static constexpr const char* name = "ucx_tag_probe";
+    static constexpr const char* cols = "ticks,worker,message,sender_tag,length,tag,tag_mask,removed";
+    static void row(std::FILE* f, const Stamped<ucr::UcxTagProbe>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,0x%llx,0x%llx,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.worker, s.payload.message,
+                     (unsigned long long)s.payload.sender_tag,
+                     (unsigned long long)s.payload.length, (unsigned long long)s.payload.tag,
+                     (unsigned long long)s.payload.tag_mask, s.payload.removed);
+    }
+};
+
+// UcxAtomicOp in words. The normalisation happened at the hook — see
+// UcxAtomicOp for why the raw value could not be stored — so this only has to
+// name the result.
+static const char* ucx_atomic_op_name(std::uint8_t raw) {
+    switch (static_cast<ucr::UcxAtomicOp>(raw)) {
+        case ucr::UcxAtomicOp::Add:
+            return "add";
+        case ucr::UcxAtomicOp::And:
+            return "and";
+        case ucr::UcxAtomicOp::Or:
+            return "or";
+        case ucr::UcxAtomicOp::Xor:
+            return "xor";
+        case ucr::UcxAtomicOp::Swap:
+            return "swap";
+        case ucr::UcxAtomicOp::CompareSwap:
+            return "cswap";
+        case ucr::UcxAtomicOp::Unknown:
+            return "unknown";
+    }
+    return "?";
+}
+
+template<> struct Table<ucr::UcxAtomic> {
+    static constexpr const char* name = "ucx_atomic";
+    static constexpr const char* cols =
+        "ticks,op,fetching,door,endpoint,buffer,request,rkey,value,remote_addr,op_size,status,"
+        "status_class";
+    static void row(std::FILE* f, const Stamped<ucr::UcxAtomic>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%s,%u,%s,%u,%u,%u,%u,%llu,0x%llx,%llu,%d,%s",
+                     (unsigned long long)s.temporal.a.ticks, ucx_atomic_op_name(s.payload.op),
+                     s.payload.fetching, ucx_door_name(s.payload.door), s.payload.endpoint,
+                     s.payload.buffer, s.payload.request, s.payload.rkey,
+                     (unsigned long long)s.payload.value,
+                     (unsigned long long)s.payload.remote_addr,
+                     (unsigned long long)s.payload.op_size, s.payload.status,
+                     ucx_status_class_name(s.payload.status_class));
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
@@ -907,7 +971,7 @@ using TableRecords =
                mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend,
                ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend,
                ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend, ucr::UcxMemMap,
-               ucr::UcxWorkerProgress>;
+               ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.

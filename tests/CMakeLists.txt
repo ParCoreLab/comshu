@@ -95,3 +95,35 @@ add_test(NAME flow_pairing_agree
 # is wrong in BOTH, nor one whose fixture never expresses the defect.
 add_test(NAME wr_flow_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/wr_flow_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
+# The UCX provider's record gate. Registered only when that provider is built,
+# because it needs both the .so and UCX itself — but it does NOT need a cluster:
+# the self transport runs the whole workload in one process, which is why this
+# exists at all. Everything the provider recorded was previously verified by
+# reading MN5 job output by hand.
+#
+# The workload links against UCX directly rather than going through the provider,
+# so its doors are the ones an application really calls.
+if(PCOMM_PROVIDER_UCX)
+  # libucs as well as libucp: the workload reports failures with
+  # ucs_status_string, and unlike the provider it links UCX directly rather than
+  # interposing it, so the transitive dependency has to be named.
+  find_library(UCX_UCS_LIB NAMES ucs HINTS ${UCX_UCP_LIB} PATH_SUFFIXES lib lib64)
+  add_executable(ucx_selftest ucx_selftest.cpp)
+  target_include_directories(ucx_selftest PRIVATE ${UCX_INCLUDE_DIR})
+  target_link_libraries(ucx_selftest PRIVATE ${UCX_UCP_LIB} ${UCX_UCS_LIB})
+  add_test(NAME ucx_records
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/ucx_records.sh
+                   $<TARGET_FILE:pcomm_launcher>
+                   $<TARGET_FILE:ucx_selftest>
+                   $<TARGET_FILE:pcomm_engine>
+                   $<TARGET_FILE:ucx_trace>)
+  # libucp pulls in libuct and libucm, and RUNPATH — which is what the linker
+  # emits by default — is NOT inherited by a dependency's dependencies. So the
+  # binary finds libucp through its own runpath and then libucp fails to find
+  # libuct. Naming the directory once here is clearer than over-linking the test
+  # against transitive libraries it never calls.
+  get_filename_component(_ucx_libdir "${UCX_UCP_LIB}" DIRECTORY)
+  set_tests_properties(ucx_records PROPERTIES
+    ENVIRONMENT "LD_LIBRARY_PATH=${_ucx_libdir}:$ENV{LD_LIBRARY_PATH}")
+endif()

@@ -77,6 +77,8 @@ PCOMM_SCHEMA_MATCH(ur::UcxRma, fb::UcxRma);
 PCOMM_SCHEMA_MATCH(ur::UcxAmSend, fb::UcxAmSend);
 PCOMM_SCHEMA_MATCH(ur::UcxMemMap, fb::UcxMemMap);
 PCOMM_SCHEMA_MATCH(ur::UcxWorkerProgress, fb::UcxWorkerProgress);
+PCOMM_SCHEMA_MATCH(ur::UcxTagProbe, fb::UcxTagProbe);
+PCOMM_SCHEMA_MATCH(ur::UcxAtomic, fb::UcxAtomic);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -216,13 +218,14 @@ int main() {
         c.payload.count = 0x0102030405060708ull;
         c.payload.tag = 0x1122334455667788ull;
         c.payload.tag_mask = 0xFFFFFFFFFFFF0000ull;
+        c.payload.message = 0x4242;
         c.payload.status = -3;
         c.payload.status_class = 1;
         c.payload.door = static_cast<uint8_t>(ur::UcxDoor::Legacy);
         fb::UcxTagRecv f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x909),
                                       fb::TimePoint(2, 0xA0A), 0),
                          0xCC, 0xDD, 0xEE, 0x0102030405060708ull, 0x1122334455667788ull,
-                         0xFFFFFFFFFFFF0000ull, -3, 1,
+                         0xFFFFFFFFFFFF0000ull, 0x4242, -3, 1,
                          static_cast<uint8_t>(ur::UcxDoor::Legacy));
         expect_identical("UcxTagRecv", &c, &f, sizeof(c));
     }
@@ -284,6 +287,43 @@ int main() {
                                              fb::TimePoint(2, 0x1212), 0),
                                 0xABCD, 7);
         expect_identical("UcxWorkerProgress", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxTagProbe> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1313}, {2, 0x1414});
+        c.payload.worker = 0x21;
+        c.payload.message = 0x22;
+        c.payload.sender_tag = 0x00000000000ABCDull;
+        c.payload.length = 48;
+        c.payload.tag = 0xABCD;
+        c.payload.tag_mask = 0xFFFFFFFFFFFFFFFFull;
+        c.payload.removed = 1;
+        fb::UcxTagProbe f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1313),
+                                       fb::TimePoint(2, 0x1414), 0),
+                          0x21, 0x22, 0x00000000000ABCDull, 48, 0xABCD, 0xFFFFFFFFFFFFFFFFull, 1);
+        expect_identical("UcxTagProbe", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxAtomic> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1515}, {2, 0x1616});
+        c.payload.endpoint = 0x31;
+        c.payload.buffer = 0x32;
+        c.payload.request = 0x33;
+        c.payload.rkey = 0x34;
+        c.payload.value = 0x1122334455667788ull;
+        c.payload.remote_addr = 0x00007F5566778800ull;
+        c.payload.op_size = 8;
+        c.payload.status = -5;
+        c.payload.status_class = 2;
+        c.payload.op = static_cast<uint8_t>(ur::UcxAtomicOp::CompareSwap);
+        c.payload.door = static_cast<uint8_t>(ur::UcxDoor::LegacyPost);
+        c.payload.fetching = 1;
+        fb::UcxAtomic f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1515),
+                                     fb::TimePoint(2, 0x1616), 0),
+                        0x31, 0x32, 0x33, 0x34, 0x1122334455667788ull, 0x00007F5566778800ull, 8,
+                        -5, 2, static_cast<uint8_t>(ur::UcxAtomicOp::CompareSwap),
+                        static_cast<uint8_t>(ur::UcxDoor::LegacyPost), 1);
+        expect_identical("UcxAtomic", &c, &f, sizeof(c));
     }
 
     {  // GpuAccess: the firehose, and the one with the most padding holes
