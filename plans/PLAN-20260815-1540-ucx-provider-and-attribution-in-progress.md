@@ -288,6 +288,47 @@ Hook lists follow observed coverage, not API completeness theatre.
 written, measured reason for exclusion; pcomm carries no known-zero placeholder
 where SigmaTrace does.
 
+### Done 2026-08-16 — the surface is complete, the gate is not
+
+All six remaining doors are hooked and all five remaining records written, so
+the provider now covers the same 14 public UCP doors SigmaTrace does. Verified
+by `nm -D` on the built `.so` rather than read off the version script, and by
+`schema_conformance`, where all nine UCX records are byte-identical to
+`pcomm.fbs`.
+
+| record | id | notes |
+|---|---|---|
+| `ucx_tag_recv` | 608 | posted intent; `capacity`, not bytes. Keyed by worker |
+| `ucx_rma` | 610 | put and get, one record, `op` discriminates |
+| `ucx_am_send` | 612 | header and payload lengths kept apart |
+| `ucx_mem_map` | 614 | effective values preferred; `resolved` says which |
+| `ucx_worker_progress` | 616 | Full mode only, empty polls dropped at the hook |
+
+`kSchemaHash` 0xD0E6688012222099 -> 0x03A9E43D1D3AC05C. Additive: job 44675611's
+capture still decodes all 260 tagged sends, and the committed `ib_pingpong`
+fixture's two tests still run rather than skip.
+
+**On the exit gate's own terms this is not finished, and the gap is honest
+rather than incidental.** The gate asks for a measured reason for every
+exclusion, and two things are excluded without one:
+
+- **Older non-`nbx` APIs.** Stage 0's probe counted the 14 `nbx`-era doors and
+  did not count the legacy ones, so "MN5's MPI does not call them" is an
+  assumption, not a measurement. It is a cheap one to settle — one probe arm —
+  and until it is settled the surface is complete only with respect to the
+  doors we thought to look at.
+- **Put, get and AM fired zero times** in the Stage 0 arm. They are hooked on
+  the argument that this was a fact about a tagged ping-pong workload rather
+  than about the API, which is sound reasoning and still not evidence. Nothing
+  has yet observed a single `ucx_rma` or `ucx_am_send` row on real hardware, so
+  those three doors are compile-tested only.
+
+Neither blocks Stage 3, and both belong in the same MN5 run: an RMA/AM workload
+would exercise the three unproven doors and settle the legacy-API question in
+one allocation. **Until then no UCX record beyond the tagged path and the
+lifecycle has been seen on real hardware**, and the provider has no regression
+gate of any kind — Stage 4 remains entirely unstarted.
+
 ## Stage 3 — cross-layer attribution
 
 Implement the least invasive mechanism Stage 0 proves:
