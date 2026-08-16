@@ -37,6 +37,7 @@
 
 #include "ib_records.hpp"  // provider record schemas (reader knows all types)
 #include "mlx5_records.hpp"
+#include "ucx_records.hpp"
 #include "../pcomm/cli.hpp"
 
 // At file scope, deliberately: raw_columns.hpp opens `namespace pcomm::raw`, and
@@ -58,6 +59,7 @@ using namespace pcomm;
 using namespace pcomm::core::records;
 namespace ibr = pcomm::providers::ibverbs::records;
 namespace mxr = pcomm::providers::mlx5dv::records;
+namespace ucr = pcomm::providers::ucx::records;
 using rec::Stamped;
 
 namespace {
@@ -711,6 +713,79 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
     }
 };
 
+// --- UCX, 600-699 -----------------------------------------------------------
+// The public-UCP records say what the application ASKED the transport to do.
+// What the wire actually did belongs to the ibverbs and mlx5 tables, and on
+// MN5's mlx5 transport the two do NOT meet at ibv_post_send: job 44635003 ran
+// both providers together and recorded verbs setup, QP/CQ, memory and
+// ib_post_recv streams while ib_post_send stayed empty, because UCX posts its
+// send WQEs below the public verbs door. So these tables stand on their own for
+// now, and nothing here should be read as a claim about bytes on the wire —
+// see plans/PLAN-20260815-1540 for the attribution work that would join them.
+
+template<> struct Table<ucr::UcxContext> {
+    static constexpr const char* name = "ucx_context";
+    static constexpr const char* cols = "ticks,context,api_major,api_minor";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxContext>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.context, s.payload.api_major, s.payload.api_minor);
+    }
+};
+
+template<> struct Table<ucr::UcxWorker> {
+    static constexpr const char* name = "ucx_worker";
+    static constexpr const char* cols = "ticks,worker,context";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxWorker>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.worker,
+                     s.payload.context);
+    }
+};
+
+template<> struct Table<ucr::UcxEndpoint> {
+    static constexpr const char* name = "ucx_endpoint";
+    static constexpr const char* cols = "ticks,endpoint,worker";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxEndpoint>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.endpoint,
+                     s.payload.worker);
+    }
+};
+
+// StatusClass in words, for the reason ib_cq_origin_name and port_state_name
+// exist: a raw 0/1/2 in a CSV is a value nobody checks. The three cases are the
+// three things ucp_tag_send_nbx can return — it completed inline (nullptr), it
+// failed, or it handed back a request that completes later — and telling them
+// apart is the whole difference between "sent" and "queued".
+static const char* ucx_status_class_name(std::uint8_t raw) {
+    switch (static_cast<ucr::StatusClass>(raw)) {
+        case ucr::StatusClass::Immediate:
+            return "immediate";
+        case ucr::StatusClass::Error:
+            return "error";
+        case ucr::StatusClass::Request:
+            return "request";
+    }
+    return "?";
+}
+
+// `count` is the raw UCP datatype count and is NOT renamed to bytes here. It is
+// one only for a contiguous byte datatype; the record deliberately does not
+// claim otherwise (see ucx_records.hpp), and neither does this column.
+template<> struct Table<ucr::UcxTagSend> {
+    static constexpr const char* name = "ucx_tag_send";
+    static constexpr const char* cols =
+        "ticks,endpoint,buffer,request,count,tag,status,status_class";
+    static void row(std::FILE* f, const Stamped<ucr::UcxTagSend>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%llu,0x%llx,%d,%s", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.endpoint, s.payload.buffer, s.payload.request,
+                     (unsigned long long)s.payload.count, (unsigned long long)s.payload.tag,
+                     s.payload.status, ucx_status_class_name(s.payload.status_class));
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
@@ -727,7 +802,8 @@ using TableRecords =
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
                ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
-               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend>;
+               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend,
+               ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.
