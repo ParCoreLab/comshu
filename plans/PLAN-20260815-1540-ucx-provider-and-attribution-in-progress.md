@@ -497,3 +497,59 @@ transport-facing half can be exercised. The right next run is one two-node job
 with MPI RMA and `MPI_Ssend`, which would exercise the `_nbi` doors, the legacy
 tagged doors, the atomics and the extra close doors at once — and it can now be
 written against a provider whose record layer is already known good.
+
+## Parity audit vs SigmaTrace, 2026-08-16 — PASSED, with one exception
+
+Checked against `../SigmaTrace` at `8d8141a` **and** its unmerged
+`origin/ucx-endpoint` branch, which is the more complete of the two.
+
+### What they had that we lacked
+
+One thing, now closed: **peer identity**. `UcpWorkerAddress` +
+`UcpEpConnection` hash the local worker address and the remote address passed to
+`ucp_ep_create`, so an endpoint in one rank's trace can be matched to the worker
+that created it in another's. Nothing in our records crossed a rank boundary at
+all. Implemented as `ucx_worker_address` (622) and `ucx_ep_connection` (624),
+with two deliberate improvements — FNV-1a rather than `absl::HashOf`, which is
+not guaranteed stable across processes and would have made every cross-rank join
+silently miss; and a second whole-address hash beside the prefix hash, so a
+prefix collision is detectable rather than a confident wrong join.
+
+### What we have that they do not
+
+| | pcomm | SigmaTrace |
+|---|---|---|
+| public UCP doors hooked | **29** | 14 (15 on the branch) |
+| legacy `_nb` API | yes — `pml_ucx`, hcoll and SHARP all use it | none |
+| `_nbi` RMA | yes — the ONLY RMA door MPI one-sided uses | none |
+| endpoint close doors | 4 (`close_nbx`, `close_nb`, `destroy`, `disconnect_nb`) | 1 |
+| probe + `msg_recv` | yes, joined by message handle | none |
+| atomics | yes, opcode normalised across 3 UCX enums | none |
+| `mem_map` address/length | from `field_mask`, effective values preferred | **writes `addr=0, size=0`** |
+| door provenance | `UcxDoor` on every operation record | n/a |
+| regression test | 17 ctest cases, incl. a UCX record gate | none found |
+
+Their `UcpMemMap` carries `.addr = 0, .size = 0` with the comment "Would need to
+dereference params to get addr" — the defect this plan flagged at the outset and
+the reason record 614 reads the field mask and prefers `ucp_mem_query`.
+
+### The exception: `UcpEpQpMapping`
+
+Their branch emits it; we emit nothing equivalent. This is **Stage 3**, and it is
+not a matter of copying their code:
+
+- their producer correlates at `ibv_create_qp`, and job 44635003 measured that
+  MN5's UCX never posts through the verbs doors at all — the same reasoning says
+  it does not create QPs through that one either;
+- it stores a single `uint32_t` per endpoint, last-write-wins, so a multi-lane
+  endpoint keeps one lane and silently discards the rest;
+- on `main` it is not emitted at all, so their shipped tool has the reader-side
+  join permanently empty.
+
+So we are behind on this one row and ahead of the mechanism that produces it.
+Closing it properly is the Stage 3 work, gated on finding an observable
+host-side mlx5 send door.
+
+**Conclusion: parity reached and exceeded everywhere except the ep→QP mapping,
+which is Stage 3 and blocked on research rather than on effort.** UCX work is
+paused here.
