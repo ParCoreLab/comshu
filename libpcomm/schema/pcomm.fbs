@@ -545,3 +545,39 @@ struct Mlx5DeviceSend {
   length:uint32;
   opcode:uint8;
 }
+
+// --- ucx/UCP provider records (600-699) -----------------------------------
+
+// type 600, Entity. A public UCP context.
+struct UcxContext {
+  temporal:Temporal;
+  context:uint32;
+  api_major:uint32;
+  api_minor:uint32;
+}
+
+// type 602, Entity. A worker owned by a UCP context.
+struct UcxWorker {
+  temporal:Temporal;
+  worker:uint32;
+  context:uint32;
+}
+
+// type 604, Entity. An endpoint owned by a UCP worker.
+struct UcxEndpoint {
+  temporal:Temporal;
+  endpoint:uint32;
+  worker:uint32;
+}
+
+// type 606, Event. A tagged-send intent; count is the raw UCP datatype count.
+struct UcxTagSend {
+  temporal:Temporal;
+  endpoint:uint32;
+  buffer:uint32;
+  request:uint32;
+  count:uint64;
+  tag:uint64;
+  status:int32;
+  status_class:uint8;
+}

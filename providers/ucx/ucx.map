@@ -1,0 +1,14 @@
+{
+  global:
+    ucp_init_version;
+    ucp_cleanup;
+    ucp_worker_create;
+    ucp_worker_destroy;
+    ucp_ep_create;
+    ucp_ep_close_nbx;
+    ucp_tag_send_nbx;
+    pcomm_create_provider;
+    pcomm_abi_version;
+  local:
+    *;
+};

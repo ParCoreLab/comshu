@@ -82,6 +82,7 @@ if(PCOMM_BUILD_TESTS AND EXISTS ${PCOMM_FLATBUFFERS_INCLUDE})
     ${CMAKE_CURRENT_SOURCE_DIR}/schema/generated
     ${CMAKE_SOURCE_DIR}/providers/ibverbs
     ${CMAKE_SOURCE_DIR}/providers/mlx5dv
+    ${CMAKE_SOURCE_DIR}/providers/ucx
     ${PCOMM_FLATBUFFERS_INCLUDE})
   target_compile_features(pcomm_schema_conformance PRIVATE cxx_std_20)
   # Keep assert() alive: every build type that runs tests defines
@@ -139,6 +140,7 @@ if(Python3_Interpreter_FOUND)
       ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/rec/stream_header.hpp
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/schema_conformance.cpp
       ${CMAKE_SOURCE_DIR}/providers/ibverbs/ib_records.hpp
+      ${CMAKE_SOURCE_DIR}/providers/ucx/ucx_records.hpp
       # check 6 (ibverbs name tables) reads both readers' sources
       ${CMAKE_SOURCE_DIR}/pcomm-read/main.cpp
       ${CMAKE_SOURCE_DIR}/tools/read_pcs.py

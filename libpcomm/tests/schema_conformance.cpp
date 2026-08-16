@@ -21,11 +21,13 @@
 #include "pcomm/rec/thread_local_buffer.hpp"
 #include "ib_records.hpp"
 #include "mlx5_records.hpp"
+#include "ucx_records.hpp"
 
 using pcomm::rec::Stamped;
 namespace cr = pcomm::core::records;
 namespace ir = pcomm::providers::ibverbs::records;
 namespace mr = pcomm::providers::mlx5dv::records;
+namespace ur = pcomm::providers::ucx::records;
 namespace fb = pcomm::fb;
 
 #define PCOMM_SCHEMA_MATCH(CppRecord, FbStruct)                                                    \
@@ -66,6 +68,10 @@ PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQpConnect, fb::Mlx5DevxQpConnect);
 PCOMM_SCHEMA_MATCH(mr::Mlx5QueuePair, fb::Mlx5QueuePair);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Doorbell, fb::Mlx5Doorbell);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DeviceSend, fb::Mlx5DeviceSend);
+PCOMM_SCHEMA_MATCH(ur::UcxContext, fb::UcxContext);
+PCOMM_SCHEMA_MATCH(ur::UcxWorker, fb::UcxWorker);
+PCOMM_SCHEMA_MATCH(ur::UcxEndpoint, fb::UcxEndpoint);
+PCOMM_SCHEMA_MATCH(ur::UcxTagSend, fb::UcxTagSend);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -147,6 +153,54 @@ static void expect_identical(const char* name, const void* a, const void* b, std
 
 int main() {
     std::printf("schema conformance vs libpcomm/schema/pcomm.fbs\n");
+
+    {
+        Stamped<ur::UcxContext> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x101}, {2, 0x202});
+        c.payload.context = 0x11;
+        c.payload.api_major = 0x22;
+        c.payload.api_minor = 0x33;
+        fb::UcxContext f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x101),
+                                      fb::TimePoint(2, 0x202), 0),
+                         0x11, 0x22, 0x33);
+        expect_identical("UcxContext", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxWorker> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x303}, {2, 0x404});
+        c.payload.worker = 0x55;
+        c.payload.context = 0x66;
+        fb::UcxWorker f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x303),
+                                     fb::TimePoint(2, 0x404), 0),
+                        0x55, 0x66);
+        expect_identical("UcxWorker", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxEndpoint> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x505}, {2, 0x606});
+        c.payload.endpoint = 0x77;
+        c.payload.worker = 0x88;
+        fb::UcxEndpoint f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x505),
+                                       fb::TimePoint(2, 0x606), 0),
+                          0x77, 0x88);
+        expect_identical("UcxEndpoint", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxTagSend> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x707}, {2, 0x808});
+        c.payload.endpoint = 0x99;
+        c.payload.buffer = 0xAA;
+        c.payload.request = 0xBB;
+        c.payload.count = 0x1122334455667788ull;
+        c.payload.tag = 0x99AABBCCDDEEFF00ull;
+        c.payload.status = -17;
+        c.payload.status_class = 2;
+        fb::UcxTagSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x707),
+                                      fb::TimePoint(2, 0x808), 0),
+                         0x99, 0xAA, 0xBB, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull,
+                         -17, 2);
+        expect_identical("UcxTagSend", &c, &f, sizeof(c));
+    }
 
     {  // GpuAccess: the firehose, and the one with the most padding holes
         Stamped<cr::GpuAccess> c{};

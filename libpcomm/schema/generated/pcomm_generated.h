@@ -92,6 +92,14 @@ struct Mlx5Doorbell;
 
 struct Mlx5DeviceSend;
 
+struct UcxContext;
+
+struct UcxWorker;
+
+struct UcxEndpoint;
+
+struct UcxTagSend;
+
 enum TimeKind : uint8_t {
   TimeKind_None = 0,
   TimeKind_Instant = 1,
@@ -2447,6 +2455,177 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxContext FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t context_;
+  uint32_t api_major_;
+  uint32_t api_minor_;
+  int32_t padding0__;
+
+ public:
+  UcxContext()
+      : temporal_(),
+        context_(0),
+        api_major_(0),
+        api_minor_(0),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  UcxContext(const pcomm::fb::Temporal &_temporal, uint32_t _context, uint32_t _api_major, uint32_t _api_minor)
+      : temporal_(_temporal),
+        context_(::flatbuffers::EndianScalar(_context)),
+        api_major_(::flatbuffers::EndianScalar(_api_major)),
+        api_minor_(::flatbuffers::EndianScalar(_api_minor)),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t context() const {
+    return ::flatbuffers::EndianScalar(context_);
+  }
+  uint32_t api_major() const {
+    return ::flatbuffers::EndianScalar(api_major_);
+  }
+  uint32_t api_minor() const {
+    return ::flatbuffers::EndianScalar(api_minor_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxContext, 64);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxWorker FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t worker_;
+  uint32_t context_;
+
+ public:
+  UcxWorker()
+      : temporal_(),
+        worker_(0),
+        context_(0) {
+  }
+  UcxWorker(const pcomm::fb::Temporal &_temporal, uint32_t _worker, uint32_t _context)
+      : temporal_(_temporal),
+        worker_(::flatbuffers::EndianScalar(_worker)),
+        context_(::flatbuffers::EndianScalar(_context)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t worker() const {
+    return ::flatbuffers::EndianScalar(worker_);
+  }
+  uint32_t context() const {
+    return ::flatbuffers::EndianScalar(context_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxWorker, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxEndpoint FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t endpoint_;
+  uint32_t worker_;
+
+ public:
+  UcxEndpoint()
+      : temporal_(),
+        endpoint_(0),
+        worker_(0) {
+  }
+  UcxEndpoint(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _worker)
+      : temporal_(_temporal),
+        endpoint_(::flatbuffers::EndianScalar(_endpoint)),
+        worker_(::flatbuffers::EndianScalar(_worker)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t endpoint() const {
+    return ::flatbuffers::EndianScalar(endpoint_);
+  }
+  uint32_t worker() const {
+    return ::flatbuffers::EndianScalar(worker_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxEndpoint, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t endpoint_;
+  uint32_t buffer_;
+  uint32_t request_;
+  int32_t padding0__;
+  uint64_t count_;
+  uint64_t tag_;
+  int32_t status_;
+  uint8_t status_class_;
+  int8_t padding1__;  int16_t padding2__;
+
+ public:
+  UcxTagSend()
+      : temporal_(),
+        endpoint_(0),
+        buffer_(0),
+        request_(0),
+        padding0__(0),
+        count_(0),
+        tag_(0),
+        status_(0),
+        status_class_(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  UcxTagSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, int32_t _status, uint8_t _status_class)
+      : temporal_(_temporal),
+        endpoint_(::flatbuffers::EndianScalar(_endpoint)),
+        buffer_(::flatbuffers::EndianScalar(_buffer)),
+        request_(::flatbuffers::EndianScalar(_request)),
+        padding0__(0),
+        count_(::flatbuffers::EndianScalar(_count)),
+        tag_(::flatbuffers::EndianScalar(_tag)),
+        status_(::flatbuffers::EndianScalar(_status)),
+        status_class_(::flatbuffers::EndianScalar(_status_class)),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t endpoint() const {
+    return ::flatbuffers::EndianScalar(endpoint_);
+  }
+  uint32_t buffer() const {
+    return ::flatbuffers::EndianScalar(buffer_);
+  }
+  uint32_t request() const {
+    return ::flatbuffers::EndianScalar(request_);
+  }
+  uint64_t count() const {
+    return ::flatbuffers::EndianScalar(count_);
+  }
+  uint64_t tag() const {
+    return ::flatbuffers::EndianScalar(tag_);
+  }
+  int32_t status() const {
+    return ::flatbuffers::EndianScalar(status_);
+  }
+  uint8_t status_class() const {
+    return ::flatbuffers::EndianScalar(status_class_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxTagSend, 88);
 
 }  // namespace fb
 }  // namespace pcomm

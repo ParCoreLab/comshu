@@ -103,6 +103,13 @@ const std::vector<Provider>& registry() {
          /*built*/ true,
          "GPU kernel execution windows — when each kernel actually ran",
          "device"},
+        {"ucx",
+         "libucx_trace.so",
+         {"ucx", "ucp"},
+         /*exclusive*/ false,
+         /*built*/ true,
+         "UCX application intent — contexts, workers, endpoints, tagged sends",
+         "inter-node"},
     };
     return r;
 }
