@@ -6,10 +6,27 @@
 # PUBLIC, not PRIVATE, throughout: usage requirements have to reach the target
 # that actually links these objects, which lives in another directory.
 add_library(pcomm_read OBJECT main.cpp)
-# The reader decodes every provider's record schema; ib_records.hpp is
-# vendor-neutral (no verbs.h), so this include adds no ibverbs dependency.
-target_include_directories(pcomm_read PUBLIC ${CMAKE_SOURCE_DIR}/providers/ibverbs
-                                             ${CMAKE_SOURCE_DIR}/providers/mlx5dv)
+# The reader decodes every provider's record schema; a *_records.hpp is
+# vendor-neutral by rule (ib_records.hpp pulls in no verbs.h, ucx_records.hpp no
+# ucp.h), so these includes add no vendor dependency.
+#
+# FOUND, not listed. This used to spell out ibverbs and mlx5dv by hand while the
+# generated raw_columns.hpp below derives its #include lines from a GLOB over the
+# very same files — two lists of one thing, kept in step by nobody. Adding
+# providers/ucx made the generator emit `#include "ucx_records.hpp"` naming a
+# directory no target had on its include path, and pcomm-read and pcomm-ui both
+# stopped compiling, in the one configuration (PCOMM_DUCKDB=ON) that the
+# pre-commit gate does not build. One glob now feeds both, so the next provider
+# cannot reintroduce it.
+file(GLOB _provider_record_hdrs CONFIGURE_DEPENDS
+     "${CMAKE_SOURCE_DIR}/providers/*/*_records.hpp")
+set(_provider_record_dirs "")
+foreach(_hdr IN LISTS _provider_record_hdrs)
+  get_filename_component(_dir "${_hdr}" DIRECTORY)
+  list(APPEND _provider_record_dirs "${_dir}")
+endforeach()
+list(REMOVE_DUPLICATES _provider_record_dirs)
+target_include_directories(pcomm_read PUBLIC ${_provider_record_dirs})
 target_link_libraries(pcomm_read PUBLIC pcomm::pcomm)
 
 # DuckDB, when asked for. Located rather than assumed: a missing library is a
@@ -30,8 +47,8 @@ if(PCOMM_DUCKDB)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   set(_raw_hdr "${CMAKE_CURRENT_BINARY_DIR}/raw_columns.hpp")
   file(GLOB_RECURSE _record_hdrs CONFIGURE_DEPENDS
-       "${CMAKE_SOURCE_DIR}/libpcomm/include/pcomm/core/*.hpp"
-       "${CMAKE_SOURCE_DIR}/providers/*/*_records.hpp")
+       "${CMAKE_SOURCE_DIR}/libpcomm/include/pcomm/core/*.hpp")
+  list(APPEND _record_hdrs ${_provider_record_hdrs})
   add_custom_command(
     OUTPUT  "${_raw_hdr}"
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/gen_raw_columns.py"
@@ -57,8 +74,7 @@ if(PCOMM_DUCKDB)
   # capture_load.hpp's loader vanished and the error named a missing member
   # rather than a missing define.
   target_compile_definitions(pcomm_duck INTERFACE PCOMM_HAVE_DUCKDB=1)
-  target_include_directories(pcomm_duck INTERFACE
-    "${CMAKE_SOURCE_DIR}/providers/ibverbs" "${CMAKE_SOURCE_DIR}/providers/mlx5dv")
+  target_include_directories(pcomm_duck INTERFACE ${_provider_record_dirs})
   add_custom_target(pcomm_duck_gen DEPENDS "${_raw_hdr}")
   add_dependencies(pcomm_duck pcomm_duck_gen)
 
