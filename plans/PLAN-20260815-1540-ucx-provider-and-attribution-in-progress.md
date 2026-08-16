@@ -1,14 +1,49 @@
 # PLAN — UCX provider with real cross-layer attribution
 
 - **Created:** 2026-08-15 15:40 +03
-- **Status:** IN PROGRESS. The transport gate is settled and the SigmaTrace
-  surface has been audited; no pcomm UCX code exists yet.
+- **Status:** **PAUSED 2026-08-16**, deliberately and at a defensible point.
+  Stages 0-2 are done; the record layer is complete and locally gated. Stage 3
+  (attribution) is blocked on research, not effort — see *Future work*. The
+  sections below are kept in the order they were written, so the measurements
+  read as they were made; **this header and the two sections that follow it are
+  the current state.**
 - **Parent:** `PLAN-20260813-2238-the-gaps-are-in-the-records-not-the-providers-todo.md`,
   Stage B.
 - **Goal:** match every useful UCX fact SigmaTrace records, improve the facts it
   records incompletely, and connect UCX intent to the verbs traffic pcomm
   already captures. Do not create an attractive parallel timeline with no
   defensible join.
+
+## Where this stands
+
+| stage | state | |
+|---|---|---|
+| 0 — establish the oracle | **done** | jobs 44578355, 44629699/44629730, 44635003; plus a login-node ELF sweep of the whole HPC-X stack |
+| 1 — provider vertical slice | **done** | validated on MN5, job 44675611 |
+| 2 — complete the surface | **done** | 29 doors, 13 records; parity with SigmaTrace audited and exceeded |
+| 3 — cross-layer attribution | **BLOCKED** | `ibv_post_send` is not UCX's send door on MN5 (job 44635003); no replacement door identified yet |
+| 4 — parity and regression gates | **partial** | a local gate exists and runs in 0.08 s; there is no MN5 gate, and nothing on du04 |
+
+**What exists.** `providers/ucx/`, built by `PCOMM_PROVIDER_UCX=ON`: 29
+interposed UCP doors feeding 13 records in the 600-699 range —
+
+`ucx_context` 600, `ucx_worker` 602, `ucx_endpoint` 604, `ucx_tag_send` 606,
+`ucx_tag_recv` 608, `ucx_rma` 610, `ucx_am_send` 612, `ucx_mem_map` 614,
+`ucx_worker_progress` 616, `ucx_tag_probe` 618, `ucx_atomic` 620,
+`ucx_worker_address` 622, `ucx_ep_connection` 624.
+
+Reader tables for all 13, byte-level schema conformance for all 13, and
+`tests/ucx_records.sh` asserting the rows against a fixed self-transport
+workload with no cluster involved.
+
+**What the capture can answer today:** which contexts, workers and endpoints
+existed and when they closed; every tagged, one-sided, atomic and
+active-message operation the application issued, through which entry point, with
+what status; what UCX was asked to register; and which remote worker an endpoint
+was dialled at.
+
+**What it still cannot:** which queue pair carried any of it, and when a deferred
+request actually completed.
 
 ## The two machines are complementary
 
@@ -38,6 +73,11 @@ That is the minimum parity surface, subject to two corrections:
 2. SigmaTrace defines and reads `UcpEpQpMapping`, but a repository-wide search
    finds no producer. Its reader therefore has a join that its profiler does not
    populate. We copy the requirement, not the missing implementation.
+   **Corrected 2026-08-16:** a producer does exist, on the unmerged
+   `origin/ucx-endpoint` branch — it correlates at `ibv_create_qp` inside a
+   thread-local `ucp_ep_create` scope. It is still not an implementation to
+   copy, for reasons measured later (see the parity audit), but "no producer
+   anywhere" was wrong: it is "no producer on `main`".
 
 Parity means matching useful semantics, not reproducing these gaps, its debug
 `cout`, or its reader's presentation choices.
@@ -418,17 +458,27 @@ IBGDA board.
 
 ## Definition of done
 
-- `pcomm list` exposes a built UCX provider and `pcomm run -p ucx,ib` produces
-  one shared-pass capture.
-- All useful SigmaTrace UCX lifecycle, traffic, memory and progress semantics
-  are present; known SigmaTrace gaps are fixed rather than copied.
-- The capture relates UCX operations to every verbs QP it can prove, supports
-  multi-QP endpoints, and quantifies unresolved operations.
-- High-level requested bytes and low-level wire bytes remain separate measures.
-- The direct matrix and real MPI case pass twice on MN5; the portable subset
-  passes on du04; all pre-existing boards remain green.
-- The plan records actual job IDs, versions, counts and any remaining blind
-  spots, then is renamed `-done.md` only after those measurements exist.
+Scored 2026-08-16 at the pause. Four of six, and the two that are open are the
+two that need a machine rather than a decision.
+
+- ~~`pcomm list` exposes a built UCX provider~~ **done**; `pcomm run -p ucx,ib`
+  producing one shared-pass capture is **UNTESTED** — every run so far used
+  `-p ucx` with ibverbs off.
+- **done.** All useful SigmaTrace UCX lifecycle, traffic, memory and progress
+  semantics are present, and its known gaps are fixed rather than copied —
+  audited against `main` and `origin/ucx-endpoint`, including the
+  `UcpMemMap addr=0,size=0` defect named above.
+- **NOT done.** The capture relates no UCX operation to any verbs QP. This is
+  Stage 3, blocked; unresolved operations are at least *marked* (`status_class`,
+  and `door` says which entry point could have deferred).
+- **done.** Requested bytes and wire bytes are separate measures and are never
+  summed: `count` keeps its raw-datatype name, a receive's is labelled
+  `capacity`, and the only true byte count (`ucx_tag_probe.length`) says so.
+- **NOT done.** No two-run MN5 case, no du04 subset. There is a local gate that
+  needs no machine at all, which the plan did not anticipate.
+- **in progress.** Job IDs, versions and counts are recorded throughout; the
+  blind spots are enumerated under *Future work*. The file keeps
+  `-in-progress` rather than `-done` precisely because of the two NOTs above.
 
 ## Non-goals
 
@@ -553,3 +603,109 @@ host-side mlx5 send door.
 **Conclusion: parity reached and exceeded everywhere except the ep→QP mapping,
 which is Stage 3 and blocked on research rather than on effort.** UCX work is
 paused here.
+
+---
+
+# Future work
+
+Ordered by value per unit of effort, not by stage number. Every item names why
+it matters, so a later reader can drop one on its merits rather than on its
+position in a list.
+
+## 1. The Stage 3 door sweep — free, and it decides the whole goal
+
+The attribution stage is blocked because job 44635003 measured that MN5's UCX
+posts no work through `ibv_post_send`. What has NOT been done is the obvious
+next question, and it costs no allocation: **sweep `libuct_ib_mlx5.so`'s
+undefined symbols the way the UCP sweep was done, and find out what it actually
+calls to post a WQE.** Three outcomes, all decisive:
+
+- it calls `mlx5dv_*` or another exported symbol → there is a door, Stage 3 is
+  unblocked, and the call-extent attribution design already sketched above
+  applies unchanged;
+- it writes WQEs and rings the UAR inline with no interposable symbol → Stage 3
+  needs the existing `providers/mlx5dv` UAR machinery, which was built for
+  device-initiated IBGDA traffic and would have to be shown to work for a
+  host-side sender;
+- neither → Stage 3 closes the way libfabric did, with a written reason.
+
+Do this before designing anything else in Stage 3, and before the MN5 run below,
+because the answer changes what that run should measure.
+
+## 2. One MN5 job, to observe what is currently only inferred
+
+Everything added on 2026-08-16 — the `_nbi` RMA doors, the atomics, the legacy
+tagged doors, the three extra endpoint close doors — is hooked on a **static ELF
+reference**. That is good evidence that the code path exists and no evidence at
+all that it is taken. Nothing beyond the tagged path and lifecycle has been
+observed firing on real hardware.
+
+One two-node job with MPI RMA (`MPI_Put`/`MPI_Get`/`MPI_Accumulate`) and
+`MPI_Ssend` exercises all four groups at once. It should also settle two things
+the plan currently asserts without testing:
+
+- **`pcomm run -p ucx,ib` in one shared pass.** The definition of done requires
+  it; the smoke job that ran used `-p ucx` with `PCOMM_PROVIDER_IBVERBS=OFF`, so
+  co-running has never been executed.
+- **the cross-rank peer join**, which the self transport can only check against
+  itself. Two ranks are the minimum that proves
+  `ucx_ep_connection.remote_prefix_hash` finds another rank's
+  `ucx_worker_address.prefix_hash`.
+
+## 3. Gaps in the record layer, each with a named consumer
+
+- **`ucp_am_send_nb`** (legacy AM) is referenced by `libnccl-net.so` and is
+  **not hooked**. Every other door that library uses is. NCCL over the UCX
+  plugin therefore loses its active-message traffic entirely.
+- **rkeys have no entity.** `ucx_rma` and `ucx_atomic` both intern a
+  `ucp_rkey_h`, and nothing ever records one being created — so that handle
+  joins to nothing at all. This is precisely the "an entity referenced by events
+  that nothing created" defect `ib_hooks.hpp` documents chasing for a week in
+  the verbs provider. `ucp_ep_rkey_unpack` is the door;
+  `ucp_rkey_destroy`/`ucp_rkey_buffer_release` close it. Both are referenced by
+  `mca_osc_ucx`, `mca_spml_ucx`, hcoll and the NCCL plugin.
+- **request completion is unresolved.** `status_class = request` means the
+  operation finished later and the capture never says when. Measured on job
+  44675611 this was 10 of 260 sends, which is small — and it inverts on
+  rendezvous or large payloads, where the deferred fraction is most of the
+  traffic. `ucp_request_check_status` / `ucp_request_free` are the candidate
+  doors; the design question is whether a completion can be tied back to its
+  issuing call without a map that grows without bound.
+- **`ucp_stream_*` and `ucp_am_recv_data_nbx`** are unexamined. Neither appeared
+  in the HPC-X sweep, so they are currently a deliberate omission rather than an
+  oversight — worth one grep if the corpus ever moves off this stack.
+
+## 4. The derived layer, which does not exist yet
+
+`pcomm-read/link_sql.hpp` contains **zero** references to any UCX table. Every
+UCX fact in a capture is raw rows; nothing is joined, and two joins the records
+were explicitly designed for are documented in comments and implemented nowhere:
+
+- **probe → `msg_recv`**, on `message`, taking the most recent probe at or
+  before the receive. Without it a `msg_recv_nb` row still has no tag in
+  practice, only in principle. The temporal form is required — UCX recycles the
+  handle.
+- **the communication graph**, joining `ucx_ep_connection.remote_prefix_hash`
+  to another rank's `ucx_worker_address.prefix_hash`. This is the only join in
+  the UCX records that crosses a rank, and it is what would put UCX traffic on
+  the same footing as `comm_edges`.
+
+A `link_health` finding for prefix-hash collisions belongs here too: two workers
+sharing a `prefix_hash` and differing in `addr_hash` are indistinguishable to
+that join, and the records already carry both hashes so the reader can say so.
+
+## 5. Keeping the gate from rotting
+
+`tools/build_all.sh` does **not** build a UCX configuration. So
+`tests/ucx_records.sh` — the provider's only regression test — runs solely for
+someone who configures `PCOMM_PROVIDER_UCX=ON` by hand, and never in the
+pre-commit gate.
+
+This is the same defect as `bea74d8`, where the DuckDB reader stopped compiling
+because the only configuration that built it was one no gate built. It found its
+way in once already; the fix is a `have_ucx` probe next to `have_ibverbs`, on
+exactly the same reasoning that file's own comment gives for probing rather than
+assuming.
+
+du04 is also untouched. Stage 4 wants the portable subset run there, across a
+different UCX, rdma-core and NIC generation.

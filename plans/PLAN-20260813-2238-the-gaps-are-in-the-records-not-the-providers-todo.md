@@ -192,6 +192,25 @@ implementation to copy or a parity oracle we can assume works. Stage B now has
 its own measurement-led plan:
 `PLAN-20260815-1540-ucx-provider-and-attribution-in-progress.md`.
 
+**Status 2026-08-16: the provider is built and PAUSED at a defensible point.**
+29 UCP doors, 13 records (600-624), reader tables and byte-level conformance for
+all of them, and a regression gate that needs no cluster — UCX's self transport
+runs the whole workload in one process, which is also how the legacy-over-modern
+double-count was caught before it shipped.
+
+Audited against SigmaTrace's UCX, including its unmerged `ucx-endpoint` branch:
+one capability was missing (peer identity, now added as `ucx_worker_address` /
+`ucx_ep_connection`) and we are ahead on doors, legacy and `_nbi` coverage,
+endpoint close accounting, probe/atomics, `ucp_mem_map` correctness and tests.
+
+The prediction at the top of this section held, and is the reason the stage is
+paused rather than closed: **the provider does produce a parallel timeline that
+does not yet join the verbs traffic.** Job 44635003 measured why — MN5's UCX
+posts no work through `ibv_post_send`, so the intended nesting point does not
+exist on this transport. The unblocking step is a login-node ELF sweep of
+`libuct_ib_mlx5.so` to find what it does call to post a WQE; see *Future work*
+in the child plan.
+
 ---
 
 ## Stage A status
