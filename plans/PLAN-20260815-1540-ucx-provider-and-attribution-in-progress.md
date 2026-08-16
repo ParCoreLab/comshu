@@ -186,6 +186,27 @@ provider but requested the CMake directory target `pcomm` instead of the
 executable target `pcomm_launcher`. The checked-in batch script now pins GCC,
 uses a job-specific build tree and builds the explicit launcher target.
 
+### Measured 2026-08-16 — Stage 1 public-UCP provider passes on MN5
+
+Job 44675611 built commit `34b4e6b` against MN5's HPC-X UCX 2.22.1 tree and
+ran the deterministic two-rank MPI ping-pong under `pcomm -p ucx`. The workload
+passed, and both rank captures contained the new provider streams. Their fixed
+stream strides give these counts:
+
+| record | rank 0 | rank 1 |
+|---|---:|---:|
+| `ucx_context` (600) | 4 | 4 |
+| `ucx_worker` (602) | 3 | 3 |
+| `ucx_endpoint` (604) | 5 | 5 |
+| `ucx_tag_send` (606) | 133 | 127 |
+
+The tagged-send counts and rank asymmetry match Stage 0's independent preload
+probe (jobs 44629699/44629730), while the capture also contains the engine's
+clock, intern and entity-close streams. This proves the initial provider is
+co-runnable with the real MPI/UCX path and that its lifecycle accounting is
+not merely a compile-time or synthetic-app result. It does not claim operation
+completion or operation→QP attribution; those remain Stage 2/3 work.
+
 ## Stage 1 — provider vertical slice
 
 Add `providers/ucx/`, built only by `PCOMM_PROVIDER_UCX=ON`, with UCX headers and
