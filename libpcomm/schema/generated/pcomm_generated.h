@@ -112,6 +112,10 @@ struct UcxMemMap;
 
 struct UcxWorkerProgress;
 
+struct UcxWorkerAddress;
+
+struct UcxEpConnection;
+
 struct UcxAtomic;
 
 enum TimeKind : uint8_t {
@@ -3050,6 +3054,91 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxWorkerProgress FLATBUFFERS_FINAL_CLASS
   }
 };
 FLATBUFFERS_STRUCT_END(UcxWorkerProgress, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxWorkerAddress FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t worker_;
+  int32_t padding0__;
+  uint64_t addr_hash_;
+  uint64_t prefix_hash_;
+  uint32_t addr_len_;
+  int32_t padding1__;
+
+ public:
+  UcxWorkerAddress()
+      : temporal_(),
+        worker_(0),
+        padding0__(0),
+        addr_hash_(0),
+        prefix_hash_(0),
+        addr_len_(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  UcxWorkerAddress(const pcomm::fb::Temporal &_temporal, uint32_t _worker, uint64_t _addr_hash, uint64_t _prefix_hash, uint32_t _addr_len)
+      : temporal_(_temporal),
+        worker_(::flatbuffers::EndianScalar(_worker)),
+        padding0__(0),
+        addr_hash_(::flatbuffers::EndianScalar(_addr_hash)),
+        prefix_hash_(::flatbuffers::EndianScalar(_prefix_hash)),
+        addr_len_(::flatbuffers::EndianScalar(_addr_len)),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t worker() const {
+    return ::flatbuffers::EndianScalar(worker_);
+  }
+  uint64_t addr_hash() const {
+    return ::flatbuffers::EndianScalar(addr_hash_);
+  }
+  uint64_t prefix_hash() const {
+    return ::flatbuffers::EndianScalar(prefix_hash_);
+  }
+  uint32_t addr_len() const {
+    return ::flatbuffers::EndianScalar(addr_len_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxWorkerAddress, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxEpConnection FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t endpoint_;
+  int32_t padding0__;
+  uint64_t remote_prefix_hash_;
+
+ public:
+  UcxEpConnection()
+      : temporal_(),
+        endpoint_(0),
+        padding0__(0),
+        remote_prefix_hash_(0) {
+    (void)padding0__;
+  }
+  UcxEpConnection(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint64_t _remote_prefix_hash)
+      : temporal_(_temporal),
+        endpoint_(::flatbuffers::EndianScalar(_endpoint)),
+        padding0__(0),
+        remote_prefix_hash_(::flatbuffers::EndianScalar(_remote_prefix_hash)) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t endpoint() const {
+    return ::flatbuffers::EndianScalar(endpoint_);
+  }
+  uint64_t remote_prefix_hash() const {
+    return ::flatbuffers::EndianScalar(remote_prefix_hash_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxEpConnection, 64);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAtomic FLATBUFFERS_FINAL_CLASS {
  private:

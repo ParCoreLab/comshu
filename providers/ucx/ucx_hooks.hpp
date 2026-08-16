@@ -166,3 +166,16 @@ DEFINE_PRELOAD_HOOK(ucx, atomic_fetch_nb, "ucp_atomic_fetch_nb", ucs_status_ptr_
 DEFINE_PRELOAD_HOOK(ucx, atomic_op_nbx, "ucp_atomic_op_nbx", ucs_status_ptr_t, ucp_ep_h,
                     ucp_atomic_op_t, const void*, size_t, uint64_t, ucp_rkey_h,
                     const ucp_request_param_t*);
+
+// The local worker's address, and the only door that offers it. Hooked for
+// identity rather than for traffic: with this and UcxEpConnection below, an
+// endpoint in rank 0's capture can be matched to the worker that created it in
+// rank 3's, which is the one join in the UCX records that crosses a rank.
+//
+// SigmaTrace's ucx-endpoint branch does the same thing and hashes with
+// absl::HashOf. We use FNV-1a instead, and the difference is not stylistic:
+// absl's hashes are not guaranteed stable across processes, and a per-process
+// salt would make every cross-rank join silently miss while looking perfectly
+// well-formed. A join key that travels between captures has to be deterministic.
+DEFINE_PRELOAD_HOOK(ucx, worker_get_address, "ucp_worker_get_address", ucs_status_t, ucp_worker_h,
+                    ucp_address_t**, size_t*);

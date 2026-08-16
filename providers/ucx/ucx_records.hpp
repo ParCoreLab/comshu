@@ -247,4 +247,47 @@ PCOMM_RECORD(UcxAtomic, RecordKind::Event, 620, "ucx_atomic") {
     std::uint8_t  fetching;  // 1 = returns the previous value
 };
 
+// ENTITY — this worker's own address, reduced to hashes. The address BYTES are
+// deliberately not recorded: they are tens to hundreds of bytes of transport
+// detail per worker, and nothing downstream wants to read them. What is wanted
+// is identity — "is the worker this endpoint dials the same one rank 3
+// created?" — and a hash answers that at fixed width.
+//
+// TWO hashes, and the pair is the point. `prefix_hash` covers the first
+// kAddressHashPrefix bytes and is the one a join can actually use, because
+// ucp_ep_create hands us a remote address pointer with NO LENGTH (see
+// UcxEpConnection) — a prefix is all the API makes available on that side.
+// `addr_hash` covers the whole address, which only the local side can compute.
+//
+// Recording both is what makes a prefix collision VISIBLE instead of silently
+// wrong: two workers that share a prefix_hash and differ in addr_hash are two
+// workers a prefix join cannot tell apart, and a reader can say so. With only
+// the prefix stored, the same collision reads as a confident, wrong join.
+PCOMM_RECORD(UcxWorkerAddress, RecordKind::Entity, 622, "ucx_worker_address") {
+    Handle        worker;
+    std::uint64_t addr_hash;    // FNV-1a over the whole address
+    std::uint64_t prefix_hash;  // FNV-1a over the first kAddressHashPrefix bytes
+    std::uint32_t addr_len;     // whole address bytes, so a short address is visible
+};
+
+// ENTITY — which remote worker an endpoint was dialled at, as the hash of the
+// address passed to ucp_ep_create. Join to UcxWorkerAddress.prefix_hash from
+// ANOTHER RANK's capture: that is what turns a pile of per-rank endpoint rows
+// into a communication graph, and it is the only thing in the UCX records that
+// crosses a rank boundary at all.
+//
+// Only the prefix is available here. ucp_ep_params_t carries `address` and no
+// length — the caller is expected to know it out of band — so hashing the whole
+// remote address is not merely inconvenient, it is unreachable through the
+// public API. Hence the two-hash scheme on the worker side.
+//
+// Emitted only when UCP_EP_PARAM_FIELD_REMOTE_ADDRESS is actually set. An
+// endpoint created from a socket address or a connection request has no peer
+// address here and gets no row, rather than a row full of zeroes that reads like
+// a measured null peer.
+PCOMM_RECORD(UcxEpConnection, RecordKind::Entity, 624, "ucx_ep_connection") {
+    Handle        endpoint;
+    std::uint64_t remote_prefix_hash;
+};
+
 }  // namespace pcomm::providers::ucx::records

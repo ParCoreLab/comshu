@@ -661,6 +661,25 @@ struct UcxWorkerProgress {
   progressed:uint32;
 }
 
+// type 622, Entity. This worker's own address as hashes. Two of them: the
+// prefix is what a cross-rank join can use, the full one makes a prefix
+// collision visible instead of silently wrong.
+struct UcxWorkerAddress {
+  temporal:Temporal;
+  worker:uint32;
+  addr_hash:uint64;
+  prefix_hash:uint64;
+  addr_len:uint32;
+}
+
+// type 624, Entity. Which remote worker an endpoint was dialled at. Join to
+// UcxWorkerAddress.prefix_hash from another rank's capture.
+struct UcxEpConnection {
+  temporal:Temporal;
+  endpoint:uint32;
+  remote_prefix_hash:uint64;
+}
+
 // type 620, Event. A remote atomic. `op` is NORMALISED across the three UCX
 // opcode spaces, which number the same operations differently — see
 // UcxAtomicOp in providers/ucx/ucx_records.hpp.

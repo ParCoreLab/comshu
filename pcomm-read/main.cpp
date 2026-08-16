@@ -952,6 +952,33 @@ template<> struct Table<ucr::UcxAtomic> {
     }
 };
 
+// The two hashes travel together so a prefix collision is detectable: two
+// workers sharing prefix_hash and differing in addr_hash are two workers the
+// cross-rank join cannot separate, and a reader can say so rather than pick one.
+template<> struct Table<ucr::UcxWorkerAddress> {
+    static constexpr const char* name = "ucx_worker_address";
+    static constexpr const char* cols = "ticks,worker,addr_hash,prefix_hash,addr_len";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxWorkerAddress>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,0x%016llx,0x%016llx,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.worker, (unsigned long long)s.payload.addr_hash,
+                     (unsigned long long)s.payload.prefix_hash, s.payload.addr_len);
+    }
+};
+
+// The only row in the UCX family that points OUTSIDE its own rank: join
+// remote_prefix_hash to another capture's ucx_worker_address.prefix_hash to
+// learn which peer an endpoint was dialled at.
+template<> struct Table<ucr::UcxEpConnection> {
+    static constexpr const char* name = "ucx_ep_connection";
+    static constexpr const char* cols = "ticks,endpoint,remote_prefix_hash";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxEpConnection>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,0x%016llx", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.endpoint, (unsigned long long)s.payload.remote_prefix_hash);
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
@@ -971,7 +998,8 @@ using TableRecords =
                mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend,
                ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend,
                ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend, ucr::UcxMemMap,
-               ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic>;
+               ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic, ucr::UcxWorkerAddress,
+               ucr::UcxEpConnection>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.

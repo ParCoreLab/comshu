@@ -79,6 +79,8 @@ PCOMM_SCHEMA_MATCH(ur::UcxMemMap, fb::UcxMemMap);
 PCOMM_SCHEMA_MATCH(ur::UcxWorkerProgress, fb::UcxWorkerProgress);
 PCOMM_SCHEMA_MATCH(ur::UcxTagProbe, fb::UcxTagProbe);
 PCOMM_SCHEMA_MATCH(ur::UcxAtomic, fb::UcxAtomic);
+PCOMM_SCHEMA_MATCH(ur::UcxWorkerAddress, fb::UcxWorkerAddress);
+PCOMM_SCHEMA_MATCH(ur::UcxEpConnection, fb::UcxEpConnection);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -324,6 +326,28 @@ int main() {
                         -5, 2, static_cast<uint8_t>(ur::UcxAtomicOp::CompareSwap),
                         static_cast<uint8_t>(ur::UcxDoor::LegacyPost), 1);
         expect_identical("UcxAtomic", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxWorkerAddress> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1717}, {2, 0x1818});
+        c.payload.worker = 0x41;
+        c.payload.addr_hash = 0x0123456789ABCDEFull;
+        c.payload.prefix_hash = 0xFEDCBA9876543210ull;
+        c.payload.addr_len = 214;
+        fb::UcxWorkerAddress f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1717),
+                                            fb::TimePoint(2, 0x1818), 0),
+                               0x41, 0x0123456789ABCDEFull, 0xFEDCBA9876543210ull, 214);
+        expect_identical("UcxWorkerAddress", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxEpConnection> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1919}, {2, 0x1A1A});
+        c.payload.endpoint = 0x51;
+        c.payload.remote_prefix_hash = 0xFEDCBA9876543210ull;
+        fb::UcxEpConnection f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1919),
+                                           fb::TimePoint(2, 0x1A1A), 0),
+                              0x51, 0xFEDCBA9876543210ull);
+        expect_identical("UcxEpConnection", &c, &f, sizeof(c));
     }
 
     {  // GpuAccess: the firehose, and the one with the most padding holes

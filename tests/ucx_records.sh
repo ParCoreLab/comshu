@@ -119,6 +119,30 @@ else
     expect "probe length (the one true byte count)" "48" "$probe_len"
 fi
 
+# --- peer identity, which the self transport can check exactly ---------------
+# The workload dials its OWN worker, so the endpoint's remote_prefix_hash must
+# equal that worker's prefix_hash. That is the whole cross-rank join mechanism
+# exercised in one process: on a real run the two sides live in different
+# captures and there is nothing local to compare them against.
+expect "ucx_worker_address rows" 1 "$(csv ucx_worker_address | wc -l)"
+expect "ucx_ep_connection rows"  1 "$(csv ucx_ep_connection | wc -l)"
+worker_prefix=$(csv ucx_worker_address | awk -F, '{print $5}')
+ep_remote=$(csv ucx_ep_connection | awk -F, '{print $4}')
+if [ -z "$worker_prefix" ] || [ "$worker_prefix" != "$ep_remote" ]; then
+    echo "FAIL: peer identity does not resolve — worker prefix_hash $worker_prefix,"
+    echo "  endpoint remote_prefix_hash $ep_remote, and this workload dials itself"
+    echo "  so they must be equal. A cross-rank join would silently miss instead."
+    fail=1
+fi
+# The two worker hashes must DIFFER: they cover different byte ranges, and equal
+# values would mean one of them is not being computed over what it claims.
+worker_full=$(csv ucx_worker_address | awk -F, '{print $4}')
+if [ "$worker_full" = "$worker_prefix" ]; then
+    echo "FAIL: addr_hash and prefix_hash are identical ($worker_full) — one of"
+    echo "  them is not hashing the range it claims, so collision detection is blind"
+    fail=1
+fi
+
 # A msg_recv row must NOT invent a tag: 0 is the honest value there, and a
 # non-zero one would mean somebody filled the field by guessing.
 msg_tag=$(csv ucx_tag_recv | awk -F, '$3=="msg_recv_nb" {print $8}')
@@ -132,4 +156,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "ok: 4 sends over 3 doors, 4 receives, probe->msg_recv join intact (tag $probe_tag, $probe_len bytes)"
+echo "ok: 4 sends over 3 doors, 4 receives, probe->msg_recv join intact (tag $probe_tag, $probe_len bytes),"
+echo "    peer identity resolves ($worker_prefix)"

@@ -35,6 +35,27 @@ static void close(const void* p, pcomm::core::RecordTypeId opener) {
         rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(p), opener});
 }
 
+
+// FNV-1a, the same construction tools/schema_check.py uses for the schema hash,
+// and chosen for the same property: it is deterministic everywhere. See the
+// ucp_worker_get_address hook for why a process-salted hash would break the one
+// join that crosses ranks.
+static std::uint64_t fnv1a(const void* data, std::size_t len) {
+    const auto*   bytes = static_cast<const unsigned char*>(data);
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+    for (std::size_t i = 0; i < len; ++i) {
+        hash ^= bytes[i];
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+
+// How much of a UCX address the cross-rank join can see. Fixed rather than
+// tunable because both sides must agree on it, and they are different processes
+// that never negotiate: a capture written with a different prefix would produce
+// hashes that silently never match.
+static constexpr std::size_t kAddressHashPrefix = 32;
+
 // Progress is Full-mode telemetry, and the mode is read ONCE for the reason the
 // ibverbs provider reads its own once: this is the hottest door in the process
 // (Stage 0 measured up to 617,094 calls per rank against 133 sends), and a
@@ -235,14 +256,37 @@ Profiler::Profiler() {
             rec().record(span(begin, end),
                          rr::UcxWorker{{}, {}, h(*out), h(context)});
     });
+    register_post<worker_get_address_tag>([](ucs_status_t status, ucp_worker_h worker,
+                                             ucp_address_t** address, size_t* length, auto begin,
+                                             auto end) {
+        if (status != UCS_OK || !address || !*address || !length ||
+            *length < kAddressHashPrefix)
+            return;
+        rec().record(span(begin, end),
+                     rr::UcxWorkerAddress{{},
+                                          {},
+                                          h(worker),
+                                          fnv1a(*address, *length),
+                                          fnv1a(*address, kAddressHashPrefix),
+                                          static_cast<std::uint32_t>(*length)});
+    });
     register_pre<worker_destroy_tag>([](ucp_worker_h worker, auto) {
         close(worker, pcomm::core::RecordTrait<rr::UcxWorker>::type_id);
     });
     register_post<ep_create_tag>([](ucs_status_t status, ucp_worker_h worker,
-                                    const ucp_ep_params_t*, ucp_ep_h* out, auto begin, auto end) {
-        if (status == UCS_OK && out && *out)
+                                    const ucp_ep_params_t* params, ucp_ep_h* out, auto begin,
+                                    auto end) {
+        if (status != UCS_OK || !out || !*out)
+            return;
+        rec().record(span(begin, end), rr::UcxEndpoint{{}, {}, h(*out), h(worker)});
+        // Only when the caller really passed a peer address. An endpoint created
+        // from a socket address or a connection request has none, and a row of
+        // zeroes there would read like a measured null peer.
+        if (params && (params->field_mask & UCP_EP_PARAM_FIELD_REMOTE_ADDRESS) &&
+            params->address)
             rec().record(span(begin, end),
-                         rr::UcxEndpoint{{}, {}, h(*out), h(worker)});
+                         rr::UcxEpConnection{{}, {}, h(*out),
+                                             fnv1a(params->address, kAddressHashPrefix)});
     });
     register_pre<ep_close_nbx_tag>([](ucp_ep_h endpoint, const ucp_request_param_t*, auto) {
         close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
@@ -559,6 +603,10 @@ extern "C" ucs_status_t ucp_mem_map(ucp_context_h context, const ucp_mem_map_par
 }
 extern "C" ucs_status_t ucp_mem_unmap(ucp_context_h context, ucp_mem_h memh) {
     return ucx::Profiler::invoke_preload<ucx::mem_unmap_tag>(context, memh);
+}
+extern "C" ucs_status_t ucp_worker_get_address(ucp_worker_h worker, ucp_address_t** address,
+                                               size_t* length) {
+    return ucx::Profiler::invoke_preload<ucx::worker_get_address_tag>(worker, address, length);
 }
 extern "C" unsigned ucp_worker_progress(ucp_worker_h worker) {
     return ucx::Profiler::invoke_preload<ucx::worker_progress_tag>(worker);
