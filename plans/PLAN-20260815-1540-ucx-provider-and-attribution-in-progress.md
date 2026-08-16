@@ -329,6 +329,58 @@ one allocation. **Until then no UCX record beyond the tagged path and the
 lifecycle has been seen on real hardware**, and the provider has no regression
 gate of any kind — Stage 4 remains entirely unstarted.
 
+### Measured 2026-08-16 — the door sweep, and why matching SigmaTrace was wrong
+
+The legacy-API question turned out to be answerable **statically, from the login
+node, with no allocation at all**: if a component calls `ucp_*`, that is an UND
+reference in its `.so`, and every library below was already measured to be
+loaded on the MPI path (job 44578355). This is weaker than a probe run and far
+stronger than "the API exists".
+
+| component | doors referenced |
+|---|---|
+| `mca_pml_ucx.so` (MPI p2p) | `tag_send_nb`, `tag_send_sync_nb`, `tag_recv_nb`, `tag_msg_recv_nb`, **and** the `_nbx` pair |
+| `mca_osc_ucx.so` (MPI one-sided) | `put_nbi`, `get_nbi`, `atomic_post`, `atomic_fetch_nb` — **no `_nbx` RMA at all** |
+| `mca_spml_ucx.so` (OpenSHMEM) | `put_nbx`, `get_nbx`, `ep_destroy` |
+| `hmca_bcol_ucx_p2p.so` (hcoll) | `tag_send_nb`, `tag_recv_nb`, `ep_close_nb` |
+| `libsmx-3.10.so` (SHARP) | `tag_send_nb`, `tag_msg_recv_nb` |
+| `libnccl-net.so` (NCCL plugin) | `am_send_nb`, `get_nb`, `put_nbi`, and `_nbx` tagged |
+| `libucc_tl_ucp.so` (UCC) | the `_nbx` set — already covered |
+
+**Copying SigmaTrace's door list was the wrong target.** It is a list of the
+modern API, and MN5's stack is substantially not on the modern API. Two things
+followed, and the first was a live bug rather than missing coverage:
+
+- **`ucx_endpoint` leaked on three of its four close doors.** Only
+  `ucp_ep_close_nbx` was hooked. An entity opened and never closed stays live
+  forever, and the allocator reuses the address — the exact defect
+  `ibv_close_device` exists to prevent. Fixed.
+- **MPI RMA would have reported a confident zero.** `mca_osc_ucx` touches none
+  of the doors we hooked, so `MPI_Put`/`MPI_Get` traffic would have produced an
+  empty `ucx_rma` table indistinguishable from a run that did no one-sided
+  traffic at all. Fixed.
+
+Nine doors added (23 total). The three operation records gained a `door` byte so
+a capture states which entry points an installation actually drives instead of
+requiring this sweep to recover it, and so `ucp_tag_send_sync_nb` — MPI_Ssend,
+which completes only on receiver match — stays distinguishable from an ordinary
+buffered send.
+
+**Deliberately still open**, both needing more than a hook:
+
+- the **atomics** (`ucp_atomic_post`, `ucp_atomic_fetch_nb`,
+  `ucp_atomic_op_nbx`) need a record of their own — MPI one-sided and UCC both
+  use them, so this is real MPI RMA coverage that is still missing;
+- `ucp_tag_msg_recv_nb` carries a `ucp_tag_message_h` rather than a tag, so it
+  cannot fill `UcxTagRecv`'s key without inventing one. Used by both `pml_ucx`
+  and SHARP, so it needs a decision rather than an omission.
+
+The runtime gap is unchanged and is now the binding one: **still nothing but the
+tagged path and lifecycle has been observed on real hardware.** The sweep proves
+the code paths exist; only a run proves which are taken. One two-node job with an
+MPI RMA + `MPI_Ssend` workload would exercise the `_nbi` doors, the legacy tagged
+doors and the extra close doors at once, and is the obvious next step.
+
 ## Stage 3 — cross-layer attribution
 
 Implement the least invasive mechanism Stage 0 proves:
