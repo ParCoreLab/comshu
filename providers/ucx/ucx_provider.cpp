@@ -35,6 +35,16 @@ static void close(const void* p, pcomm::core::RecordTypeId opener) {
         rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(p), opener});
 }
 
+// Progress is Full-mode telemetry, and the mode is read ONCE for the reason the
+// ibverbs provider reads its own once: this is the hottest door in the process
+// (Stage 0 measured up to 617,094 calls per rank against 133 sends), and a
+// getenv per call would be its own performance story.
+static bool record_progress() noexcept {
+    static const bool on =
+        pcomm_engine_trace_mode() >= static_cast<int>(pcomm::core::TraceMode::Full);
+    return on;
+}
+
 struct ClassifiedStatus {
     pcomm::core::Handle request{};
     std::int32_t       status{UCS_OK};
@@ -102,6 +112,118 @@ Profiler::Profiler() {
                                     s.status,
                                     static_cast<std::uint8_t>(s.kind)});
     });
+    // A receive names its WORKER, not an endpoint: the match is by tag across
+    // every peer, so there is no endpoint to record. See UcxTagRecv.
+    register_post<tag_recv_nbx_tag>([](ucs_status_ptr_t result, ucp_worker_h worker, void* buffer,
+                                       size_t count, ucp_tag_t tag, ucp_tag_t tag_mask,
+                                       const ucp_request_param_t*, auto begin, auto end) {
+        const auto s = classify(result);
+        rec().record(span(begin, end), rr::UcxTagRecv{{},
+                                                      {},
+                                                      h(worker),
+                                                      h(buffer),
+                                                      s.request,
+                                                      count,
+                                                      tag,
+                                                      tag_mask,
+                                                      s.status,
+                                                      static_cast<std::uint8_t>(s.kind)});
+    });
+    register_post<put_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, const void* buffer,
+                                  size_t count, std::uint64_t remote_addr, ucp_rkey_h rkey,
+                                  const ucp_request_param_t*, auto begin, auto end) {
+        const auto s = classify(result);
+        rec().record(span(begin, end),
+                     rr::UcxRma{{},
+                                {},
+                                h(endpoint),
+                                h(buffer),
+                                s.request,
+                                h(rkey),
+                                count,
+                                remote_addr,
+                                s.status,
+                                static_cast<std::uint8_t>(s.kind),
+                                static_cast<std::uint8_t>(rr::RmaOp::Put)});
+    });
+    register_post<get_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, void* buffer,
+                                  size_t count, std::uint64_t remote_addr, ucp_rkey_h rkey,
+                                  const ucp_request_param_t*, auto begin, auto end) {
+        const auto s = classify(result);
+        rec().record(span(begin, end),
+                     rr::UcxRma{{},
+                                {},
+                                h(endpoint),
+                                h(buffer),
+                                s.request,
+                                h(rkey),
+                                count,
+                                remote_addr,
+                                s.status,
+                                static_cast<std::uint8_t>(s.kind),
+                                static_cast<std::uint8_t>(rr::RmaOp::Get)});
+    });
+    register_post<am_send_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint, unsigned am_id,
+                                      const void*, size_t header_length, const void* buffer,
+                                      size_t count, const ucp_request_param_t*, auto begin,
+                                      auto end) {
+        const auto s = classify(result);
+        rec().record(span(begin, end), rr::UcxAmSend{{},
+                                                     {},
+                                                     h(endpoint),
+                                                     h(buffer),
+                                                     s.request,
+                                                     am_id,
+                                                     count,
+                                                     header_length,
+                                                     s.status,
+                                                     static_cast<std::uint8_t>(s.kind)});
+    });
+    // EVERY optional field is read through its field_mask bit, never assumed
+    // present: ucp_mem_map_params_t is a masked struct, and a caller passing
+    // UCP_MEM_MAP_ALLOCATE supplies no address at all. Reading one anyway would
+    // put whatever the caller left on the stack into the capture as an address.
+    //
+    // The effective values are then preferred over the requested ones, because
+    // they are what UCX actually registered — the two differ on every page
+    // rounding and on every allocate-for-me call, where the requested address is
+    // not merely imprecise but absent.
+    register_post<mem_map_tag>([](ucs_status_t status, ucp_context_h context,
+                                  const ucp_mem_map_params_t* params, ucp_mem_h* out, auto begin,
+                                  auto end) {
+        if (status != UCS_OK || !out || !*out)
+            return;
+        std::uint64_t address = 0;
+        std::uint64_t length = 0;
+        if (params) {
+            if (params->field_mask & UCP_MEM_MAP_PARAM_FIELD_ADDRESS)
+                address = reinterpret_cast<std::uint64_t>(params->address);
+            if (params->field_mask & UCP_MEM_MAP_PARAM_FIELD_LENGTH)
+                length = params->length;
+        }
+        std::uint8_t   resolved = 0;
+        ucp_mem_attr_t attr{};
+        attr.field_mask = UCP_MEM_ATTR_FIELD_ADDRESS | UCP_MEM_ATTR_FIELD_LENGTH;
+        if (ucp_mem_query(*out, &attr) == UCS_OK) {
+            address = reinterpret_cast<std::uint64_t>(attr.address);
+            length = attr.length;
+            resolved = 1;
+        }
+        rec().record(span(begin, end),
+                     rr::UcxMemMap{{}, {}, h(*out), h(context), address, length, resolved});
+    });
+    register_pre<mem_unmap_tag>([](ucp_context_h, ucp_mem_h memh, auto) {
+        close(memh, pcomm::core::RecordTrait<rr::UcxMemMap>::type_id);
+    });
+    // Empty polls are already dropped by the hook's predicate; this drops the
+    // rest outside Full mode. Both filters are needed — the predicate cuts the
+    // firehose, the mode decides whether the survivors are wanted at all.
+    register_post<worker_progress_tag>(
+        [](unsigned progressed, ucp_worker_h worker, auto begin, auto end) {
+            if (!record_progress())
+                return;
+            rec().record(span(begin, end), rr::UcxWorkerProgress{{}, {}, h(worker), progressed});
+        });
 }
 
 template class UcxEventSource<Profiler>;
@@ -133,6 +255,41 @@ extern "C" ucs_status_ptr_t ucp_tag_send_nbx(ucp_ep_h endpoint, const void* buff
                                               ucp_tag_t tag,
                                               const ucp_request_param_t* params) {
     return ucx::Profiler::invoke_preload<ucx::tag_send_nbx_tag>(endpoint, buffer, count, tag, params);
+}
+extern "C" ucs_status_ptr_t ucp_tag_recv_nbx(ucp_worker_h worker, void* buffer, size_t count,
+                                              ucp_tag_t tag, ucp_tag_t tag_mask,
+                                              const ucp_request_param_t* params) {
+    return ucx::Profiler::invoke_preload<ucx::tag_recv_nbx_tag>(worker, buffer, count, tag,
+                                                                tag_mask, params);
+}
+extern "C" ucs_status_ptr_t ucp_put_nbx(ucp_ep_h endpoint, const void* buffer, size_t count,
+                                         uint64_t remote_addr, ucp_rkey_h rkey,
+                                         const ucp_request_param_t* params) {
+    return ucx::Profiler::invoke_preload<ucx::put_nbx_tag>(endpoint, buffer, count, remote_addr,
+                                                           rkey, params);
+}
+extern "C" ucs_status_ptr_t ucp_get_nbx(ucp_ep_h endpoint, void* buffer, size_t count,
+                                         uint64_t remote_addr, ucp_rkey_h rkey,
+                                         const ucp_request_param_t* params) {
+    return ucx::Profiler::invoke_preload<ucx::get_nbx_tag>(endpoint, buffer, count, remote_addr,
+                                                           rkey, params);
+}
+extern "C" ucs_status_ptr_t ucp_am_send_nbx(ucp_ep_h endpoint, unsigned am_id, const void* header,
+                                             size_t header_length, const void* buffer, size_t count,
+                                             const ucp_request_param_t* params) {
+    return ucx::Profiler::invoke_preload<ucx::am_send_nbx_tag>(endpoint, am_id, header,
+                                                               header_length, buffer, count,
+                                                               params);
+}
+extern "C" ucs_status_t ucp_mem_map(ucp_context_h context, const ucp_mem_map_params_t* params,
+                                    ucp_mem_h* memh) {
+    return ucx::Profiler::invoke_preload<ucx::mem_map_tag>(context, params, memh);
+}
+extern "C" ucs_status_t ucp_mem_unmap(ucp_context_h context, ucp_mem_h memh) {
+    return ucx::Profiler::invoke_preload<ucx::mem_unmap_tag>(context, memh);
+}
+extern "C" unsigned ucp_worker_progress(ucp_worker_h worker) {
+    return ucx::Profiler::invoke_preload<ucx::worker_progress_tag>(worker);
 }
 
 namespace pcomm::providers {

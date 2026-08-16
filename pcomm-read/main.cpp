@@ -786,6 +786,87 @@ template<> struct Table<ucr::UcxTagSend> {
     }
 };
 
+// A receive's `count` is the capacity OFFERED, and the column is named to say so
+// rather than to look like the send side's. Summing it produces a number that
+// means nothing: the message that lands may be smaller, later, or never.
+template<> struct Table<ucr::UcxTagRecv> {
+    static constexpr const char* name = "ucx_tag_recv";
+    static constexpr const char* cols =
+        "ticks,worker,buffer,request,capacity,tag,tag_mask,status,status_class";
+    static void row(std::FILE* f, const Stamped<ucr::UcxTagRecv>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%llu,0x%llx,0x%llx,%d,%s",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.worker, s.payload.buffer,
+                     s.payload.request, (unsigned long long)s.payload.count,
+                     (unsigned long long)s.payload.tag, (unsigned long long)s.payload.tag_mask,
+                     s.payload.status, ucx_status_class_name(s.payload.status_class));
+    }
+};
+
+// RmaOp in words, for the reason every other discriminator in this file is: the
+// direction is the only thing separating a put from a get, so a raw 0/1 hides
+// the entire difference between "wrote to the peer" and "read from it".
+static const char* ucx_rma_op_name(std::uint8_t raw) {
+    switch (static_cast<ucr::RmaOp>(raw)) {
+        case ucr::RmaOp::Put:
+            return "put";
+        case ucr::RmaOp::Get:
+            return "get";
+    }
+    return "?";
+}
+
+template<> struct Table<ucr::UcxRma> {
+    static constexpr const char* name = "ucx_rma";
+    static constexpr const char* cols =
+        "ticks,op,endpoint,buffer,request,rkey,count,remote_addr,status,status_class";
+    static void row(std::FILE* f, const Stamped<ucr::UcxRma>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%s,%u,%u,%u,%u,%llu,0x%llx,%d,%s",
+                     (unsigned long long)s.temporal.a.ticks, ucx_rma_op_name(s.payload.op),
+                     s.payload.endpoint, s.payload.buffer, s.payload.request, s.payload.rkey,
+                     (unsigned long long)s.payload.count,
+                     (unsigned long long)s.payload.remote_addr, s.payload.status,
+                     ucx_status_class_name(s.payload.status_class));
+    }
+};
+
+template<> struct Table<ucr::UcxAmSend> {
+    static constexpr const char* name = "ucx_am_send";
+    static constexpr const char* cols =
+        "ticks,endpoint,buffer,request,am_id,count,header_length,status,status_class";
+    static void row(std::FILE* f, const Stamped<ucr::UcxAmSend>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%llu,%llu,%d,%s", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.endpoint, s.payload.buffer, s.payload.request, s.payload.am_id,
+                     (unsigned long long)s.payload.count,
+                     (unsigned long long)s.payload.header_length, s.payload.status,
+                     ucx_status_class_name(s.payload.status_class));
+    }
+};
+
+// `resolved` rides as a word beside the values it qualifies, because "effective"
+// and "requested" are different measurements and nothing else in the row says
+// which one is present.
+template<> struct Table<ucr::UcxMemMap> {
+    static constexpr const char* name = "ucx_mem_map";
+    static constexpr const char* cols = "ticks,memh,context,address,length,resolved";
+    static void row(std::FILE* f, const Stamped<ucr::UcxMemMap>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%s", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.memh, s.payload.context, (unsigned long long)s.payload.address,
+                     (unsigned long long)s.payload.length,
+                     s.payload.resolved ? "effective" : "requested");
+    }
+};
+
+template<> struct Table<ucr::UcxWorkerProgress> {
+    static constexpr const char* name = "ucx_worker_progress";
+    static constexpr const char* cols = "ticks,worker,progressed";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxWorkerProgress>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.worker,
+                     s.payload.progressed);
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
@@ -803,7 +884,9 @@ using TableRecords =
                ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
                mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
                mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend,
-               ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend>;
+               ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend,
+               ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend, ucr::UcxMemMap,
+               ucr::UcxWorkerProgress>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.

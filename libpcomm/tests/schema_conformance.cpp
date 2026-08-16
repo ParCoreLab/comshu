@@ -72,6 +72,11 @@ PCOMM_SCHEMA_MATCH(ur::UcxContext, fb::UcxContext);
 PCOMM_SCHEMA_MATCH(ur::UcxWorker, fb::UcxWorker);
 PCOMM_SCHEMA_MATCH(ur::UcxEndpoint, fb::UcxEndpoint);
 PCOMM_SCHEMA_MATCH(ur::UcxTagSend, fb::UcxTagSend);
+PCOMM_SCHEMA_MATCH(ur::UcxTagRecv, fb::UcxTagRecv);
+PCOMM_SCHEMA_MATCH(ur::UcxRma, fb::UcxRma);
+PCOMM_SCHEMA_MATCH(ur::UcxAmSend, fb::UcxAmSend);
+PCOMM_SCHEMA_MATCH(ur::UcxMemMap, fb::UcxMemMap);
+PCOMM_SCHEMA_MATCH(ur::UcxWorkerProgress, fb::UcxWorkerProgress);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -200,6 +205,80 @@ int main() {
                          0x99, 0xAA, 0xBB, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull,
                          -17, 2);
         expect_identical("UcxTagSend", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxTagRecv> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x909}, {2, 0xA0A});
+        c.payload.worker = 0xCC;
+        c.payload.buffer = 0xDD;
+        c.payload.request = 0xEE;
+        c.payload.count = 0x0102030405060708ull;
+        c.payload.tag = 0x1122334455667788ull;
+        c.payload.tag_mask = 0xFFFFFFFFFFFF0000ull;
+        c.payload.status = -3;
+        c.payload.status_class = 1;
+        fb::UcxTagRecv f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x909),
+                                      fb::TimePoint(2, 0xA0A), 0),
+                         0xCC, 0xDD, 0xEE, 0x0102030405060708ull, 0x1122334455667788ull,
+                         0xFFFFFFFFFFFF0000ull, -3, 1);
+        expect_identical("UcxTagRecv", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxRma> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0xB0B}, {2, 0xC0C});
+        c.payload.endpoint = 0x11;
+        c.payload.buffer = 0x22;
+        c.payload.request = 0x33;
+        c.payload.rkey = 0x44;
+        c.payload.count = 0x8877665544332211ull;
+        c.payload.remote_addr = 0x00007F0011223344ull;
+        c.payload.status = 0;
+        c.payload.status_class = 0;
+        c.payload.op = static_cast<uint8_t>(ur::RmaOp::Get);
+        fb::UcxRma f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xB0B),
+                                  fb::TimePoint(2, 0xC0C), 0),
+                     0x11, 0x22, 0x33, 0x44, 0x8877665544332211ull, 0x00007F0011223344ull, 0, 0,
+                     static_cast<uint8_t>(ur::RmaOp::Get));
+        expect_identical("UcxRma", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxAmSend> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0xD0D}, {2, 0xE0E});
+        c.payload.endpoint = 0x55;
+        c.payload.buffer = 0x66;
+        c.payload.request = 0x77;
+        c.payload.am_id = 0x0BADC0DEu;
+        c.payload.count = 0x0011223344556677ull;
+        c.payload.header_length = 0x40;
+        c.payload.status = -9;
+        c.payload.status_class = 2;
+        fb::UcxAmSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xD0D),
+                                     fb::TimePoint(2, 0xE0E), 0),
+                        0x55, 0x66, 0x77, 0x0BADC0DEu, 0x0011223344556677ull, 0x40, -9, 2);
+        expect_identical("UcxAmSend", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxMemMap> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0xF0F}, {2, 0x1010});
+        c.payload.memh = 0x88;
+        c.payload.context = 0x99;
+        c.payload.address = 0x00007FAABBCC0000ull;
+        c.payload.length = 0x200000;
+        c.payload.resolved = 1;
+        fb::UcxMemMap f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xF0F),
+                                     fb::TimePoint(2, 0x1010), 0),
+                        0x88, 0x99, 0x00007FAABBCC0000ull, 0x200000, 1);
+        expect_identical("UcxMemMap", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxWorkerProgress> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1111}, {2, 0x1212});
+        c.payload.worker = 0xABCD;
+        c.payload.progressed = 7;
+        fb::UcxWorkerProgress f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1111),
+                                             fb::TimePoint(2, 0x1212), 0),
+                                0xABCD, 7);
+        expect_identical("UcxWorkerProgress", &c, &f, sizeof(c));
     }
 
     {  // GpuAccess: the firehose, and the one with the most padding holes

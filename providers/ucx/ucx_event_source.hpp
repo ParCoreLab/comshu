@@ -9,11 +9,14 @@ template<typename Derived>
 class UcxEventSource
     : public pcomm::hook::CompositeHookManager<
           Derived, pcomm::hook::DefaultHookManagerConfig, init_version_tag, cleanup_tag,
-          worker_create_tag, worker_destroy_tag, ep_create_tag, ep_close_nbx_tag,
-          tag_send_nbx_tag> {
+          worker_create_tag, worker_destroy_tag, ep_create_tag, ep_close_nbx_tag, tag_send_nbx_tag,
+          tag_recv_nbx_tag, put_nbx_tag, get_nbx_tag, am_send_nbx_tag, mem_map_tag, mem_unmap_tag,
+          worker_progress_tag> {
     using Base = pcomm::hook::CompositeHookManager<
         Derived, pcomm::hook::DefaultHookManagerConfig, init_version_tag, cleanup_tag,
-        worker_create_tag, worker_destroy_tag, ep_create_tag, ep_close_nbx_tag, tag_send_nbx_tag>;
+        worker_create_tag, worker_destroy_tag, ep_create_tag, ep_close_nbx_tag, tag_send_nbx_tag,
+        tag_recv_nbx_tag, put_nbx_tag, get_nbx_tag, am_send_nbx_tag, mem_map_tag, mem_unmap_tag,
+        worker_progress_tag>;
 
 public:
     using Context = typename Base::Context;

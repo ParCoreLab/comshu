@@ -581,3 +581,64 @@ struct UcxTagSend {
   status:int32;
   status_class:uint8;
 }
+
+// type 608, Event. A tagged receive POSTED — count is the capacity offered, not
+// bytes delivered. Keyed by worker: the match is by tag across every peer.
+struct UcxTagRecv {
+  temporal:Temporal;
+  worker:uint32;
+  buffer:uint32;
+  request:uint32;
+  count:uint64;
+  tag:uint64;
+  tag_mask:uint64;
+  status:int32;
+  status_class:uint8;
+}
+
+// type 610, Event. A one-sided put or get; `op` discriminates (RmaOp).
+struct UcxRma {
+  temporal:Temporal;
+  endpoint:uint32;
+  buffer:uint32;
+  request:uint32;
+  rkey:uint32;
+  count:uint64;
+  remote_addr:uint64;
+  status:int32;
+  status_class:uint8;
+  op:uint8;
+}
+
+// type 612, Event. An active-message send; header and payload keep separate
+// lengths because one is control traffic and the other is data.
+struct UcxAmSend {
+  temporal:Temporal;
+  endpoint:uint32;
+  buffer:uint32;
+  request:uint32;
+  am_id:uint32;
+  count:uint64;
+  header_length:uint64;
+  status:int32;
+  status_class:uint8;
+}
+
+// type 614, Entity. A UCP memory registration. `resolved` says whether the
+// address/length are the effective ones from ucp_mem_query or as requested.
+struct UcxMemMap {
+  temporal:Temporal;
+  memh:uint32;
+  context:uint32;
+  address:uint64;
+  length:uint64;
+  resolved:uint8;
+}
+
+// type 616, Event. A worker progress call that progressed something. Full mode
+// only, and telemetry rather than a golden — see the record.
+struct UcxWorkerProgress {
+  temporal:Temporal;
+  worker:uint32;
+  progressed:uint32;
+}

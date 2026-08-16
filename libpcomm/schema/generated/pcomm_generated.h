@@ -100,6 +100,16 @@ struct UcxEndpoint;
 
 struct UcxTagSend;
 
+struct UcxTagRecv;
+
+struct UcxRma;
+
+struct UcxAmSend;
+
+struct UcxMemMap;
+
+struct UcxWorkerProgress;
+
 enum TimeKind : uint8_t {
   TimeKind_None = 0,
   TimeKind_Instant = 1,
@@ -2626,6 +2636,324 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(UcxTagSend, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagRecv FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t worker_;
+  uint32_t buffer_;
+  uint32_t request_;
+  int32_t padding0__;
+  uint64_t count_;
+  uint64_t tag_;
+  uint64_t tag_mask_;
+  int32_t status_;
+  uint8_t status_class_;
+  int8_t padding1__;  int16_t padding2__;
+
+ public:
+  UcxTagRecv()
+      : temporal_(),
+        worker_(0),
+        buffer_(0),
+        request_(0),
+        padding0__(0),
+        count_(0),
+        tag_(0),
+        tag_mask_(0),
+        status_(0),
+        status_class_(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  UcxTagRecv(const pcomm::fb::Temporal &_temporal, uint32_t _worker, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, uint64_t _tag_mask, int32_t _status, uint8_t _status_class)
+      : temporal_(_temporal),
+        worker_(::flatbuffers::EndianScalar(_worker)),
+        buffer_(::flatbuffers::EndianScalar(_buffer)),
+        request_(::flatbuffers::EndianScalar(_request)),
+        padding0__(0),
+        count_(::flatbuffers::EndianScalar(_count)),
+        tag_(::flatbuffers::EndianScalar(_tag)),
+        tag_mask_(::flatbuffers::EndianScalar(_tag_mask)),
+        status_(::flatbuffers::EndianScalar(_status)),
+        status_class_(::flatbuffers::EndianScalar(_status_class)),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t worker() const {
+    return ::flatbuffers::EndianScalar(worker_);
+  }
+  uint32_t buffer() const {
+    return ::flatbuffers::EndianScalar(buffer_);
+  }
+  uint32_t request() const {
+    return ::flatbuffers::EndianScalar(request_);
+  }
+  uint64_t count() const {
+    return ::flatbuffers::EndianScalar(count_);
+  }
+  uint64_t tag() const {
+    return ::flatbuffers::EndianScalar(tag_);
+  }
+  uint64_t tag_mask() const {
+    return ::flatbuffers::EndianScalar(tag_mask_);
+  }
+  int32_t status() const {
+    return ::flatbuffers::EndianScalar(status_);
+  }
+  uint8_t status_class() const {
+    return ::flatbuffers::EndianScalar(status_class_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxTagRecv, 96);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t endpoint_;
+  uint32_t buffer_;
+  uint32_t request_;
+  uint32_t rkey_;
+  uint64_t count_;
+  uint64_t remote_addr_;
+  int32_t status_;
+  uint8_t status_class_;
+  uint8_t op_;
+  int16_t padding0__;
+
+ public:
+  UcxRma()
+      : temporal_(),
+        endpoint_(0),
+        buffer_(0),
+        request_(0),
+        rkey_(0),
+        count_(0),
+        remote_addr_(0),
+        status_(0),
+        status_class_(0),
+        op_(0),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  UcxRma(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _rkey, uint64_t _count, uint64_t _remote_addr, int32_t _status, uint8_t _status_class, uint8_t _op)
+      : temporal_(_temporal),
+        endpoint_(::flatbuffers::EndianScalar(_endpoint)),
+        buffer_(::flatbuffers::EndianScalar(_buffer)),
+        request_(::flatbuffers::EndianScalar(_request)),
+        rkey_(::flatbuffers::EndianScalar(_rkey)),
+        count_(::flatbuffers::EndianScalar(_count)),
+        remote_addr_(::flatbuffers::EndianScalar(_remote_addr)),
+        status_(::flatbuffers::EndianScalar(_status)),
+        status_class_(::flatbuffers::EndianScalar(_status_class)),
+        op_(::flatbuffers::EndianScalar(_op)),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t endpoint() const {
+    return ::flatbuffers::EndianScalar(endpoint_);
+  }
+  uint32_t buffer() const {
+    return ::flatbuffers::EndianScalar(buffer_);
+  }
+  uint32_t request() const {
+    return ::flatbuffers::EndianScalar(request_);
+  }
+  uint32_t rkey() const {
+    return ::flatbuffers::EndianScalar(rkey_);
+  }
+  uint64_t count() const {
+    return ::flatbuffers::EndianScalar(count_);
+  }
+  uint64_t remote_addr() const {
+    return ::flatbuffers::EndianScalar(remote_addr_);
+  }
+  int32_t status() const {
+    return ::flatbuffers::EndianScalar(status_);
+  }
+  uint8_t status_class() const {
+    return ::flatbuffers::EndianScalar(status_class_);
+  }
+  uint8_t op() const {
+    return ::flatbuffers::EndianScalar(op_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxRma, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAmSend FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t endpoint_;
+  uint32_t buffer_;
+  uint32_t request_;
+  uint32_t am_id_;
+  uint64_t count_;
+  uint64_t header_length_;
+  int32_t status_;
+  uint8_t status_class_;
+  int8_t padding0__;  int16_t padding1__;
+
+ public:
+  UcxAmSend()
+      : temporal_(),
+        endpoint_(0),
+        buffer_(0),
+        request_(0),
+        am_id_(0),
+        count_(0),
+        header_length_(0),
+        status_(0),
+        status_class_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  UcxAmSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _am_id, uint64_t _count, uint64_t _header_length, int32_t _status, uint8_t _status_class)
+      : temporal_(_temporal),
+        endpoint_(::flatbuffers::EndianScalar(_endpoint)),
+        buffer_(::flatbuffers::EndianScalar(_buffer)),
+        request_(::flatbuffers::EndianScalar(_request)),
+        am_id_(::flatbuffers::EndianScalar(_am_id)),
+        count_(::flatbuffers::EndianScalar(_count)),
+        header_length_(::flatbuffers::EndianScalar(_header_length)),
+        status_(::flatbuffers::EndianScalar(_status)),
+        status_class_(::flatbuffers::EndianScalar(_status_class)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t endpoint() const {
+    return ::flatbuffers::EndianScalar(endpoint_);
+  }
+  uint32_t buffer() const {
+    return ::flatbuffers::EndianScalar(buffer_);
+  }
+  uint32_t request() const {
+    return ::flatbuffers::EndianScalar(request_);
+  }
+  uint32_t am_id() const {
+    return ::flatbuffers::EndianScalar(am_id_);
+  }
+  uint64_t count() const {
+    return ::flatbuffers::EndianScalar(count_);
+  }
+  uint64_t header_length() const {
+    return ::flatbuffers::EndianScalar(header_length_);
+  }
+  int32_t status() const {
+    return ::flatbuffers::EndianScalar(status_);
+  }
+  uint8_t status_class() const {
+    return ::flatbuffers::EndianScalar(status_class_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxAmSend, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxMemMap FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t memh_;
+  uint32_t context_;
+  uint64_t address_;
+  uint64_t length_;
+  uint8_t resolved_;
+  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+
+ public:
+  UcxMemMap()
+      : temporal_(),
+        memh_(0),
+        context_(0),
+        address_(0),
+        length_(0),
+        resolved_(0),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  UcxMemMap(const pcomm::fb::Temporal &_temporal, uint32_t _memh, uint32_t _context, uint64_t _address, uint64_t _length, uint8_t _resolved)
+      : temporal_(_temporal),
+        memh_(::flatbuffers::EndianScalar(_memh)),
+        context_(::flatbuffers::EndianScalar(_context)),
+        address_(::flatbuffers::EndianScalar(_address)),
+        length_(::flatbuffers::EndianScalar(_length)),
+        resolved_(::flatbuffers::EndianScalar(_resolved)),
+        padding0__(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t memh() const {
+    return ::flatbuffers::EndianScalar(memh_);
+  }
+  uint32_t context() const {
+    return ::flatbuffers::EndianScalar(context_);
+  }
+  uint64_t address() const {
+    return ::flatbuffers::EndianScalar(address_);
+  }
+  uint64_t length() const {
+    return ::flatbuffers::EndianScalar(length_);
+  }
+  uint8_t resolved() const {
+    return ::flatbuffers::EndianScalar(resolved_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxMemMap, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxWorkerProgress FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t worker_;
+  uint32_t progressed_;
+
+ public:
+  UcxWorkerProgress()
+      : temporal_(),
+        worker_(0),
+        progressed_(0) {
+  }
+  UcxWorkerProgress(const pcomm::fb::Temporal &_temporal, uint32_t _worker, uint32_t _progressed)
+      : temporal_(_temporal),
+        worker_(::flatbuffers::EndianScalar(_worker)),
+        progressed_(::flatbuffers::EndianScalar(_progressed)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t worker() const {
+    return ::flatbuffers::EndianScalar(worker_);
+  }
+  uint32_t progressed() const {
+    return ::flatbuffers::EndianScalar(progressed_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxWorkerProgress, 56);
 
 }  // namespace fb
 }  // namespace pcomm

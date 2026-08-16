@@ -42,4 +42,102 @@ PCOMM_RECORD(UcxTagSend, RecordKind::Event, 606, "ucx_tag_send") {
     std::uint8_t  status_class;  // StatusClass
 };
 
+// EVENT — a tagged receive was POSTED. Not a receive that completed, and the
+// distinction is the whole reason this record's `count` must never be added to
+// a bytes total: it is the capacity the application offered, and the message
+// that eventually lands in it may be smaller, may arrive much later, or may
+// never arrive at all. What was actually delivered is knowable only from the
+// request's completion, which this provider does not yet resolve.
+//
+// Keyed by WORKER rather than endpoint on purpose. ucp_tag_recv_nbx matches by
+// tag across every peer the worker can hear from, so there is no endpoint to
+// name, and inventing one by guessing the likely sender would be a fabricated
+// join that reads exactly like a measured one.
+PCOMM_RECORD(UcxTagRecv, RecordKind::Event, 608, "ucx_tag_recv") {
+    Handle        worker;
+    Handle        buffer;
+    Handle        request;
+    std::uint64_t count;  // capacity OFFERED, not bytes delivered
+    std::uint64_t tag;
+    std::uint64_t tag_mask;  // which bits of `tag` the match tests
+    std::int32_t  status;
+    std::uint8_t  status_class;
+};
+
+// Which one-sided operation a UcxRma row describes. Values are pinned: they go
+// on disk. Put and get share a record for the reason ib_post_send covers send,
+// RDMA write and RDMA read in one — the question "what one-sided traffic did
+// this endpoint issue" should not require a union of two tables — and they are
+// discriminated here rather than by table because the direction is the only
+// thing that differs between them.
+enum class RmaOp : std::uint8_t {
+    Put = 0,  // local buffer -> remote_addr
+    Get = 1,  // remote_addr -> local buffer
+};
+
+// EVENT — a one-sided put or get was issued. `remote_addr` is the peer's
+// virtual address, and it is the field that makes these rows joinable to a
+// remote object the way ib_post_send.remote_addr already is.
+PCOMM_RECORD(UcxRma, RecordKind::Event, 610, "ucx_rma") {
+    Handle        endpoint;
+    Handle        buffer;  // the LOCAL buffer
+    Handle        request;
+    Handle        rkey;  // interned ucp_rkey_h; the remote key, not the address
+    std::uint64_t count;
+    std::uint64_t remote_addr;
+    std::int32_t  status;
+    std::uint8_t  status_class;
+    std::uint8_t  op;  // RmaOp
+};
+
+// EVENT — an active-message send. The header and the payload keep separate
+// lengths rather than being summed: an AM protocol's header is control traffic
+// and its payload is data, and a total that merges them cannot be split back.
+PCOMM_RECORD(UcxAmSend, RecordKind::Event, 612, "ucx_am_send") {
+    Handle        endpoint;
+    Handle        buffer;  // the payload buffer; the header is not interned
+    Handle        request;
+    std::uint32_t am_id;
+    std::uint64_t count;          // payload, raw UCP datatype count
+    std::uint64_t header_length;  // bytes, and this one really is bytes
+    std::int32_t  status;
+    std::uint8_t  status_class;
+};
+
+// ENTITY — a UCP memory registration, lifetime [ucp_mem_map, ucp_mem_unmap).
+//
+// Deliberately NOT a MemObject. The engine owns object identity, and a region
+// registered here is very often the same memory some other provider already
+// named; minting a second identity for it would put two rows in front of a
+// reader for one allocation and leave them to guess which is authoritative.
+// This record says only "UCX was asked to register this range", and the join to
+// an object goes through the address like every other address in the capture.
+//
+// `address` and `length` are the EFFECTIVE values from ucp_mem_query where it
+// answers, and the requested ones from ucp_mem_map_params_t otherwise — the two
+// differ whenever UCX rounds to pages or picks the address itself, which is
+// exactly what happens when the caller passes UCP_MEM_MAP_ALLOCATE. `resolved`
+// says which of the two a row carries, because a rounded length and a requested
+// length are different measurements and a reader cannot tell them apart by
+// looking.
+PCOMM_RECORD(UcxMemMap, RecordKind::Entity, 614, "ucx_mem_map") {
+    Handle        memh;  // interned ucp_mem_h
+    Handle        context;
+    std::uint64_t address;
+    std::uint64_t length;
+    std::uint8_t  resolved;  // 1 = effective, from ucp_mem_query; 0 = as requested
+};
+
+// EVENT — a worker progress call that actually progressed something.
+//
+// Full mode only, and filtered at the hook: Stage 0 measured 329,073-617,094
+// progress calls per rank against 133 tagged sends, varying by a factor of two
+// between two runs of the identical workload. So the empty polls are dropped
+// (see the predicate on the hook) and what remains is telemetry — never a
+// golden, and never evidence about how much work a rank did.
+PCOMM_RECORD(UcxWorkerProgress, RecordKind::Event, 616, "ucx_worker_progress") {
+    Handle        worker;
+    std::uint32_t progressed;  // callbacks dispatched by this call
+};
+
 }  // namespace pcomm::providers::ucx::records

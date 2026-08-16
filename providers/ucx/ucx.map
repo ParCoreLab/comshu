@@ -7,6 +7,13 @@
     ucp_ep_create;
     ucp_ep_close_nbx;
     ucp_tag_send_nbx;
+    ucp_tag_recv_nbx;
+    ucp_put_nbx;
+    ucp_get_nbx;
+    ucp_am_send_nbx;
+    ucp_mem_map;
+    ucp_mem_unmap;
+    ucp_worker_progress;
     pcomm_create_provider;
     pcomm_abi_version;
   local:
