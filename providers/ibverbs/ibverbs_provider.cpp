@@ -14,7 +14,6 @@
 #include "pcomm/core/dmabuf_registry.hpp"
 #include "pcomm/core/mem_attr.hpp"
 #include "pcomm/core/records.hpp"
-#include "pcomm/hook/dlsym/Dlsym.hpp"
 #include "pcomm/provider/provider.hpp"
 #include "pcomm/rec/intern_table.hpp"
 #include "pcomm/engine_abi.h"
@@ -25,7 +24,6 @@
 #include "ib_records.hpp"
 #include "wr_builder.hpp"
 
-#include <array>
 #include <cstring>
 #include <atomic>
 #include <map>
@@ -77,67 +75,6 @@ static void record_device(ibv_context* ctx);
 // Diagnostics for the unmatched-CQ hunt; see their definitions at the bottom.
 static void remember_cq(const ibv_cq* cq);
 static void trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr);
-
-// Stage-0 UCX attribution instrument. The disposable UCX API probe exports its
-// innermost call scope; when explicitly enabled, count which scope each verbs
-// WR is posted under. No record or provider behaviour depends on this bridge.
-// An absent symbol means the UCX probe was not preloaded and is reported once.
-using UcxProbeCurrent = int (*)(std::uint32_t*, unsigned long long*);
-
-static bool trace_ucx_nesting_enabled() noexcept {
-    static const bool on = [] {
-        const char* value = std::getenv("PCOMM_TRACE_UCX_NESTING");
-        return value && *value && std::strcmp(value, "0") != 0;
-    }();
-    return on;
-}
-
-static std::array<std::atomic<unsigned long long>, 16>& ucx_nesting_counts() {
-    static std::array<std::atomic<unsigned long long>, 16> counts{};
-    return counts;
-}
-
-static void trace_ucx_nesting(const ibv_qp* qp) {
-    if (!trace_ucx_nesting_enabled())
-        return;
-    static UcxProbeCurrent current =
-        reinterpret_cast<UcxProbeCurrent>(pcomm::smart_dlsym::real_dlsym(
-            pcomm::smart_dlsym::DL_RTLD_DEFAULT, "pcomm_ucx_api_probe_current"));
-    static bool warned = false;
-    if (!current) {
-        if (!warned) {
-            warned = true;
-            std::fprintf(stderr,
-                         "[pcomm-ucx-nesting] probe symbol absent; preload libucx_calls.so\n");
-        }
-        return;
-    }
-    std::uint32_t      call = 0;
-    unsigned long long scope = 0;
-    const bool         nested = current(&call, &scope) != 0;
-    const std::size_t  bucket = nested && call < 15 ? call + 1 : 0;
-    auto&              count = ucx_nesting_counts()[bucket];
-    const auto         seen = count.fetch_add(1, std::memory_order_relaxed);
-    if (seen < 4)
-        std::fprintf(stderr, "[pcomm-ucx-nesting] qp=%u call=%s%u scope=%llu\n",
-                     qp ? qp->qp_num : 0u, nested ? "" : "none/", call, scope);
-}
-
-static void dump_ucx_nesting() {
-    if (!trace_ucx_nesting_enabled())
-        return;
-    static std::atomic<bool> reported{false};
-    if (reported.exchange(true))
-        return;
-    std::fprintf(stderr, "[pcomm-ucx-nesting] summary outside=%llu",
-                 ucx_nesting_counts()[0].load(std::memory_order_relaxed));
-    for (std::size_t i = 1; i < ucx_nesting_counts().size(); ++i) {
-        const auto count = ucx_nesting_counts()[i].load(std::memory_order_relaxed);
-        if (count)
-            std::fprintf(stderr, " call%zu=%llu", i - 1, count);
-    }
-    std::fputc('\n', stderr);
-}
 
 // How much this run records. Read ONCE — poll_cq is the hottest path in the
 // process (5.86 M rows in a 64-rank hub capture) and a getenv per completion
@@ -1066,7 +1003,6 @@ Profiler::Profiler() {
             return;
         const auto tspan = span(t0, t1);
         for (; wr; wr = wr->next) {
-            trace_ucx_nesting(qp);
             std::uint32_t length = 0;
             for (int i = 0; i < wr->num_sge; ++i)
                 length += wr->sg_list[i].length;
@@ -1887,7 +1823,6 @@ public:
     }
     void shutdown() override {
         dump_install_doors();
-        ibv::dump_ucx_nesting();
         pcomm_engine_drain_thread();
         pcomm_engine_release();
     }
@@ -1906,7 +1841,6 @@ static void __attribute__((constructor)) pcomm_ibverbs_load() {
 }
 static void __attribute__((destructor)) pcomm_ibverbs_unload() {
     dump_install_doors();
-    ibv::dump_ucx_nesting();
     pcomm_engine_drain_thread();
     pcomm_engine_release();
 }
