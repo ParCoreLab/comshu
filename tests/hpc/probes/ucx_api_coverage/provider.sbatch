@@ -22,7 +22,9 @@ mkdir -p "$OUT"
 module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1
 SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7
 MPI="$SDK/comm_libs/mpi"
-UCX="$MPI/ucx"
+# On MN5 comm_libs/mpi is the HPC-X launcher symlink; its UCX libraries live
+# in the versioned HPC-X tree rather than beneath the symlink target.
+UCX="$SDK/comm_libs/12.9/hpcx/hpcx-2.22.1/ucx"
 export OMPI_CC=gcc
 export LD_LIBRARY_PATH="/apps/ACC/GCC/13.2.0/lib64:$UCX/lib:${LD_LIBRARY_PATH:-}"
 
