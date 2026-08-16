@@ -366,14 +366,7 @@ requiring this sweep to recover it, and so `ucp_tag_send_sync_nb` — MPI_Ssend,
 which completes only on receiver match — stays distinguishable from an ordinary
 buffered send.
 
-**Deliberately still open**, both needing more than a hook:
-
-- the **atomics** (`ucp_atomic_post`, `ucp_atomic_fetch_nb`,
-  `ucp_atomic_op_nbx`) need a record of their own — MPI one-sided and UCC both
-  use them, so this is real MPI RMA coverage that is still missing;
-- `ucp_tag_msg_recv_nb` carries a `ucp_tag_message_h` rather than a tag, so it
-  cannot fill `UcxTagRecv`'s key without inventing one. Used by both `pml_ucx`
-  and SHARP, so it needs a decision rather than an omission.
+**Both remaining items are now closed** — see the next section.
 
 The runtime gap is unchanged and is now the binding one: **still nothing but the
 tagged path and lifecycle has been observed on real hardware.** The sweep proves
@@ -445,3 +438,62 @@ IBGDA board.
 - Using timestamps alone as causal attribution.
 - Emitting SigmaTrace-compatible binary records. Semantic parity is the goal;
   pcomm's four-archetype schema and reader remain its own.
+
+### Measured 2026-08-16 — UCX runs locally, and that changes the gate story
+
+The two items left open above are done, and the way the second was settled
+matters more than the record it produced.
+
+**`ucp_tag_msg_recv_nb`, solved by hooking the probe.** That door carries a
+`ucp_tag_message_h` and no tag, so its row could not be keyed without inventing
+one. But the tag is not lost: `ucp_tag_probe_nb` was handed it, in
+`ucp_tag_recv_info_t`, when it produced the handle. So the probe is hooked as
+the tag's source (`ucx_tag_probe`, 618), `UcxTagRecv` gains a `message` handle,
+and the reader joins them. `tag`/`tag_mask` stay 0 on that path because that
+door genuinely has neither — 0 is honest where a guess would read exactly like
+a measurement.
+
+The join is **temporal, not equality**: UCX recycles the handle out of its
+request mpool, which it announced itself during the validating run.
+
+`ucx_tag_probe.length` is a bonus worth naming: it is the one TRUE byte count
+anywhere in the UCX family. Every other size is capacity offered or a raw
+datatype count.
+
+**Atomics (`ucx_atomic`, 620)**, with the opcode normalised. UCX numbers the
+same operations differently in each of its three atomic doors — `op = 1` is AND
+via `atomic_post`, SWAP via `atomic_fetch_nb`, SWAP via `atomic_op_nbx` — so the
+raw byte is not merely opaque, it is ambiguous, and is mapped at the hook.
+
+### The thing that should have been obvious a week ago
+
+**UCX needs no cluster.** The self transport runs the whole thing in one
+process, and `ucp_init` succeeds on an ordinary workstation with nothing but the
+rdma-core/ucx development packages. Every claim this provider has made until now
+was validated by submitting a two-node MN5 job and reading its output by hand —
+an allocation, a queue wait and a reservation to discover that a record was
+missing.
+
+`tests/ucx_selftest.cpp` + `tests/ucx_records.sh` is the provider's first
+regression gate, and it runs in 0.08 s in `ctest`.
+
+**It found a live bug on its first run.** UCX implements its legacy doors on top
+of the modern ones, so with global interposers a single `ucp_tag_send_nb`
+produced a `nb` row AND an `nbx` row — three sends recorded as five, receives
+likewise. This is `ibv_reg_mr` over `ibv_reg_mr_iova2` again (ib_hooks.hpp), and
+takes the same remedy: a thread-local depth counter with the outer door as the
+recorder. Without a local test it would have shipped as a silent 2x inflation on
+every legacy send, and the MN5 runs would not have caught it — nothing there
+counts sends independently.
+
+The gate was then verified to FAIL when the guard is removed (4 sends become 6),
+because a green test nobody has seen fail is not evidence. Per-door counts are
+exact equality for the same reason: `>=` passes happily on a doubling.
+
+**What this does not cover.** The self transport is not the wire: no `_nbi` RMA,
+no atomics, no multi-rank endpoints, and no mlx5. So the local gate defends the
+record layer and the door accounting, and MN5 is still the only place the
+transport-facing half can be exercised. The right next run is one two-node job
+with MPI RMA and `MPI_Ssend`, which would exercise the `_nbi` doors, the legacy
+tagged doors, the atomics and the extra close doors at once — and it can now be
+written against a provider whose record layer is already known good.
