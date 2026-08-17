@@ -49,12 +49,41 @@ non-existent object and are now dropped and counted in
 honestly.
 
 This is the strongest argument for recording the mapping, and it is a *capture*
-argument rather than a query one. `cuMemMap` already tells us the offset into a
-physical allocation and which allocation it is; the owner's `cuMemCreate` /
-`cuIpcGetMemHandle` names the same one. With that pair, a mapped region can mint
-a real object handle that resolves to the owner's allocation — allocator-agnostic,
-no symmetric heap required, and `add_range`'s reason for refusing to name an
-object goes away because the entity would then have been recorded.
+argument rather than a query one.
+
+**And the first step is smaller than it looks, because the gap is one unhooked
+door.** `nvbit_backend.cu` intercepts `cuMemAlloc`, `cuMemAlloc_v2` and
+`cuMemAllocManaged` — which mint objects — and `cuMemMap`, which cannot.
+**`cuMemCreate` is not hooked at all.** So a VMM allocation is observed only at
+the moment it is *mapped*, by which point the thing being mapped has no recorded
+identity, and `add_range` is right to refuse to invent one.
+
+Verified on `nccl_p2p-44688653`, which is a Ring/Simple allreduce over NVLink
+(`NCCL_P2P_LEVEL=NVL`, one channel, host-initiated — not GIN):
+
+- The workload's own `cudaMalloc` **is** recorded: one 1 MiB object per rank,
+  because `cudaMalloc` routes to `cuMemAlloc_v2`.
+- A Ring/Simple allreduce never peer-writes into the user buffer; it stages
+  through NCCL's internal channel buffers on the peer. Those are VMM memory —
+  the job log reports "9/9 new mapped regions attributed by CUDA" per rank.
+- Result: rank 1's own buffer is at 140629078179840 while its peer writes start
+  at 140629092859904, ~14 MB higher, spanning ~8.3 MB, and **zero of the
+  1,179,948 accesses fall inside any recorded `mem_object`**.
+
+So the ordered work is:
+
+1. **Hook `cuMemCreate`** (handle, size, device). This alone lets a process name
+   its OWN VMM allocations, which is what `mem_object` is missing today — and it
+   is a strictly local change needing no cross-rank join.
+2. `cuMemMap` then has a named allocation to point at, so `add_range` can become
+   `add` with a real object handle for VMM memory.
+3. Only then does the cross-process half (the shareable/IPC handle pair) matter,
+   for translating the actor's mapping to the owner's allocation and for the
+   exact offset.
+
+Step 1 is worth doing on its own: it turns "this capture has one object per rank"
+into "this capture has every buffer NCCL allocated", independently of whether the
+peer-mapping translation ever lands.
 
 ## Why not the NVSHMEM route
 
