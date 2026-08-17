@@ -44,6 +44,32 @@ $SSH "$REMOTE" true 2>/dev/null || {
   exit 1
 }
 
+# --- what commit built the tracer, when that is knowable -------------------
+#
+# The remote clone's HEAD is the commit the last run synced and built, so for a
+# capture THAT run produced it is exactly the answer. For any other capture it is
+# whatever has been synced since, which is not — and writing it down anyway would
+# be a guess wearing a fact's clothes, the thing README.md says not to do.
+#
+# `.last-run.manifest` is what tells the two apart, and soundly rather than by
+# heuristic: run_on_mn5.sh writes it in the same run that pushes HEAD and
+# submits the jobs, one `<case> <jobid>` line per case. So if a capture's jobid
+# is the one the manifest pins for its case, that capture came out of the run
+# that left HEAD where it is, and HEAD is its tracer commit. Otherwise: unknown,
+# as before.
+#
+# Both reads are best-effort — a missing manifest or an unreachable tree costs an
+# `unknown`, never a failed harvest.
+REMOTE_DIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
+remote_head=$($SSH "$REMOTE" "git -C '$REMOTE_DIR' rev-parse --short=7 HEAD 2>/dev/null" \
+              2>/dev/null | tr -d '\r') || remote_head=""
+manifest=$($SSH "$REMOTE" "cat '$OUT_ROOT/.last-run.manifest' 2>/dev/null" 2>/dev/null) || manifest=""
+
+# The jobid the last run pinned for this case, or empty.
+manifest_job() {  # <case>
+  printf '%s\n' "$manifest" | awk -v c="$1" '$0 ~ ("_" c "$") || $1 ~ ("_" c "$") {print $2; exit}'
+}
+
 # Newest job per case unless one is named. Deliberately resolved per case rather
 # than assuming one job produced all of them: --per-case runs exist, and a
 # combined job that died partway leaves some cases on an older id.
@@ -62,8 +88,14 @@ for c in $CASES; do
 
   # Provenance, written now because it is unrecoverable later. The tracer commit
   # is honestly `unknown` for a retroactive harvest: the suite syncs a commit to
-  # the remote clone, but a finished capture records nothing about which one.
+  # the remote clone, but a finished capture records nothing about which one — so
+  # it is recorded only when the manifest proves this capture came from the run
+  # that left the remote tree where it is. See the block above.
   jobid="${d##*-}"
+  commit="unknown"
+  if [ -n "$remote_head" ] && [ "$(manifest_job "$c")" = "$jobid" ]; then
+    commit="$remote_head"
+  fi
   ranks=$(find "$CORPUS/$d" -maxdepth 1 -type d -name 'rank-*' | wc -l)
   meta="$(dirname "$0")/../cases"/*_"${c}"/meta.json
   {
@@ -73,7 +105,7 @@ for c in $CASES; do
     printf 'ranks\t%s\n'         "$ranks"
     printf 'source\t%s:%s/%s\n'  "$REMOTE" "$OUT_ROOT" "$d"
     printf 'harvested\t%s\n'     "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'tracer_commit\tunknown\n'
+    printf 'tracer_commit\t%s\n' "$commit"
     # shellcheck disable=SC2086
     for m in $meta; do [ -f "$m" ] && printf 'meta_json\t%s\n' "$(tr -d '\n' < "$m" | tr -s ' ')"; done
   } > "$CORPUS/$d/provenance.tsv"
