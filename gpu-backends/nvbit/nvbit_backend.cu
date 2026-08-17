@@ -704,12 +704,54 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 // Keeping the tightest of N brackets is the cheap fix: the noise is one-sided
 // (a bracket can only be too wide, never too narrow), so the minimum is the
 // best estimator available without a proper round-trip protocol.
+// ONE BUFFER PER DEVICE, AND THE DEVICE MADE CURRENT AROUND THE LAUNCH. Both
+// halves are load-bearing and neither was here, because until 2026-08-17 this
+// function had never run in a process with more than one GPU in it.
+//
+// It was `static uint64_t* d_out` — one allocation for the whole process, made
+// in whichever context happened to be current at the first call. A device
+// pointer belongs to the device it was allocated on, so every subsequent
+// `pcomm_read_globaltimer<<<1,1>>>(d_out)` on a *different* device wrote through
+// a foreign pointer: an illegal memory access, which poisons the context and
+// costs the whole capture. Case 03 is the only case in the suite that puts four
+// GPUs in one process (cudaSetDevice in a loop, four contexts), and it is the
+// only one that failed — job 44713195, `p2p_kernel.cu:64: an illegal memory
+// access was encountered` on the cudaDeviceSynchronize that surfaces it, with
+// exactly one `gpu 0 anchor` line printed before the other three faulted.
+//
+// The second half matters at ctx term, which loops `for (int dev :
+// g_gpu_anchored) sample_gpu_anchor(dev)` without switching device. A kernel
+// launches on the CURRENT device regardless of what dev_id says, so without the
+// switch the closing anchor samples the wrong GPU's clock and files it under the
+// right GPU's domain — a wrong anchor rather than a missing one, which is worse:
+// pcomm-read fits rate from the two anchors, so it would have silently skewed
+// every span in that domain.
 void sample_gpu_anchor(int dev_id) {
-    static uint64_t* d_out = nullptr;  // one per process; the tool leaks by design
-    if (!d_out && cudaMalloc(&d_out, sizeof(uint64_t)) != cudaSuccess) {
-        d_out = nullptr;
+    static std::unordered_map<int, uint64_t*> d_outs;  // per device; leaked by design
+
+    int prev = -1;
+    if (cudaGetDevice(&prev) != cudaSuccess)
         return;
+    if (prev != dev_id && cudaSetDevice(dev_id) != cudaSuccess)
+        return;
+    // Restore on every exit path below, of which there are several.
+    struct DeviceGuard {
+        int prev, cur;
+        ~DeviceGuard() {
+            if (prev != cur)
+                cudaSetDevice(prev);
+        }
+    } guard{prev, dev_id};
+
+    auto it = d_outs.find(dev_id);
+    if (it == d_outs.end()) {
+        uint64_t* p = nullptr;  // allocated on dev_id: it is current here
+        if (cudaMalloc(&p, sizeof(uint64_t)) != cudaSuccess)
+            return;
+        it = d_outs.emplace(dev_id, p).first;
     }
+    uint64_t* const d_out = it->second;
+
     const auto ns = [](const timespec& t) {
         return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec;
     };
@@ -1277,9 +1319,19 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     // well as the offset, and the rate is the part that matters: globaltimer
     // drifts 5.7-13.9 ppm against the wall clock, which over a 7 s capture is
     // ~97 us of skew against kernels lasting tens of microseconds.
-    if (g_kernel_timing && flush == cudaSuccess)
+    //
+    // ONCE PER RUN, not once per context. This loop closes EVERY device, so in
+    // a process with four of them (case 03) running it at all four ctx terms
+    // would sample sixteen times — and the last three passes would launch the
+    // sampling kernel into contexts already destroyed by the earlier passes.
+    // The first ctx term is the one moment every context is still alive, so it
+    // is the right one to close them all at.
+    static bool closed = false;
+    if (g_kernel_timing && flush == cudaSuccess && !closed) {
+        closed = true;
         for (int dev : g_gpu_anchored)
             sample_gpu_anchor(dev);
+    }
 
     state->channel_host.destroy(false);
     cudaFree(state->channel_dev);
