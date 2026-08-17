@@ -177,6 +177,49 @@ and only two exist:
 Neither is a query change, and no heuristic over `mem_object` substitutes for
 them: the correspondence is absent from the capture, not merely hard to compute.
 
+## Both remaining routes, probed (job 44709082)
+
+`tests/hpc/probes/ncclsym/` ran NCCL 2.29.3 bare and under the tracer.
+
+**Route 1 — NCCL's symmetric window does not give VA symmetry.**
+`ncclCommWindowRegister(..., NCCL_WIN_COLL_SYMMETRIC)` succeeds on all four
+ranks and returns the *same* window handle (`0x25e000d048`), but the buffer
+`ncclMemAlloc` returned is at a **different address on every rank**:
+
+```
+rank 0  0x7f4055200000     rank 2  0x7f01b1200000
+rank 1  0x7efa9f200000     rank 3  0x7f151b200000
+```
+
+So the window is symmetric in NCCL's bookkeeping, not in the VA space. The
+property `object_access` exploits — same `(base, size)` on every rank, which is
+what makes NVSHMEM translate — is absent, and hooking `ncclMemAlloc` /
+`ncclCommWindowRegister` would name the owner's buffer without providing the
+correspondence that peer attribution actually needs.
+
+**Route 2 — fabric handles are supported here, but NCCL will not ask for one.**
+`CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED` is **1** on all four H100s,
+so the join key route 2 needs is not a hardware limitation. But NCCL selects
+`CU_MEM_HANDLE_TYPE_FABRIC` only for **MNNVL** topologies — the library's own
+strings are `MNNVL busId %lx fabric UUID %lx.%lx cliqueId %x` — and it exposes no
+env knob for the handle type (`NCCL_CUMEM_ENABLE`, `NCCL_WIN_ENABLE`,
+`NCCL_SYM_NOWIN_ENABLE` exist; nothing selects the handle type). On MN5, which is
+NVLink islands within a node rather than an NVSwitch fabric across nodes, NCCL
+uses POSIX fds — the handles already proved identity-free.
+
+**So the fabric arm is implementable and testable only synthetically here.** A
+two-process test that does `cuMemCreate` with `CU_MEM_HANDLE_TYPE_FABRIC`,
+exports, imports and maps would validate the join end to end, and the capability
+would then be real on any MNNVL machine (GB200 and similar). Nothing in the
+current corpus would exercise it, and no existing capture gains anything.
+
+**A flaw in that probe, recorded so it is not repeated:** the traced run's mpirun
+output was piped through `grep -E "ncclsym|pcomm-vmm"`, so when the run stopped
+after the fabric print — NCCL under NVBit, the same instability that bus-errored
+case 05 — the error message was filtered away and the failure looked like an
+empty capture. The bare run is what answered both questions. Do not filter the
+output of a probe whose failure mode is unknown.
+
 ## Why not the NVSHMEM route
 
 The tempting shortcut is the symmetric heap: `nvshmem_ptr(a, pe) = peer_base[pe]
