@@ -62,25 +62,48 @@ static void close(const void* p, pcomm::core::RecordTypeId opener) {
 // pointer reuse after a genuine close still records both closes.
 // true = open, false = closed. Absent = never seen, which is NOT the same as
 // closed and is why this is a map rather than a set.
-static std::mutex                            g_ep_mu;
-static std::unordered_map<const void*, bool> g_ep_open;
+//
+// LEAKED ON PURPOSE, and this is not a style choice. An endpoint can be
+// destroyed during process teardown — this file registers its own
+// __attribute__((destructor)), and an application or an MPI stack may close
+// endpoints from an atexit handler, which runs AFTER the destructors of
+// namespace-scope objects in this translation unit. A `std::unordered_map`
+// there is a use-after-destruction: exactly the bug that made every gpumem case
+// segfault at address 0x8 when a POD static became an unordered_map inside a
+// path reachable from nvbit_at_term.
+//
+// gpumem's answer was a static_assert on trivial destructibility, which cannot
+// apply to a map. The equivalent guarantee here is to never run the destructor
+// at all: the pointer is trivially destructible, the objects it points at
+// outlive every handler, and the memory is reclaimed by the OS at exit like any
+// other allocation in a dying process. The mutex is immortal for the same
+// reason — locking a destroyed mutex is no better than reading a destroyed map.
+static std::mutex& ep_mu() {
+    static std::mutex* m = new std::mutex();
+    return *m;
+}
+static std::unordered_map<const void*, bool>& ep_open() {
+    static auto* m = new std::unordered_map<const void*, bool>();
+    return *m;
+}
 
 static void note_endpoint_open(const void* p) {
     if (!p)
         return;
-    std::lock_guard<std::mutex> lk(g_ep_mu);
-    g_ep_open[p] = true;
+    std::lock_guard<std::mutex> lk(ep_mu());
+    ep_open()[p] = true;
 }
 
 static void close_endpoint_once(const void* p) {
     if (!p)
         return;
     {
-        std::lock_guard<std::mutex> lk(g_ep_mu);
-        auto                        it = g_ep_open.find(p);
-        if (it != g_ep_open.end() && !it->second)
+        std::lock_guard<std::mutex> lk(ep_mu());
+        auto&                       open = ep_open();
+        auto                        it = open.find(p);
+        if (it != open.end() && !it->second)
             return;  // already closed by an outer door in this same teardown
-        g_ep_open[p] = false;
+        open[p] = false;
     }
     close(p, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
 }
