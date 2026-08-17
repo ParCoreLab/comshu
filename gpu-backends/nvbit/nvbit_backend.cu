@@ -117,6 +117,15 @@ struct Globals {
     // Allocation handles cuMemCreate returned in this process. Membership is
     // what makes a cuMemMap'd region nameable — see MappedRegion::own.
     std::unordered_set<unsigned long long>   created_handles;
+    // VA ranges from cuMemAddressReserve: [base, base+size).
+    //
+    // THE LOGICAL BUFFER IS THE RESERVATION, NOT THE BACKING CHUNK, and getting
+    // that backwards is measurable. Naming each cuMemMap'd chunk instead put 818
+    // objects per rank in case 04 where there had been 38 — 780 of them exactly
+    // 2 MiB, which is the VMM granularity CUDA's pooled allocator maps its
+    // backing in, not anything the application allocated. The reservation is the
+    // extent a pointer is valid over, so it is the extent an access should name.
+    std::vector<MappedRegion>                reserved;
     std::unordered_map<CUcontext, CtxState*> ctx_state;
     std::unordered_set<CUfunction>           instrumented;
     std::map<std::string, int>               opcode_to_id;
@@ -318,7 +327,19 @@ void refresh_mapped_regions() {
         if (dev < 0)
             continue;
         if (r.own) {
-            g_engine->on_alloc(r.base, r.size, static_cast<pcomm::core::DeviceId>(dev));
+            // Name the RESERVATION this chunk backs, not the chunk. A pooled
+            // allocator maps many granularity-sized chunks into one reserved
+            // range, and the range is the extent a pointer is valid over.
+            // on_alloc is idempotent per base, so the hundredth chunk of a
+            // reservation costs one registry entry and no extra record.
+            uint64_t obase = r.base, osize = r.size;
+            for (const auto& v : g.reserved)
+                if (v.base <= r.base && r.base < v.base + v.size) {
+                    obase = v.base;
+                    osize = v.size;
+                    break;
+                }
+            g_engine->on_alloc(obase, osize, static_cast<pcomm::core::DeviceId>(dev));
             named++;
         } else {
             g_engine->allocs().add_range(r.base, r.size, static_cast<pcomm::core::DeviceId>(dev));
@@ -1005,6 +1026,10 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
                                   : (uint64_t)((cuMemFree_params*)params)->dptr;
         if (g_engine && dptr)
             g_engine->on_free(dptr);
+    } else if (is_exit && cbid == API_CUDA_cuMemAddressReserve) {
+        auto* p = (cuMemAddressReserve_params*)params;
+        if (p->ptr && *p->ptr)
+            G().reserved.push_back({(uint64_t)*p->ptr, (uint64_t)p->size, true});
     } else if (is_exit && cbid == API_CUDA_cuMemCreate) {
         // THE DOOR THAT WAS MISSING. cuMemAlloc/_v2/Managed are hooked and mint
         // MemObjects; cuMemMap is hooked and cannot, because until now the
