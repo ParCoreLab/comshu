@@ -44,6 +44,10 @@ CREATE TABLE mlx5_queue_pair (rank INT, qp INT);
 CREATE TABLE mlx5_umem (rank INT, umem INT);
 CREATE TABLE mlx5_uar (rank INT, uar INT);
 CREATE TABLE mem_object (rank INT, id INT);
+CREATE TABLE ucx_context (rank INT, context INT);
+CREATE TABLE ucx_worker (rank INT, worker INT);
+CREATE TABLE ucx_endpoint (rank INT, endpoint INT);
+CREATE TABLE ucx_mem_map (rank INT, memh INT);
 SQL
 }
 
@@ -129,6 +133,33 @@ INSERT INTO ib_device VALUES (0, 1);"
 run "ib_device closed twice still fires" fires "
 INSERT INTO ib_device VALUES (0, 1);
 INSERT INTO entity_close VALUES (0, 10, 1, 120), (0, 20, 1, 120);"
+
+# UCX. These four openers were absent from the assertion's `opens` CTE for the
+# whole life of the UCX provider, which turned every one of case 19's closes
+# into a spurious "names an entity no open record created" — 24 rows on a
+# capture whose opens and closes matched exactly. That is this file's stated
+# failure mode ("a pass for the wrong reason") arriving as its mirror: noise for
+# the wrong reason, loud enough to hide a real defect behind it.
+run "UCX context opened and closed is quiet" quiet "
+INSERT INTO ucx_context VALUES (0, 1);
+INSERT INTO entity_close VALUES (0, 10, 1, 600);"
+
+run "UCX worker opened and closed is quiet" quiet "
+INSERT INTO ucx_worker VALUES (0, 2);
+INSERT INTO entity_close VALUES (0, 10, 2, 602);"
+
+# The defect the noise was hiding, in miniature. UCX reaches its own public close
+# symbols through one another and all four doors are interposed, so one teardown
+# emitted two or three EntityClose rows — measured on job 44698048, endpoint 4
+# closed three times 1.9 us and 0.8 us apart. With the openers absent this could
+# not be seen: the closes-outnumber-opens clause had no denominator to compare
+# against.
+run "UCX endpoint closed three times by nested doors fires" fires "
+INSERT INTO ucx_endpoint VALUES (0, 4);
+INSERT INTO entity_close VALUES (0, 10, 4, 604), (0, 11, 4, 604), (0, 12, 4, 604);"
+
+run "UCX endpoint closed through a door we do not hook still fires" fires "
+INSERT INTO entity_close VALUES (0, 10, 99, 604);"
 
 [ $fail -eq 0 ] && echo "=== asserts_fire : PASS ===" || echo "=== asserts_fire : FAIL ==="
 exit $fail

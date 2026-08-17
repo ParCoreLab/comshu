@@ -65,6 +65,18 @@ WITH opens AS (
   UNION ALL SELECT rank, umem, 200 FROM mlx5_umem
   UNION ALL SELECT rank, uar, 202 FROM mlx5_uar
   UNION ALL SELECT rank, id, 520 FROM mem_object
+  -- The four UCX entities that emit a close (ucx_provider.cpp closes 600, 602,
+  -- 604 and 614; the rest are events or have no destruction door). They were
+  -- missing from this CTE for the whole life of the UCX provider, which is the
+  -- exact failure the note above predicts: case 19 reported 24 spurious "close
+  -- names an entity no open record created" rows while its opens and closes
+  -- matched EXACTLY — contexts {1,3,5,14} and workers {2,6,15} opened and closed
+  -- on both ranks. The signal was noise, and it was hiding a real defect
+  -- underneath (see the closes-outnumber-opens clause below).
+  UNION ALL SELECT rank, context,  600 FROM ucx_context
+  UNION ALL SELECT rank, worker,   602 FROM ucx_worker
+  UNION ALL SELECT rank, endpoint, 604 FROM ucx_endpoint
+  UNION ALL SELECT rank, memh,     614 FROM ucx_mem_map
 ),
 closes AS (SELECT rank, subject, opener, count(*) AS n
            FROM entity_close GROUP BY rank, subject, opener),

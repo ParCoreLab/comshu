@@ -67,6 +67,7 @@ case "$cmd" in
       # e.g. 02_nccl_internode -> nccl_internode-<jobid>.csv/result.json
       label="${c#*_}"
       jid=$(manifest_jid "$c")
+      stale=""   # set below when this verdict did not come from this run
       # SKIPPED is written by run_on_mn5.sh --quick. It is not a pass and not a
       # failure: the case was deliberately not run, so the run is GREEN but
       # INCOMPLETE, and the board has to say so rather than leaving a blank that
@@ -83,6 +84,20 @@ case "$cmd" in
       else
         d=$(ls -1dt "$OUT_ROOT/$label"-*.csv 2>/dev/null | head -1)
         want="$OUT_ROOT/$label-*.csv"
+        # NOT FROM THIS RUN, and the board has to say so. Newest-wins is the
+        # right fallback — a bare `check` has no manifest and must still report
+        # something — but rendering an unpinned verdict identically to a pinned
+        # one presents an unrelated job as this run's result.
+        #
+        # It is not hypothetical. On 2026-08-17 the board showed
+        # `05_nccl_p2p FAIL` beside seven cases that had just run, and the
+        # verdict came from job 44699869: an ad-hoc probe of the cuMemCreate
+        # hook that was REVERTED in a05aa28. Its objects golden failed because
+        # that experiment recorded CUDA's 2 MiB pool chunks as application
+        # objects — 8 per rank against the expected 1. Code that no longer
+        # exists, reported as a failure of HEAD, and it cost a real
+        # investigation to find that out.
+        stale=" [stale: not in this run]"
       fi
       # A case marked expect_fail in meta.json is xfail: failing/deadlocking is
       # the *expected* state (XFAIL, suite stays green); completing is an alert
@@ -124,10 +139,10 @@ case "$cmd" in
       # about the part that is known broken.
       nx=$(python3 -c "import json;print(json.load(open('$d/result.json')).get('asserts',{}).get('xfail',0))" 2>/dev/null || echo 0)
       if [ -n "$why" ]; then
-        printf '%-20s %-6s %s\n' "$c" SKIP "$why · $(basename "$d")"
+        printf '%-20s %-6s %s\n' "$c" SKIP "$why · $(basename "$d")$stale"
       elif [ "$ok" = "True" ]; then
-        printf '%-20s %-6s %s\n' "$c" PASS "$n checks${nx:+$([ "$nx" -gt 0 ] && echo ", $nx xfail")} · $(basename "$d")"
-      else printf '%-20s %-6s %s\n' "$c" FAIL "see job .out · $(basename "$d")"; fail=1; fi
+        printf '%-20s %-6s %s\n' "$c" PASS "$n checks${nx:+$([ "$nx" -gt 0 ] && echo ", $nx xfail")} · $(basename "$d")$stale"
+      else printf '%-20s %-6s %s\n' "$c" FAIL "see job .out · $(basename "$d")$stale"; fail=1; fi
     done
     [ "$skipped" -gt 0 ] && echo "  !! INCOMPLETE: $skipped case(s) skipped — a green board here covers less than a full run"
     exit $fail ;;

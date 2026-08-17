@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <mutex>
+#include <unordered_map>
 
 #include <ucp/api/ucp.h>
 #include <ucs/type/status.h>
@@ -33,6 +35,54 @@ static pcomm::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
 static void close(const void* p, pcomm::core::RecordTypeId opener) {
     if (p)
         rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(p), opener});
+}
+
+// ONE DESTRUCTION, ONE CLOSE — for endpoints, which are the only entity here
+// with more than one destruction door.
+//
+// UCX reaches its own public close symbols through one another, and all four are
+// interposed, so a single teardown fires several of these hooks. Measured on
+// job 44698048: endpoint 4 on rank 0 closed THREE times at ticks ...560853,
+// ...562743, ...563571 — 1.9 us and 0.8 us apart, which is nesting inside one
+// destruction and not three application-level closes. Endpoints 7 the same, 20
+// and 24 twice each.
+//
+// It went unseen because entity_close_accounted's `opens` CTE had no UCX tables,
+// so every UCX close already reported as "names an entity no open record
+// created" and the closes-outnumber-opens clause never got a denominator to
+// compare against. Two defects, the louder one masking the quieter.
+//
+// AN UNKNOWN HANDLE STILL EMITS, and that is the important half. Suppressing on
+// "not currently open" would silently swallow the close of an endpoint created
+// through a door we do not hook — which is the single signal
+// entity_close_accounted exists to deliver, and its comment says outright not to
+// filter it away. So only a handle we have already closed is suppressed: state
+// goes absent -> emit (unknown provenance, let the assertion flag it), open ->
+// emit, closed -> drop. A create on the same address resets it to open, so
+// pointer reuse after a genuine close still records both closes.
+// true = open, false = closed. Absent = never seen, which is NOT the same as
+// closed and is why this is a map rather than a set.
+static std::mutex                            g_ep_mu;
+static std::unordered_map<const void*, bool> g_ep_open;
+
+static void note_endpoint_open(const void* p) {
+    if (!p)
+        return;
+    std::lock_guard<std::mutex> lk(g_ep_mu);
+    g_ep_open[p] = true;
+}
+
+static void close_endpoint_once(const void* p) {
+    if (!p)
+        return;
+    {
+        std::lock_guard<std::mutex> lk(g_ep_mu);
+        auto                        it = g_ep_open.find(p);
+        if (it != g_ep_open.end() && !it->second)
+            return;  // already closed by an outer door in this same teardown
+        g_ep_open[p] = false;
+    }
+    close(p, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
 }
 
 // FNV-1a, the same construction tools/schema_check.py uses for the schema hash,
@@ -290,6 +340,7 @@ Profiler::Profiler() {
         if (status != UCS_OK || !out || !*out)
             return;
         rec().record(span(begin, end), rr::UcxEndpoint{{}, {}, h(*out), h(worker)});
+        note_endpoint_open(*out);
         // Only when the caller really passed a peer address. An endpoint created
         // from a socket address or a connection request has none, and a row of
         // zeroes there would read like a measured null peer.
@@ -298,9 +349,8 @@ Profiler::Profiler() {
                 span(begin, end),
                 rr::UcxEpConnection{{}, {}, h(*out), fnv1a(params->address, kAddressHashPrefix)});
     });
-    register_pre<ep_close_nbx_tag>([](ucp_ep_h endpoint, const ucp_request_param_t*, auto) {
-        close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
-    });
+    register_pre<ep_close_nbx_tag>(
+        [](ucp_ep_h endpoint, const ucp_request_param_t*, auto) { close_endpoint_once(endpoint); });
     register_post<tag_send_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
                                        const void* buffer, size_t count, ucp_tag_t tag,
                                        const ucp_request_param_t*, auto begin, auto end) {
@@ -401,15 +451,10 @@ Profiler::Profiler() {
     // one-sided through ucp_ep_destroy, libmca_common_ucx through
     // ucp_disconnect_nb. All four closes are the SAME entity, so they emit the
     // same EntityClose against UcxEndpoint rather than each minting its own.
-    register_pre<ep_close_nb_tag>([](ucp_ep_h endpoint, unsigned, auto) {
-        close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
-    });
-    register_pre<ep_destroy_tag>([](ucp_ep_h endpoint, auto) {
-        close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
-    });
-    register_pre<disconnect_nb_tag>([](ucp_ep_h endpoint, auto) {
-        close(endpoint, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
-    });
+    register_pre<ep_close_nb_tag>(
+        [](ucp_ep_h endpoint, unsigned, auto) { close_endpoint_once(endpoint); });
+    register_pre<ep_destroy_tag>([](ucp_ep_h endpoint, auto) { close_endpoint_once(endpoint); });
+    register_pre<disconnect_nb_tag>([](ucp_ep_h endpoint, auto) { close_endpoint_once(endpoint); });
 
     // The one-sided doors MPI actually uses. mca_osc_ucx references only these,
     // never the _nbx pair, so without them MPI_Put/MPI_Get produce an empty
