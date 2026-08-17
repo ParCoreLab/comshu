@@ -180,6 +180,42 @@ PCOMM_RECORD(NodeIdentity, RecordKind::Entity, 524, "node_identity") {
     std::uint64_t node_hash;  // FNV-1a of the hostname; 0 if it could not be read
 };
 
+// ENTITY — one process's mapping of a shared allocation, keyed by an identity
+// both sides of the share agree on.
+//
+// THE PROBLEM THIS EXISTS FOR. A peer access arrives at an address in the
+// ACTOR's mapping of someone else's memory. To place it in an object we need the
+// OWNER's address for the same byte, and CUDA's VMM API will map a peer's
+// allocation while telling you nothing about which allocation it was. NVSHMEM
+// escapes this because nvshmem_ptr(addr, pe) IS that correspondence; nothing
+// below the library offers an equivalent, which is why object_access drops
+// non-symmetric peer accesses today (link_health.unattributed_p2p_accesses).
+//
+// `allocation` is the join key and the whole point: it is the interned
+// CUmemFabricHandle, hex-encoded, which is globally meaningful by construction —
+// that is what a fabric handle is FOR. Two ranks that share memory mint the same
+// id from the same 64 bytes, so the exporter's row and the importer's row meet.
+//
+// WHY ONLY FABRIC. The POSIX-fd handle type cannot do this and it was measured,
+// not assumed: on MN5 (job 44705498) all 48 exports and imports fstat'd to the
+// same driver-node inode, dev=6 ino=1729, so an fd names the driver rather than
+// the allocation and its NUMBER is process-local anyway. A row is therefore
+// written only for CU_MEM_HANDLE_TYPE_FABRIC, and a capture with none says so by
+// being empty rather than by carrying a key that does not join.
+//
+// `alloc_offset` is cuMemMap's own `offset` argument: where this mapping starts
+// inside the allocation. Both sides may map different parts, so the address
+// arithmetic is (my_base + d) -> allocation offset (my_alloc_offset + d) ->
+// (their_base + that - their_alloc_offset). Carrying it is what makes partial
+// maps work rather than assuming everyone maps the whole thing at zero.
+PCOMM_RECORD(PeerMapping, RecordKind::Entity, 526, "peer_mapping") {
+    Handle        allocation;    // interned fabric handle (hex) — the global key
+    MemRange      range;         // this process's mapping: [base, size)
+    std::uint64_t alloc_offset;  // where `range.base` sits inside the allocation
+    DeviceId      device;        // which GPU the memory lives on
+    std::uint8_t  exporter;      // 1 = we created and exported it; 0 = imported
+};
+
 // EVENT — one kernel's EXECUTION, [start, end] on the device.
 //
 // Id 530, in the internal range beside MemObject/EntityClose/NodeIdentity, and

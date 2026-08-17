@@ -42,6 +42,8 @@ struct EntityClose;
 
 struct NodeIdentity;
 
+struct PeerMapping;
+
 struct GpuKernel;
 
 struct ClockAnchor;
@@ -873,6 +875,67 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NodeIdentity FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(NodeIdentity, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) PeerMapping FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t allocation_;
+  int32_t padding0__;
+  pcomm::fb::MemRange range_;
+  uint64_t alloc_offset_;
+  uint16_t device_;
+  uint8_t exporter_;
+  int8_t padding1__;  int32_t padding2__;
+
+ public:
+  PeerMapping()
+      : temporal_(),
+        allocation_(0),
+        padding0__(0),
+        range_(),
+        alloc_offset_(0),
+        device_(0),
+        exporter_(0),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  PeerMapping(const pcomm::fb::Temporal &_temporal, uint32_t _allocation, const pcomm::fb::MemRange &_range, uint64_t _alloc_offset, uint16_t _device, uint8_t _exporter)
+      : temporal_(_temporal),
+        allocation_(::flatbuffers::EndianScalar(_allocation)),
+        padding0__(0),
+        range_(_range),
+        alloc_offset_(::flatbuffers::EndianScalar(_alloc_offset)),
+        device_(::flatbuffers::EndianScalar(_device)),
+        exporter_(::flatbuffers::EndianScalar(_exporter)),
+        padding1__(0),
+        padding2__(0) {
+    (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t allocation() const {
+    return ::flatbuffers::EndianScalar(allocation_);
+  }
+  const pcomm::fb::MemRange &range() const {
+    return range_;
+  }
+  uint64_t alloc_offset() const {
+    return ::flatbuffers::EndianScalar(alloc_offset_);
+  }
+  uint16_t device() const {
+    return ::flatbuffers::EndianScalar(device_);
+  }
+  uint8_t exporter() const {
+    return ::flatbuffers::EndianScalar(exporter_);
+  }
+};
+FLATBUFFERS_STRUCT_END(PeerMapping, 88);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuKernel FLATBUFFERS_FINAL_CLASS {
  private:

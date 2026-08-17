@@ -26,6 +26,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <string>
+
 #include <sys/stat.h>
 #include <vector>
 
@@ -104,9 +106,22 @@ pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;  // serializes callbacks
 struct MappedRegion {
     uint64_t base;
     uint64_t size;
+    // Set only when this mapping's allocation was shared as a FABRIC handle:
+    // the handle's 64 bytes in hex, which both sides of the share mint
+    // identically and can therefore be joined on. Empty for everything else — a
+    // POSIX fd names the driver node rather than the allocation (measured, MN5
+    // job 44705498: all 48 exports and imports fstat'd to dev=6 ino=1729), so
+    // there is nothing worth carrying.
+    std::string alloc_hex;
+    uint64_t    alloc_offset;  // cuMemMap's own offset into the allocation
+    bool        exporter;      // we created and exported it, vs imported it
 };
 
 struct Globals {
+    // CUmemGenericAllocationHandle -> (fabric hex, did we export it). Written
+    // by the export/import hooks and read at cuMemMap, which is the only place
+    // the local address of the mapping is known.
+    std::unordered_map<unsigned long long, std::pair<std::string, bool>> fabric_of;
     std::unordered_map<CUcontext, CtxState*> ctx_state;
     std::unordered_set<CUfunction>           instrumented;
     std::map<std::string, int>               opcode_to_id;
@@ -239,6 +254,21 @@ const NvshmemApi& nvshmem_api() {
     return *api;
 }
 
+// A CUmemFabricHandle's 64 bytes as hex. Hex rather than raw because the intern
+// table's string domain is dumped into the capture and read back as text; 128
+// printable characters cost nothing at this frequency — one per shared
+// allocation, not per access.
+inline std::string fabric_hex(const void* blob) {
+    static const char* kHex = "0123456789abcdef";
+    const auto*        b = static_cast<const unsigned char*>(blob);
+    std::string        s(128, '0');
+    for (int i = 0; i < 64; i++) {
+        s[2 * i] = kHex[b[i] >> 4];
+        s[2 * i + 1] = kHex[b[i] & 0xF];
+    }
+    return s;
+}
+
 // PROBE, gated on PCOMM_TRACE_VMM=1 — which memory-sharing doors does this
 // workload actually use, and with what identity?
 //
@@ -332,20 +362,30 @@ void refresh_mapped_regions() {
     //    was being applied to NCCL's regions — it reported mem_dev up to 8 on a
     //    4-GPU node, i.e. it was fabricating the answer that made the case pass.
     const bool verbose = std::getenv("PCOMM_VERBOSE") != nullptr;
-    int        by_cuda = 0;
+    int        by_cuda = 0, fabric = 0;
     for (size_t i = g.regions_resolved; i < n; i++) {
         const auto& r = g.mapped_regions[i];
         const int   dev = device_of(r.base, ndev, "mapped region");
         if (dev >= 0) {
             g_engine->allocs().add_range(r.base, r.size, static_cast<pcomm::core::DeviceId>(dev));
             by_cuda++;
+            // A fabric-shared allocation is the one case where a peer mapping
+            // can be tied back to the owner's address, so record the pairing.
+            // Emitted HERE rather than at cuMemMap because this is where the
+            // device is known, and device_of is the answer the rest of this
+            // function already trusts over anything inferred.
+            if (!r.alloc_hex.empty()) {
+                g_engine->on_peer_mapping(r.alloc_hex, r.base, r.size, r.alloc_offset,
+                                          static_cast<pcomm::core::DeviceId>(dev), r.exporter);
+                fabric++;
+            }
         }
     }
     if (verbose && g.regions_resolved != n)
         std::fprintf(stderr,
-                     "[pcomm-gpumem] %d/%zu new mapped regions attributed "
-                     "by CUDA (%zu total)\n",
-                     by_cuda, n - g.regions_resolved, n);
+                     "[pcomm-gpumem] %d/%zu new mapped regions attributed by CUDA, "
+                     "%d fabric-shared (%zu total)\n",
+                     by_cuda, n - g.regions_resolved, fabric, n);
     g.regions_resolved = n;
 
     // 2. NVSHMEM's symmetric heap, authoritatively. Step 1 already covers every
@@ -1027,17 +1067,26 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
                      p->handle ? (unsigned long long)*p->handle : 0ull, (size_t)p->size,
                      p->prop ? (int)p->prop->location.id : -1,
                      p->prop ? (int)p->prop->requestedHandleTypes : -1);
-    } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuMemExportToShareableHandle) {
+    } else if (is_exit && cbid == API_CUDA_cuMemExportToShareableHandle) {
         auto* p = (cuMemExportToShareableHandle_params*)params;
+        // 0x8 = CU_MEM_HANDLE_TYPE_FABRIC, the only type that is an identity.
+        if (p->shareableHandle && (unsigned)p->handleType == 0x8)
+            G().fabric_of[(unsigned long long)p->handle] = {fabric_hex(p->shareableHandle), true};
+        if (vmm_trace_on()) {
         // For a POSIX fd the out-param is an int; for a fabric handle it is a
         // 64-byte blob. Reading it as an fd is only meaningful in the first case,
         // which is exactly what the type tells us.
-        const long long fd = p->shareableHandle ? (long long)*(int*)p->shareableHandle : -1;
-        vmm_trace_fd("export", fd, (unsigned)p->handleType);
-    } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuMemImportFromShareableHandle) {
+            const long long fd = p->shareableHandle ? (long long)*(int*)p->shareableHandle : -1;
+            vmm_trace_fd("export", fd, (unsigned)p->handleType);
+        }
+    } else if (is_exit && cbid == API_CUDA_cuMemImportFromShareableHandle) {
         auto* p = (cuMemImportFromShareableHandle_params*)params;
-        const long long fd = (long long)(intptr_t)p->osHandle;
-        vmm_trace_fd("import", fd, (unsigned)p->shHandleType);
+        if (p->handle && p->osHandle && (unsigned)p->shHandleType == 0x8)
+            G().fabric_of[(unsigned long long)*p->handle] = {fabric_hex(p->osHandle), false};
+        if (vmm_trace_on()) {
+            const long long fd = (long long)(intptr_t)p->osHandle;
+            vmm_trace_fd("import", fd, (unsigned)p->shHandleType);
+        }
     } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuIpcGetMemHandle) {
         std::fprintf(stderr, "[pcomm-vmm] ipc_get\n");
         std::fflush(stderr);
@@ -1060,8 +1109,19 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
         // and contributes no ordering, no index and no count.
         auto* p = (cuMemMap_params*)params;
         auto& g = G();
-        if (g.mapped_bases_seen.insert((uint64_t)p->ptr).second)
-            g.mapped_regions.push_back({(uint64_t)p->ptr, (uint64_t)p->size});
+        if (g.mapped_bases_seen.insert((uint64_t)p->ptr).second) {
+            // Carry the allocation's identity onto the mapping, when there is
+            // one. This is the only moment both are in hand: the export/import
+            // hook knows the identity, cuMemMap knows the local address.
+            std::string hex;
+            bool        exporter = false;
+            if (auto it = g.fabric_of.find((unsigned long long)p->handle); it != g.fabric_of.end()) {
+                hex = it->second.first;
+                exporter = it->second.second;
+            }
+            g.mapped_regions.push_back({(uint64_t)p->ptr, (uint64_t)p->size, std::move(hex),
+                                        (uint64_t)p->offset, exporter});
+        }
     }
 
     g_skip_callback = false;

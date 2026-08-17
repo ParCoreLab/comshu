@@ -333,6 +333,26 @@ public:
                    core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
     }
 
+    // One process's mapping of a fabric-shared allocation.
+    //
+    // `alloc_hex` is the CUmemFabricHandle's 64 bytes in hex — globally
+    // meaningful by construction, so the exporter's row and the importer's row
+    // mint the same interned id and can be joined. See core/records.hpp for why
+    // only fabric handles get a row and what the address arithmetic is.
+    void on_peer_mapping(std::string_view alloc_hex, std::uint64_t base, std::uint64_t size,
+                         std::uint64_t alloc_offset, core::DeviceId dev, bool exporter) {
+        auto&      rec = recorder();
+        const auto alloc = rec.intern(rec::InternDomain::String, alloc_hex);
+        rec.record(rec.now_instant(),
+                   core::records::PeerMapping{{},
+                                              {},
+                                              alloc,
+                                              {base, size},
+                                              alloc_offset,
+                                              dev,
+                                              static_cast<std::uint8_t>(exporter ? 1 : 0)});
+    }
+
     // One row per instrumented instruction, at instrumentation time.
     void on_source_line(std::uint32_t instr_index, std::string_view file, std::string_view dir,
                         std::uint32_t line) {

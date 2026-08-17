@@ -41,6 +41,7 @@ PCOMM_SCHEMA_MATCH(cr::EntityClose, fb::EntityClose);
 PCOMM_SCHEMA_MATCH(cr::SourceLine, fb::SourceLine);
 PCOMM_SCHEMA_MATCH(cr::Attribution, fb::Attribution);
 PCOMM_SCHEMA_MATCH(cr::NodeIdentity, fb::NodeIdentity);
+PCOMM_SCHEMA_MATCH(cr::PeerMapping, fb::PeerMapping);
 PCOMM_SCHEMA_MATCH(cr::GpuKernel, fb::GpuKernel);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
 PCOMM_SCHEMA_MATCH(cr::InternKey, fb::InternKey);
@@ -430,6 +431,22 @@ int main() {
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 7, 9,
             fb::EdgePredicate_ResidesOn);
         expect_identical("Attribution", &c, &f, sizeof(c));
+    }
+    {
+        // Every field distinct and non-zero, including `exporter`: it is the
+        // last byte before the tail padding, which is exactly where a layout
+        // disagreement between the C++ struct and the FlatBuffers one hides.
+        Stamped<cr::PeerMapping> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.allocation = 0xAABBCCDD;
+        c.payload.range = {0x4000, 0x8000};
+        c.payload.alloc_offset = 0x1234567890ABCDEFull;
+        c.payload.device = 0x55;
+        c.payload.exporter = 1;
+        fb::PeerMapping f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0xAABBCCDD, fb::MemRange(0x4000, 0x8000), 0x1234567890ABCDEFull, 0x55, 1);
+        expect_identical("PeerMapping", &c, &f, sizeof(c));
     }
     {
         Stamped<cr::NodeIdentity> c{};

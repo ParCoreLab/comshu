@@ -233,6 +233,26 @@ template<> struct Table<NodeIdentity> {
     }
 };
 
+// One process's mapping of a fabric-shared allocation.
+//
+// `allocation` is emitted as the interned STRING, not its handle: it is the
+// join key between two ranks' rows, and a reader that had to resolve handles
+// through the intern dictionary to compare them would make the one query this
+// record exists for the awkward one. The hex is 128 chars and there is one row
+// per shared allocation, so the width costs nothing.
+template<> struct Table<PeerMapping> {
+    static constexpr const char* name = "peer_mapping";
+    static constexpr const char* cols = "allocation,base,size,alloc_offset,device,exporter";
+    static void row(std::FILE* f, const Stamped<PeerMapping>& s, const rec::InternDictionary& d) {
+        const char* a = d.str(s.payload.allocation);
+        std::fprintf(f, "%s,%llu,%llu,%llu,%u,%u", a ? a : "",
+                     (unsigned long long)s.payload.range.base,
+                     (unsigned long long)s.payload.range.size,
+                     (unsigned long long)s.payload.alloc_offset, (unsigned)s.payload.device,
+                     (unsigned)s.payload.exporter);
+    }
+};
+
 // One row per kernel execution. `source` is carried rather than dropped
 // because it changes what the interval MEANS: HostSubmit rows are submission,
 // not execution, and trail the real thing by milliseconds — a consumer that
@@ -989,7 +1009,8 @@ template<> struct Table<ucr::UcxEpConnection> {
 // Nothing else depends on this order: the CSV files are written independently,
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
-    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, ClockAnchor,
+    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, PeerMapping,
+               ClockAnchor,
                Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,

@@ -206,6 +206,28 @@ struct NodeIdentity {
   node_hash:uint64;
 }
 
+// type 526, Entity. One process's mapping of a shared allocation, keyed by an
+// identity both sides agree on.
+//
+// `allocation` is the interned CUmemFabricHandle (hex), which is globally
+// meaningful by construction — the exporter's row and the importer's row mint
+// the same id from the same 64 bytes, and that join is the only way to turn a
+// peer access address into the owner's address. Written for
+// CU_MEM_HANDLE_TYPE_FABRIC only: a POSIX fd names the driver node rather than
+// the allocation (measured, MN5 job 44705498 — all 48 exports and imports share
+// dev=6 ino=1729) and its number is process-local besides.
+//
+// `alloc_offset` is cuMemMap's own offset argument, so partial maps work rather
+// than being assumed away. See core/records.hpp for the address arithmetic.
+struct PeerMapping {
+  temporal:Temporal;
+  allocation:uint32;
+  range:MemRange;
+  alloc_offset:uint64;
+  device:uint16;
+  exporter:uint8;
+}
+
 // type 530, Event. One kernel's EXECUTION window on the device.
 //
 // In the internal range rather than the reserved cupti 300s because that range
