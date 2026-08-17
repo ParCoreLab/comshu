@@ -27,10 +27,14 @@ SELECT * FROM (
 
   UNION ALL
   -- The join itself: one distinct hash across every rank.
+  -- A bare HAVING over an un-grouped SELECT is a syntax error in the engine
+  -- sql_check uses, so the whole-table aggregates are written as scalar
+  -- subqueries in WHERE. Job 44724071 failed on this and reported no rows,
+  -- which is the useful reminder that an assertion which cannot parse is
+  -- indistinguishable from one that found nothing.
   SELECT 'ranks disagree on comm_hash — the cross-rank join is broken',
-         CAST(count(DISTINCT comm_hash) AS VARCHAR)
-  FROM nccl_comm
-  HAVING count(DISTINCT comm_hash) != 1
+         CAST((SELECT count(DISTINCT comm_hash) FROM nccl_comm) AS VARCHAR)
+  WHERE (SELECT count(DISTINCT comm_hash) FROM nccl_comm) != 1
 
   UNION ALL
   -- A zero hash means the id was read as zeroes, which would make every
@@ -50,8 +54,7 @@ SELECT * FROM (
   -- own rank column — see the reader for why they are named apart. Every member
   -- must hold a distinct one.
   SELECT 'NCCL ranks are not distinct across the communicator',
-         CAST(count(DISTINCT nccl_rank) AS VARCHAR)
-  FROM nccl_comm
-  HAVING count(DISTINCT nccl_rank) != (SELECT ranks FROM params)
+         CAST((SELECT count(DISTINCT nccl_rank) FROM nccl_comm) AS VARCHAR)
+  WHERE (SELECT count(DISTINCT nccl_rank) FROM nccl_comm) != (SELECT ranks FROM params)
 )
 ORDER BY problem, detail;
