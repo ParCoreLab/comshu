@@ -171,9 +171,46 @@ if [ "$do_clean" -eq 1 ]; then
   say "clean remote build dirs"; rsh "cd $RDIR && rm -rf build build-gpumem build-ucx"
 fi
 if [ "$do_build" -eq 1 ]; then
-  say "build tools + ibverbs provider (gcc-13.2)"
+  # DuckDB, pushed rather than fetched. MN5 has no outbound network, so
+  # tools/get_duckdb.sh cannot run there — but the library is just a file, and
+  # this end has already downloaded it. Without it the remote build has no
+  # --parquet, no `link` and no `sql`, which means the suite's assertions can
+  # never see the derived layer (sql_check.sh explains why that matters).
+  #
+  # .tools/ is gitignored, so the git sync above does NOT carry it; that is why
+  # this is a separate rsync and not a consequence of the push. It was already
+  # present on MN5 by some earlier manual step, which is exactly the kind of
+  # undeclared dependency that works until someone runs --clean on a new account.
+  # TWO gitignored things are needed, not one. Enabling PCOMM_DUCKDB also enters
+  # pcomm-ui (CMakeLists: the UI is a DuckDB consumer by definition), and that
+  # subdirectory refuses to configure without a built ui/dist. Both are untracked,
+  # so neither rides along with the git push above and both must be sent here.
+  DUCK_LOCAL="$REPO_ROOT/.tools/duckdb"
+  if [ -e "$DUCK_LOCAL/libduckdb.so" ] && [ -e "$REPO_ROOT/ui/dist/index.html" ]; then
+    if ! $SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so -a -e $PROOT/ui/dist/index.html"; then
+      say "ship libduckdb + ui/dist to the remote (no network there to fetch them)"
+      $SSH "$REMOTE" "mkdir -p $PROOT/.tools/duckdb $PROOT/ui/dist"
+      rsync -az -e "$SSH" "$DUCK_LOCAL/libduckdb.so" "$DUCK_LOCAL/duckdb.h" "$DUCK_LOCAL/duckdb.hpp" \
+            "$REMOTE:$PROOT/.tools/duckdb/" &&
+      rsync -az --delete -e "$SSH" "$REPO_ROOT/ui/dist/" "$REMOTE:$PROOT/ui/dist/" \
+        || echo "  (push failed — building without DuckDB; derived-layer assertions will skip)" >&2
+    fi
+  else
+    [ -e "$DUCK_LOCAL/libduckdb.so" ] \
+      || echo "  (no local .tools/duckdb — run tools/get_duckdb.sh for derived-layer assertions)" >&2
+    [ -e "$REPO_ROOT/ui/dist/index.html" ] \
+      || echo "  (no local ui/dist — run 'pnpm build' in ui/ for derived-layer assertions)" >&2
+  fi
+  # PCOMM_DUCKDB follows what is actually there, so a missing library degrades to
+  # the old CSV-only behaviour instead of failing the configure.
+  # BOTH must be present remotely, for the reason above: libduckdb alone turns
+  # PCOMM_DUCKDB on, which pulls in pcomm-ui, which then fails the configure for
+  # want of ui/dist — turning a missing optional into a broken build.
+  DUCK_ON=$($SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so -a -e $PROOT/ui/dist/index.html && echo ON || echo OFF")
+
+  say "build tools + ibverbs provider (gcc-13.2, DuckDB=$DUCK_ON)"
   rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1; cd $RDIR &&
-       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON >/dev/null &&
+       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
        cmake --build build -j 2>&1 | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2; exit 1; }
 

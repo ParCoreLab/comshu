@@ -54,12 +54,58 @@
 #
 # Engine is sqlite3 (present everywhere, zero setup); queries are kept portable
 # ANSI SQL so DuckDB can be dropped in by changing SQL_ENGINE.
+#
+# --- ASSERTIONS PREFER PARQUET, GOLDENS NEVER DO ----------------------------
+#
+# The CSV export cannot carry the derived layer. It re-derives ONE derived table,
+# comm_edges, in C++ (CsvAgg, pcomm-read/main.cpp) — a second implementation of
+# the most-asserted table in the suite, kept byte-identical to link_sql.hpp's
+# version by inspection. Everything else the UI computes (object_access,
+# link_health, rank_identity, endpoint, timeline_span, wr_flow) is invisible to
+# every assertion ever written.
+#
+# That is not a gap in coverage, it is a gap in *what can be covered*, and it
+# cost a real bug: object_access.owner_rank named the writing rank rather than
+# the owning one for the p2p branch's whole life, reporting the hubspoke case's
+# one shared buffer as three phantom objects. Case 13's own assertion could not
+# see it — it counts writers straight off gpu_access — so it passed throughout.
+#
+# So when a linked Parquet export is available, ASSERTIONS run against it via
+# `pcomm sql`, which is the same DuckDB and the same link_sql.hpp the UI serves.
+# One derived layer, asserted directly.
+#
+# GOLDENS STAY ON SQLITE/CSV, deliberately. A golden is a characterization test
+# diffed against a stored file, so changing its engine changes every stored
+# file's formatting and would force a mass regeneration — and a carelessly
+# regenerated golden enshrines whatever is there today (see 04_nvshmem's
+# peer_fanout above). Assertions have nothing to regenerate, which is exactly
+# why they are the half that can move.
+#
+# Falls back silently to CSV+sqlite when there is no Parquet export or no
+# DuckDB-capable pcomm: MN5 builds with PCOMM_DUCKDB=OFF by default because
+# tools/get_duckdb.sh needs network and MN5 has none. The fallback must stay
+# exact — a suite that only works on the workstation is not a suite.
 set -u
 CSV_DIR="${1:?usage: sql_check.sh <csv-dir> <case-dir> [--update]}"
 CASE_DIR="${2:?usage: sql_check.sh <csv-dir> <case-dir> [--update]}"
 UPDATE="${3:-}"
 SQL_ENGINE="${SQL_ENGINE:-sqlite3}"
 SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The linked Parquet export, if one was made. Convention: beside the CSV dir,
+# with .pq where .csv is — so a case that adds `--parquet` gets this for free and
+# one that does not is unaffected.
+PQ_DIR="${PCOMM_PQ_DIR:-${CSV_DIR%.csv}.pq}"
+# A pcomm that actually has DuckDB. $PCOMM is set by common.sh; the verb list is
+# the only honest test, because a build without DuckDB still ADVERTISES `sql` and
+# refuses at runtime.
+PQ_BIN="${PCOMM_PQ_BIN:-${PCOMM:-}}"
+PQ_MODE=0
+if [ -n "$PQ_BIN" ] && [ -x "$PQ_BIN" ] && [ -d "$PQ_DIR" ] &&
+   ls "$PQ_DIR"/*.parquet >/dev/null 2>&1 &&
+   "$PQ_BIN" sql "$PQ_DIR" "SELECT 1" >/dev/null 2>&1; then
+  PQ_MODE=1
+fi
 
 DB="$(mktemp)"; trap 'rm -f "$DB"' EXIT
 # Load every CSV as a table named after the file (sqlite auto-creates columns
@@ -231,6 +277,111 @@ if [ -n "$expect_tables" ]; then
   fi
 fi
 
+# --------------------------------------------------- the Parquet assertion path
+# `pcomm sql` wraps its argument in COPY (...) TO, so it takes exactly ONE
+# statement and no DDL. `params` and `ranks_seen` are synthetic tables that exist
+# only in the sqlite DB, so on this path they have to arrive as CTEs spliced onto
+# the front of the assertion. Splicing is done in python rather than sed because
+# the three cases (`WITH RECURSIVE ...`, `WITH ...`, bare SELECT) differ in where
+# the comma goes, and getting that wrong produces a parse error that reads like a
+# broken assertion.
+pq_sql() { "$PQ_BIN" sql "$PQ_DIR" "$1" 2>&1; }
+
+pq_has_table() { [ -e "$PQ_DIR/$1.parquet" ]; }
+pq_row_count() {
+  pq_has_table "$1" || { echo 0; return; }
+  pq_sql "SELECT count(*) FROM \"$1\"" | tail -1
+}
+
+# Does this assertion need a table only the Parquet export has? If the CSV set
+# already carries every table it names, the sqlite run above already checked it
+# and re-checking proves nothing.
+pq_only() {
+  need="$(sed -n 's/^-- requires:[[:space:]]*//p' "$1" | tr '\n' ' ')"
+  for r in $need; do
+    case "$r" in
+      params.*) ;;
+      *) if ! have_table "$r" && pq_has_table "$r"; then return 0; fi ;;
+    esac
+  done
+  return 1
+}
+
+pq_prelude_values="$(meta_py <<'PY'
+import json, sys
+meta, cols = sys.argv[1], sys.argv[2].split()
+w = json.load(open(meta)).get("workload", {})
+print(", ".join(("NULL" if w.get(c) is None else str(int(w[c]))) + " AS " + c for c in cols))
+PY
+)"
+
+# ranks_seen, rebuilt over the Parquet tables that carry a rank column. Same
+# definition as the sqlite one — "a rank appears in whichever tables the capture
+# happens to have" — over a different table set.
+pq_rank_union=""
+if [ "$PQ_MODE" -eq 1 ]; then
+  for f in "$PQ_DIR"/*.parquet; do
+    t="$(basename "$f" .parquet)"
+    pq_sql "SELECT rank FROM \"$t\" LIMIT 0" >/dev/null 2>&1 || continue
+    if [ -z "$pq_rank_union" ]; then pq_rank_union="SELECT DISTINCT rank FROM \"$t\""
+    else pq_rank_union="$pq_rank_union UNION SELECT DISTINCT rank FROM \"$t\""; fi
+  done
+fi
+[ -n "$pq_rank_union" ] || pq_rank_union="SELECT NULL AS rank WHERE 1=0"
+
+run_assert_pq() {
+  q="$1"; name="$(basename "$q" .sql)"
+  need="$(sed -n 's/^-- requires:[[:space:]]*//p' "$q" | tr '\n' ' ')"
+  for r in $need; do
+    case "$r" in
+      params.*) col="${r#params.}"
+        if [ "$(pq_sql "WITH params AS (SELECT $pq_prelude_values) SELECT count(*) FROM params WHERE $col IS NOT NULL" | tail -1)" = "0" ]; then
+          echo "  [skip] $name (derived) — workload has no $col"; askip=$((askip+1)); return; fi ;;
+      *) if ! pq_has_table "$r" || [ "$(pq_row_count "$r")" = "0" ]; then
+           echo "  [skip] $name (derived) — no $r rows in this capture"; askip=$((askip+1)); return; fi ;;
+    esac
+  done
+  an=$((an+1))
+  spliced="$(PQ_VALUES="$pq_prelude_values" PQ_RANKS="$pq_rank_union" python3 - "$q" <<'PY'
+import os, re, sys
+body = open(sys.argv[1]).read()
+# Strip leading comments and blank lines so the WITH/SELECT is the first token.
+body = re.sub(r'(?m)^\s*--.*$', '', body).strip().rstrip(';')
+ctes = 'params AS (SELECT %s), ranks_seen AS (%s)' % (os.environ['PQ_VALUES'], os.environ['PQ_RANKS'])
+m = re.match(r'(?is)^with\s+recursive\s+', body)
+if m:
+    print('WITH RECURSIVE %s, %s' % (ctes, body[m.end():]))
+else:
+    m = re.match(r'(?is)^with\s+', body)
+    if m:
+        print('WITH %s, %s' % (ctes, body[m.end():]))
+    else:
+        print('WITH %s %s' % (ctes, body))
+PY
+)"
+  out="$(pq_sql "$spliced")"
+  # `pcomm sql` prints a header row for a successful empty result; the header
+  # alone therefore means PASS. Anything with a second line is a violation, and
+  # its own error text (no header) is a broken assertion, not a passing one.
+  case "$out" in
+    pcomm:*|*"Error"*) echo "  [XX ] $name (derived) — query failed:"
+                       printf '%s\n' "$out" | head -6 | sed 's/^/        /'; afail=1; return ;;
+  esac
+  rows="$(printf '%s\n' "$out" | tail -n +2)"
+  why="$(xfail_reason "$name")"
+  if [ -z "$rows" ]; then
+    if [ -n "$why" ]; then
+      echo "  [XPASS] $name (derived) — marked expect_fail but passes"; axpass=$((axpass+1))
+    else echo "  [ok ] $name (derived)"; fi
+  elif [ -n "$why" ]; then
+    echo "  [xfail] $name (derived) — known: $why"
+    printf '%s\n' "$rows" | head -12 | sed 's/^/        /'; axfail=$((axfail+1))
+  else
+    echo "  [XX ] $name (derived) — violated by:"
+    printf '%s\n' "$rows" | head -25 | sed 's/^/        /'; afail=1
+  fi
+}
+
 run_assert() {
   q="$1"; name="$(basename "$q" .sql)"
   # -- requires: <table|params.<col>> ...  — the capture cannot speak to this
@@ -269,6 +420,26 @@ for q in "$SUITE_DIR"/asserts/*.sql "$CASE_DIR"/asserts/*.sql; do
   [ -e "$q" ] || continue
   run_assert "$q"
 done
+
+# --- the same assertions again, against the derived layer --------------------
+#
+# Only the ones that a Parquet export can answer AND the CSV export cannot: an
+# assertion naming a derived-only table was [skip]ped above because the table is
+# simply not in the CSV set. Re-running the whole suite of them here would double
+# every verdict; re-running only these turns "cannot be checked" into "checked".
+#
+# Reported with a (derived) tag so a failure is unambiguous about which engine
+# saw it. The two engines disagreeing about the same assertion is itself a
+# finding worth reading — it means CsvAgg's comm_edges and link_sql.hpp's have
+# drifted, which is precisely the fork this path exists to expose.
+if [ "$PQ_MODE" -eq 1 ]; then
+  echo "  -- assertions against the derived layer ($(basename "$PQ_DIR"), via pcomm sql)"
+  for q in "$SUITE_DIR"/asserts/*.sql "$CASE_DIR"/asserts/*.sql; do
+    [ -e "$q" ] || continue
+    pq_only "$q" || continue
+    run_assert_pq "$q"
+  done
+fi
 
 # ------------------------------------------------------------------ verdict --
 fail=$(( gfail || afail ))

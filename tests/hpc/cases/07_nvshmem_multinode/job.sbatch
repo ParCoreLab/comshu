@@ -80,5 +80,6 @@ fi
 
 echo "=== captured streams ==="; "$PCOMM" read "$OUT"
 "$PCOMM" export "$OUT" --csv "$OUT.csv"
+pcomm_derive "$OUT"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
      "$PCOMM_ROOT/tests/hpc/cases/07_nvshmem_multinode"

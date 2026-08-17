@@ -70,3 +70,33 @@ pcomm_find_cuda() {
 
 # Where a case drops its capture + where the checker reads it.
 pcomm_out() { echo "${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/$1-${SLURM_JOB_ID:-local}"; }
+
+# The linked Parquet export, beside the CSV one, when this build can make it.
+#
+# WHY BOTH AND NOT JUST ONE. CSV is the path that always works: MN5 defaults to
+# PCOMM_DUCKDB=OFF because tools/get_duckdb.sh needs network and MN5 has none, so
+# a suite that required Parquet would not run on the cluster it exists for.
+# Parquet is the only path that carries the DERIVED layer — comm_edges as
+# link_sql.hpp actually computes it, plus object_access, link_health,
+# rank_identity, endpoint, timeline_span, wr_flow — none of which the CSV export
+# emits and therefore none of which any assertion could reach.
+#
+# SILENT WHEN UNAVAILABLE, on purpose. This must never turn a working suite red
+# on a host without DuckDB; sql_check.sh notices the export is missing and runs
+# exactly as it did before. The one thing it must not do is fail *quietly when it
+# was supposed to work*, so a build that HAS the verb and still errors says so.
+pcomm_derive() {
+  _out="$1"
+  # Attempting it IS the capability test. A build without DuckDB still advertises
+  # `sql` and `--parquet` in its verb list and refuses at runtime, so asking the
+  # verb list would answer yes and then fail.
+  if ! "$PCOMM" export "$_out" --parquet "$_out.pq" >/dev/null 2>&1; then
+    echo "   (no parquet export from this build — derived-layer assertions will be skipped)"
+    rm -rf "$_out.pq"
+    return 0
+  fi
+  "$PCOMM" link "$_out.pq" >/dev/null 2>&1 \
+    || { echo "!! parquet export succeeded but \`pcomm link\` failed on $_out.pq" >&2
+         rm -rf "$_out.pq"; return 0; }
+  echo "   (derived tables in $_out.pq)"
+}
