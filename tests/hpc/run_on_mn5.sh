@@ -266,6 +266,24 @@ if [ "$do_build" -eq 1 ]; then
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
        ls -la build/providers/*/*.so" \
     || { echo 'ucx build FAILED' >&2; exit 1; }
+
+  # NCCL, fourth. Headers only — this one links against no libnccl, because it
+  # reaches NCCL through the pnccl* profiling symbols the application has
+  # already loaded (see providers/nccl/nccl_hooks.hpp). So the only thing this
+  # step needs to find is nccl.h and cuda_runtime_api.h, both of which live in
+  # the SDK that NCCL_HOME already resolves for the cases themselves.
+  #
+  # gcc-13.2 like ucx and for the same reason: the engine's libstdc++.
+  say "build nccl provider (PROFAPI doors, gcc-13.2)"
+  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
+       . tests/hpc/suite/common.sh &&
+       echo \"  nccl: \$NCCL_HOME\" &&
+       cmake -B build-nccl -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&
+       cmake --build build-nccl --target nccl_trace -j 2>&1 | tail -2 &&
+       mkdir -p build/providers/nccl &&
+       cp build-nccl/providers/nccl/libnccl_trace.so build/providers/nccl/ &&
+       ls -la build/providers/*/*.so" \
+    || { echo 'nccl build FAILED' >&2; exit 1; }
 fi
 
 # --- 3. run the cases --------------------------------------------------------

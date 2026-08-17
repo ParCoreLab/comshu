@@ -1123,9 +1123,15 @@ static const char* nccl_redop_name(std::uint8_t raw) {
     }
 }
 
+// `nccl_rank`, not `rank`. The export prepends the CAPTURE's rank to every
+// table, so a payload field called `rank` would produce two columns of that
+// name and every query against this table would silently take whichever the
+// engine picked. They are also not the same number: a process is one rank in
+// the capture and may hold a different rank inside a communicator it joined —
+// which is the whole reason NCCL's rank is worth recording separately.
 template<> struct Table<ncr::NcclComm> {
     static constexpr const char* name = "nccl_comm";
-    static constexpr const char* cols = "ticks,comm,comm_hash,rank,nranks,cuda_dev";
+    static constexpr const char* cols = "ticks,comm,comm_hash,nccl_rank,nranks,cuda_dev";
     static void row(std::FILE* f, const Stamped<ncr::NcclComm>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%llu,%d,%d,%d", (unsigned long long)s.temporal.a.ticks,
                      s.payload.comm, (unsigned long long)s.payload.comm_hash, s.payload.rank,
