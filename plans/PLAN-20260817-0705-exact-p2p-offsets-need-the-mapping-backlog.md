@@ -1,6 +1,12 @@
 # Exact p2p object offsets: record the mapping, not the library
 
-Status: **todo**
+Status: **BLOCKED 2026-08-17**, on evidence rather than effort. Both routes to
+peer-memory object identity were probed and both are shut on this stack: the
+driver API cannot tell an application buffer from allocator backing (reverted,
+measured), and the POSIX-fd shareable handle carries no allocation identity to
+join on (probed, job 44705498). The sections from *The general fact* onward were
+written before those two results and are kept for their reasoning, not as a plan
+— read the two blocker sections first.
 Created: 2026-08-17 07:05
 Touches: `gpu-backends/nvbit/nvbit_backend.cu`,
 `libpcomm/include/pcomm/core/records.hpp`, `providers/gpumem/engine.hpp`,
@@ -121,6 +127,56 @@ Route 2 remains the plan. Route 1 is the only thing that would give NCCL capture
 object *identity*, and it should not be started expecting the driver API to
 shortcut it.
 
+## Route 2 is blocked too: the fd carries no allocation identity
+
+Probed on MN5 2026-08-17, job 44705498 (`tests/hpc/probes/vmmdoors/`), BEFORE
+building anything — which is the whole reason this cost one job instead of three.
+
+The premise held in part. Both workloads do share peer memory through the VMM
+export/import pair, and neither touches the legacy `cuIpc*` doors at all:
+
+| door | calls |
+|---|---|
+| `cuMemCreate` | 206 |
+| `cuMemMap` | 230 |
+| `cuMemExportToShareableHandle` | 16 |
+| `cuMemImportFromShareableHandle` | 32 |
+| `cuIpcGetMemHandle` / `cuIpcOpenMemHandle` | **0** |
+
+So there is a door, and it is the VMM one. What there is not is a **key**.
+
+Every export and every import reports `type=1` —
+`CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR` — and fstat on both sides gives the
+**same `dev=6 ino=1729` for all 48 of them**. The fd is a handle onto the NVIDIA
+driver node, not a per-allocation object: the allocation's identity lives inside
+the driver and never reaches the filesystem. So the two candidate keys are both
+gone — the fd *number* is process-local by construction, and the inode is a
+constant.
+
+A fabric handle (`CU_MEM_HANDLE_TYPE_FABRIC`) would be globally meaningful, but
+nothing here requests one, and configuring the workload to use one so the tracer
+can read it would be measuring a run nobody else does.
+
+**What this says about the general problem.** NVSHMEM attribution works because
+`nvshmem_ptr(addr, pe)` is exactly the cross-process correspondence — a function
+from *my* symmetric address to *where PE pe's copy lives in my process*. That is
+the fact peer attribution needs, and NVSHMEM hands it over. CUDA's VMM API
+exposes no equivalent: it will map a peer's allocation for you and tell you
+nothing about which allocation it was.
+
+So peer-memory OBJECT attribution needs a source that knows the correspondence,
+and only two exist:
+
+1. **The library that made the mapping.** For NCCL that means its registration
+   path, the same shape as the NVSHMEM pass. This is the only route left for
+   NCCL and it is not small.
+2. **A fabric-handle stack**, where the shareable handle is globally meaningful
+   and the join is trivial — worth re-probing on any machine whose NCCL uses one,
+   since that turns route 2 back on for free.
+
+Neither is a query change, and no heuristic over `mem_object` substitutes for
+them: the correspondence is absent from the capture, not merely hard to compute.
+
 ## Why not the NVSHMEM route
 
 The tempting shortcut is the symmetric heap: `nvshmem_ptr(a, pe) = peer_base[pe]
@@ -139,6 +195,11 @@ So NVSHMEM stays where it already is: a **supplement** that knows a region is
 symmetric memory at all (`refresh_mapped_regions` step 2), not the mechanism.
 
 ## The general fact
+
+> **Superseded 2026-08-17.** What follows was the design before the two probes
+> above. Its reasoning about *where* the delta lives is still correct; its
+> assumption that a shareable handle is a usable join key is not.
+
 
 The delta is a property of the **mapping**, not of the library that made it, and
 mappings enter a process through a small enumerable set of CUDA doors:
