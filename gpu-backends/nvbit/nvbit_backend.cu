@@ -102,30 +102,9 @@ pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;  // serializes callbacks
 struct MappedRegion {
     uint64_t base;
     uint64_t size;
-    // Did cuMemCreate for this mapping's allocation happen in THIS process?
-    //
-    // That is the whole discrimination this flag exists for. A VMM allocation
-    // we created is ours, and naming it is exactly as sound as naming a
-    // cuMemAlloc'd buffer. A mapping whose handle arrived through
-    // cuMemImportFromShareableHandle is a window onto someone else's
-    // allocation, and we know its device but not its identity — so it stays
-    // device-only, for the reason AllocRegistry::add_range gives.
-    bool own;
 };
 
 struct Globals {
-    // Allocation handles cuMemCreate returned in this process. Membership is
-    // what makes a cuMemMap'd region nameable — see MappedRegion::own.
-    std::unordered_set<unsigned long long>   created_handles;
-    // VA ranges from cuMemAddressReserve: [base, base+size).
-    //
-    // THE LOGICAL BUFFER IS THE RESERVATION, NOT THE BACKING CHUNK, and getting
-    // that backwards is measurable. Naming each cuMemMap'd chunk instead put 818
-    // objects per rank in case 04 where there had been 38 — 780 of them exactly
-    // 2 MiB, which is the VMM granularity CUDA's pooled allocator maps its
-    // backing in, not anything the application allocated. The reservation is the
-    // extent a pointer is valid over, so it is the extent an access should name.
-    std::vector<MappedRegion>                reserved;
     std::unordered_map<CUcontext, CtxState*> ctx_state;
     std::unordered_set<CUfunction>           instrumented;
     std::map<std::string, int>               opcode_to_id;
@@ -313,61 +292,21 @@ void refresh_mapped_regions() {
     //    peer traffic used to appear only because the NVSHMEM positional guess
     //    was being applied to NCCL's regions — it reported mem_dev up to 8 on a
     //    4-GPU node, i.e. it was fabricating the answer that made the case pass.
-    //    A region whose allocation WE created is named, not merely located:
-    //    on_alloc mints the object and records the MemObject, exactly as it
-    //    does for a cuMemAlloc'd buffer, because at that point the entity has
-    //    been recorded and add_range's objection no longer applies. A region
-    //    mapped from an imported handle stays device-only — we know which GPU
-    //    it lives on and nothing else about it.
     const bool verbose = std::getenv("PCOMM_VERBOSE") != nullptr;
-    int        by_cuda = 0, named = 0;
+    int        by_cuda = 0;
     for (size_t i = g.regions_resolved; i < n; i++) {
         const auto& r = g.mapped_regions[i];
         const int   dev = device_of(r.base, ndev, "mapped region");
-        if (dev < 0)
-            continue;
-        if (r.own) {
-            // Name the RESERVATION this chunk backs, not the chunk. A pooled
-            // allocator maps many granularity-sized chunks into one reserved
-            // range, and the range is the extent a pointer is valid over.
-            // on_alloc is idempotent per base, so the hundredth chunk of a
-            // reservation costs one registry entry and no extra record.
-            uint64_t obase = 0, osize = 0;
-            for (const auto& v : g.reserved)
-                if (v.base <= r.base && r.base < v.base + v.size) {
-                    obase = v.base;
-                    osize = v.size;
-                    break;
-                }
-            if (obase) {
-                g_engine->on_alloc(obase, osize, static_cast<pcomm::core::DeviceId>(dev));
-                named++;
-            } else {
-                // Created here but backing no reservation we saw. NAME NOTHING.
-                //
-                // cuMemCreate is not by itself evidence of an application
-                // buffer: CUDA's own pooled allocator creates and maps
-                // granularity chunks through the same door. Falling back to
-                // naming the chunk put 818 objects per rank in case 04 against
-                // 38 before — 780 of them exactly 2 MiB at 0x7fc9-0x7fcb, pool
-                // backing rather than anything allocated by the program.
-                //
-                // So the reservation is required, not preferred. Without it we
-                // are back to knowing only the device, which is what add_range
-                // exists to say.
-                g_engine->allocs().add_range(r.base, r.size,
-                                             static_cast<pcomm::core::DeviceId>(dev));
-            }
-        } else {
+        if (dev >= 0) {
             g_engine->allocs().add_range(r.base, r.size, static_cast<pcomm::core::DeviceId>(dev));
+            by_cuda++;
         }
-        by_cuda++;
     }
     if (verbose && g.regions_resolved != n)
         std::fprintf(stderr,
                      "[pcomm-gpumem] %d/%zu new mapped regions attributed "
-                     "by CUDA, %d named from cuMemCreate (%zu total)\n",
-                     by_cuda, n - g.regions_resolved, named, n);
+                     "by CUDA (%zu total)\n",
+                     by_cuda, n - g.regions_resolved, n);
     g.regions_resolved = n;
 
     // 2. NVSHMEM's symmetric heap, authoritatively. Step 1 already covers every
@@ -1043,30 +982,6 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
                                   : (uint64_t)((cuMemFree_params*)params)->dptr;
         if (g_engine && dptr)
             g_engine->on_free(dptr);
-    } else if (is_exit && cbid == API_CUDA_cuMemAddressReserve) {
-        auto* p = (cuMemAddressReserve_params*)params;
-        if (p->ptr && *p->ptr)
-            G().reserved.push_back({(uint64_t)*p->ptr, (uint64_t)p->size, true});
-    } else if (is_exit && cbid == API_CUDA_cuMemCreate) {
-        // THE DOOR THAT WAS MISSING. cuMemAlloc/_v2/Managed are hooked and mint
-        // MemObjects; cuMemMap is hooked and cannot, because until now the
-        // allocation it maps had never been seen. So every VMM-allocated buffer
-        // in a capture was anonymous.
-        //
-        // Measured on nccl_p2p-44688653: NCCL's channel buffers are VMM memory,
-        // nine mapped regions per rank, and NOT ONE of the 1,179,948 recorded
-        // peer accesses fell inside any mem_object — the capture's only objects
-        // were the workload's own 1 MiB cudaMalloc per rank. cudaMalloc routes
-        // to cuMemAlloc_v2, which is why that one was recorded and NCCL's were
-        // not.
-        //
-        // Only the handle is kept. Size comes from the mapping (a handle may be
-        // mapped in parts) and the device from CUDA at the mapped address, which
-        // is the answer refresh_mapped_regions already trusts over anything
-        // inferred.
-        auto* p = (cuMemCreate_params*)params;
-        if (p->handle)
-            G().created_handles.insert((unsigned long long)*p->handle);
     } else if (is_exit && cbid == API_CUDA_cuMemMap) {
         // Record the extent, nothing more. Who owns each of these is decided at
         // the next launch, by asking CUDA and NVSHMEM — see
@@ -1074,9 +989,8 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
         // and contributes no ordering, no index and no count.
         auto* p = (cuMemMap_params*)params;
         auto& g = G();
-        const bool own = g.created_handles.count((unsigned long long)p->handle) > 0;
         if (g.mapped_bases_seen.insert((uint64_t)p->ptr).second)
-            g.mapped_regions.push_back({(uint64_t)p->ptr, (uint64_t)p->size, own});
+            g.mapped_regions.push_back({(uint64_t)p->ptr, (uint64_t)p->size});
     }
 
     g_skip_callback = false;

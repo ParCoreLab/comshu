@@ -70,20 +70,56 @@ Verified on `nccl_p2p-44688653`, which is a Ring/Simple allreduce over NVLink
   at 140629092859904, ~14 MB higher, spanning ~8.3 MB, and **zero of the
   1,179,948 accesses fall inside any recorded `mem_object`**.
 
-So the ordered work is:
+## Tried and reverted: naming VMM memory from the driver API alone
 
-1. **Hook `cuMemCreate`** (handle, size, device). This alone lets a process name
-   its OWN VMM allocations, which is what `mem_object` is missing today — and it
-   is a strictly local change needing no cross-rank join.
-2. `cuMemMap` then has a named allocation to point at, so `add_range` can become
-   `add` with a real object handle for VMM memory.
-3. Only then does the cross-process half (the shareable/IPC handle pair) matter,
-   for translating the actor's mapping to the owner's allocation and for the
-   exact offset.
+**Do not re-attempt this shape.** Implemented and measured on MN5 2026-08-17
+(jobs 44698761, 44699012, 44699694), then reverted in full.
 
-Step 1 is worth doing on its own: it turns "this capture has one object per rank"
-into "this capture has every buffer NCCL allocated", independently of whether the
-peer-mapping translation ever lands.
+The idea was that `cuMemCreate` is simply an unhooked door: hook it, remember the
+handles minted in this process, and a `cuMemMap` of one of them is as nameable as
+a `cuMemAlloc`'d buffer, so `add_range` could become `add`. It compiles, it runs,
+and it is wrong for a reason no care at the call site fixes.
+
+**CUDA's own pooled allocator uses the same three doors, in granularity chunks.**
+On case 04 the object count per rank went from 38 to **818** - 780 of them
+exactly 2 MiB, at `0x7fc9...`-`0x7fe0...`, which is pool backing rather than
+anything the program allocated.
+
+Two narrowings were tried and both failed:
+
+1. **Anchor on the reservation, not the chunk** (`cuMemAddressReserve`), on the
+   theory that a pooled allocator reserves one range and maps many chunks into
+   it. Still 818: the pool reserves *per chunk* as well.
+2. **Require an observed reservation**, falling back to `add_range` otherwise.
+   Still 818, for the same reason - the reservations exist, they are just 2 MiB
+   each.
+
+**The conclusion is about the API, not the implementation.** `cuMemCreate`,
+`cuMemAddressReserve` and `cuMemMap` carry no signal distinguishing an
+application buffer from an allocator's internal backing, because for the driver
+there is no difference - CUDA's pool is just another client of the same
+interface. "We created it in this process" is therefore not evidence of an
+application object, and `AllocRegistry::add_range`'s refusal to name what it only
+located is right for a deeper reason than the one its comment gives.
+
+That is why the NVSHMEM pass works: it asks NVSHMEM, at the library boundary,
+which regions are symmetric memory. Naming a buffer needs a source that knows
+what a buffer *is*, and the driver is below that line.
+
+So the remaining routes are:
+
+1. **The library boundary**, as NVSHMEM already does - for NCCL that means
+   interposing its buffer registration, a much larger commitment than a CUDA hook
+   and what `add_range`'s comment is really waiting for.
+2. **The cross-process handle pair** (`cuMemExportToShareableHandle` /
+   `cuMemImportFromShareableHandle`), which does not identify what a buffer is but
+   *does* identify which allocation a mapping is a window onto. That is enough for
+   the offset translation this plan is actually about, and it never has to decide
+   whether the thing is an application buffer - only which side owns it.
+
+Route 2 remains the plan. Route 1 is the only thing that would give NCCL captures
+object *identity*, and it should not be started expecting the driver API to
+shortcut it.
 
 ## Why not the NVSHMEM route
 
@@ -182,8 +218,12 @@ were built for.
    non-trivial `offset` and a stable handle. **Do this before designing the
    record** — if the offsets are all zero the join key carries everything and
    the record shrinks.
-2. Add the `cuIpcGetMemHandle` / `cuIpcOpenMemHandle` hooks; check whether
-   NCCL's p2p path (case 05) uses IPC or VMM. They may need different arms.
+2. Add the `cuIpcGetMemHandle` / `cuIpcOpenMemHandle` hooks. **Case 05 is
+   answered: NCCL uses VMM**, nine mapped regions per rank and no IPC — so the
+   VMM arm is the one that matters for it, and the IPC arm is for whatever else
+   turns up. Note the negative result above before touching these: hooking the
+   VMM doors tells you a mapping's *allocation*, never whether that allocation is
+   an application buffer.
 3. `PeerMapping` record + intern domain + both-sides emission.
 4. `link_sql.hpp`: the exact join, `exact = TRUE`, `link_health` finding for
    mappings with no matching export.

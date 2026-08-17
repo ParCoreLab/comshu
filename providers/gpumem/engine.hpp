@@ -11,7 +11,6 @@
 #include <mutex>
 #include <optional>
 #include <span>
-#include <unordered_set>
 #include <string_view>
 #include <vector>
 
@@ -245,9 +244,8 @@ public:
     core::Handle on_symmetric_region(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         auto&      rec = recorder();
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
-        if (first_object_at(base))
-            rec.record(rec.now_instant(), core::records::MemObject{
-                                              {}, {}, object, core::kNullHandle, {base, size}, dev});
+        rec.record(rec.now_instant(),
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
         return object;
     }
 
@@ -286,9 +284,8 @@ public:
             return;
         auto&      rec = recorder();
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
-        if (first_object_at(base))
-            rec.record(rec.now_instant(), core::records::MemObject{
-                                              {}, {}, object, core::kNullHandle, {base, size}, dev});
+        rec.record(rec.now_instant(),
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
         m_allocs.add(base, size, dev, object);
     }
 
@@ -316,9 +313,6 @@ public:
     // attached is not a defect, and inventing a close for it would manufacture
     // exactly the unmatched row entity_close_accounted exists to detect.
     void close_object(std::uint64_t base) {
-        // Unmark first: whatever happens below, this base no longer has a live
-        // MemObject, so the next allocation there must be free to record one.
-        m_objected.erase(base);
         const auto object = m_allocs.object_at(base);
         if (object == core::kNullHandle)
             return;
@@ -326,23 +320,6 @@ public:
         rec.record(rec.now_instant(), core::records::EntityClose{
                                           {}, {}, object, core::records::MemObject::pcomm_type_id});
     }
-
-    // ONE MemObject PER LIVE BASE, whoever asks.
-    //
-    // Two doors can now legitimately name the same region: a VMM allocation is
-    // seen at cuMemCreate/cuMemMap, and if it is also NVSHMEM's symmetric heap
-    // the NVSHMEM pass names it again a launch later. Both are right; emitting
-    // twice would put two MemObject rows on one buffer, and since the id is
-    // interned from the base they would be indistinguishable duplicates rather
-    // than a visible conflict.
-    //
-    // Cleared by on_free, so a base that is genuinely reallocated records again.
-    // That is the honest limit of this: without lifetimes (PLAN-20260805-0053)
-    // a base freed by a door we do not hook stays marked, and the next
-    // allocation there goes unrecorded. Dedupe is still closer to correct than
-    // duplicates, and the failure it can cause is a missing row rather than a
-    // fabricated one.
-    bool first_object_at(std::uint64_t base) { return m_objected.insert(base).second; }
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         auto& rec = recorder();
@@ -352,10 +329,8 @@ public:
         // That was impossible while this was a dense counter local to gpumem.
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
         m_allocs.add(base, size, dev, object);
-        if (first_object_at(base))
-            rec.record(rec.now_instant(),  // lifetime open until free-tracking lands
-                       core::records::MemObject{
-                           {}, {}, object, core::kNullHandle, {base, size}, dev});
+        rec.record(rec.now_instant(),  // lifetime open until free-tracking lands
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
     }
 
     // One row per instrumented instruction, at instrumentation time.
@@ -400,8 +375,6 @@ public:
 private:
     AllocRegistry                              m_allocs;
     std::unique_ptr<attr::AttributionPipeline> m_pipeline;
-    // Bases that already have a MemObject row — see first_object_at.
-    std::unordered_set<std::uint64_t>          m_objected;
 };
 
 }  // namespace pcomm::gpumem
