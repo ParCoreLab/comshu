@@ -721,3 +721,82 @@ struct UcxAtomic {
   door:uint8;
   fetching:uint8;
 }
+
+// ---------------------------------------------------------------------------
+// NCCL host API, 900-999. The collective layer as the application asked for it.
+// Every temporal here is the HOST CALL, not the collective's execution — NCCL
+// is stream-ordered, so these are enqueue facts. See
+// providers/nccl/nccl_records.hpp.
+// ---------------------------------------------------------------------------
+
+// type 900, Entity. `comm_hash` is FNV-1a of the ncclUniqueId and is EQUAL on
+// every rank of the communicator; the comm pointer is not, so the hash is the
+// only cross-rank join.
+struct NcclComm {
+  temporal:Temporal;
+  comm:uint32;
+  comm_hash:uint64;
+  rank:int32;
+  nranks:int32;
+  cuda_dev:int32;
+}
+
+// type 902, Event. `count` is ELEMENTS, not bytes, and the product with the
+// datatype width is LOGICAL size — not what crosses the wire.
+struct NcclCollective {
+  temporal:Temporal;
+  comm:uint32;
+  sendbuff:uint32;
+  recvbuff:uint32;
+  stream:uint32;
+  count:uint64;
+  root:int32;
+  op:uint8;
+  datatype:uint8;
+  redop:uint8;
+  pad:uint8;
+}
+
+// type 904, Event. The only NCCL call that names a peer, and so the only one an
+// exact edge follows from.
+struct NcclP2p {
+  temporal:Temporal;
+  comm:uint32;
+  buffer:uint32;
+  stream:uint32;
+  count:uint64;
+  peer:int32;
+  dir:uint8;
+  datatype:uint8;
+  pad:uint16;
+}
+
+// type 906, Event. Group boundaries: N grouped sends are ONE launch, and
+// nothing in a send row says so.
+struct NcclGroup {
+  temporal:Temporal;
+  depth:uint32;
+  edge:uint32;
+}
+
+// type 908, Entity. A registered symmetric window — the host half of the
+// device-initiated path, and what makes GPU-initiated NCCL attributable where
+// case 05's internal channel buffers are not.
+struct NcclWindow {
+  temporal:Temporal;
+  window:uint32;
+  comm:uint32;
+  buffer:uint32;
+  size:uint64;
+  win_flags:int32;
+  pad:int32;
+}
+
+// type 910, Entity. The existence fact "this workload initiates communication
+// from the GPU". Nothing else in a capture states it: the device API is all
+// NCCL_DEVICE_INLINE and leaves no symbol to interpose.
+struct NcclDevComm {
+  temporal:Temporal;
+  comm:uint32;
+  pad:int32;
+}

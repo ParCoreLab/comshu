@@ -21,6 +21,7 @@
 #include "pcomm/rec/thread_local_buffer.hpp"
 #include "ib_records.hpp"
 #include "mlx5_records.hpp"
+#include "nccl_records.hpp"
 #include "ucx_records.hpp"
 
 using pcomm::rec::Stamped;
@@ -28,6 +29,7 @@ namespace cr = pcomm::core::records;
 namespace ir = pcomm::providers::ibverbs::records;
 namespace mr = pcomm::providers::mlx5dv::records;
 namespace ur = pcomm::providers::ucx::records;
+namespace nr = pcomm::providers::nccl::records;
 namespace fb = pcomm::fb;
 
 #define PCOMM_SCHEMA_MATCH(CppRecord, FbStruct)                                                    \
@@ -82,6 +84,14 @@ PCOMM_SCHEMA_MATCH(ur::UcxTagProbe, fb::UcxTagProbe);
 PCOMM_SCHEMA_MATCH(ur::UcxAtomic, fb::UcxAtomic);
 PCOMM_SCHEMA_MATCH(ur::UcxWorkerAddress, fb::UcxWorkerAddress);
 PCOMM_SCHEMA_MATCH(ur::UcxEpConnection, fb::UcxEpConnection);
+
+// NCCL host API, 900-999.
+PCOMM_SCHEMA_MATCH(nr::NcclComm, fb::NcclComm);
+PCOMM_SCHEMA_MATCH(nr::NcclCollective, fb::NcclCollective);
+PCOMM_SCHEMA_MATCH(nr::NcclP2p, fb::NcclP2p);
+PCOMM_SCHEMA_MATCH(nr::NcclGroup, fb::NcclGroup);
+PCOMM_SCHEMA_MATCH(nr::NcclWindow, fb::NcclWindow);
+PCOMM_SCHEMA_MATCH(nr::NcclDevComm, fb::NcclDevComm);
 
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
@@ -289,6 +299,88 @@ int main() {
                                              fb::TimePoint(2, 0x1212), 0),
                                 0xABCD, 7);
         expect_identical("UcxWorkerProgress", &c, &f, sizeof(c));
+    }
+    // --- NCCL host API, 900-999 --------------------------------------------
+    {
+        Stamped<nr::NcclComm> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9001}, {2, 0x9002});
+        c.payload.comm = 0x11;
+        c.payload.comm_hash = 0x0123456789ABCDEFull;
+        c.payload.rank = 3;
+        c.payload.nranks = 8;
+        c.payload.cuda_dev = 2;
+        fb::NcclComm f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9001),
+                                    fb::TimePoint(2, 0x9002), 0),
+                       0x11, 0x0123456789ABCDEFull, 3, 8, 2);
+        expect_identical("NcclComm", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclCollective> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9003}, {2, 0x9004});
+        c.payload.comm = 0x11;
+        c.payload.sendbuff = 0x22;
+        c.payload.recvbuff = 0x33;
+        c.payload.stream = 0x44;
+        c.payload.count = 262144;
+        c.payload.root = -1;
+        c.payload.op = 0;
+        c.payload.datatype = 7;
+        c.payload.redop = 0xFF;
+        c.payload.pad = 0;
+        fb::NcclCollective f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9003),
+                                          fb::TimePoint(2, 0x9004), 0),
+                             0x11, 0x22, 0x33, 0x44, 262144, -1, 0, 7, 0xFF, 0);
+        expect_identical("NcclCollective", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclP2p> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9005}, {2, 0x9006});
+        c.payload.comm = 0x11;
+        c.payload.buffer = 0x55;
+        c.payload.stream = 0x44;
+        c.payload.count = 1024;
+        c.payload.peer = 5;
+        c.payload.dir = 1;
+        c.payload.datatype = 7;
+        c.payload.pad = 0;
+        fb::NcclP2p f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9005),
+                                   fb::TimePoint(2, 0x9006), 0),
+                      0x11, 0x55, 0x44, 1024, 5, 1, 7, 0);
+        expect_identical("NcclP2p", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclGroup> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9007}, {2, 0x9008});
+        c.payload.depth = 2;
+        c.payload.edge = 1;
+        fb::NcclGroup f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9007),
+                                     fb::TimePoint(2, 0x9008), 0),
+                        2, 1);
+        expect_identical("NcclGroup", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclWindow> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9009}, {2, 0x900A});
+        c.payload.window = 0x66;
+        c.payload.comm = 0x11;
+        c.payload.buffer = 0x77;
+        c.payload.size = 1048576;
+        c.payload.win_flags = 4;
+        c.payload.pad = 0;
+        fb::NcclWindow f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9009),
+                                      fb::TimePoint(2, 0x900A), 0),
+                         0x66, 0x11, 0x77, 1048576, 4, 0);
+        expect_identical("NcclWindow", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclDevComm> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x900B}, {2, 0x900C});
+        c.payload.comm = 0x11;
+        c.payload.pad = 0;
+        fb::NcclDevComm f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x900B),
+                                       fb::TimePoint(2, 0x900C), 0),
+                          0x11, 0);
+        expect_identical("NcclDevComm", &c, &f, sizeof(c));
     }
     {
         Stamped<ur::UcxTagProbe> c{};

@@ -12,6 +12,10 @@ option(PCOMM_PROVIDER_IBVERBS "Build the ibverbs provider (needs libibverbs)" OF
 # control plane that IBGDA uses instead of verbs, and it needs libmlx5 as well.
 option(PCOMM_PROVIDER_MLX5DV  "Build the mlx5dv/DEVX provider (needs libmlx5)" OFF)
 option(PCOMM_PROVIDER_UCX     "Build the UCX/UCP provider (needs libucp)" OFF)
+# Headers only — this one links against no NCCL. It reaches libnccl through the
+# PROFAPI (pnccl*) symbols the application has already loaded, which is why it
+# is the one provider whose door is supported rather than interposed.
+option(PCOMM_PROVIDER_NCCL    "Build the NCCL host-API provider (needs nccl.h)" OFF)
 
 # Kernel lifetimes, via CUPTI. Not a provider — it captures no transport — and
 # not part of the engine, which may not include a vendor header. Compiles no

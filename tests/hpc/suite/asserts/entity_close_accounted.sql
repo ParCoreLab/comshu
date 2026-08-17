@@ -28,7 +28,10 @@
 -- so an unmatched row names the door to go looking for instead of merely saying
 -- something is missing: 100 ib_mem_region, 102 ib_queue_pair,
 -- 104 ib_completion_queue, 108 ib_shared_recv_queue, 118 ib_address_handle,
--- 120 ib_device, 200 mlx5_umem, 202 mlx5_uar, 520 mem_object.
+-- 120 ib_device, 200 mlx5_umem, 202 mlx5_uar, 520 mem_object,
+-- 600 ucx_context, 602 ucx_worker, 604 ucx_endpoint, 614 ucx_mem_map,
+-- 900 nccl_comm, 908 nccl_window.
+--
 -- 104 ib_completion_queue, 108 ib_shared_recv_queue, 118 ib_address_handle and
 -- 120 ib_device joined this list when the receive path landed. Every one of them
 -- HAD to arrive with its close hook in the same change: an entity type that
@@ -77,6 +80,15 @@ WITH opens AS (
   UNION ALL SELECT rank, worker,   602 FROM ucx_worker
   UNION ALL SELECT rank, endpoint, 604 FROM ucx_endpoint
   UNION ALL SELECT rank, memh,     614 FROM ucx_mem_map
+  -- The two NCCL entities that emit a close (nccl_provider.cpp closes 900 at
+  -- ncclCommDestroy/ncclCommAbort and 908 at ncclCommWindowDeregister). Added
+  -- WITH the provider, in the same change, because the paragraph above says
+  -- what happens otherwise and the UCX case proved it: an entity type that
+  -- emits EntityClose rows while absent from this CTE turns every one of its
+  -- closes into a spurious "names an entity no open record created", and this
+  -- assertion becomes noise on exactly the capture that needed it.
+  UNION ALL SELECT rank, comm,   900 FROM nccl_comm
+  UNION ALL SELECT rank, window, 908 FROM nccl_window
 ),
 closes AS (SELECT rank, subject, opener, count(*) AS n
            FROM entity_close GROUP BY rank, subject, opener),

@@ -1,0 +1,31 @@
+/* Export surface for libnccl_trace.so. See ibverbs.map for why.
+ *
+ * The nccl* entries MUST stay global — they ARE the interposition. libnccl's
+ * own definitions are weak (NCCL_API under PROFAPI), so a strong definition
+ * here wins the symbol for the whole process; hiding one silently hands that
+ * call back to NCCL and the table for it is empty rather than absent, which
+ * reads as "the workload never called it".
+ */
+{
+  global:
+    ncclCommInitRank;
+    ncclCommInitRankConfig;
+    ncclCommDestroy;
+    ncclCommAbort;
+    ncclAllReduce;
+    ncclBroadcast;
+    ncclReduce;
+    ncclAllGather;
+    ncclReduceScatter;
+    ncclSend;
+    ncclRecv;
+    ncclGroupStart;
+    ncclGroupEnd;
+    ncclCommWindowRegister;
+    ncclCommWindowDeregister;
+    ncclDevCommCreate;
+    pcomm_create_provider;
+    pcomm_abi_version;
+  local:
+    *;
+};

@@ -37,6 +37,7 @@
 
 #include "ib_records.hpp"  // provider record schemas (reader knows all types)
 #include "mlx5_records.hpp"
+#include "nccl_records.hpp"
 #include "ucx_records.hpp"
 #include "../pcomm/cli.hpp"
 
@@ -60,6 +61,7 @@ using namespace pcomm::core::records;
 namespace ibr = pcomm::providers::ibverbs::records;
 namespace mxr = pcomm::providers::mlx5dv::records;
 namespace ucr = pcomm::providers::ucx::records;
+namespace ncr = pcomm::providers::nccl::records;
 using rec::Stamped;
 
 namespace {
@@ -1019,6 +1021,185 @@ template<> struct Table<ucr::UcxEpConnection> {
 // which lets a GpuAccess resolve its object's [open, close) window as it
 // arrives, instead of buffering every access's timestamp to resolve afterwards.
 // Nothing else depends on this order: the CSV files are written independently,
+// --- NCCL host API, 900-999 -------------------------------------------------
+// Every `ticks` here is the HOST CALL, not the collective. NCCL is
+// stream-ordered: these rows say when the application ASKED, and the kernel ran
+// later. Join to gpu_kernel for execution — see providers/nccl/nccl_records.hpp.
+
+static const char* nccl_coll_op_name(std::uint8_t raw) {
+    switch (static_cast<ncr::CollOp>(raw)) {
+        case ncr::CollOp::AllReduce:
+            return "all_reduce";
+        case ncr::CollOp::Broadcast:
+            return "broadcast";
+        case ncr::CollOp::Reduce:
+            return "reduce";
+        case ncr::CollOp::AllGather:
+            return "all_gather";
+        case ncr::CollOp::ReduceScatter:
+            return "reduce_scatter";
+        case ncr::CollOp::AllToAll:
+            return "all_to_all";
+    }
+    return "?";
+}
+
+// NCCL's own ncclDataType_t numbering, spelled out. The width matters — it is
+// the only way `count` becomes a size — and a raw enum value would send every
+// reader to nccl.h to find out that 7 is float32.
+static const char* nccl_datatype_name(std::uint8_t raw) {
+    switch (raw) {
+        case 0:
+            return "int8";
+        case 1:
+            return "uint8";
+        case 2:
+            return "int32";
+        case 3:
+            return "uint32";
+        case 4:
+            return "int64";
+        case 5:
+            return "uint64";
+        case 6:
+            return "float16";
+        case 7:
+            return "float32";
+        case 8:
+            return "float64";
+        case 9:
+            return "bfloat16";
+        case 10:
+            return "fp8_e4m3";
+        case 11:
+            return "fp8_e5m2";
+        default:
+            return "?";
+    }
+}
+
+// Bytes per element, so `count` can be turned into a size by whoever needs one.
+// Returns 0 for a datatype this build does not know, and 0 is the honest answer
+// there: a guessed width would silently scale every derived number.
+static std::uint64_t nccl_datatype_bytes(std::uint8_t raw) {
+    switch (raw) {
+        case 0:
+        case 1:
+        case 10:
+        case 11:
+            return 1;
+        case 6:
+        case 9:
+            return 2;
+        case 2:
+        case 3:
+        case 7:
+            return 4;
+        case 4:
+        case 5:
+        case 8:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+static const char* nccl_redop_name(std::uint8_t raw) {
+    switch (raw) {
+        case 0:
+            return "sum";
+        case 1:
+            return "prod";
+        case 2:
+            return "max";
+        case 3:
+            return "min";
+        case 4:
+            return "avg";
+        case 0xFF:
+            return "";  // the operation does not reduce
+        default:
+            return "?";
+    }
+}
+
+template<> struct Table<ncr::NcclComm> {
+    static constexpr const char* name = "nccl_comm";
+    static constexpr const char* cols = "ticks,comm,comm_hash,rank,nranks,cuda_dev";
+    static void row(std::FILE* f, const Stamped<ncr::NcclComm>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%llu,%d,%d,%d", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.comm, (unsigned long long)s.payload.comm_hash, s.payload.rank,
+                     s.payload.nranks, s.payload.cuda_dev);
+    }
+};
+
+// `logical_bytes` is count x the datatype width and is named to say so. It is
+// what the application handed over, NOT what crosses the wire: a ring
+// all-reduce moves about 2x(n-1)/n of it per rank, a broadcast moves it once.
+// The column exists because every reader would otherwise recompute it, and it
+// is named `logical_` because the first reader to call it `bytes` would put it
+// on a bandwidth axis.
+template<> struct Table<ncr::NcclCollective> {
+    static constexpr const char* name = "nccl_collective";
+    static constexpr const char* cols =
+        "ticks,op,comm,sendbuff,recvbuff,stream,count,datatype,elem_bytes,logical_bytes,redop,root";
+    static void row(std::FILE* f, const Stamped<ncr::NcclCollective>& s,
+                    const rec::InternDictionary&) {
+        const auto w = nccl_datatype_bytes(s.payload.datatype);
+        std::fprintf(f, "%llu,%s,%u,%u,%u,%u,%llu,%s,%llu,%llu,%s,%d",
+                     (unsigned long long)s.temporal.a.ticks, nccl_coll_op_name(s.payload.op),
+                     s.payload.comm, s.payload.sendbuff, s.payload.recvbuff, s.payload.stream,
+                     (unsigned long long)s.payload.count, nccl_datatype_name(s.payload.datatype),
+                     (unsigned long long)w, (unsigned long long)(s.payload.count * w),
+                     nccl_redop_name(s.payload.redop), s.payload.root);
+    }
+};
+
+template<> struct Table<ncr::NcclP2p> {
+    static constexpr const char* name = "nccl_p2p";
+    static constexpr const char* cols =
+        "ticks,dir,comm,peer,buffer,stream,count,datatype,elem_bytes,logical_bytes";
+    static void row(std::FILE* f, const Stamped<ncr::NcclP2p>& s, const rec::InternDictionary&) {
+        const auto w = nccl_datatype_bytes(s.payload.datatype);
+        std::fprintf(f, "%llu,%s,%u,%d,%u,%u,%llu,%s,%llu,%llu",
+                     (unsigned long long)s.temporal.a.ticks,
+                     static_cast<ncr::P2pDir>(s.payload.dir) == ncr::P2pDir::Send ? "send" : "recv",
+                     s.payload.comm, s.payload.peer, s.payload.buffer, s.payload.stream,
+                     (unsigned long long)s.payload.count, nccl_datatype_name(s.payload.datatype),
+                     (unsigned long long)w, (unsigned long long)(s.payload.count * w));
+    }
+};
+
+template<> struct Table<ncr::NcclGroup> {
+    static constexpr const char* name = "nccl_group";
+    static constexpr const char* cols = "ticks,edge,depth";
+    static void row(std::FILE* f, const Stamped<ncr::NcclGroup>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%s,%u", (unsigned long long)s.temporal.a.ticks,
+                     static_cast<ncr::GroupEdge>(s.payload.edge) == ncr::GroupEdge::Start ? "start"
+                                                                                          : "end",
+                     s.payload.depth);
+    }
+};
+
+template<> struct Table<ncr::NcclWindow> {
+    static constexpr const char* name = "nccl_window";
+    static constexpr const char* cols = "ticks,window,comm,buffer,size,win_flags";
+    static void row(std::FILE* f, const Stamped<ncr::NcclWindow>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u,%llu,%d", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.window, s.payload.comm, s.payload.buffer,
+                     (unsigned long long)s.payload.size, s.payload.win_flags);
+    }
+};
+
+template<> struct Table<ncr::NcclDevComm> {
+    static constexpr const char* name = "nccl_dev_comm";
+    static constexpr const char* cols = "ticks,comm";
+    static void                  row(std::FILE* f, const Stamped<ncr::NcclDevComm>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u", (unsigned long long)s.temporal.a.ticks, s.payload.comm);
+    }
+};
+
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
     std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, PeerMapping,
@@ -1030,7 +1211,8 @@ using TableRecords =
                mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, ucr::UcxContext, ucr::UcxWorker,
                ucr::UcxEndpoint, ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend,
                ucr::UcxMemMap, ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic,
-               ucr::UcxWorkerAddress, ucr::UcxEpConnection>;
+               ucr::UcxWorkerAddress, ucr::UcxEpConnection, ncr::NcclComm, ncr::NcclCollective,
+               ncr::NcclP2p, ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.

@@ -51,6 +51,12 @@ inline constexpr RecordTypeId internal_lo = 500, internal_hi = 599;
 inline constexpr RecordTypeId ucx_lo = 600, ucx_hi = 699;
 inline constexpr RecordTypeId gpumem_lo = 700, gpumem_hi = 799;      // Snoopie engine
 inline constexpr RecordTypeId ucx_deep_lo = 800, ucx_deep_hi = 899;  // ucTrace (deferred)
+// NCCL is the only provider whose door is a SUPPORTED profiling interface
+// rather than an interposition: every public entry point is declared through
+// NCCL_API (src/include/core.h), which emits `pncclX` as a strong alias and
+// leaves `ncclX` weak. So this range describes the collective layer as the
+// application asked for it, not as it lands on the wire.
+inline constexpr RecordTypeId nccl_lo = 900, nccl_hi = 999;
 }  // namespace id_range
 
 }  // namespace pcomm::core

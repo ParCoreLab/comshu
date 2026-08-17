@@ -48,6 +48,8 @@ CREATE TABLE ucx_context (rank INT, context INT);
 CREATE TABLE ucx_worker (rank INT, worker INT);
 CREATE TABLE ucx_endpoint (rank INT, endpoint INT);
 CREATE TABLE ucx_mem_map (rank INT, memh INT);
+CREATE TABLE nccl_comm (rank INT, comm INT);
+CREATE TABLE nccl_window (rank INT, window INT);
 SQL
 }
 
@@ -160,6 +162,31 @@ INSERT INTO entity_close VALUES (0, 10, 4, 604), (0, 11, 4, 604), (0, 12, 4, 604
 
 run "UCX endpoint closed through a door we do not hook still fires" fires "
 INSERT INTO entity_close VALUES (0, 10, 99, 604);"
+
+# NCCL, pinned the same way and for the same reason. These four exist so that
+# the openers added to the CTE with the provider stay added: delete the
+# nccl_comm line from `opens` and the first two of these turn red immediately,
+# instead of the provider quietly producing a capture full of spurious rows.
+run "NCCL communicator opened and closed is quiet" quiet "
+INSERT INTO nccl_comm VALUES (0, 1);
+INSERT INTO entity_close VALUES (0, 10, 1, 900);"
+
+run "NCCL window registered and deregistered is quiet" quiet "
+INSERT INTO nccl_window VALUES (0, 5);
+INSERT INTO entity_close VALUES (0, 10, 5, 908);"
+
+# ncclCommDestroy and ncclCommAbort are alternatives, not nested doors, so the
+# provider suppresses neither. If a stack ever does reach one through the other,
+# this is the row that says so rather than a silent double count.
+run "NCCL comm destroyed and aborted fires" fires "
+INSERT INTO nccl_comm VALUES (0, 1);
+INSERT INTO entity_close VALUES (0, 10, 1, 900), (0, 11, 1, 900);"
+
+# The signal the whole assertion exists for, on the newest provider: a
+# communicator built through a creation door we do not hook — ncclCommSplit,
+# ncclCommInitAll — must still be reported.
+run "NCCL comm closed through a door we do not hook still fires" fires "
+INSERT INTO entity_close VALUES (0, 10, 77, 900);"
 
 [ $fail -eq 0 ] && echo "=== asserts_fire : PASS ===" || echo "=== asserts_fire : FAIL ==="
 exit $fail

@@ -83,6 +83,11 @@ if(PCOMM_BUILD_TESTS AND EXISTS ${PCOMM_FLATBUFFERS_INCLUDE})
     ${CMAKE_SOURCE_DIR}/providers/ibverbs
     ${CMAKE_SOURCE_DIR}/providers/mlx5dv
     ${CMAKE_SOURCE_DIR}/providers/ucx
+    # nccl_records.hpp includes no nccl.h — the records are plain POD over
+    # pcomm's own vocabulary — so the core conformance test compiles it on a
+    # host with no NCCL at all, which is the point of keeping records free of
+    # vendor headers.
+    ${CMAKE_SOURCE_DIR}/providers/nccl
     ${PCOMM_FLATBUFFERS_INCLUDE})
   target_compile_features(pcomm_schema_conformance PRIVATE cxx_std_20)
   # Keep assert() alive: every build type that runs tests defines
@@ -141,6 +146,7 @@ if(Python3_Interpreter_FOUND)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/schema_conformance.cpp
       ${CMAKE_SOURCE_DIR}/providers/ibverbs/ib_records.hpp
       ${CMAKE_SOURCE_DIR}/providers/ucx/ucx_records.hpp
+      ${CMAKE_SOURCE_DIR}/providers/nccl/nccl_records.hpp
       # check 6 (ibverbs name tables) reads both readers' sources
       ${CMAKE_SOURCE_DIR}/pcomm-read/main.cpp
       ${CMAKE_SOURCE_DIR}/tools/read_pcs.py

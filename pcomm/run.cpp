@@ -110,6 +110,17 @@ const std::vector<Provider>& registry() {
          /*built*/ true,
          "UCX application intent — contexts, workers, endpoints, tagged sends",
          "inter-node"},
+        // Composes with everything, including gpumem: it hooks host API calls
+        // and touches no CUDA context, so running it alongside NVBit costs
+        // nothing and answers the question NVBit cannot — WHICH collective the
+        // accesses belong to.
+        {"nccl",
+         "libnccl_trace.so",
+         {"nccl", "collectives", "coll"},
+         /*exclusive*/ false,
+         /*built*/ true,
+         "NCCL collective layer — communicators, collectives, peers, groups",
+         "collective"},
     };
     return r;
 }
