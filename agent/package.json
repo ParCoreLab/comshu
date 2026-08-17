@@ -1,0 +1,12 @@
+{
+  "name": "pcomm-agent",
+  "private": true,
+  "type": "module",
+  "description": "the chat pane's sidecar: pi + three tools over a running `pcomm ui`",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "ask": "node ask.mjs",
+    "bridge": "node bridge.mjs",
+    "eval": "node eval.mjs"
+  }
+}
