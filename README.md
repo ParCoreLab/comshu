@@ -50,7 +50,14 @@ pcomm run -p ib,p2p  -- ./app args     # both — see "replay" below
 pcomm read pcomm-out                   # what is in the capture
 pcomm export pcomm-out --csv out.csv   # tables for anything that reads CSV
 pcomm ui pcomm-out                     # the panels, at 127.0.0.1:8777
+agent/run.sh pcomm-out                 # ... and the chat pane, if a model is up
 ```
+
+`agent/` is an optional sidecar that lets you ask the capture questions in
+English and get prose, the SQL behind it, and a chart. It answers with a query
+rather than with data, so every number it gives you is one click from being
+re-run in the Ask panel — see [`agent/README.md`](agent/README.md). The panels
+work exactly the same without it.
 
 One binary with verbs, not three tools: `pcomm-read` and `pcomm-ui` are gone as
 executables (they are still the directories the code lives in). It also removes

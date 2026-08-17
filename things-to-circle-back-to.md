@@ -2,6 +2,31 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN: `/query` rejects a query that begins with a comment
+
+`POST /query` decides a statement is a read by looking at its first token
+(`looks_like_select`, `pcomm-ui/main.cpp`). A leading `--` or `/* */` comment is
+a token it does not recognise, so
+
+```sql
+-- the heaviest pairs
+SELECT src_rank, dst_rank, bytes FROM comm_edges ORDER BY bytes DESC
+```
+
+comes back **400** with "this endpoint answers SELECT only; use `pcomm export`
+to write anything", which describes neither the problem nor the fix. Paste any
+commented query into the Ask panel and it fails.
+
+Found 2026-08-17 while checking that every worked example in `agent/catalog.md`
+actually runs — the first pass failed all thirteen, and only because each began
+with a comment line explaining it.
+
+The agent path does not hit this (`lib/query.mjs` strips comments, and wrapping
+the query in `SELECT * FROM (…) LIMIT n` puts SELECT first regardless), so this
+is only the human path. The fix is to skip leading comments and whitespace
+before the first-token check — a few lines, deliberately not taken during the
+chat-panel work because that work was scoped to change no C++.
+
 ## OPEN: perftest's queue pair is never created, only modified
 
 `case 08`'s `ib_queue_pair` table is **empty**, on every capture we have

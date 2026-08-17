@@ -33,7 +33,13 @@ thing never tested against a real capture.
 | Objects | `mem_object` + `gpu_access` | per-object 1D access heatmap, after Snoopie's object view |
 | Source | `source_line` | **empty on every current capture** — needs gpumem with PC→line |
 | Timeline | `timeline_span` | canvas, pan + zoom; density bins zoomed out, real spans zoomed in |
-| Ask | any | SQL console; the NL layer will emit into this same path |
+| Ask | any | SQL console; the chat pane hands its queries here to be edited and re-run |
+
+Plus one thing that is not a panel: the **Chat** pane (`src/panels/Chat.svelte`),
+a side pane rather than a tenth view because it is not a view of the capture —
+it is a way of getting to the views, and it stays open while you read them. It
+needs `agent/bridge.mjs` running beside this server and says so when it is not.
+See [`../agent/README.md`](../agent/README.md).
 
 The view lives in the URL fragment (`#flow`), so a view is linkable and survives
 a reload. One panel renders at a time — eight panels is eight queries, and
@@ -46,6 +52,14 @@ component imports `fetch`. Two reasons: a panel with its own server-side
 endpoint forks the derived layer, and two panels then disagree about total bytes
 with no single place to fix it; and the static / DuckDB-WASM build swaps the
 transport in that one file instead of hunting fetches through a grown UI.
+
+**The chat pane may not return data either.** `src/lib/agent.js` is the only
+file that talks to the agent bridge, and what comes back is prose plus
+`{ sql, spec }` — never rows. A chart's data is fetched by the panel through
+`query()` like everything else, so the model's numbers come down the same pipe
+as the panels' numbers and can be checked against them. An agent that computed
+its own aggregates would be a ninth panel with a private pipeline, which is the
+failure this file exists to prevent, arriving through a door nobody guarded.
 
 **If a panel needs a table that does not exist, it belongs in
 `pcomm link`, not in the panel.** That is what keeps every view a
