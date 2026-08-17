@@ -356,9 +356,15 @@ int pcomm::cli::run_main(int argc, char** argv) {
     // said loudly, because a silently missing lane is the failure this whole
     // check exists to prevent.
     //
-    // The environment variable is the second half of the guard: the backend
-    // consults pcomm_engine_kernel_timing_wanted() before touching CUPTI, so
+    // The environment variable is the second half of the guard: the CUPTI
+    // backend consults pcomm_engine_cupti_allowed() before touching CUPTI, so
     // even a hand-built LD_PRELOAD that includes both is safe.
+    //
+    // IT IS NOT THE KERNEL-TIMING SWITCH, and it used to be. Setting
+    // PCOMM_KERNEL_TIMING here also disabled NVBit's %globaltimer stamp, which
+    // needs no CUPTI at all — so every `-p p2p` run silently lost its only
+    // clock. See engine_abi.h. The launcher now says only what it knows: who is
+    // allowed to take the subscriber.
     {
         // `canonical`, not aliases[0] — the latter is the printed short name
         // ("kernel", "p2p") and matching on it silently never fires.
@@ -369,21 +375,27 @@ int pcomm::cli::run_main(int argc, char** argv) {
             return false;
         };
         if (has("cupti") && has("gpumem")) {
-            std::fprintf(stderr,
-                         "pcomm: dropping `cupti` — gpumem loads NVBit, which takes this "
-                         "process's\n"
-                         "       only CUPTI subscriber. Running both silently empties the "
-                         "gpumem\n"
-                         "       capture. Kernel lifetimes will be absent from this run.\n");
+            std::fprintf(stderr, "pcomm: dropping `cupti` — gpumem loads NVBit, which takes this "
+                                 "process's\n"
+                                 "       only CUPTI subscriber. Running both silently empties the "
+                                 "gpumem\n"
+                                 "       capture. NVBit's own %%globaltimer stamp still times "
+                                 "kernels.\n");
             selected.erase(std::remove_if(selected.begin(), selected.end(),
                                           [](const Provider* p) {
                                               return std::string_view("cupti") == p->canonical;
                                           }),
                            selected.end());
         }
-        // Always set, both ways: an inherited PCOMM_KERNEL_TIMING=0 from an
-        // earlier shell must not silently disable a run that did ask for cupti.
-        setenv("PCOMM_KERNEL_TIMING", has("cupti") ? "1" : "0", 1);
+        // Always set, both ways: an inherited PCOMM_CUPTI_ALLOWED=0 from an
+        // earlier shell must not silently disable a run that has no gpumem in
+        // it. Keyed on gpumem, not on the absence of cupti — the hazard is
+        // NVBit owning the subscriber, and nothing else.
+        //
+        // PCOMM_KERNEL_TIMING is deliberately NOT set here. It is the user's,
+        // it defaults on, and the run that most needs it (`-p p2p`) is exactly
+        // the one the old provider-keyed value turned off.
+        setenv("PCOMM_CUPTI_ALLOWED", has("gpumem") ? "0" : "1", 1);
     }
 
     // ── Plan the passes ─────────────────────────────────────────────────────

@@ -235,13 +235,23 @@ void pcomm_engine_clock_anchor(std::uint16_t domain, std::uint64_t local_ticks,
         pcomm::core::records::ClockAnchor{{}, {}, domain, local_ticks, wall_ns, mono_ns});
 }
 
-// Set by the launcher, which is the only thing that knows the provider list
-// before any of them load. Default ON: a bare LD_PRELOAD of the engine with no
-// gpumem in sight should still time kernels. `pcomm run` clears it when gpumem
-// is selected — see the arm-E measurement quoted in engine_abi.h for what
-// happens if it does not.
+// The user's knob, not the launcher's. Default ON, and the launcher no longer
+// touches it: whether kernel lifetimes are wanted is a question about the run,
+// not about which provider happens to be able to answer it. engine_abi.h
+// carries what the previous conflation cost.
 int pcomm_engine_kernel_timing_wanted(void) {
     const char* v = std::getenv("PCOMM_KERNEL_TIMING");
+    if (v && (*v == '0' || *v == 'n' || *v == 'N'))
+        return 0;
+    return 1;
+}
+
+// Set by the launcher, which is the only thing that knows the provider list
+// before any of them load. Default ON: a bare LD_PRELOAD chain with no gpumem
+// in sight may take CUPTI. `pcomm run` clears it when gpumem is selected — see
+// the arm-E measurement quoted in engine_abi.h for what happens if it does not.
+int pcomm_engine_cupti_allowed(void) {
+    const char* v = std::getenv("PCOMM_CUPTI_ALLOWED");
     if (v && (*v == '0' || *v == 'n' || *v == 'N'))
         return 0;
     return 1;

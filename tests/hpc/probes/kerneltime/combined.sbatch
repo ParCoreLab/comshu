@@ -40,8 +40,9 @@ OUT=$HOME/kt-combined-$SLURM_JOB_ID; rm -rf "$OUT"
 
 # `pcomm run` is deliberately NOT used to wrap mpirun: it would trace mpirun
 # itself. The launcher's job here is done by exporting the same chain it would
-# build, per rank, which is what -x LD_PRELOAD does below. PCOMM_KERNEL_TIMING=1
-# is the launcher's guard variable, set by hand for the same reason.
+# build, per rank, which is what -x LD_PRELOAD does below. PCOMM_CUPTI_ALLOWED=1
+# is the launcher's guard variable, set by hand for the same reason; there is no
+# gpumem in this chain, so CUPTI is safe to take.
 ENGINE=$(ls $BUILD/libpcomm/libpcomm_engine.so)
 CHAIN="$ENGINE:$BUILD/providers/ibverbs/libibverbs_trace.so:$BUILD/gpu-backends/cupti/libcupti_trace.so"
 
@@ -49,7 +50,7 @@ mpirun -np 8 --map-by ppr:4:node \
   -x PATH -x LD_LIBRARY_PATH \
   -x LD_PRELOAD="$CHAIN" \
   -x PCOMM_OUTPUT_DIR="$OUT" \
-  -x PCOMM_KERNEL_TIMING=1 \
+  -x PCOMM_CUPTI_ALLOWED=1 \
   -x PCOMM_VERBOSE=1 \
   -x NCCL_DEBUG=WARN \
   "$APP" 8388608 30
@@ -74,7 +75,7 @@ if [ -f "$GPUMEM" ]; then
   PCOMM_PROVIDER_PATH="$(dirname $GPUMEM):$BUILD/gpu-backends/cupti" \
     "$PCOMM" run -p gpumem,cupti -o "$GOUT" --dry-run -- "$APP" 65536 2 2>&1 | head -8
   echo "--- and for real, single rank ---"
-  PCOMM_KERNEL_TIMING=0 mpirun -np 1 \
+  PCOMM_CUPTI_ALLOWED=0 mpirun -np 1 \
     -x PATH -x LD_LIBRARY_PATH \
     -x LD_PRELOAD="$ENGINE:$GPUMEM" \
     -x PCOMM_OUTPUT_DIR="$GOUT" -x NCCL_DEBUG=WARN \

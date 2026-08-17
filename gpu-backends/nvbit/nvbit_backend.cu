@@ -1004,9 +1004,14 @@ void nvbit_at_init() {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
     if (const char* k = std::getenv("PCOMM_KERNEL_NAME"))
         G().kernel_filter = k;
-    // Same switch the CUPTI backend reads, and read ONCE: the instrumentation
-    // loop runs per instruction over modules with hundreds of specialisations,
-    // so a getenv in it would be a real cost.
+    // "Does this run want kernel times", and nothing about CUPTI: the stamp
+    // this gates is PTX %globaltimer, which shares no state with the activity
+    // API. Until 2026-08-17 this read the launcher's CUPTI guard by the same
+    // name, so `-p p2p` — the case that has no CUPTI and therefore needs this
+    // path most — turned it off. engine_abi.h has what that cost.
+    //
+    // Read ONCE: the instrumentation loop runs per instruction over modules
+    // with hundreds of specialisations, so a getenv in it would be a real cost.
     g_kernel_timing = pcomm_engine_kernel_timing_wanted() != 0;
     g_engine = new pcomm::gpumem::Engine();
 }

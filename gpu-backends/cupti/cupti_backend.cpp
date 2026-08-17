@@ -22,10 +22,16 @@
 // So this file must never be the one that wins. The guards, in the order they
 // actually protect:
 //
-//   1. THE REAL ONE: pcomm_engine_kernel_timing_wanted(). The launcher knows
-//      the provider list before anything loads and clears it when gpumem is
+//   1. THE REAL ONE: pcomm_engine_cupti_allowed(). The launcher knows the
+//      provider list before anything loads and clears it when gpumem is
 //      selected, so we never touch CUPTI in a process NVBit is in. This is
 //      deterministic and does not depend on timing.
+//
+//      It was pcomm_engine_kernel_timing_wanted() until 2026-08-17, and that
+//      is a cautionary tale rather than a rename: NVBit's own kernel stamp read
+//      the same flag, so the guard protecting THIS file from CUPTI was also
+//      switching off the instrument that replaces it. Every gpumem capture ever
+//      taken lost its clock to it. A guard names the hazard it guards.
 //   2. Best-effort lateness. We arm from cuInit-after-the-real-call (the driver
 //      runs CUDA_INJECTION64_PATH tools from inside cuInit, so NVBit has
 //      already taken the slot by then) or from the first launch. That removes
@@ -220,9 +226,21 @@ const char* cupti_err(CUptiResult r) {  // NOLINT — forward-declared above
 void enable_once() {
     g_verbose = std::getenv("PCOMM_VERBOSE") != nullptr;
 
+    // Two questions, and this backend is the only thing in the tree that has to
+    // ask both. They fail for different reasons and so they say different
+    // things: "nobody wants kernel times" is the user's choice, "you may not
+    // take CUPTI" is the launcher protecting a gpumem capture that is still
+    // being timed by NVBit. Reporting either as the other is how the two got
+    // conflated in the first place — see engine_abi.h.
     if (!pcomm_engine_kernel_timing_wanted()) {
         if (g_verbose)
-            std::fprintf(stderr, "[pcomm/cupti] kernel timing disabled by the launcher\n");
+            std::fprintf(stderr, "[pcomm/cupti] kernel timing off (PCOMM_KERNEL_TIMING=0)\n");
+        return;
+    }
+    if (!pcomm_engine_cupti_allowed()) {
+        if (g_verbose)
+            std::fprintf(stderr, "[pcomm/cupti] not taking CUPTI — NVBit owns this process's "
+                                 "subscriber\n");
         return;
     }
 

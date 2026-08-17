@@ -183,15 +183,50 @@ void pcomm_engine_record_kernel(uint64_t t0, uint64_t t1, uint16_t domain, const
  * A100 — opposite signs, so a shared constant is not an option. */
 void pcomm_engine_clock_anchor(uint16_t domain, uint64_t local_ticks, uint64_t wall_ns);
 
-/* Should this process take CUPTI?
+/* Does this run want kernel execution windows at all?
+ *
+ * Read from PCOMM_KERNEL_TIMING; defaults to 1. This is the USER's knob — "do
+ * not spend anything on kernel lifetimes" — and it is deliberately independent
+ * of which instrument would take them. Every backend that can measure a kernel
+ * consults it; none of them may infer anything about CUPTI from the answer.
+ *
+ * THESE WERE ONE FUNCTION UNTIL 2026-08-17, AND THE CONFLATION COST EVERY
+ * GPUMEM CAPTURE ITS CLOCK. This flag used to mean "should this process take
+ * CUPTI?", which the launcher answered by clearing it whenever cupti was not in
+ * the provider list. NVBit's kernel stamp reads the same flag — and it is pure
+ * PTX %globaltimer, sharing nothing with CUPTI but the question's old name — so
+ * `-p p2p` set it to 0 and disabled the one instrument that run had. Result:
+ * not one gpu_access capture in the corpus carries a GpuKernel row or a
+ * kDomainGpuTimerBase anchor, so the only timestamps in it are host TSC read on
+ * the drain thread, and pcomm-read draws those as if they were execution time.
+ * Verified on the 2026-08-11/14 asym_patterns captures: four ranks in disjoint
+ * windows across a workload that barriers every iteration.
+ *
+ * The mechanism was never broken, only unreachable: `kt-nvbit-globaltimer`,
+ * hand-run outside the launcher, holds 502 spans in domain 2 with both anchors.
+ *
+ * So: one question per function, and the CUPTI hazard is the other one. */
+int pcomm_engine_kernel_timing_wanted(void);
+
+/* May this process register CUPTI callbacks?
  *
  * Returns 0 when something else already owns the CUDA callback subscriber — in
  * practice NVBit, loaded by the gpumem provider. Enabling CUPTI anyway does not
  * degrade that capture, it EMPTIES it: measured on MN5 job 44546506 arm E, the
  * real libgpumem_trace.so produced four rank directories and zero .pcs files,
- * silently. The launcher knows the provider list and sets this; a backend must
- * consult it before calling cuptiActivityRegisterCallbacks. */
-int pcomm_engine_kernel_timing_wanted(void);
+ * silently. The launcher knows the provider list and sets this; the CUPTI
+ * backend must consult it before calling cuptiActivityRegisterCallbacks.
+ *
+ * Read from PCOMM_CUPTI_ALLOWED, and it defaults to 1 rather than 0 on purpose:
+ * a hand-built LD_PRELOAD chain with no launcher in it must behave as it did
+ * before this variable existed, and the CUPTI backend's lateness guard is what
+ * covers that case (see the guard list in cupti_backend.cpp).
+ *
+ * Keyed on gpumem being SELECTED, not on cupti being absent. The hazard is
+ * NVBit taking the subscriber; a run with neither backend has nothing to
+ * protect, and answering it by asking after cupti is what tangled this with
+ * kernel timing in the first place. */
+int pcomm_engine_cupti_allowed(void);
 
 /* How much this run wants recorded: 0 = aggregate, 1 = simple, 2 = full.
  * Matches pcomm::core::TraceMode, which carries the reasoning and the numbers.
