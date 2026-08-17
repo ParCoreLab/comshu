@@ -168,7 +168,16 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # oracle and not an observation: ibv_rc_pingpong takes it as -r (default 500)
 # and posts exactly that many receives up front, so the expected ib_post_recv
 # count is known from the command line before the code runs.
-PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding gpudirect rx_depth"
+# colls_per_iter / p2p_per_iter / groups_per_iter are how many NCCL calls of
+# each kind one iteration of the workload makes. They are oracles for the same
+# reason rx_depth is — the number is in the source of the workload, known before
+# it runs — but ONLY at the host-API layer, and the distinction matters enough
+# to state here. Cases 02 and 05 cannot use anything like them: NCCL picks
+# channels, protocol and chunking, so nothing about the wire follows from the
+# call count. The nccl provider records the calls the APPLICATION made, and no
+# NCCL internal choice changes how many times the application called
+# ncclAllReduce.
+PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding gpudirect rx_depth colls_per_iter p2p_per_iter groups_per_iter"
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
 params_sql="$(meta_py <<'PY'
