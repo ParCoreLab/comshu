@@ -35,7 +35,6 @@ set -x
 PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
 source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
-export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
 # Same workload binary as case 04 — the ring spans whatever PE count it is given,
 # so the only difference here is 8 PEs across 2 nodes instead of 4 on one.
@@ -49,6 +48,21 @@ if [ ! -x "$APP" ]; then
     -lnvshmem_host -lnvshmem_device -lcudart
   pcomm_load_runtime
 fi
+
+# AFTER the build block, not before it, and this line has already cost a job.
+#
+# NVSHMEM_HOME is globbed to the NEWEST SDK (26.5 on MN5) while
+# pcomm_load_build/pcomm_load_runtime do `module load nvidia-hpc-sdk/25.7` — and
+# each of those PREPENDS 25.7's lib dir. Setting this before the build block
+# therefore puts 26.5 first, the build block shoves 25.7 in front of it, and the
+# loader hands the binary a libnvshmem_host it was not linked against:
+# "undefined symbol: nvshmem_selected_device_transport, version NVSHMEM",
+# exit 127, no capture at all.
+#
+# This case survived it only because its binary was cached, so the build block
+# never ran — exactly as 13_hubspoke's comment predicted it would fail "the day
+# someone changes the workload". Adding -lineinfo was that day (job 44696379).
+export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
 # Pin the inter-node transport to IBRC (proxy-based): its WQEs are posted by a
 # host CPU thread through libibverbs, which is what the `ib` provider hooks.

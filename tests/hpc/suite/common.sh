@@ -71,6 +71,37 @@ pcomm_find_cuda() {
 # Where a case drops its capture + where the checker reads it.
 pcomm_out() { echo "${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/$1-${SLURM_JOB_ID:-local}"; }
 
+# The UCX tree, anchored to the MPI THAT WILL ACTUALLY RUN — not to $PCOMM_SDK.
+#
+# $PCOMM_SDK is the NEWEST SDK (26.5 on MN5) while pcomm_load_runtime loads
+# nvidia-hpc-sdk/25.7, so mpirun comes from 25.7 and the UCX it dlopens is 25.7's.
+# Deriving UCX from $PCOMM_SDK instead picked 26.5, whose hpcx layout is a
+# different version entirely (2.50 vs 2.22.1) — case 19 refused to run against it
+# and said so, which is the only reason this is a two-line fix rather than a
+# capture full of nothing. Job 44696379.
+#
+# The provider is INTERPOSED on public UCP symbols, so "which libucp" is not a
+# detail: build against one and run against another and the interposition simply
+# does not engage. Build and run therefore share this one definition — run_on_mn5.sh
+# calls it too rather than spelling a path of its own.
+#
+# MN5 has several hpcx trees per SDK (2.14, 2.20, 2.22.1); the newest that
+# actually carries lib/libucp.so wins, which is the one HPC-X's own `latest`
+# symlink points at.
+pcomm_find_ucx() {
+  [ -n "${UCX_HOME:-}" ] && { echo "$UCX_HOME"; return 0; }
+  _mpirun="$(command -v mpirun 2>/dev/null)" || return 1
+  [ -n "$_mpirun" ] || return 1
+  # $SDKROOT/comm_libs/mpi/bin/mpirun -> $SDKROOT
+  _sdk="$(cd "$(dirname "$_mpirun")/../../.." 2>/dev/null && pwd)" || return 1
+  _best=""
+  for _u in "$_sdk"/comm_libs/*/hpcx/hpcx-*/ucx; do
+    [ -e "$_u/lib/libucp.so" ] && _best="$_u"      # last match wins = newest
+  done
+  [ -n "$_best" ] || return 1
+  echo "$_best"
+}
+
 # The linked Parquet export, beside the CSV one, when this build can make it.
 #
 # WHY BOTH AND NOT JUST ONE. CSV is the path that always works: MN5 defaults to

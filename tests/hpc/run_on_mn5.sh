@@ -257,8 +257,9 @@ if [ "$do_build" -eq 1 ]; then
   # doors sat in the tree fully tested and never exercised on a cluster.
   say "build ucx provider (public UCP doors, gcc-13.2)"
   rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
-       SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
-       UCX=\$SDK/comm_libs/12.9/hpcx/hpcx-2.22.1/ucx &&
+       . tests/hpc/suite/common.sh &&
+       UCX=\$(pcomm_find_ucx) &&
+       echo \"  ucx: \$UCX\" &&
        cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
        cmake --build build-ucx --target ucx_trace -j 2>&1 | tail -2 &&
        mkdir -p build/providers/ucx &&

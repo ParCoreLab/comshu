@@ -49,14 +49,18 @@ if [ ! -x "$APP" ] || [ "$SRC" -nt "$APP" ]; then
     || { echo "!! mpicc failed — refusing to run a stale or missing binary" >&2; exit 1; }
 fi
 
-# UCX lives in the VERSIONED HPC-X tree, not under the comm_libs/mpi symlink
-# that PATH resolves. Pointing at the symlink finds headers and no library; this
-# path is the one the promoting probe verified. The provider .so was linked
-# against it at build time (run_on_mn5.sh), so the runtime path has to agree.
-UCX_LIB="$PCOMM_SDK/comm_libs/12.9/hpcx/hpcx-2.22.1/ucx/lib"
+# UCX lives in the VERSIONED HPC-X tree, not under the comm_libs/mpi symlink that
+# PATH resolves — and it must be the tree belonging to the MPI that will actually
+# run, which is NOT $PCOMM_SDK. pcomm_find_ucx is the one definition of that,
+# shared with the build in run_on_mn5.sh: the provider interposes public UCP
+# symbols, so building against one libucp and running against another leaves the
+# interposition silently disengaged.
+UCX_HOME_RESOLVED="$(pcomm_find_ucx)" || {
+  echo "!! no HPC-X UCX tree found beside this MPI ($(command -v mpirun))" >&2
+  exit 1; }
+UCX_LIB="$UCX_HOME_RESOLVED/lib"
 if [ ! -e "$UCX_LIB/libucp.so" ]; then
   echo "!! no libucp.so under $UCX_LIB" >&2
-  echo "   (the provider was built against this path; a moved HPC-X needs both updated)" >&2
   exit 1
 fi
 export LD_LIBRARY_PATH="$UCX_LIB:$LD_LIBRARY_PATH"
