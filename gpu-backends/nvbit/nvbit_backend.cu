@@ -332,15 +332,32 @@ void refresh_mapped_regions() {
             // range, and the range is the extent a pointer is valid over.
             // on_alloc is idempotent per base, so the hundredth chunk of a
             // reservation costs one registry entry and no extra record.
-            uint64_t obase = r.base, osize = r.size;
+            uint64_t obase = 0, osize = 0;
             for (const auto& v : g.reserved)
                 if (v.base <= r.base && r.base < v.base + v.size) {
                     obase = v.base;
                     osize = v.size;
                     break;
                 }
-            g_engine->on_alloc(obase, osize, static_cast<pcomm::core::DeviceId>(dev));
-            named++;
+            if (obase) {
+                g_engine->on_alloc(obase, osize, static_cast<pcomm::core::DeviceId>(dev));
+                named++;
+            } else {
+                // Created here but backing no reservation we saw. NAME NOTHING.
+                //
+                // cuMemCreate is not by itself evidence of an application
+                // buffer: CUDA's own pooled allocator creates and maps
+                // granularity chunks through the same door. Falling back to
+                // naming the chunk put 818 objects per rank in case 04 against
+                // 38 before — 780 of them exactly 2 MiB at 0x7fc9-0x7fcb, pool
+                // backing rather than anything allocated by the program.
+                //
+                // So the reservation is required, not preferred. Without it we
+                // are back to knowing only the device, which is what add_range
+                // exists to say.
+                g_engine->allocs().add_range(r.base, r.size,
+                                             static_cast<pcomm::core::DeviceId>(dev));
+            }
         } else {
             g_engine->allocs().add_range(r.base, r.size, static_cast<pcomm::core::DeviceId>(dev));
         }
