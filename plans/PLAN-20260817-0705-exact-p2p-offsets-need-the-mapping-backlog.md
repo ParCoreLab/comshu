@@ -220,6 +220,48 @@ case 05 — the error message was filtered away and the failure looked like an
 empty capture. The bare run is what answered both questions. Do not filter the
 output of a probe whose failure mode is unknown.
 
+## The fabric arm is built, and cannot be exercised on MN5
+
+`PeerMapping` (record 526) is implemented end to end — backend hooks, engine
+emission, reader table, CSV/Parquet, and a byte-identical layout assertion in
+`schema_conformance`. It carries the interned `CUmemFabricHandle` hex, the local
+`[base, size)`, `cuMemMap`'s own `alloc_offset`, the device, and which end of the
+share the row is.
+
+**It has never seen a real fabric handle, and on this machine it cannot.**
+`tests/hpc/probes/fabricshare/` asks for one directly, and job 44709806 answers:
+
+```
+[fabric] rank=0 dev=0 fabric_supported=1
+[fabric] rank=0 FAIL cuMemCreate(&mine, N, &prop, 0) -> CUDA_ERROR_NOT_PERMITTED
+```
+
+So the distinction that matters is one the earlier probe could not see:
+`CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED = 1` says the **GPU** can
+export a fabric handle; it does **not** say the system will let a process create
+one. That needs the IMEX daemon / fabric manager configured, and MN5 does not
+have it. Reading the device attribute as "fabric works here" would have been
+wrong, and is exactly the kind of inference this probe exists to prevent.
+
+**Status of the arm, stated plainly:**
+
+| part | state |
+|---|---|
+| record layout | verified — `schema_conformance` asserts it byte-for-byte against the FlatBuffers struct |
+| emission path | **unexercised** — no fabric handle has ever reached it |
+| link-side join | **not written**, deliberately: building a join on top of an emission path nothing has run would compound unvalidated code |
+
+The cost of keeping it is one schema-hash bump (0xA7144CDF1C9EF478 →
+0xDECE2918D9647FAE); strides are unchanged, so captures decode with a warning
+rather than a refusal. The benefit is that on MNNVL hardware — GB200 and
+similar, where NCCL *does* choose fabric handles — the capture side is already
+there and only the join remains.
+
+**Do not write the join until something populates the table.** The first machine
+with IMEX configured should run `tests/hpc/probes/fabricshare/` first; it prints
+the allocation-id histogram, and a count of 2 on a single id is the whole
+validation.
+
 ## Why not the NVSHMEM route
 
 The tempting shortcut is the symmetric heap: `nvshmem_ptr(a, pe) = peer_base[pe]
