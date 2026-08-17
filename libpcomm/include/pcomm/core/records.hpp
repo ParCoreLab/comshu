@@ -19,6 +19,25 @@ PCOMM_RECORD(GpuAccess, RecordKind::Event, 700, "gpu_access") {
     Handle        pc;      // interned program counter
     Handle        object;  // interned mem-object id (0 if unattributed)
     std::uint64_t address;
+    // Which kernel launch issued it — GpuKernel.correlation, same rank. 0 when
+    // unknown (a launch path we do not intercept, or kernel timing off).
+    //
+    // THIS IS A JOIN KEY AND NOT A TIME, and the distinction is why the field
+    // exists. The temporal on this record is a Window of [launch enqueue, host
+    // drain] in host TSC — sound, but measured at 1.94 s wide against a 48 us
+    // kernel on hubspoke-44713195, because "drain" is in practice the
+    // end-of-run flush. The kernel's own %globaltimer span is three orders
+    // tighter, and it CANNOT be resolved when this record is written: t1 is a
+    // max over exits that closes only when the last block retires, and t0 a min
+    // over entries, so reading either at drain time could yield a window that
+    // EXCLUDES the true access time — worse than a wide one, per
+    // plans/PLAN-20260803-1021.
+    //
+    // So the producer records the key and the reader does the join, where the
+    // whole capture is available and the ordering problem does not exist. See
+    // _tl_raw in pcomm-read/link_sql.hpp, which narrows to the span's window
+    // when one matches and keeps the TSC window when none does.
+    std::uint64_t launch;
     std::uint32_t size;
     MemOp         op;
     MemSpace      space;

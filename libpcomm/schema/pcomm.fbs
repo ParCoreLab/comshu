@@ -129,6 +129,7 @@ struct GpuAccess {
   pc:uint32;           // interned handle
   object:uint32;       // interned handle, 0 = unattributed
   address:uint64;
+  launch:uint64;       // GpuKernel.correlation, same rank; 0 = unknown
   size:uint32;
   op:MemOp;
   space:MemSpace;

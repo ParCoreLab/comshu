@@ -190,16 +190,21 @@ struct Table;  // no primary definition: an unspecialized use is a missing entry
 // because one called `ticks` was printed identically to ib_post_send's `ticks`,
 // which is a *measured* call-entry time; joining the two silently correlated
 // drain time against wire time. ticks_lo == 0 means the lower bound is open.
+//
+// `launch` is GpuKernel.correlation on the same rank, and it is what makes that
+// wide window narrowable — the derived layer joins it to the kernel's own
+// %globaltimer span, which is three orders tighter. It is a key rather than a
+// tighter timestamp for an ordering reason spelled out on GpuAccess::launch.
 template<> struct Table<GpuAccess> {
     static constexpr const char* name = "gpu_access";
     static constexpr const char* cols =
-        "ticks_lo,ticks_hi,pc,object,addr,size,op,run_dev,mem_dev,thread";
+        "ticks_lo,ticks_hi,launch,pc,object,addr,size,op,run_dev,mem_dev,thread";
     static void row(std::FILE* f, const Stamped<GpuAccess>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u",
-                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
-                     s.payload.pc, s.payload.object, (unsigned long long)s.payload.address,
-                     s.payload.size, memop_name(s.payload.op), s.payload.run_device,
-                     s.payload.mem_device, s.payload.thread);
+        std::fprintf(
+            f, "%llu,%llu,%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+            (unsigned long long)s.temporal.b.ticks, (unsigned long long)s.payload.launch,
+            s.payload.pc, s.payload.object, (unsigned long long)s.payload.address, s.payload.size,
+            memop_name(s.payload.op), s.payload.run_device, s.payload.mem_device, s.payload.thread);
     }
 };
 

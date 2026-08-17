@@ -27,6 +27,7 @@ inline void AttributionPipeline::process(std::span<const RawAccess> accesses) {
         rec.run_device = a.run_device;
         rec.mem_device = a.mem_device;
         rec.thread = a.thread;
+        rec.launch = a.launch;
 
         for (auto& attributor : m_chain)
             attributor->attribute(a, rec, *m_rec);

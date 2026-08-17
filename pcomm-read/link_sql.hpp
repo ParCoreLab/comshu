@@ -299,13 +299,47 @@ UNION ALL
            temporal_a_ticks, temporal_b_ticks,
            qp_num, NULL::BIGINT       FROM mlx5_doorbell
 UNION ALL
-    -- kind = 3 (Window) since 2026-08-17: [kernel launch, host drain]. This
-    -- lane is the reason `kind` exists here at all — an access is BOUNDED, not
-    -- measured, and drawing its window as a slice would assert the access took
-    -- that long. See RawAccess in attr/interfaces.hpp.
-    SELECT rank, 'gpu_access',     temporal_a_domain, temporal_kind,
-           temporal_a_ticks, temporal_b_ticks,
-           run_device, size::BIGINT   FROM gpu_access
+    -- kind = 3 (Window) since 2026-08-17: an access is BOUNDED, not measured,
+    -- and drawing its window as a slice would assert the access took that long.
+    -- This lane is the reason `kind` exists here at all.
+    --
+    -- NARROWED TO THE ISSUING KERNEL'S SPAN when one is recorded, and the
+    -- difference is three orders of magnitude, not a refinement. What the
+    -- producer can bound at drain time is [launch enqueue, host drain]: sound,
+    -- but "drain" is in practice the end-of-run flush, measured at 1.94 s wide
+    -- around a 48 us kernel on hubspoke-44713195. The kernel's own %globaltimer
+    -- entry/exit span is the real bound, and the producer cannot apply it —
+    -- see GpuAccess::launch in core/records.hpp for the ordering reason. Here it
+    -- can: the whole capture is present, so the join is just a join.
+    --
+    -- COALESCE, not a filter: a row with no matching span keeps its TSC window
+    -- and stays in the lane. Kernel timing can be off (PCOMM_KERNEL_TIMING=0),
+    -- the launch path can be one we do not intercept (CUDA graphs), or the span
+    -- can have failed to close — and an access is still an access. Degrading per
+    -- row is the same rule the corpus follows per stream.
+    --
+    -- The DOMAIN comes from whichever side won, which is why this is sound
+    -- across two clocks without any conversion here: both ends of a narrowed row
+    -- are globaltimer in the kernel's domain, both ends of a fallback row are
+    -- host TSC in domain 0, and timeline_span joins _clock per (rank, domain).
+    -- Mixing the two ends of ONE row across domains would be the bug; this never
+    -- does that.
+    SELECT g.rank, 'gpu_access',
+           coalesce(k.temporal_a_domain, g.temporal_a_domain),
+           g.temporal_kind,
+           coalesce(k.temporal_a_ticks, g.temporal_a_ticks),
+           coalesce(k.temporal_b_ticks, g.temporal_b_ticks),
+           g.run_device, g.size::BIGINT
+    FROM gpu_access g
+    LEFT JOIN (
+        -- One row per (rank, launch). gpu_kernel is already unique on that pair,
+        -- but source = 2 (HostSubmit) rows must not be the match: they are the
+        -- launch API call, 9-13 ms ahead of execution, and narrowing to one
+        -- would move the window off the kernel entirely — the same reason they
+        -- are excluded from the gpu_kernel lane below.
+        SELECT rank, correlation, temporal_a_domain, temporal_a_ticks, temporal_b_ticks
+        FROM gpu_kernel WHERE source <> 2 AND correlation <> 0
+    ) k ON k.rank = g.rank AND k.correlation = g.launch
 UNION ALL
     -- Compute, beside the comm. This is the row that lets a timeline answer
     -- "was that rank stalled or working" instead of only "that rank went

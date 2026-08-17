@@ -61,6 +61,11 @@ struct RawAccess {
     // alternatives (previous-drain time; per-access globaltimer) were rejected.
     core::Ticks ticks_lo{0};
     core::Ticks ticks_hi{0};
+
+    // Which kernel launch issued it, for the reader to join against a recorded
+    // kernel span — see GpuAccess::launch in core/records.hpp for why this is a
+    // key rather than a tighter pair of ticks. 0 = unknown.
+    std::uint64_t launch{0};
 };
 
 // Host-side runtime happenings the pipeline reacts to (kernel launch/exit,

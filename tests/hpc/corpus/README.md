@@ -71,6 +71,32 @@ reports them as `unattributed_recv_completions` rather than quietly dropping
 them. On `scale_hubspoke_ib-44517390` that is 11,520 completions. Regenerating
 the capture restores it; nothing else in the capture is affected.
 
+**It has now happened a second time, and this one costs the whole p2p half.**
+`gpu_access` gained `launch` (the kernel-launch join key that lets the reader
+narrow an access's window to its kernel's `%globaltimer` span, 2026-08-17),
+moving its stride from 80 to 88 and `kSchemaHash` from `dece2918d9647fae` to
+`431590ac40ce7184`. Every capture taken before that still decodes completely
+EXCEPT that one stream, which is refused by name:
+
+```
+pcomm: .../rank-0/700.pcs: record stride differs — this capture was written
+       by a build whose record layout does not match this one
+```
+
+So a pre-2026-08-17 p2p capture now reads as **0 gpu-accesses**: no NVLink
+`comm_edges`, no `object_access` p2p rows, no `gpu_access` timeline lane. The ib
+captures are untouched, having no `700` stream at all. Every case that produces
+`gpu_access` — 03, 04, 05, 06, 07, 13, 14, 15 — has to be re-run, which is the
+trade [[pcomm-prealpha-prefers-correct-design-over-compatibility]] exists to
+authorise: the schema is pre-alpha and MN5 cycles are cheaper than carrying a
+record that cannot say when its accesses happened.
+
+Worth noting which way the degradation falls. Losing `gpu_access` is loud — the
+suite's `tables_present` assertion fires and the panels are visibly empty — where
+the `ib_post_recv` drift above was quiet enough to need `link_health` to surface
+it. A stream refused by name is the good failure; the one to fear is a layout
+change that keeps the stride.
+
 ## Usage
 
 ```bash
