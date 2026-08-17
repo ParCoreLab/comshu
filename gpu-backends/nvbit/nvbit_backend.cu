@@ -25,6 +25,8 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+
+#include <sys/stat.h>
 #include <vector>
 
 #include "nvbit.h"
@@ -235,6 +237,43 @@ const NvshmemApi& nvshmem_api() {
         api->init_status = (int (*)())dlsym(RTLD_DEFAULT, "nvshmemx_init_status");
     }
     return *api;
+}
+
+// PROBE, gated on PCOMM_TRACE_VMM=1 — which memory-sharing doors does this
+// workload actually use, and with what identity?
+//
+// It exists because the last attempt to name VMM memory was built on an
+// assumption about these doors and cost three MN5 jobs to disprove (see
+// plans/PLAN-20260817-0705). The question this answers first:
+//
+//   - does anything export/import a shareable handle, or is peer sharing done
+//     with the legacy cuIpc* pair, or neither;
+//   - what handle TYPE, since a POSIX fd is process-local and a fabric handle is
+//     not, and the join key differs completely between them;
+//   - for an fd, whether (st_dev, st_ino) is stable across processes — that is
+//     the only thing that could make an fd-based export joinable at all.
+//
+// Diagnostic only: no record, no registry entry, and silent unless asked.
+inline bool vmm_trace_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("PCOMM_TRACE_VMM");
+        return e && *e && std::strcmp(e, "0") != 0;
+    }();
+    return on;
+}
+
+// An OS handle's global identity, when it is a file descriptor. Two processes
+// that hold the same underlying kernel object see the same (st_dev, st_ino)
+// even though the fd NUMBERS differ — which is exactly the property a join key
+// needs and the fd itself lacks.
+inline void vmm_trace_fd(const char* what, long long fd, unsigned int type) {
+    struct stat st {};
+    if (fd >= 0 && fstat((int)fd, &st) == 0)
+        std::fprintf(stderr, "[pcomm-vmm] %s type=%u fd=%lld dev=%llu ino=%llu\n", what, type, fd,
+                     (unsigned long long)st.st_dev, (unsigned long long)st.st_ino);
+    else
+        std::fprintf(stderr, "[pcomm-vmm] %s type=%u handle=%lld (not an fd)\n", what, type, fd);
+    std::fflush(stderr);
 }
 
 // Which GPU does the memory at `p` live on? CUDA's own answer, in the same
@@ -982,7 +1021,39 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
                                   : (uint64_t)((cuMemFree_params*)params)->dptr;
         if (g_engine && dptr)
             g_engine->on_free(dptr);
+    } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuMemCreate) {
+        auto* p = (cuMemCreate_params*)params;
+        std::fprintf(stderr, "[pcomm-vmm] create handle=%llu size=%zu dev=%d type=%d\n",
+                     p->handle ? (unsigned long long)*p->handle : 0ull, (size_t)p->size,
+                     p->prop ? (int)p->prop->location.id : -1,
+                     p->prop ? (int)p->prop->requestedHandleTypes : -1);
+    } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuMemExportToShareableHandle) {
+        auto* p = (cuMemExportToShareableHandle_params*)params;
+        // For a POSIX fd the out-param is an int; for a fabric handle it is a
+        // 64-byte blob. Reading it as an fd is only meaningful in the first case,
+        // which is exactly what the type tells us.
+        const long long fd = p->shareableHandle ? (long long)*(int*)p->shareableHandle : -1;
+        vmm_trace_fd("export", fd, (unsigned)p->handleType);
+    } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuMemImportFromShareableHandle) {
+        auto* p = (cuMemImportFromShareableHandle_params*)params;
+        const long long fd = (long long)(intptr_t)p->osHandle;
+        vmm_trace_fd("import", fd, (unsigned)p->shHandleType);
+    } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuIpcGetMemHandle) {
+        std::fprintf(stderr, "[pcomm-vmm] ipc_get\n");
+        std::fflush(stderr);
+    } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuIpcOpenMemHandle) {
+        auto* p = (cuIpcOpenMemHandle_params*)params;
+        std::fprintf(stderr, "[pcomm-vmm] ipc_open ptr=0x%llx\n",
+                     p->pdptr ? (unsigned long long)*p->pdptr : 0ull);
+        std::fflush(stderr);
     } else if (is_exit && cbid == API_CUDA_cuMemMap) {
+        if (vmm_trace_on()) {
+            auto* q = (cuMemMap_params*)params;
+            std::fprintf(stderr, "[pcomm-vmm] map ptr=0x%llx size=%zu offset=%zu handle=%llu\n",
+                         (unsigned long long)q->ptr, (size_t)q->size, (size_t)q->offset,
+                         (unsigned long long)q->handle);
+            std::fflush(stderr);
+        }
         // Record the extent, nothing more. Who owns each of these is decided at
         // the next launch, by asking CUDA and NVSHMEM — see
         // refresh_mapped_regions. cuMemMap is only the source of exact sizes,
