@@ -155,6 +155,15 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # symmetric buffer: `elems` there is a collective's element count. A case opts
 # in by declaring it, which is what makes app_buffers_recorded a check rather
 # than noise on a third of the board.
+# `gpus` IS PER NODE, not per job, because that is what the thing it bounds
+# indexes: a CUDA device ordinal restarts at 0 on every node, so
+# owner_in_range's `mem_dev < gpus` is a statement about one node's devices.
+# ranks * nodes * gpus is therefore not the rank count and never was.
+#
+# Worth stating because it was got wrong silently: cases 16-18 run four nodes
+# with `--gres=gpu:1` and declared `"gpus": 4` until 2026-08-17. Nothing caught
+# it — those cases have no gpu_access, so the one assertion that reads the param
+# is skipped on exactly the cases whose value was wrong.
 # rx_depth is the receive-queue depth a workload pre-posts. It is a genuine
 # oracle and not an observation: ibv_rc_pingpong takes it as -r (default 500)
 # and posts exactly that many receives up front, so the expected ib_post_recv
