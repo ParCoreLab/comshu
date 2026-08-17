@@ -11,10 +11,23 @@
 #
 #SBATCH --job-name=pcomm-16-hubspoke_ib
 #SBATCH --account=etur02
-# acc_ehpc, not acc_debug: debug allows one job at a time, which serialises
-# every experiment behind the last one. ehpc allows 366 and 100 nodes, at the
-# cost of a longer queue wait.
-#SBATCH --qos=acc_ehpc
+# acc_debug. This was acc_ehpc, on the reasoning that debug's one-job limit
+# serialises every experiment behind the last one. Measured on 2026-08-17, that
+# trade is backwards: job 44715122 (case 18, ehpc) sat PENDING for 80 minutes
+# with Reason=Priority, and the identical job resubmitted to acc_debug
+# (44718913) started in 18 seconds and ran in 32. `sprio` says why — the QoS
+# factor is 100x on debug (priority weight 10000 vs 100), which took the job
+# from 30830 to 129303. Serialising three half-minute jobs costs less than one
+# ehpc queue wait.
+#
+# 4 nodes x 15 min is inside debug's ceiling (node=8, MaxWall 02:00:00), so
+# this fits without a DenyOnLimit rejection.
+#
+# The one-job limit is per-QoS, not per-user: MaxJobsPU=1 belongs to acc_debug
+# alone, while ehpc allows 366. So a debug job and an ehpc job coexist, and it
+# is only these three cases that now serialise against the suite's other
+# acc_debug jobs.
+#SBATCH --qos=acc_debug
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=20
