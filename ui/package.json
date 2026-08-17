@@ -18,5 +18,9 @@
     "onlyBuiltDependencies": [
       "esbuild"
     ]
+  },
+  "dependencies": {
+    "vega": "^6.4.0",
+    "vega-lite": "^6.4.3"
   }
 }

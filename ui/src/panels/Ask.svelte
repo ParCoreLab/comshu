@@ -13,12 +13,34 @@
   //
   // The schema list is the other half: a model cannot write a query against
   // tables it has not been shown, and neither can a person.
-  let sql = $state('SELECT src_rank, dst_rank, sends, bytes\nFROM comm_edges\nORDER BY bytes DESC\nLIMIT 10');
+  // The chat pane hands a query over two ways, and both are needed: the
+  // sessionStorage key for when this panel has not mounted yet, and the event
+  // for when it is already open — in which case nothing re-runs and, before the
+  // event existed, every hand-off after the first silently did nothing.
+  //
+  // One-shot on read: this panel is where a query becomes yours to edit, so a
+  // later reload must not overwrite what you have typed.
+  const handed = sessionStorage.getItem('pcomm.ask.sql');
+  if (handed) sessionStorage.removeItem('pcomm.ask.sql');
+
+  let sql = $state(
+    handed ?? 'SELECT src_rank, dst_rank, sends, bytes\nFROM comm_edges\nORDER BY bytes DESC\nLIMIT 10',
+  );
   let rows = $state(null);
   let cols = $state([]);
   let error = $state(null);
   let busy = $state(false);
   let tables = $state([]);
+
+  $effect(() => {
+    const take = (e) => {
+      sql = e.detail;
+      rows = null;
+      error = null;
+    };
+    addEventListener('pcomm:ask', take);
+    return () => removeEventListener('pcomm:ask', take);
+  });
 
   $effect(() => {
     // Views (parquet-backed) and tables (the empty stand-ins mounted for

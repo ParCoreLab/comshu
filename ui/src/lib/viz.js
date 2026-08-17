@@ -45,6 +45,25 @@ export function logScale(values) {
   };
 }
 
+/**
+ * Categorical hues, in fixed order, from the same validated palette as STEPS.
+ *
+ * Fixed order matters: colour follows the entity, not its rank, so a chart that
+ * drops a series must not repaint the survivors. Both modes are *selected* —
+ * the dark column is the same eight hues re-stepped for the dark surface, not
+ * an automatic flip of the light one.
+ *
+ * Validated (OKLab ΔE ×100) against both surfaces: worst adjacent CVD 9.1 light
+ * / 8.4 dark, worst adjacent normal-vision 19.6 / 19.3. Three light-mode slots
+ * (aqua, yellow, magenta) sit under 3:1 against the light surface, so anything
+ * using them keeps a legend and a readable table beside it — which the chat
+ * pane does by construction, since every chart ships with its query.
+ */
+const SERIES_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+const SERIES_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+
+export const series = () => (isDark() ? SERIES_DARK : SERIES_LIGHT);
+
 export function bytes(n) {
   if (n === null || Number.isNaN(n)) return '—';
   if (n < 1024) return `${n} B`;

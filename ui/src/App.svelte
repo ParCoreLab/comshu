@@ -10,6 +10,7 @@
   import SourceLines from './panels/SourceLines.svelte';
   import Timeline from './panels/Timeline.svelte';
   import Ask from './panels/Ask.svelte';
+  import Chat from './panels/Chat.svelte';
 
   // ?theme=light|dark stamps the root the way a toggle would. It exists because
   // a dark-only render is how the inverted sequential ramp survived its first
@@ -50,6 +51,13 @@
   });
   const Current = $derived(VIEWS.find((v) => v.id === active).c);
 
+  // The chat pane is not a view — it is a way of getting to the views, so it
+  // sits beside them rather than replacing one, and it stays open across
+  // navigation. It is remembered because a pane you must reopen on every reload
+  // is a pane you stop using.
+  let chat = $state(localStorage.getItem('pcomm.chat') === 'open');
+  $effect(() => localStorage.setItem('pcomm.chat', chat ? 'open' : 'closed'));
+
   let health = $state([]);
   $effect(() => {
     query('SELECT finding, n, note FROM link_health WHERE n > 0')
@@ -58,11 +66,23 @@
   });
 </script>
 
-<main class="max-w-[1100px] mx-auto p-6">
-  <h1 class="text-lg font-semibold m-0">pcomm</h1>
-  <p class="text-[13px] mt-0.5 mb-4" style="color: var(--text-2)">
-    multi-GPU communication profile
-  </p>
+<div class="flex items-start">
+<main class="grow min-w-0 max-w-[1100px] mx-auto p-6">
+  <div class="flex items-start gap-3">
+    <div class="grow">
+      <h1 class="text-lg font-semibold m-0">pcomm</h1>
+      <p class="text-[13px] mt-0.5 mb-4" style="color: var(--text-2)">
+        multi-GPU communication profile
+      </p>
+    </div>
+    {#if !chat}
+      <button
+        onclick={() => (chat = true)}
+        class="text-[13px] rounded-md px-3 py-1.5 border cursor-pointer"
+        style="border-color: var(--border); background: transparent; color: var(--text-2)"
+      >Chat</button>
+    {/if}
+  </div>
 
   <nav class="flex flex-wrap gap-1 mb-5">
     {#each VIEWS as v}
@@ -88,3 +108,8 @@
 
   <Current />
 </main>
+
+{#if chat}
+  <Chat open={chat} onclose={() => (chat = false)} />
+{/if}
+</div>
