@@ -332,8 +332,33 @@ int pcomm::cli::ui_main(int argc, char** argv) {
                     static_dir.c_str());
     std::fflush(stdout);
 
+    // SO_REUSEADDR, deliberately NOT cpp-httplib's default. Its
+    // default_socket_options() sets SO_REUSEPORT *instead of* SO_REUSEADDR
+    // where the platform has it, so a second `pcomm ui` on the same addr:port
+    // does not fail — it SHARES the port, and the kernel round-robins requests
+    // between the two processes.
+    //
+    // Observed, not theorised: a 6.5-hour-old instance serving a pre-schema
+    // capture was squatting on 127.0.0.1:8777 beside a fresh one serving
+    // another. Identical queries returned different answers at random,
+    // depending on which process the kernel handed the connection to. A UI that
+    // silently answers from last week's capture is worse than one that will not
+    // start, and there is no legitimate use here for two servers on one port:
+    // this serves one capture to one person over a port-forward.
+    //
+    // SO_REUSEADDR still allows rebinding over a TIME_WAIT socket, so
+    // restarting after Ctrl-C works; it does not admit a second live listener.
+    // `socket_t` is at global scope in cpp-httplib, not in namespace httplib.
+    srv.set_socket_options([](socket_t sock) {
+        int yes = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void*>(&yes),
+                   sizeof(yes));
+    });
+
     if (!srv.listen(bind_addr.c_str(), port)) {
         std::fprintf(stderr, "pcomm ui: cannot bind %s:%d\n", bind_addr.c_str(), port);
+        std::fprintf(stderr, "  another pcomm ui may already be on that port: ss -ltnp | grep %d\n",
+                     port);
         return 1;
     }
     duckdb_disconnect(&con);
