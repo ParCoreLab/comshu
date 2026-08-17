@@ -129,12 +129,12 @@ struct Globals {
     // by the export/import hooks and read at cuMemMap, which is the only place
     // the local address of the mapping is known.
     std::unordered_map<unsigned long long, std::pair<std::string, bool>> fabric_of;
-    std::unordered_map<CUcontext, CtxState*> ctx_state;
-    std::unordered_set<CUfunction>           instrumented;
-    std::map<std::string, int>               opcode_to_id;
-    std::vector<std::string>                 id_to_opcode;
-    std::vector<MemOp>                       id_to_memop;
-    std::string                              kernel_filter = "all";
+    std::unordered_map<CUcontext, CtxState*>                             ctx_state;
+    std::unordered_set<CUfunction>                                       instrumented;
+    std::map<std::string, int>                                           opcode_to_id;
+    std::vector<std::string>                                             id_to_opcode;
+    std::vector<MemOp>                                                   id_to_memop;
+    std::string                                                          kernel_filter = "all";
     // Touched only by the CUDA-callback thread, under g_mutex. The recv thread
     // never reads these — it used to, and needed an atomically published
     // snapshot to do it safely, because sorting the live vector while the
@@ -351,7 +351,7 @@ inline bool vmm_trace_on() {
 // even though the fd NUMBERS differ — which is exactly the property a join key
 // needs and the fd itself lacks.
 inline void vmm_trace_fd(const char* what, long long fd, unsigned int type) {
-    struct stat st {};
+    struct stat st{};
     if (fd >= 0 && fstat((int)fd, &st) == 0)
         std::fprintf(stderr, "[pcomm-vmm] %s type=%u fd=%lld dev=%llu ino=%llu\n", what, type, fd,
                      (unsigned long long)st.st_dev, (unsigned long long)st.st_ino);
@@ -1153,9 +1153,9 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
         if (p->shareableHandle && (unsigned)p->handleType == 0x8)
             G().fabric_of[(unsigned long long)p->handle] = {fabric_hex(p->shareableHandle), true};
         if (vmm_trace_on()) {
-        // For a POSIX fd the out-param is an int; for a fabric handle it is a
-        // 64-byte blob. Reading it as an fd is only meaningful in the first case,
-        // which is exactly what the type tells us.
+            // For a POSIX fd the out-param is an int; for a fabric handle it is a
+            // 64-byte blob. Reading it as an fd is only meaningful in the first case,
+            // which is exactly what the type tells us.
             const long long fd = p->shareableHandle ? (long long)*(int*)p->shareableHandle : -1;
             vmm_trace_fd("export", fd, (unsigned)p->handleType);
         }
@@ -1195,7 +1195,8 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
             // hook knows the identity, cuMemMap knows the local address.
             std::string hex;
             bool        exporter = false;
-            if (auto it = g.fabric_of.find((unsigned long long)p->handle); it != g.fabric_of.end()) {
+            if (auto it = g.fabric_of.find((unsigned long long)p->handle);
+                it != g.fabric_of.end()) {
                 hex = it->second.first;
                 exporter = it->second.second;
             }

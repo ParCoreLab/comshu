@@ -14,8 +14,8 @@ DEFINE_PRELOAD_HOOK(ucx, ep_create, "ucp_ep_create", ucs_status_t, ucp_worker_h,
                     const ucp_ep_params_t*, ucp_ep_h*);
 DEFINE_PRELOAD_HOOK(ucx, ep_close_nbx, "ucp_ep_close_nbx", ucs_status_ptr_t, ucp_ep_h,
                     const ucp_request_param_t*);
-DEFINE_PRELOAD_HOOK(ucx, tag_send_nbx, "ucp_tag_send_nbx", ucs_status_ptr_t, ucp_ep_h,
-                    const void*, size_t, ucp_tag_t, const ucp_request_param_t*);
+DEFINE_PRELOAD_HOOK(ucx, tag_send_nbx, "ucp_tag_send_nbx", ucs_status_ptr_t, ucp_ep_h, const void*,
+                    size_t, ucp_tag_t, const ucp_request_param_t*);
 // The other half of the tagged path, and the half a capture is useless without:
 // with sends alone a ping-pong shows one direction and every latency question
 // has nowhere to land. Takes a WORKER, not an endpoint — a receive is matched by
@@ -148,8 +148,9 @@ DEFINE_PRELOAD_HOOK(ucx, tag_recv_nb, "ucp_tag_recv_nb", ucs_status_ptr_t, ucp_w
 // like an empty ibv_poll_cq, and the same predicate answer applies.
 DEFINE_PRELOAD_HOOK_PRED(
     ucx, tag_probe_nb, "ucp_tag_probe_nb",
-    [](ucp_tag_message_h found, ucp_worker_h, ucp_tag_t, ucp_tag_t, int,
-       ucp_tag_recv_info_t*) { return found != nullptr; },
+    [](ucp_tag_message_h found, ucp_worker_h, ucp_tag_t, ucp_tag_t, int, ucp_tag_recv_info_t*) {
+        return found != nullptr;
+    },
     ucp_tag_message_h, ucp_worker_h, ucp_tag_t, ucp_tag_t, int, ucp_tag_recv_info_t*);
 DEFINE_PRELOAD_HOOK(ucx, tag_msg_recv_nb, "ucp_tag_msg_recv_nb", ucs_status_ptr_t, ucp_worker_h,
                     void*, size_t, ucp_datatype_t, ucp_tag_message_h, ucp_tag_recv_callback_t);

@@ -208,8 +208,8 @@ int main() {
         c.payload.door = static_cast<uint8_t>(ur::UcxDoor::LegacySync);
         fb::UcxTagSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x707),
                                       fb::TimePoint(2, 0x808), 0),
-                         0x99, 0xAA, 0xBB, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull,
-                         -17, 2, static_cast<uint8_t>(ur::UcxDoor::LegacySync));
+                         0x99, 0xAA, 0xBB, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, -17, 2,
+                         static_cast<uint8_t>(ur::UcxDoor::LegacySync));
         expect_identical("UcxTagSend", &c, &f, sizeof(c));
     }
     {
@@ -248,8 +248,7 @@ int main() {
         fb::UcxRma f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xB0B),
                                   fb::TimePoint(2, 0xC0C), 0),
                      0x11, 0x22, 0x33, 0x44, 0x8877665544332211ull, 0x00007F0011223344ull, 0, 0,
-                     static_cast<uint8_t>(ur::RmaOp::Get),
-                     static_cast<uint8_t>(ur::UcxDoor::Nbi));
+                     static_cast<uint8_t>(ur::RmaOp::Get), static_cast<uint8_t>(ur::UcxDoor::Nbi));
         expect_identical("UcxRma", &c, &f, sizeof(c));
     }
     {
@@ -323,8 +322,8 @@ int main() {
         c.payload.fetching = 1;
         fb::UcxAtomic f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1515),
                                      fb::TimePoint(2, 0x1616), 0),
-                        0x31, 0x32, 0x33, 0x34, 0x1122334455667788ull, 0x00007F5566778800ull, 8,
-                        -5, 2, static_cast<uint8_t>(ur::UcxAtomicOp::CompareSwap),
+                        0x31, 0x32, 0x33, 0x34, 0x1122334455667788ull, 0x00007F5566778800ull, 8, -5,
+                        2, static_cast<uint8_t>(ur::UcxAtomicOp::CompareSwap),
                         static_cast<uint8_t>(ur::UcxDoor::LegacyPost), 1);
         expect_identical("UcxAtomic", &c, &f, sizeof(c));
     }

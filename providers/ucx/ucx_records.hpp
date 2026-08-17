@@ -40,7 +40,7 @@ enum class UcxDoor : std::uint8_t {
 };
 
 PCOMM_RECORD(UcxContext, RecordKind::Entity, 600, "ucx_context") {
-    Handle context;
+    Handle        context;
     std::uint32_t api_major;
     std::uint32_t api_minor;
 };
@@ -96,10 +96,10 @@ PCOMM_RECORD(UcxTagRecv, RecordKind::Event, 608, "ucx_tag_recv") {
     // the same run). "The most recent probe with this handle at or before this
     // receive" is the rule; matching on the value alone will pair a receive with
     // a long-dead probe as soon as the pool wraps.
-    Handle        message;
-    std::int32_t  status;
-    std::uint8_t  status_class;
-    std::uint8_t  door;  // UcxDoor
+    Handle       message;
+    std::int32_t status;
+    std::uint8_t status_class;
+    std::uint8_t door;  // UcxDoor
 };
 
 // EVENT — a probe that FOUND a message. Probes that find nothing are dropped at

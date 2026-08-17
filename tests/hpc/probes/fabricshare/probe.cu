@@ -51,7 +51,8 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &g_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     if (size != 2) {
-        if (!g_rank) std::fprintf(stderr, "fabricshare: needs exactly 2 ranks\n");
+        if (!g_rank)
+            std::fprintf(stderr, "fabricshare: needs exactly 2 ranks\n");
         MPI_Abort(MPI_COMM_WORLD, 2);
     }
 
@@ -100,7 +101,7 @@ int main(int argc, char** argv) {
     CUmemFabricHandle out{};
     DK(cuMemExportToShareableHandle(&out, mine, CU_MEM_HANDLE_TYPE_FABRIC, 0));
     CUmemFabricHandle in{};
-    const int peer = 1 - g_rank;
+    const int         peer = 1 - g_rank;
     MPI_Sendrecv(&out, sizeof(out), MPI_BYTE, peer, 7, &in, sizeof(in), MPI_BYTE, peer, 7,
                  MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
@@ -116,8 +117,8 @@ int main(int argc, char** argv) {
     pacc.location.id = g_rank;
     pacc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     DK(cuMemSetAccess(peerptr, N, &pacc, 1));
-    std::printf("[fabric] rank=%d peer_map=0x%llx (peer=%d)\n", g_rank,
-                (unsigned long long)peerptr, peer);
+    std::printf("[fabric] rank=%d peer_map=0x%llx (peer=%d)\n", g_rank, (unsigned long long)peerptr,
+                peer);
     std::fflush(stdout);
 
     // Write into the PEER's memory, which is the access pcomm has to attribute.

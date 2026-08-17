@@ -36,11 +36,11 @@
 
 static ucp_worker_h g_worker;
 
-extern "C" void send_cb(void *request, ucs_status_t status) {
+extern "C" void send_cb(void* request, ucs_status_t status) {
     (void)request;
     (void)status;
 }
-extern "C" void recv_cb(void *request, ucs_status_t status, ucp_tag_recv_info_t *info) {
+extern "C" void recv_cb(void* request, ucs_status_t status, ucp_tag_recv_info_t* info) {
     (void)request;
     (void)status;
     (void)info;
@@ -48,7 +48,7 @@ extern "C" void recv_cb(void *request, ucs_status_t status, ucp_tag_recv_info_t 
 
 /* Drive progress until the request retires. A NULL request completed inline and
  * an error pointer never will, so neither is waited on. */
-static int settle(void *request) {
+static int settle(void* request) {
     if (request == NULL)
         return 0;
     if (UCS_PTR_IS_ERR(request)) {
@@ -63,7 +63,7 @@ static int settle(void *request) {
 }
 
 int main(void) {
-    ucp_config_t *config;
+    ucp_config_t* config;
     ucp_context_h context;
     ucp_params_t  params;
     int           rc = 0;
@@ -94,7 +94,7 @@ int main(void) {
     }
 
     /* An endpoint to our own worker: the self transport, no network needed. */
-    ucp_address_t *address;
+    ucp_address_t* address;
     size_t         address_len;
     if (ucp_worker_get_address(g_worker, &address, &address_len) != UCS_OK) {
         fprintf(stderr, "ucx_selftest: ucp_worker_get_address failed\n");
@@ -106,7 +106,7 @@ int main(void) {
     memset(&eparams, 0, sizeof eparams);
     eparams.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
     eparams.address = address;
-    ucp_ep_h ep;
+    ucp_ep_h     ep;
     ucs_status_t st = ucp_ep_create(g_worker, &eparams, &ep);
     ucp_worker_release_address(g_worker, address);
     if (st != UCS_OK) {
@@ -134,14 +134,14 @@ int main(void) {
     /* 3. the synchronous door, 24 bytes, tag 0x9999. Its receive is posted
      *    first: a sync send does not complete until the receiver matches, so
      *    sending into an unposted queue would spin forever. */
-    void *sync_recv = ucp_tag_recv_nb(g_worker, recv_buf, 24, contig, 0x9999, (ucp_tag_t)-1,
-                                      recv_cb);
+    void* sync_recv =
+        ucp_tag_recv_nb(g_worker, recv_buf, 24, contig, 0x9999, (ucp_tag_t)-1, recv_cb);
     rc |= settle(ucp_tag_send_sync_nb(ep, send_buf, 24, contig, 0x9999, send_cb));
     rc |= settle(sync_recv);
 
     /* 4. probe + msg_recv, 48 bytes, tag 0xABCD. The probe is where this
      *    receive's tag comes from; ucp_tag_msg_recv_nb itself carries none. */
-    void *probed_send = ucp_tag_send_nb(ep, send_buf, 48, contig, 0xABCD, send_cb);
+    void*               probed_send = ucp_tag_send_nb(ep, send_buf, 48, contig, 0xABCD, send_cb);
     ucp_tag_recv_info_t info;
     ucp_tag_message_h   message = NULL;
     memset(&info, 0, sizeof info);

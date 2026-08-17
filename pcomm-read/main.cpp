@@ -254,11 +254,10 @@ template<> struct Table<PeerMapping> {
     static constexpr const char* cols = "allocation,base,size,alloc_offset,device,exporter";
     static void row(std::FILE* f, const Stamped<PeerMapping>& s, const rec::InternDictionary& d) {
         const char* a = d.str(s.payload.allocation);
-        std::fprintf(f, "%s,%llu,%llu,%llu,%u,%u", a ? a : "",
-                     (unsigned long long)s.payload.range.base,
-                     (unsigned long long)s.payload.range.size,
-                     (unsigned long long)s.payload.alloc_offset, (unsigned)s.payload.device,
-                     (unsigned)s.payload.exporter);
+        std::fprintf(
+            f, "%s,%llu,%llu,%llu,%u,%u", a ? a : "", (unsigned long long)s.payload.range.base,
+            (unsigned long long)s.payload.range.size, (unsigned long long)s.payload.alloc_offset,
+            (unsigned)s.payload.device, (unsigned)s.payload.exporter);
     }
 };
 
@@ -384,21 +383,27 @@ inline std::string send_flags_name(std::uint32_t v) {
 // there. Checked against infiniband/verbs.h.
 inline const char* port_state_name(std::uint8_t v) {
     switch (v) {
-    case 0: return "nop";
-    case 1: return "down";
-    case 2: return "init";
-    case 3: return "armed";
-    case 4: return "active";
-    case 5: return "active_defer";
-    default: return "unknown";
+        case 0:
+            return "nop";
+        case 1:
+            return "down";
+        case 2:
+            return "init";
+        case 3:
+            return "armed";
+        case 4:
+            return "active";
+        case 5:
+            return "active_defer";
+        default:
+            return "unknown";
     }
 }
 
 template<> struct Table<ibr::IbPort> {
     static constexpr const char* name = "ib_port";
     static constexpr const char* cols = "ticks,context,port_num,lid,state";
-    static void                  row(std::FILE* f, const Stamped<ibr::IbPort>& s,
-                                     const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<ibr::IbPort>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
                      s.payload.context, s.payload.port_num, s.payload.lid,
                      port_state_name(s.payload.state));
@@ -413,11 +418,10 @@ template<> struct Table<ibr::IbPostSendSg> {
     static constexpr const char* cols = "ticks,qp,wr_id,idx,addr,length,lkey,qp_num";
     static void                  row(std::FILE* f, const Stamped<ibr::IbPostSendSg>& s,
                                      const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%llu,%u,0x%llx,%u,%u,%u",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.qp,
-                     (unsigned long long)s.payload.wr_id, s.payload.index,
-                     (unsigned long long)s.payload.addr, s.payload.length, s.payload.lkey,
-                     s.payload.qp_num);
+        std::fprintf(f, "%llu,%u,%llu,%u,0x%llx,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                                      s.payload.qp, (unsigned long long)s.payload.wr_id, s.payload.index,
+                                      (unsigned long long)s.payload.addr, s.payload.length, s.payload.lkey,
+                                      s.payload.qp_num);
     }
 };
 
@@ -431,7 +435,7 @@ template<> struct Table<ibr::IbQpSignalling> {
     static void                  row(std::FILE* f, const Stamped<ibr::IbQpSignalling>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,%s", (unsigned long long)s.temporal.a.ticks, s.payload.qp,
-                     s.payload.qp_num, s.payload.sq_sig_all ? "all" : "selective");
+                                      s.payload.qp_num, s.payload.sq_sig_all ? "all" : "selective");
     }
 };
 
@@ -755,18 +759,16 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
 template<> struct Table<ucr::UcxContext> {
     static constexpr const char* name = "ucx_context";
     static constexpr const char* cols = "ticks,context,api_major,api_minor";
-    static void                  row(std::FILE* f, const Stamped<ucr::UcxContext>& s,
-                                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.context, s.payload.api_major, s.payload.api_minor);
+    static void row(std::FILE* f, const Stamped<ucr::UcxContext>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.context,
+                     s.payload.api_major, s.payload.api_minor);
     }
 };
 
 template<> struct Table<ucr::UcxWorker> {
     static constexpr const char* name = "ucx_worker";
     static constexpr const char* cols = "ticks,worker,context";
-    static void                  row(std::FILE* f, const Stamped<ucr::UcxWorker>& s,
-                                     const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<ucr::UcxWorker>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.worker,
                      s.payload.context);
     }
@@ -778,7 +780,7 @@ template<> struct Table<ucr::UcxEndpoint> {
     static void                  row(std::FILE* f, const Stamped<ucr::UcxEndpoint>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.endpoint,
-                     s.payload.worker);
+                                      s.payload.worker);
     }
 };
 
@@ -828,8 +830,7 @@ template<> struct Table<ucr::UcxTagSend> {
     static constexpr const char* name = "ucx_tag_send";
     static constexpr const char* cols =
         "ticks,door,endpoint,buffer,request,count,tag,status,status_class";
-    static void row(std::FILE* f, const Stamped<ucr::UcxTagSend>& s,
-                    const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<ucr::UcxTagSend>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,%d,%s",
                      (unsigned long long)s.temporal.a.ticks, ucx_door_name(s.payload.door),
                      s.payload.endpoint, s.payload.buffer, s.payload.request,
@@ -845,14 +846,12 @@ template<> struct Table<ucr::UcxTagRecv> {
     static constexpr const char* name = "ucx_tag_recv";
     static constexpr const char* cols =
         "ticks,door,worker,buffer,request,capacity,tag,tag_mask,message,status,status_class";
-    static void row(std::FILE* f, const Stamped<ucr::UcxTagRecv>& s,
-                    const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<ucr::UcxTagRecv>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,0x%llx,%u,%d,%s",
                      (unsigned long long)s.temporal.a.ticks, ucx_door_name(s.payload.door),
-                     s.payload.worker, s.payload.buffer,
-                     s.payload.request, (unsigned long long)s.payload.count,
-                     (unsigned long long)s.payload.tag, (unsigned long long)s.payload.tag_mask,
-                     s.payload.message, s.payload.status,
+                     s.payload.worker, s.payload.buffer, s.payload.request,
+                     (unsigned long long)s.payload.count, (unsigned long long)s.payload.tag,
+                     (unsigned long long)s.payload.tag_mask, s.payload.message, s.payload.status,
                      ucx_status_class_name(s.payload.status_class));
     }
 };
@@ -877,9 +876,8 @@ template<> struct Table<ucr::UcxRma> {
     static void row(std::FILE* f, const Stamped<ucr::UcxRma>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%s,%s,%u,%u,%u,%u,%llu,0x%llx,%d,%s",
                      (unsigned long long)s.temporal.a.ticks, ucx_rma_op_name(s.payload.op),
-                     ucx_door_name(s.payload.door),
-                     s.payload.endpoint, s.payload.buffer, s.payload.request, s.payload.rkey,
-                     (unsigned long long)s.payload.count,
+                     ucx_door_name(s.payload.door), s.payload.endpoint, s.payload.buffer,
+                     s.payload.request, s.payload.rkey, (unsigned long long)s.payload.count,
                      (unsigned long long)s.payload.remote_addr, s.payload.status,
                      ucx_status_class_name(s.payload.status_class));
     }
@@ -918,7 +916,7 @@ template<> struct Table<ucr::UcxWorkerProgress> {
     static void                  row(std::FILE* f, const Stamped<ucr::UcxWorkerProgress>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.worker,
-                     s.payload.progressed);
+                                      s.payload.progressed);
     }
 };
 
@@ -930,14 +928,15 @@ template<> struct Table<ucr::UcxWorkerProgress> {
 // a receive with a dead probe once the pool wraps.
 template<> struct Table<ucr::UcxTagProbe> {
     static constexpr const char* name = "ucx_tag_probe";
-    static constexpr const char* cols = "ticks,worker,message,sender_tag,length,tag,tag_mask,removed";
+    static constexpr const char* cols =
+        "ticks,worker,message,sender_tag,length,tag,tag_mask,removed";
     static void row(std::FILE* f, const Stamped<ucr::UcxTagProbe>& s,
                     const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,0x%llx,0x%llx,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.worker, s.payload.message,
-                     (unsigned long long)s.payload.sender_tag,
-                     (unsigned long long)s.payload.length, (unsigned long long)s.payload.tag,
-                     (unsigned long long)s.payload.tag_mask, s.payload.removed);
+                     (unsigned long long)s.payload.sender_tag, (unsigned long long)s.payload.length,
+                     (unsigned long long)s.payload.tag, (unsigned long long)s.payload.tag_mask,
+                     s.payload.removed);
     }
 };
 
@@ -974,8 +973,7 @@ template<> struct Table<ucr::UcxAtomic> {
                      (unsigned long long)s.temporal.a.ticks, ucx_atomic_op_name(s.payload.op),
                      s.payload.fetching, ucx_door_name(s.payload.door), s.payload.endpoint,
                      s.payload.buffer, s.payload.request, s.payload.rkey,
-                     (unsigned long long)s.payload.value,
-                     (unsigned long long)s.payload.remote_addr,
+                     (unsigned long long)s.payload.value, (unsigned long long)s.payload.remote_addr,
                      (unsigned long long)s.payload.op_size, s.payload.status,
                      ucx_status_class_name(s.payload.status_class));
     }
@@ -990,8 +988,8 @@ template<> struct Table<ucr::UcxWorkerAddress> {
     static void                  row(std::FILE* f, const Stamped<ucr::UcxWorkerAddress>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,0x%016llx,0x%016llx,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.worker, (unsigned long long)s.payload.addr_hash,
-                     (unsigned long long)s.payload.prefix_hash, s.payload.addr_len);
+                                      s.payload.worker, (unsigned long long)s.payload.addr_hash,
+                                      (unsigned long long)s.payload.prefix_hash, s.payload.addr_len);
     }
 };
 
@@ -1004,7 +1002,7 @@ template<> struct Table<ucr::UcxEpConnection> {
     static void                  row(std::FILE* f, const Stamped<ucr::UcxEpConnection>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,0x%016llx", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.endpoint, (unsigned long long)s.payload.remote_prefix_hash);
+                                      s.payload.endpoint, (unsigned long long)s.payload.remote_prefix_hash);
     }
 };
 
@@ -1019,17 +1017,15 @@ template<> struct Table<ucr::UcxEpConnection> {
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
     std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, PeerMapping,
-               ClockAnchor,
-               Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
+               ClockAnchor, Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
-               ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
-               mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp,
-               mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend,
-               ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend,
-               ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend, ucr::UcxMemMap,
-               ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic, ucr::UcxWorkerAddress,
-               ucr::UcxEpConnection>;
+               ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort, mxr::Mlx5Umem, mxr::Mlx5Uar,
+               mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair,
+               mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, ucr::UcxContext, ucr::UcxWorker,
+               ucr::UcxEndpoint, ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend,
+               ucr::UcxMemMap, ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic,
+               ucr::UcxWorkerAddress, ucr::UcxEpConnection>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.
@@ -1741,12 +1737,11 @@ int run_link(const fs::path& dir) {
             health_sql = t.sql;
 
     duckdb_result res;
-    if (health_sql &&
-        duckdb_query(con,
-                     ("SELECT finding::VARCHAR, n::VARCHAR FROM (" + std::string(health_sql) +
-                      ") WHERE n > 0")
-                         .c_str(),
-                     &res) == DuckDBSuccess) {
+    if (health_sql && duckdb_query(con,
+                                   ("SELECT finding::VARCHAR, n::VARCHAR FROM (" +
+                                    std::string(health_sql) + ") WHERE n > 0")
+                                       .c_str(),
+                                   &res) == DuckDBSuccess) {
         auto text = [](duckdb_string_t s) {
             return duckdb_string_is_inlined(s)
                        ? std::string(s.value.inlined.inlined, s.value.inlined.length)
@@ -2068,7 +2063,7 @@ TraceStats build_trace(const std::vector<RankDir>& ranks, const std::vector<Rank
     // The same rule is stated in SQL as _wr_flight in link_sql.hpp, and
     // tests/wr_flow_rule.sh is what keeps the two saying the same thing.
     std::map<std::pair<std::uint32_t, std::uint64_t>, std::deque<std::uint64_t>> pending;
-    std::uint64_t next_flow = 1;
+    std::uint64_t                                                                next_flow = 1;
 
     // Receive completions carry the RECEIVER's wr_id, which names an
     // ib_post_recv and never a send. Pairing without checking this bit links a
@@ -2191,8 +2186,7 @@ TraceStats build_trace(const std::vector<RankDir>& ranks, const std::vector<Rank
         // kernel that ran ten milliseconds before any traffic, so the first
         // sample was emitted at a timestamp already behind the send that
         // triggered it — one backwards packet per rank, every time.
-        const std::uint64_t span_ns =
-            evs.empty() ? 0 : evs.back().t_ns - evs.front().t_ns;
+        const std::uint64_t span_ns = evs.empty() ? 0 : evs.back().t_ns - evs.front().t_ns;
         const std::uint64_t window =
             std::max(COUNTER_MIN_WINDOW_NS, span_ns / COUNTER_TARGET_SAMPLES);
         std::uint64_t win_end = 0;
@@ -2228,66 +2222,66 @@ TraceStats build_trace(const std::vector<RankDir>& ranks, const std::vector<Rank
             s.rank = r.rank;
             s.lane = e.lane;
             switch (e.lane) {
-            case Lane::Send: {
-                const auto& p = sends[e.idx].payload;
-                s.ep = p.qp_num;
-                // The name is the OPERATION, with the size in an annotation
-                // rather than in the text. Encoding it into the name ("send
-                // 4096B") splits Perfetto's own `select name, sum(dur) group by
-                // name` into one row per message size, which turns the first
-                // question anyone asks of a trace into nonsense.
-                s.name = "send";
-                s.wr_id = p.wr_id;
-                s.remote_addr = p.remote_addr;
-                s.bytes = p.length;
-                s.rkey = p.rkey;
-                s.opcode = p.opcode;
-                if (pairable.count(p.qp_num)) {
-                    s.flow = next_flow++;
-                    pending[{p.qp_num, p.wr_id}].push_back(s.flow);
-                }
-                cum_bytes += p.length;
-                win_bytes += p.length;
-                if (!have_window) {
-                    have_window = true;
-                    win_end = e.t_ns + window;
-                }
-                break;
-            }
-            case Lane::Complete: {
-                const auto& p = polls[e.idx].payload;
-                s.ep = p.qp_num;
-                s.name = "complete";
-                s.wr_id = p.wr_id;
-                s.bytes = p.byte_len;
-                s.opcode = p.opcode;
-                s.status = p.status;
-                s.flow_end = true;
-                if (!(p.opcode & WC_RECV_BIT) && pairable.count(p.qp_num)) {
-                    auto it = pending.find({p.qp_num, p.wr_id});
-                    if (it != pending.end() && !it->second.empty()) {
-                        s.flow = it->second.front();
-                        it->second.pop_front();
-                        if (it->second.empty())
-                            pending.erase(it);
-                        st.flows++;
-                    } else {
-                        st.unmatched++;
+                case Lane::Send: {
+                    const auto& p = sends[e.idx].payload;
+                    s.ep = p.qp_num;
+                    // The name is the OPERATION, with the size in an annotation
+                    // rather than in the text. Encoding it into the name ("send
+                    // 4096B") splits Perfetto's own `select name, sum(dur) group by
+                    // name` into one row per message size, which turns the first
+                    // question anyone asks of a trace into nonsense.
+                    s.name = "send";
+                    s.wr_id = p.wr_id;
+                    s.remote_addr = p.remote_addr;
+                    s.bytes = p.length;
+                    s.rkey = p.rkey;
+                    s.opcode = p.opcode;
+                    if (pairable.count(p.qp_num)) {
+                        s.flow = next_flow++;
+                        pending[{p.qp_num, p.wr_id}].push_back(s.flow);
                     }
+                    cum_bytes += p.length;
+                    win_bytes += p.length;
+                    if (!have_window) {
+                        have_window = true;
+                        win_end = e.t_ns + window;
+                    }
+                    break;
                 }
-                break;
-            }
-            case Lane::Kernel: {
-                const auto& p = kernels[e.idx].payload;
-                s.ep = KERNEL_EP;
-                // Name it from the KernelName domain explicitly: interned
-                // handles restart at 1 in EVERY domain, so the defaulted
-                // one-argument str() resolves a valid handle to "" with no
-                // error. Table<GpuKernel> carries the same note.
-                const char* kn = r.str(rec::InternDomain::KernelName, p.name);
-                s.name = (kn && *kn) ? kn : "kernel";
-                break;
-            }
+                case Lane::Complete: {
+                    const auto& p = polls[e.idx].payload;
+                    s.ep = p.qp_num;
+                    s.name = "complete";
+                    s.wr_id = p.wr_id;
+                    s.bytes = p.byte_len;
+                    s.opcode = p.opcode;
+                    s.status = p.status;
+                    s.flow_end = true;
+                    if (!(p.opcode & WC_RECV_BIT) && pairable.count(p.qp_num)) {
+                        auto it = pending.find({p.qp_num, p.wr_id});
+                        if (it != pending.end() && !it->second.empty()) {
+                            s.flow = it->second.front();
+                            it->second.pop_front();
+                            if (it->second.empty())
+                                pending.erase(it);
+                            st.flows++;
+                        } else {
+                            st.unmatched++;
+                        }
+                    }
+                    break;
+                }
+                case Lane::Kernel: {
+                    const auto& p = kernels[e.idx].payload;
+                    s.ep = KERNEL_EP;
+                    // Name it from the KernelName domain explicitly: interned
+                    // handles restart at 1 in EVERY domain, so the defaulted
+                    // one-argument str() resolves a valid handle to "" with no
+                    // error. Table<GpuKernel> carries the same note.
+                    const char* kn = r.str(rec::InternDomain::KernelName, p.name);
+                    s.name = (kn && *kn) ? kn : "kernel";
+                    break;
+                }
             }
             on_slice(s);
             st.slices++;
@@ -2340,19 +2334,29 @@ inline std::string json_escape(const char* s) {
     std::string out;
     for (const char* p = s; p && *p; ++p) {
         switch (*p) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-            if (static_cast<unsigned char>(*p) < 0x20) {
-                char esc[8];
-                std::snprintf(esc, sizeof esc, "\\u%04x", *p);
-                out += esc;
-            } else {
-                out += *p;
-            }
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (static_cast<unsigned char>(*p) < 0x20) {
+                    char esc[8];
+                    std::snprintf(esc, sizeof esc, "\\u%04x", *p);
+                    out += esc;
+                } else {
+                    out += *p;
+                }
         }
     }
     return out;
@@ -2633,7 +2637,7 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
         std::uint64_t end_ns;
         std::uint64_t track_uuid;
     };
-    auto later = [](const Open& a, const Open& b) { return a.end_ns > b.end_ns; };
+    auto              later = [](const Open& a, const Open& b) { return a.end_ns > b.end_ns; };
     std::vector<Open> open;
     std::uint64_t     seq = 0;
     int               cur_rank = -1;
@@ -2657,8 +2661,8 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
             cur_rank = rank;
             seq = rank_seq(rank_ix++);
             track(rank_uuid(rank), "rank " + std::to_string(rank), 0);
-            counter_track(counter_uuid(rank, Counter::BytesSent), "bytes sent",
-                          rank_uuid(rank), /*bytes=*/true);
+            counter_track(counter_uuid(rank, Counter::BytesSent), "bytes sent", rank_uuid(rank),
+                          /*bytes=*/true);
             counter_track(counter_uuid(rank, Counter::SendRate), "send MB/s", rank_uuid(rank),
                           /*bytes=*/false);
         },
@@ -2666,8 +2670,7 @@ int export_pftrace(const fs::path& root, const fs::path& outfile) {
             track(ep == KERNEL_EP ? kernel_uuid(rank) : qp_uuid(rank, ep), name, rank_uuid(rank));
         },
         [&](const Slice& s) {
-            const auto uuid =
-                s.ep == KERNEL_EP ? kernel_uuid(s.rank) : qp_uuid(s.rank, s.ep);
+            const auto uuid = s.ep == KERNEL_EP ? kernel_uuid(s.rank) : qp_uuid(s.rank, s.ep);
             drain(s.t_ns);
             begin_pkt(seq, uuid, s);
             if (s.dur_ns) {
