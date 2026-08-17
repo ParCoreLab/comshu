@@ -723,9 +723,34 @@ WITH p2p AS (
     -- that silently needs a filter in another component to be correct is a
     -- landmine for whoever relaxes it. When the access is local the owner is the
     -- rank itself, and no node identity is required to say so.
-    SELECT CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END
-                                                    AS owner_rank,
-           g.object                                 AS object,
+    SELECT po.owner_rank                            AS owner_rank,
+    -- THE OBJECT ID IS PER-RANK, SO IT MUST BE TRANSLATED, NEVER CARRIED OVER.
+    --
+    -- `object` is an intern handle minted from the buffer's base address in the
+    -- RECORDING rank's table, so it is a name only that rank understands. Fixing
+    -- owner_rank above without fixing this produced a pair from two different
+    -- namespaces: the owner was finally right while the id still belonged to the
+    -- actor, and the Objects panel's `owner_rank = m.rank AND object = m.id`
+    -- join then landed on whatever unrelated buffer that rank had given the same
+    -- number.
+    --
+    -- Measured on nvshmem_coexist-44696991: id 701 names FOUR different buffers
+    -- — 832 B on rank 0, 832 B on rank 1, the 256 KiB symmetric buffer on rank 2,
+    -- and 4 B on rank 3. Rank 2's 196,605 accesses to the 256 KiB buffer were
+    -- attributed to rank 3's 4-byte one. 139 ids in that capture have ranks
+    -- disagreeing about their extent.
+    --
+    -- hubspoke hid it because its two providers mint few objects and the
+    -- symmetric ones happened to align; coexist loads both providers, so the
+    -- intern orders diverge and the numbers stop coinciding.
+    --
+    -- TRANSLATE BY RANGE, which is the rule records.hpp already states for the
+    -- reader's own merge: "the range is the fact every emitter agrees on WITHOUT
+    -- having to agree on a convention". Under a symmetric heap the same buffer
+    -- has the same (base, size) on every PE — verified on this capture, where
+    -- (1100757343744, 262144) exists on all four ranks as ids 725/730/701/719 —
+    -- so the actor's extent identifies the owner's row exactly.
+           om.id                                    AS object,
     -- ANCHOR PER (ACTOR, DEVICE), NOT PER ACTOR.
     --
     -- The partition was `(g.rank, g.object)`, and under a symmetric heap that is
@@ -737,22 +762,42 @@ WITH p2p AS (
     -- 2 KiB object, and every real access collapsed into the first bin.
     --
     -- mem_device is what separates them, because the mapping is per peer.
-           g.address - min(g.address) OVER (PARTITION BY g.rank, g.mem_device, g.object)
+    -- The window stays in the ACTOR's namespace (its rank, its device, its own
+    -- object id) because the mapping whose anchor is being removed is the
+    -- actor's. Partitioning on the translated id would merge two of the actor's
+    -- mappings that happen to resolve to one owner buffer.
+           po.address - min(po.address) OVER (PARTITION BY po.rank, po.mem_device, po.object)
                                                     AS obj_offset,
-           g.size                                   AS size,
+           po.size                                  AS size,
            'p2p'                                    AS source,
-           g.rank::BIGINT                           AS actor_rank,
-           g.run_device::BIGINT                     AS actor_device,
+           po.rank::BIGINT                          AS actor_rank,
+           po.run_device::BIGINT                    AS actor_device,
            FALSE                                    AS exact
-    FROM gpu_access g
-    LEFT JOIN _node n         ON n.rank = g.rank
-    LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
-    -- An access whose owning rank cannot be named is not attributable to an
-    -- object at all — dropping it here is right. It is NOT allowed to vanish
-    -- quietly, so link_health counts it as unattributed_p2p_accesses; a capture
-    -- with no node identity turns the whole p2p branch off, and that must read
-    -- as a number rather than as an empty panel.
-    WHERE g.run_device = g.mem_device OR o.rank IS NOT NULL
+    FROM (
+        SELECT g.*,
+               CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
+        FROM gpu_access g
+        LEFT JOIN _node n         ON n.rank = g.rank
+        LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
+    ) po
+    -- The actor's own record of the buffer it touched: this is what gives the
+    -- extent, and it is the only thing that crosses ranks meaningfully.
+    LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) am
+           ON am.rank = po.rank AND am.id = po.object
+    -- The same extent as the OWNER recorded it. For a local access this matches
+    -- the actor's own row, so the translation is an identity and costs nothing.
+    LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
+           ON om.rank = po.owner_rank
+          AND om.range_base = am.range_base
+          AND om.range_size = am.range_size
+    -- Two ways an access cannot be placed in an object, and neither may vanish
+    -- quietly — link_health counts both as unattributed_p2p_accesses:
+    --   the owning rank cannot be named (no node identity), or
+    --   the owner has no buffer at the actor's extent, which means the memory is
+    --   not symmetric and the actor's handle names nothing on the far side.
+    -- Guessing either would put real accesses in the wrong object, which is the
+    -- failure this whole comment block exists to record.
+    WHERE po.owner_rank IS NOT NULL AND om.id IS NOT NULL
 ),
 verbs AS (
     SELECT e.peer_rank                              AS owner_rank,
@@ -1070,11 +1115,21 @@ UNION ALL
 -- must read as a count here rather than as "this workload touched nothing".
 SELECT 'unattributed_p2p_accesses',
        coalesce(count(*), 0)::BIGINT,
-       'GPU accesses whose owning rank could not be named from (node, mem_device) — dropped from object_access'
-FROM gpu_access g
-LEFT JOIN _node n         ON n.rank = g.rank
-LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
-WHERE g.run_device <> g.mem_device AND o.rank IS NULL
+       'GPU accesses object_access could not place: owning rank unnameable, or the owner has no buffer at the actor''s extent'
+FROM (
+    SELECT g.rank, g.object, g.run_device, g.mem_device,
+           CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
+    FROM gpu_access g
+    LEFT JOIN _node n         ON n.rank = g.rank
+    LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
+) po
+LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) am
+       ON am.rank = po.rank AND am.id = po.object
+LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
+       ON om.rank = po.owner_rank
+      AND om.range_base = am.range_base
+      AND om.range_size = am.range_size
+WHERE po.owner_rank IS NULL OR om.id IS NULL
 UNION ALL
 SELECT 'self_edges',
        coalesce(count(*), 0),

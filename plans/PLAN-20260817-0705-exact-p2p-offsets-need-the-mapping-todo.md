@@ -17,10 +17,33 @@ Two defects in `object_access`'s p2p branch were fixed on 2026-08-17 and are
   of the same symmetric object id on several peers into one window (measured: a
   2048-byte object reporting offsets to 549,755,815,936).
 
-What remains is the third thing, which no SQL change can reach: a p2p
+A third was fixed the same day: `object` was carried across ranks unchanged,
+though it is an intern handle minted per rank — on `nvshmem_coexist-44696991` id
+701 names four different buffers, and 139 ids have ranks disagreeing about their
+extent. It is now translated through the owner's `mem_object` **by range**, which
+is the rule `records.hpp` already states for the reader's own merge.
+
+What remains is the fourth thing, which no SQL change can reach: a p2p
 `obj_offset` is anchored to the **lowest address observed**, so it is only the
 true offset when the workload happened to touch byte 0. `exact = FALSE` marks it
 and the Objects panel renders "(approx.)" — this is honest today, just not right.
+
+**And it now costs coverage, not just precision.** The range translation above
+works because NVSHMEM's symmetric heap puts the same buffer at the same VA on
+every PE. NCCL has no such invariant: its peer buffers are mapped at unrelated
+addresses, so the owner has no `mem_object` at the actor's extent and the access
+cannot be placed in an object at all. On `nccl_p2p-44688653` that is **all
+1,179,948 accesses**, dropped and counted in
+`link_health.unattributed_p2p_accesses`. They were previously "attributed" to the
+actor's own handle, which was wrong in both halves — wrong owner and a peer's
+buffer under a local name — so the count is an improvement over a confident
+wrong answer, and a regression against nothing real.
+
+Recording the mapping fixes this too, and that is the strongest argument for
+doing it: with the delta known, the actor's address converts to the owner's true
+address and the range join becomes exact for *any* allocator, symmetric heap or
+not. One record buys correct offsets AND restores object attribution for every
+non-NVSHMEM p2p capture in the corpus.
 
 ## Why not the NVSHMEM route
 
