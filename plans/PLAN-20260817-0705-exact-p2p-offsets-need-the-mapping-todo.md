@@ -28,22 +28,33 @@ What remains is the fourth thing, which no SQL change can reach: a p2p
 true offset when the workload happened to touch byte 0. `exact = FALSE` marks it
 and the Objects panel renders "(approx.)" — this is honest today, just not right.
 
-**And it now costs coverage, not just precision.** The range translation above
-works because NVSHMEM's symmetric heap puts the same buffer at the same VA on
-every PE. NCCL has no such invariant: its peer buffers are mapped at unrelated
-addresses, so the owner has no `mem_object` at the actor's extent and the access
-cannot be placed in an object at all. On `nccl_p2p-44688653` that is **all
-1,179,948 accesses**, dropped and counted in
-`link_health.unattributed_p2p_accesses`. They were previously "attributed" to the
-actor's own handle, which was wrong in both halves — wrong owner and a peer's
-buffer under a local name — so the count is an improvement over a confident
-wrong answer, and a regression against nothing real.
+**The second thing it costs is object attribution for every non-NVSHMEM
+allocator, and that one is NOT a join problem.** It is worth being exact about
+where the gap is, because it looks like a join problem and is not.
 
-Recording the mapping fixes this too, and that is the strongest argument for
-doing it: with the delta known, the actor's address converts to the owner's true
-address and the range join becomes exact for *any* allocator, symmetric heap or
-not. One record buys correct offsets AND restores object attribution for every
-non-NVSHMEM p2p capture in the corpus.
+`AllocRegistry::add_range` (`providers/gpumem/engine.hpp:66`) records a mapped
+peer region as **device-only, with `kNullHandle` for the object**, and does so
+deliberately: "that would mint an object handle for an entity nobody recorded,
+leaving GpuAccess.object pointing at a MemObject row that does not exist." Object
+handles come from the NVSHMEM pass, which knows a region is symmetric memory.
+NCCL has no such pass, so on `nccl_p2p-44688653` **every one of the 1,179,948
+accesses carries `object = 0`**, and the capture holds exactly one `mem_object`
+per rank — 1 MiB — which is not the buffer being written.
+
+So neither side recorded the buffer. No range match, size match or uniqueness
+heuristic can recover it, because there is nothing on either end to match
+against. Those rows previously sat in `object_access` pointing at a
+non-existent object and are now dropped and counted in
+`link_health.unattributed_p2p_accesses` — the same information, labelled
+honestly.
+
+This is the strongest argument for recording the mapping, and it is a *capture*
+argument rather than a query one. `cuMemMap` already tells us the offset into a
+physical allocation and which allocation it is; the owner's `cuMemCreate` /
+`cuIpcGetMemHandle` names the same one. With that pair, a mapped region can mint
+a real object handle that resolves to the owner's allocation — allocator-agnostic,
+no symmetric heap required, and `add_range`'s reason for refusing to name an
+object goes away because the entity would then have been recorded.
 
 ## Why not the NVSHMEM route
 
