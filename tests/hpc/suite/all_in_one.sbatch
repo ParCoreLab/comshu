@@ -6,12 +6,26 @@
 # for each of the eight cases. The workloads themselves total under ten minutes;
 # the wall clock was ~25-30 min. This removes seven queue waits outright.
 #
-# The allocation is the union of what the cases ask for — 2 nodes x 4 tasks x
+# The allocation is the union of what the cases ask for — 4 nodes x 4 tasks x
 # 4 GPUs, whole-node CPU — and each case is executed exactly as it is submitted
 # standalone. A case's job.sbatch is a plain bash script whose #SBATCH lines are
 # comments, so running it under `bash` inside an allocation is the same program
 # with the same srun/mpirun shapes; nothing is forked into a suite-only variant
 # that could drift from what a lone `sbatch cases/NN/job.sbatch` does.
+#
+# IT WAS 2 NODES, AND THAT SILENTLY EXCLUDED THREE CASES. "The union of what the
+# cases ask for" was true when written and stopped being true when 16-18 arrived
+# asking for 4 nodes x 1 task (one GPU per node, so that every edge crosses the
+# NIC). mpirun then refused to place 4 procs at ppr:1:node on 2 nodes —
+# "this topology can support: Number of procs: 4, PPR: 1:node" — and the cases
+# produced EMPTY capture directories whose only failing assertion was
+# tables_present, with 17 skips. That reads exactly like a tracer regression and
+# is not one. Measured twice: jobs 44688266 and its predecessor.
+#
+# 4 is still inside acc_debug's node=8 ceiling, so this costs no queue class.
+#
+# The union is now CHECKED rather than asserted in a comment — see the
+# pre-flight below. A comment cannot notice that a new case outgrew it.
 #
 #   PCOMM_CASES       space-separated case dirs to run (default: all, in order)
 #   PCOMM_CASES_FILE  same, one per line — how run_on_mn5.sh passes it, since
@@ -22,7 +36,7 @@
 #SBATCH --job-name=pcomm-suite
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:4
@@ -74,6 +88,37 @@ suite_t0=$SECONDS
 # 40-minute allocation less five minutes for the check step and the tail.
 CASE_TIMEOUT=${PCOMM_CASE_TIMEOUT:-900}
 BUDGET=${PCOMM_SUITE_BUDGET:-2100}
+
+# PRE-FLIGHT: does this allocation actually cover every case we were asked to
+# run? Checked HERE, before a single workload starts, because the failure it
+# catches is otherwise invisible until after the queue wait and then looks like
+# a tracer bug (empty captures, tables_present the only red assertion).
+#
+# Each case declares its shape in its own #SBATCH lines, which are the same
+# lines a standalone `sbatch` would honour — so this reads the case's real
+# intent rather than a suite-local duplicate that could drift from it.
+#
+# HARD ERROR, not a skip. A case quietly dropped from the board is the failure
+# mode this whole file already refuses for empty case lists: a green board that
+# tested less than it claims. Whoever adds a case that outgrows the allocation
+# must widen the allocation (or run it --per-case), and should be told so in one
+# line instead of reading mpirun's topology complaint.
+alloc_nodes=${SLURM_JOB_NUM_NODES:-0}
+short=""
+for c in $CASES; do
+  j="$CASES_DIR/$c/job.sbatch"
+  [ -f "$j" ] || continue
+  want=$(sed -n 's/^#SBATCH --nodes=\([0-9]\+\).*/\1/p' "$j" | head -1)
+  [ -n "$want" ] || continue
+  if [ "$alloc_nodes" -gt 0 ] && [ "$want" -gt "$alloc_nodes" ]; then
+    short="$short $c(needs ${want}n)"
+  fi
+done
+if [ -n "$short" ]; then
+  echo "!! allocation is ${alloc_nodes} nodes; these cases ask for more:$short" >&2
+  echo "!! widen --nodes in $(basename "$0"), or run them with run_on_mn5.sh --per-case" >&2
+  exit 2
+fi
 
 for c in $CASES; do
   job="$CASES_DIR/$c/job.sbatch"

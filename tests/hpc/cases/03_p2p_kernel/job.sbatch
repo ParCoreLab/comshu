@@ -23,10 +23,10 @@ PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
 source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
 
-APP="$HOME/p2p_kernel"
+APP="$HOME/p2p_kernel-li"
 if [ ! -x "$APP" ]; then
   pcomm_load_build
-  nvcc -O2 -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
+  nvcc -O2 -lineinfo -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/cases/03_p2p_kernel/p2p_kernel.cu" -o "$APP" -lcudart
   pcomm_load_runtime
 fi

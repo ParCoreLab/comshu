@@ -1,0 +1,25 @@
+{
+  "case": "19_ucx_mpi",
+  "providers": [
+    "ucx"
+  ],
+  "topology": "2 nodes x 1 rank, MPI point-to-point ping-pong over MN5's HPC-X UCX, captured at the public UCP doors",
+  "golden": "none — assertions only; the shape is derived from params, not from a recorded run",
+  "workload": {
+    "ranks": 2,
+    "nodes": 2,
+    "gpus": 0,
+    "iters": 100,
+    "elems": 1024,
+    "elem_bytes": 8,
+    "app_buffer_bytes": 8192
+  },
+  "workload_note": "`tests/hpc/probes/ucx_api_coverage/mpi_calls.c`, unchanged. 100 iterations of MPI_Send/MPI_Recv of 1024 MPI_UNSIGNED_LONG (8192 B) each way between two ranks, then one MPI_Allreduce. Deliberately NOT a CUDA workload: the question is whether the UCP doors are reached on MN5's MPI, and a GPU would only add a second provider's failure modes to a capture that is not about them. ONE RANK PER NODE on purpose — UCX picks shared memory for a same-node pair, so a single-node run would exercise the doors without ever touching the network and be green while saying nothing about the transport.\n\nNo assertion counts messages or bytes. MPI_Send is not obliged to be one ucp_tag_send: OpenMPI chooses eager or rendezvous by size and its collectives take their own path, so a count equality would be asserting OpenMPI's protocol choices rather than pcomm's recording. `UcxTagSend.count` is a UCP datatype count and `UcxTagRecv.count` is capacity OFFERED, not bytes delivered — neither is a byte total, and summing them would be the exact mistake those record comments exist to prevent.",
+  "expect_tables": [
+    "ucx_context",
+    "ucx_worker",
+    "ucx_endpoint",
+    "ucx_tag_send",
+    "ucx_tag_recv"
+  ]
+}

@@ -36,7 +36,7 @@ pcomm_load_runtime
 # then ran a binary that did not exist, exit 127.
 PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
 PCOMM_SM=${PCOMM_SM:-90}
-APP="$HOME/asym_patterns-sm$PCOMM_SM"
+APP="$HOME/asym_patterns-li-sm$PCOMM_SM"
 
 # NVSHMEM_HOME is resolved by globbing the SDKs and taking the newest, so it can
 # name a directory whose layout differs from the one the modules provide. If the
@@ -54,9 +54,18 @@ fi
 # the pattern and never in the build. The arch is in the name because a cached
 # binary from the other machine is not a build error, it is a silent wrong
 # answer.
+# `-lineinfo` AND `-li` IN THE NAME ARE ONE CHANGE, NOT TWO.
+# Without -lineinfo, nvbit_get_line_info returns nothing and the SourceLine
+# artifact is "silently absent, like snoopie" (gpu-backends/nvbit/nvbit_backend.cu:518).
+# That is why source_line was 0 rows in EVERY capture in the corpus and the UI's
+# Source panel has never had data to draw.
+# The name carries the flag for the same reason it carries the arch: the staleness
+# check below compares against the .cu, which does not change when a build flag
+# does, so a cached binary from before this line would have kept the panel empty
+# while every job reported success.
 if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
   pcomm_load_build
-  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
+  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
     -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \

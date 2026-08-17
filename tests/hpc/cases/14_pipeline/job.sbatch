@@ -36,7 +36,7 @@ pcomm_load_runtime
 # then ran a binary that did not exist, exit 127.
 PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
 PCOMM_SM=${PCOMM_SM:-90}
-APP="$HOME/asym_patterns-sm$PCOMM_SM"
+APP="$HOME/asym_patterns-li-sm$PCOMM_SM"
 
 # NVSHMEM_HOME is resolved by globbing the SDKs and taking the newest, so it can
 # name a directory whose layout differs from the one the modules provide. If the
@@ -56,7 +56,7 @@ fi
 # answer.
 if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
   pcomm_load_build
-  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
+  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
     -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \

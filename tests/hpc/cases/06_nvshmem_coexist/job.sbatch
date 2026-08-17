@@ -37,10 +37,10 @@ export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
 # Same workload binary as case 04 — the ring spans whatever PE count it is given,
 # so the only difference here is 8 PEs across 2 nodes instead of 4 on one.
-APP="$HOME/nvshmem_putget"
+APP="$HOME/nvshmem_putget-li"
 if [ ! -x "$APP" ]; then
   pcomm_load_build
-  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
+  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
     -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \

@@ -34,10 +34,10 @@ source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
 export LD_LIBRARY_PATH="$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
-APP="$HOME/nccl_allreduce"
+APP="$HOME/nccl_allreduce-li"
 if [ ! -x "$APP" ]; then
   pcomm_load_build
-  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -Wno-deprecated-gpu-targets \
+  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/nccl_allreduce.cu" -o "$APP" \
     -I"$NCCL_HOME/include" -L"$NCCL_HOME/lib" -lnccl -lcudart
   pcomm_load_runtime

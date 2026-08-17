@@ -19,7 +19,7 @@ export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
 # overwrite was live — the runner exported the mlx5dv path, common.sh replaced
 # it with ibverbs:gpumem, and `-p mlx5dv` would have failed to find its
 # provider on a host where the provider had just been built successfully.
-export PCOMM_PROVIDER_PATH="${PCOMM_PROVIDER_PATH:+$PCOMM_PROVIDER_PATH:}$PCOMM_BUILD/providers/ibverbs:$PCOMM_BUILD/providers/gpumem:$PCOMM_BUILD/providers/mlx5dv"
+export PCOMM_PROVIDER_PATH="${PCOMM_PROVIDER_PATH:+$PCOMM_PROVIDER_PATH:}$PCOMM_BUILD/providers/ibverbs:$PCOMM_BUILD/providers/gpumem:$PCOMM_BUILD/providers/mlx5dv:$PCOMM_BUILD/providers/ucx"
 # Providers link the shared engine (libpcomm_engine.so); they carry an $ORIGIN
 # rpath to it, but export the dir too so a provider .so copied elsewhere (as the
 # gpumem build does) still resolves it.

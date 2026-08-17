@@ -168,7 +168,7 @@ fi
 
 # --- 2. build ---------------------------------------------------------------
 if [ "$do_clean" -eq 1 ]; then
-  say "clean remote build dirs"; rsh "cd $RDIR && rm -rf build build-gpumem"
+  say "clean remote build dirs"; rsh "cd $RDIR && rm -rf build build-gpumem build-ucx"
 fi
 if [ "$do_build" -eq 1 ]; then
   say "build tools + ibverbs provider (gcc-13.2)"
@@ -199,6 +199,27 @@ if [ "$do_build" -eq 1 ]; then
        cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/ &&
        ls -la build/providers/*/*.so" \
     || { echo 'gpumem build FAILED' >&2; exit 1; }
+
+  # UCX, third and separate for the same reason gpumem is: it needs a toolchain
+  # the other two do not. libucp lives in the *versioned* HPC-X tree, not under
+  # the comm_libs/mpi symlink that PATH resolves — a configure pointed at the
+  # symlink finds headers and no library. Paths verified by the probe this case
+  # was promoted from (tests/hpc/probes/ucx_api_coverage/provider.sbatch).
+  #
+  # The provider is built OFF by default everywhere else and would otherwise
+  # never appear in a capture: before this step, every ucx_* table in the whole
+  # corpus was 0 rows, in every capture, while 13 record types and 29 interposed
+  # doors sat in the tree fully tested and never exercised on a cluster.
+  say "build ucx provider (public UCP doors, gcc-13.2)"
+  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
+       SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
+       UCX=\$SDK/comm_libs/12.9/hpcx/hpcx-2.22.1/ucx &&
+       cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
+       cmake --build build-ucx --target ucx_trace -j 2>&1 | tail -2 &&
+       mkdir -p build/providers/ucx &&
+       cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
+       ls -la build/providers/*/*.so" \
+    || { echo 'ucx build FAILED' >&2; exit 1; }
 fi
 
 # --- 3. run the cases --------------------------------------------------------

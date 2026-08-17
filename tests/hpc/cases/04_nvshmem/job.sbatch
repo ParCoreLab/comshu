@@ -28,10 +28,10 @@ source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
-APP="$HOME/nvshmem_putget"
+APP="$HOME/nvshmem_putget-li"
 if [ ! -x "$APP" ]; then
   pcomm_load_build
-  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
+  OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
     -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
