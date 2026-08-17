@@ -73,13 +73,15 @@
   let vbActor = $state(null);
 
   // Node and device identity for a rank, shared by both verbs queries.
+  //
+  // This used to compute `dense_rank()` over `_node` and `_rank_device` right
+  // here, which made it the private owner of an identity three consumers want:
+  // this panel, Graph.svelte's arc ordering, and the chat agent — which could
+  // not have it at all, because the views the recipe needs are internal ones it
+  // is told never to read. It is `rank_identity` in the derived layer now, so
+  // "n14 · GPU 0" means the same thing in a panel and in an answer.
   const ND = `
-    WITH nd AS (
-      SELECT n.rank,
-             (dense_rank() OVER (ORDER BY n.node) - 1)::BIGINT AS node_ix,
-             d.device, d.devices
-      FROM _node n LEFT JOIN _rank_device d ON d.rank = n.rank
-    )`;
+    WITH nd AS (SELECT rank, node_ix, device, devices FROM rank_identity)`;
 
   $effect(() => {
     query(`

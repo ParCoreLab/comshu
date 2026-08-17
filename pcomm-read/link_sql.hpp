@@ -810,6 +810,43 @@ SELECT * FROM verbs_recv
     // connected has no peer, which is a different statement from "we could not
     // resolve its peer", and NULL is the only value that does not assert one of
     // them. comm_edges below uses -1 because it must aggregate.
+    // Who a rank IS, physically: which host it ran on and which GPU it owns.
+    //
+    // WHY THIS IS A TABLE AND NOT A PANEL'S `WITH` CLAUSE. Every consumer wants
+    // to name a rank the way a person does — "n14 · GPU 0" — and every consumer
+    // was deriving it privately: Devices.svelte built `node_ix` inline over
+    // `_node` and `_rank_device`, Graph.svelte ordered its arcs by the same
+    // dense_rank, and the chat agent could not do it at all, because the views
+    // that recipe needs are internal ones it is told never to read. Three
+    // derivations of one identity, and the one that is missing is the one a
+    // user notices ("which host/GPU pair did the most remote accesses?").
+    //
+    // `node_ix` is the ordinal, NOT the hostname. `node_hash` is FNV-1a of
+    // gethostname (records.hpp) and is one-way: the capture does not contain
+    // the name of the machine and no query can recover it. What the ordinal is
+    // good for is telling hosts apart and matching what the panels display —
+    // both come from `dense_rank() OVER (ORDER BY node_hash)`, which is stable
+    // for one capture and means nothing across two.
+    //
+    // IDENTITY IS (node, device), NEVER device ALONE — across 16 nodes there
+    // are sixteen "GPU 0"s, and merging them reports a 64-rank job as a 4-GPU
+    // one. Same collision class as keying a peer on qp_num without the lid.
+    //
+    // `device` is NULL when a rank drives more than one GPU (`devices` says how
+    // many). That is a real state, not a gap to paper over.
+    {"rank_identity", R"sql(
+SELECT n.rank,
+       (dense_rank() OVER (ORDER BY n.node) - 1)::BIGINT AS node_ix,
+       n.node                                            AS node_hash,
+       d.device,
+       coalesce(d.devices, 0)::BIGINT                    AS devices,
+       'n' || (dense_rank() OVER (ORDER BY n.node) - 1)
+            || ' · GPU ' || coalesce(d.device::VARCHAR, '?') AS label
+FROM _node n
+LEFT JOIN _rank_device d ON d.rank = n.rank
+ORDER BY n.rank
+)sql"},
+
     {"endpoint", R"sql(
 SELECT r.rank,
        r.qp_num,
