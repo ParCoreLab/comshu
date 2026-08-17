@@ -243,6 +243,14 @@ if [ "$do_build" -eq 1 ]; then
   # symlink finds headers and no library. Paths verified by the probe this case
   # was promoted from (tests/hpc/probes/ucx_api_coverage/provider.sbatch).
   #
+  # CMAKE_C/CXX_COMPILER ARE NOT OPTIONAL HERE, and dropping them is how this
+  # step failed first: `module load nvidia-hpc-sdk` (needed for the HPC-X tree)
+  # also puts nvc++ on PATH and exports CC/CXX, so cmake silently configures with
+  # the NVIDIA compiler. The failure surfaces inside libstdc++ —
+  # "identifier __is_convertible is undefined" in <type_traits> — which reads as
+  # a broken toolchain rather than as the wrong compiler being chosen. Same
+  # hazard common.sh already documents for CC in the CUDA cases.
+  #
   # The provider is built OFF by default everywhere else and would otherwise
   # never appear in a capture: before this step, every ucx_* table in the whole
   # corpus was 0 rows, in every capture, while 13 record types and 29 interposed
@@ -251,7 +259,7 @@ if [ "$do_build" -eq 1 ]; then
   rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
        SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
        UCX=\$SDK/comm_libs/12.9/hpcx/hpcx-2.22.1/ucx &&
-       cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
+       cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
        cmake --build build-ucx --target ucx_trace -j 2>&1 | tail -2 &&
        mkdir -p build/providers/ucx &&
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
