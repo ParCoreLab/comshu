@@ -726,8 +726,26 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 // right GPU's domain — a wrong anchor rather than a missing one, which is worse:
 // pcomm-read fits rate from the two anchors, so it would have silently skewed
 // every span in that domain.
+// A PLAIN ARRAY, NOT A MAP, AND THAT IS NOT A MICRO-OPTIMISATION. The first
+// version of this fix used `static std::unordered_map<int, uint64_t*>` and
+// segfaulted every gpumem case on job 44713978 — at address 0x8, inside
+// nvbit_at_ctx_term, reached from an exit handler (on_exit ->
+// __libc_start_main). A function-local static with a non-trivial destructor is
+// destroyed during exit, and ctx term also runs during exit, in an order
+// nothing here controls: touching the map after its destructor ran is a
+// use-after-free. nvbit_at_term below already states the rule — "statics may be
+// gone" — and this is the same hazard one frame earlier.
+//
+// So the state a teardown path touches must be trivially destructible. An array
+// indexed by device ordinal is, and 32 is generous: NVML tops out well below it
+// and an out-of-range ordinal simply gets no anchor rather than corrupting
+// memory.
+constexpr int kMaxAnchoredDevices = 32;
+uint64_t*     g_anchor_buf[kMaxAnchoredDevices] = {};  // per device; leaked by design
+
 void sample_gpu_anchor(int dev_id) {
-    static std::unordered_map<int, uint64_t*> d_outs;  // per device; leaked by design
+    if (dev_id < 0 || dev_id >= kMaxAnchoredDevices)
+        return;
 
     int prev = -1;
     if (cudaGetDevice(&prev) != cudaSuccess)
@@ -743,14 +761,12 @@ void sample_gpu_anchor(int dev_id) {
         }
     } guard{prev, dev_id};
 
-    auto it = d_outs.find(dev_id);
-    if (it == d_outs.end()) {
-        uint64_t* p = nullptr;  // allocated on dev_id: it is current here
-        if (cudaMalloc(&p, sizeof(uint64_t)) != cudaSuccess)
-            return;
-        it = d_outs.emplace(dev_id, p).first;
+    if (!g_anchor_buf[dev_id] &&
+        cudaMalloc(&g_anchor_buf[dev_id], sizeof(uint64_t)) != cudaSuccess) {
+        g_anchor_buf[dev_id] = nullptr;  // allocated on dev_id: it is current here
+        return;
     }
-    uint64_t* const d_out = it->second;
+    uint64_t* const d_out = g_anchor_buf[dev_id];
 
     const auto ns = [](const timespec& t) {
         return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec;
@@ -1014,6 +1030,7 @@ void* recv_thread_fun(void* args) {
                 a.run_device = static_cast<pcomm::core::DeviceId>(ma->dev_id);
                 a.ticks_lo = t_lo;
                 a.ticks_hi = t_hi;
+                a.launch = ma->launch_id;
                 // mem_device is left unresolved: symmetric-heap ranges are in
                 // the alloc registry like any other allocation, so the engine
                 // resolves every address the same way.
@@ -1326,11 +1343,19 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     // sampling kernel into contexts already destroyed by the earlier passes.
     // The first ctx term is the one moment every context is still alive, so it
     // is the right one to close them all at.
+    // Driven off g_anchor_buf, NOT off g_gpu_anchored, and the reason is the one
+    // in sample_gpu_anchor's comment: this runs during exit, and g_gpu_anchored
+    // is a std::unordered_set whose destructor may already have run. It survived
+    // job 44713195 on destruction-order luck — being a load-time global it is
+    // torn down late — which is not a property to rely on. g_anchor_buf is a POD
+    // array and a non-null slot means that device was anchored, so it answers
+    // the same question with nothing to destroy.
     static bool closed = false;
     if (g_kernel_timing && flush == cudaSuccess && !closed) {
         closed = true;
-        for (int dev : g_gpu_anchored)
-            sample_gpu_anchor(dev);
+        for (int dev = 0; dev < kMaxAnchoredDevices; ++dev)
+            if (g_anchor_buf[dev])
+                sample_gpu_anchor(dev);
     }
 
     state->channel_host.destroy(false);
