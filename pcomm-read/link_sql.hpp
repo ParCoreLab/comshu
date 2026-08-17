@@ -264,10 +264,11 @@ WHERE c.a >= s.a
     {"_tl_raw", R"sql(
 CREATE OR REPLACE VIEW _tl_raw AS
     SELECT rank, 'ib_post_send'     AS stream, temporal_a_domain AS domain,
-           temporal_a_ticks AS a, temporal_b_ticks AS b,
+           temporal_kind AS kind, temporal_a_ticks AS a, temporal_b_ticks AS b,
            qp_num AS ep, length::BIGINT  AS bytes FROM ib_post_send
 UNION ALL
-    SELECT rank, 'ib_poll_cq',     temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+    SELECT rank, 'ib_poll_cq',     temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
            qp_num, byte_len::BIGINT   FROM ib_poll_cq
 UNION ALL
     -- The one lane that is a JOIN rather than a stream: a work request from its
@@ -276,22 +277,34 @@ UNION ALL
     -- answer. It needs no special case downstream because it arrives in exactly
     -- the same shape — an interval on a rank in a clock domain — and _wr_flight
     -- is materialised so this union stays as cheap as the others.
-    SELECT rank, 'ib_wr_flight',   domain, a, b,
+    -- 2 = TimeKind::Interval, hardcoded because this lane is SYNTHESISED: it
+    -- is a join of two measured instants, not a stream with a temporal of its
+    -- own, and [post, completion] is a real measured duration.
+    SELECT rank, 'ib_wr_flight',   domain, 2::UTINYINT, a, b,
            qp_num, length::BIGINT     FROM _wr_flight
 UNION ALL
-    SELECT rank, 'ib_post_recv',   temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+    SELECT rank, 'ib_post_recv',   temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
            qp_num, length::BIGINT     FROM ib_post_recv
 UNION ALL
-    SELECT rank, 'ib_recv_cqe',    temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+    SELECT rank, 'ib_recv_cqe',    temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
            qp_num, byte_len::BIGINT   FROM ib_recv_cqe
 UNION ALL
-    SELECT rank, 'mlx5_device_send', temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+    SELECT rank, 'mlx5_device_send', temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
            qp_num, length::BIGINT     FROM mlx5_device_send
 UNION ALL
-    SELECT rank, 'mlx5_doorbell',  temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+    SELECT rank, 'mlx5_doorbell',  temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
            qp_num, NULL::BIGINT       FROM mlx5_doorbell
 UNION ALL
-    SELECT rank, 'gpu_access',     temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+    -- kind = 3 (Window) since 2026-08-17: [kernel launch, host drain]. This
+    -- lane is the reason `kind` exists here at all — an access is BOUNDED, not
+    -- measured, and drawing its window as a slice would assert the access took
+    -- that long. See RawAccess in attr/interfaces.hpp.
+    SELECT rank, 'gpu_access',     temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
            run_device, size::BIGINT   FROM gpu_access
 UNION ALL
     -- Compute, beside the comm. This is the row that lets a timeline answer
@@ -307,7 +320,8 @@ UNION ALL
     -- kernels lasting tens of microseconds — drawn on a timeline they would be
     -- confident fiction. They stay in the raw table for anyone studying launch
     -- latency; they must not reach a lane labelled "kernel".
-    SELECT rank, 'gpu_kernel',     temporal_a_domain, temporal_a_ticks, temporal_b_ticks,
+    SELECT rank, 'gpu_kernel',     temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
            device, NULL::BIGINT      FROM gpu_kernel WHERE source <> 2
 )sql"},
 
@@ -996,6 +1010,13 @@ SELECT e.rank,
        e.stream,
        e.ep,
        e.bytes,
+       -- What [t0_ns, t1_ns] MEANS on this row, and it is not the same question
+       -- as what it contains. 1 = Instant (t1 == t0), 2 = Interval — the span
+       -- was measured — and 3 = Window, where the two ends BOUND an event whose
+       -- real time is unknown. A renderer that treats 3 as 2 asserts a duration
+       -- nothing measured; gpu_access is the lane that makes the distinction
+       -- load-bearing. See core/time.hpp for the enum.
+       e.kind,
        (c.w0::HUGEINT
           + ((e.a::HUGEINT - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT AS t0_ns,
        (c.w0::HUGEINT

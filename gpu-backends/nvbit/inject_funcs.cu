@@ -36,6 +36,7 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcod
     ma.opcode_id = opcode_id;
     ma.instr_index = static_cast<uint32_t>(instr_index);
     ma.access_size = static_cast<uint32_t>(access_size);
+    ma.launch_id = grid_launch_id;  // the host turns this into a time bound
 
     uint64_t block_id = blockIdx.x + blockIdx.y * gridDim.x + gridDim.x * gridDim.y * blockIdx.z;
     ma.thread_index = block_id * (blockDim.x * blockDim.y * blockDim.z) +
@@ -102,6 +103,11 @@ pcomm_kernel_stamp(int is_end, int dev_id, uint64_t launch_id, uint64_t pchannel
     r.dev_id = dev_id;
     r.instr_index = 0;
     r.access_size = 0;
+    // Set on both records, though the drain reads it only off accesses: an
+    // uninitialised field on the wire is a trap for whoever reads it next, and
+    // the two kinds naming one launch identically is the join a tighter lower
+    // bound would need. PCOMM_SPAN_LAUNCH predates the field; see dev_common.h.
+    r.launch_id = launch_id;
     PCOMM_SPAN_LAUNCH(r) = launch_id;
     PCOMM_SPAN_TICKS(r) = t;
     PCOMM_SPAN_IS_END(r) = is_end;

@@ -1,8 +1,79 @@
 # PLAN — gpumem records must say when they *might* have happened, not lie about when they did
 
 - **Created:** 2026-08-03 10:21 +03
-- **Status:** TODO — **implemented once (2bfb376) and reverted (see below).**
-  Blocked on the NVSHMEM heap-attribution race, which this change exposes.
+- **Status:** **RE-LANDED 2026-08-17**, by hand rather than by revert. Both
+  unblocking conditions below were met in the interim; local gate green (16/16,
+  including the new `core_smoke` window assertions, mutation-checked), MN5 gate
+  owed. See "Re-landing" below for what was NOT taken from `2bfb376`.
+
+## Re-landing (2026-08-17)
+
+**`git revert e97dd0f` was tried and rejected on evidence, not on size.** It
+conflicts in five files, and the conflict that matters is the third one in
+`nvbit_backend.cu`: the revert's parent still contains `find_nvshmem_heap_owner`
+and the 2.x fixed-layout fallback — *the positional attribution bug that blocked
+this plan and that HEAD has since deleted*. A blind revert restores it. The two
+lines actually wanted from that hunk are `a.ticks_lo = t_lo; a.ticks_hi =
+t_hi;`.
+
+So the content was re-applied by hand. Taken verbatim: the `launch_id` field and
+its device-side assignment, `RawAccess::ticks_lo/hi`, the pipeline's
+`Temporal::window(...)` / `none()` emission, the launch ring and its
+`g_launch_unknown` report, the CSV `ticks_lo,ticks_hi` split, the `dur_ns`
+Interval-only note, and the `core_smoke` block. **Not** taken: everything
+touching NVSHMEM heap ownership.
+
+Three things were added that `2bfb376` did not have, because the tree moved:
+
+1. `note_launch_time` is called **unconditionally**, outside the
+   `g_kernel_timing` guard that now wraps the span bookkeeping beside it. The
+   lower bound is not a kernel-timing feature; it is what stops every access
+   claiming drain time.
+2. `pcomm_kernel_stamp` sets `launch_id` too, so the field is never garbage on
+   the wire and the two record kinds name one launch identically.
+3. **`timeline_span` gained a `kind` column, and this is the load-bearing one.**
+   `2bfb376` closed with *"Nothing exports Windows to a timeline today; when
+   something does, it needs its own rendering, not this."* Something does now —
+   `_tl_raw` pulls `gpu_access` in, and `timeline_span` renders `[a, b]` as a
+   measured span. Landing the window without `kind` would have converted a false
+   *instant* into a false *duration*: 3 (Window) is a bound, 2 (Interval) is a
+   measurement, and a renderer must not read one as the other.
+
+**`kind` is also the staleness marker.** On the pre-fix captures the query
+`SELECT stream, kind, count(*) FROM timeline_span GROUP BY ALL` returns
+`gpu_access, 1` — Instant, the old false claim, now visible *in the data*
+instead of inferable from a commit date. After a re-run it reads 3.
+
+### Both blockers were cleared before this re-land, and were checked rather than assumed
+
+1. *Ownership independent of discovery order.* Done. `(mype + region_index) %
+   npes` is gone; `nvbit_backend.cu:202` keeps it only as the comment explaining
+   why it was wrong, and ownership comes from `nvshmem_ptr(a, pe)`.
+2. *A case-07 check that would have caught it without depending on timing.*
+   Done: `suite/asserts/owner_in_range.sql`, which bounds `mem_dev`/`run_dev` by
+   `params.gpus` and runs on every case that has `gpu_access`.
+
+### Known-loose, unchanged, and now cheaper to tighten
+
+`ticks_lo` is still the host **enqueue** time, so a deep stream queue widens the
+window. Sound, never wrong — but the kernel-span work that landed 2026-08-13
+gives a strictly tighter sound lower bound (`%globaltimer` at the first block's
+entry, tens of microseconds against milliseconds of enqueue-to-drain lag), and
+both records now carry the same `launch_id` to join on. Deliberately left as a
+follow-up so the honest window and the tighter window are separately checkable;
+tightening it means switching `ticks_lo`'s domain from TSC to
+`kDomainGpuTimerBase + dev`, which `_tl_raw` joins per `(rank, domain)` and so
+needs the window to be single-domain — take `ticks_hi` from the span's exit
+stamp too, not from the drain.
+
+## BLOCKER (2026-08-03): it perturbs a pre-existing attribution race
+
+**Cleared 2026-08-17 — see "Re-landing" above. Kept for the reasoning.**
+
+The implementation was correct on its own terms and passed everything that
+tests it directly — cases 03, 04, 05 green on real NVBit, `mem_object` output
+byte-identical, all ib exports byte-identical. **Case 07 failed**, and bisecting
+put it squarely on this commit:
 
 ## BLOCKER (2026-08-03): it perturbs a pre-existing attribution race
 

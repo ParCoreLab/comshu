@@ -15,6 +15,21 @@ typedef struct {
     uint32_t access_size;   // bytes per lane access (from Instr::getSize())
     uint64_t addrs[32];     // per-lane addresses (0 = inactive lane)
     uint64_t thread_index;  // flat thread index of the pushing lane
+    // Which launch issued this access. NVBit hands it to the device via
+    // nvbit_set_at_launch and it has always been a parameter of
+    // pcomm_instrument_mem; carrying it back is what lets the host bound *when*
+    // the access happened. The device has no clock (reading %globaltimer per
+    // instrumented instruction is on the hot path of the thing being measured),
+    // so the launch time is the lower bound and the drain time is the upper one
+    // — a Window, not an Instant. See
+    // plans/PLAN-20260803-1021-gpumem-window-timestamps-*.md.
+    //
+    // Span records (lane_id -2) carry the same id in PCOMM_SPAN_LAUNCH below,
+    // which predates this field. Both are set, so the two record kinds can be
+    // joined on one launch without the reader caring which it is reading — that
+    // is what a later tightening of the lower bound from enqueue-TSC to the
+    // kernel's own %globaltimer window would key on.
+    uint64_t launch_id;
 } pcomm_gpu_access_t;
 
 // KERNEL SPAN RECORDS ride in the access record rather than in a struct of
