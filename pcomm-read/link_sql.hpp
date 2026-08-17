@@ -696,9 +696,48 @@ inline constexpr Table kTables[] = {
     // from a workload that did not send any.
     {"object_access", R"sql(
 WITH p2p AS (
-    SELECT g.rank                                   AS owner_rank,
+    -- OWNER IS THE RANK THAT OWNS THE MEMORY, NEVER THE RANK THAT WROTE IT.
+    --
+    -- This said `g.rank` until 2026-08-17, which made the column mean the
+    -- OPPOSITE of what the verbs branch below means by it: there, owner_rank is
+    -- `e.peer_rank`, the far end. One column, two meanings, decided by `source`
+    -- — so any panel grouping on it silently mixed them.
+    --
+    -- What it cost is exactly the property `hubspoke` exists to produce.
+    -- Measured on hubspoke-44465477: the hub's 64 KiB recv buffer is one object
+    -- written by three spokes, and it came out as THREE objects of one writer
+    -- each (owner 1/obj 37, owner 2/obj 37, owner 3/obj 37) because the object
+    -- id is symmetric-heap-shared and `mem_object` has a row for it on every
+    -- rank, so the panel's `owner_rank = m.rank` join succeeded on the wrong
+    -- one. `touched by` several GPUs — the whole point of the case — could not
+    -- appear. Its ib twin (hubspoke_ib-44578395), which takes the verbs branch,
+    -- reported the same buffer correctly all along: one object, three actors,
+    -- three disjoint bands.
+    --
+    -- The join is the one `_nvlink_sends` already uses, and that is deliberate:
+    -- "who owns this device's memory" must have ONE answer in this file, or
+    -- comm_edges and object_access disagree about the same access.
+    -- The local case is stated rather than assumed. `RemoteFilter`
+    -- (providers/gpumem/engine.hpp:211) keeps only peer accesses today, so
+    -- run_device = mem_device does not currently reach a capture — but a view
+    -- that silently needs a filter in another component to be correct is a
+    -- landmine for whoever relaxes it. When the access is local the owner is the
+    -- rank itself, and no node identity is required to say so.
+    SELECT CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END
+                                                    AS owner_rank,
            g.object                                 AS object,
-           g.address - min(g.address) OVER (PARTITION BY g.rank, g.object)
+    -- ANCHOR PER (ACTOR, DEVICE), NOT PER ACTOR.
+    --
+    -- The partition was `(g.rank, g.object)`, and under a symmetric heap that is
+    -- not one window but several glued together: one actor maps the SAME object
+    -- id on every peer, at unrelated base addresses. Measured on the same
+    -- capture: rank 0 writes object 39 — 2048 bytes — into devices 1, 2 and 3 at
+    -- bases 1375635332608 / 1650513239552 / 1925391146496, and the single window
+    -- over all three reported offsets up to 549755815936. That is 512 GiB into a
+    -- 2 KiB object, and every real access collapsed into the first bin.
+    --
+    -- mem_device is what separates them, because the mapping is per peer.
+           g.address - min(g.address) OVER (PARTITION BY g.rank, g.mem_device, g.object)
                                                     AS obj_offset,
            g.size                                   AS size,
            'p2p'                                    AS source,
@@ -706,6 +745,14 @@ WITH p2p AS (
            g.run_device::BIGINT                     AS actor_device,
            FALSE                                    AS exact
     FROM gpu_access g
+    LEFT JOIN _node n         ON n.rank = g.rank
+    LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
+    -- An access whose owning rank cannot be named is not attributable to an
+    -- object at all — dropping it here is right. It is NOT allowed to vanish
+    -- quietly, so link_health counts it as unattributed_p2p_accesses; a capture
+    -- with no node identity turns the whole p2p branch off, and that must read
+    -- as a number rather than as an empty panel.
+    WHERE g.run_device = g.mem_device OR o.rank IS NOT NULL
 ),
 verbs AS (
     SELECT e.peer_rank                              AS owner_rank,
@@ -1014,6 +1061,20 @@ SELECT 'unresolved_nvlink',
        coalesce(sum(sends), 0)::BIGINT,
        'NVLink accesses whose peer rank is unknown — this capture records no node identity'
 FROM _nvlink_sends WHERE src_rank = -1 OR dst_rank = -1
+UNION ALL
+-- The same failure seen from object_access rather than from comm_edges, and it
+-- needs its own row because the two branches drop on different keys:
+-- _nvlink_sends only looks at remote accesses (run_device <> mem_device), while
+-- object_access attributes local ones too. A capture with no node identity
+-- empties the whole p2p half of the object view, and an empty Objects panel
+-- must read as a count here rather than as "this workload touched nothing".
+SELECT 'unattributed_p2p_accesses',
+       coalesce(count(*), 0)::BIGINT,
+       'GPU accesses whose owning rank could not be named from (node, mem_device) — dropped from object_access'
+FROM gpu_access g
+LEFT JOIN _node n         ON n.rank = g.rank
+LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
+WHERE g.run_device <> g.mem_device AND o.rank IS NULL
 UNION ALL
 SELECT 'self_edges',
        coalesce(count(*), 0),
