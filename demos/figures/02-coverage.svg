@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" font-family="Inter, Helvetica Neue, Arial, sans-serif">
+  <title>One tool per layer</title>
+  <rect width="1600" height="900" fill="#ffffff"/>
+
+  <!-- NOTE: the "log format" and "viewer" cells are the punchline of this
+       figure. Check each against the tool you know best before presenting —
+       the claim is that they are all DIFFERENT, not any specific string. -->
+
+  <text x="90" y="92" font-size="34" font-weight="600" fill="#24343f">What each tool sees, writes, and shows</text>
+  <text x="90" y="128" font-size="20" fill="#7c8c9a">Five layers of one run. Four tools. No two agree on a format or a viewer.</text>
+
+  <!-- ── column headers ────────────────────────────────────────────── -->
+  <g font-size="16" fill="#5f7183" text-anchor="middle">
+    <text x="430" y="196">GPU</text><text x="430" y="216">load / store</text>
+    <text x="598" y="196">NVLink</text><text x="598" y="216">peer access</text>
+    <text x="766" y="196">CUDA / NCCL</text><text x="766" y="216">API</text>
+    <text x="934" y="196">IB</text><text x="934" y="216">verbs</text>
+    <text x="1102" y="196">UCX /</text><text x="1102" y="216">libfabric</text>
+  </g>
+  <g font-size="16" fill="#5f7183">
+    <text x="1200" y="216">log format</text>
+    <text x="1360" y="216">viewer</text>
+  </g>
+  <line x1="90" y1="236" x2="1510" y2="236" stroke="#c9d2da" stroke-width="2"/>
+
+  <!-- ── rows: covered = filled, uncovered = hairline ──────────────── -->
+  <!-- Snoopie -->
+  <g>
+    <text x="90" y="292" font-size="24" font-weight="600" fill="#24343f">Snoopie</text>
+    <rect x="350" y="264" width="160" height="46" rx="8" fill="#d8e6da" stroke="#2f7d5d" stroke-width="2"/>
+    <rect x="518" y="264" width="160" height="46" rx="8" fill="#d8e6da" stroke="#2f7d5d" stroke-width="2"/>
+    <rect x="686" y="264" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="854" y="264" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="1022" y="264" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <text x="1200" y="293" font-size="17" fill="#5f7183">own text log</text>
+    <text x="1360" y="293" font-size="17" fill="#5f7183">own web UI</text>
+  </g>
+  <!-- SigmaTrace -->
+  <g>
+    <text x="90" y="376" font-size="24" font-weight="600" fill="#24343f">SigmaTrace</text>
+    <rect x="350" y="348" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="518" y="348" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="686" y="348" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="854" y="348" width="160" height="46" rx="8" fill="#f7ded2" stroke="#b4552d" stroke-width="2"/>
+    <rect x="1022" y="348" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <text x="1200" y="377" font-size="17" fill="#5f7183">own binary</text>
+    <text x="1360" y="377" font-size="17" fill="#5f7183">ad-hoc scripts</text>
+  </g>
+  <!-- ComScribe -->
+  <g>
+    <text x="90" y="460" font-size="24" font-weight="600" fill="#24343f">ComScribe</text>
+    <rect x="350" y="432" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="518" y="432" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>
+    <rect x="686" y="432" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>
+    <rect x="854" y="432" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="1022" y="432" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <text x="1200" y="461" font-size="17" fill="#5f7183">profiler CSV</text>
+    <text x="1360" y="461" font-size="17" fill="#5f7183">matplotlib</text>
+  </g>
+  <!-- UCTrace -->
+  <g>
+    <text x="90" y="544" font-size="24" font-weight="600" fill="#24343f">UCTrace</text>
+    <rect x="350" y="516" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="518" y="516" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="686" y="516" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="854" y="516" width="160" height="46" rx="8" fill="#fafbfc" stroke="#e2e8ed" stroke-width="2"/>
+    <rect x="1022" y="516" width="160" height="46" rx="8" fill="#ede0ee" stroke="#7a5fa8" stroke-width="2"/>
+    <text x="1200" y="545" font-size="17" fill="#5f7183">own trace</text>
+    <text x="1360" y="545" font-size="17" fill="#5f7183">its own tooling</text>
+  </g>
+
+  <!-- ── the gap ───────────────────────────────────────────────────── -->
+  <text x="90" y="614" font-size="19" fill="#b4552d">
+    ↑ four log formats, four viewers — and no way to ask a question that crosses two rows
+  </text>
+
+  <!-- ── pcomm ─────────────────────────────────────────────────────── -->
+  <g>
+    <rect x="70" y="646" width="1460" height="112" rx="14" fill="#f7f9fb" stroke="#5b7c99" stroke-width="2.5"/>
+    <text x="90" y="700" font-size="27" font-weight="700" fill="#24343f">pcomm</text>
+    <text x="90" y="726" font-size="16" fill="#7c8c9a">one process, one clock</text>
+    <g>
+      <rect x="350" y="676" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>
+      <rect x="518" y="676" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>
+      <rect x="686" y="676" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>
+      <rect x="854" y="676" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>
+      <rect x="1022" y="676" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>
+      <g font-size="15" fill="#3d4f5c" text-anchor="middle">
+        <text x="430" y="705">-p gpumem</text>
+        <text x="598" y="705">-p gpumem</text>
+        <text x="766" y="705">-p nccl</text>
+        <text x="934" y="705">-p ib</text>
+        <text x="1102" y="705">-p ucx</text>
+      </g>
+    </g>
+    <text x="1200" y="698" font-size="17" font-weight="600" fill="#24343f">.pcs streams</text>
+    <text x="1200" y="720" font-size="15" fill="#7c8c9a">→ CSV / Parquet</text>
+    <text x="1360" y="698" font-size="17" font-weight="600" fill="#24343f">one UI</text>
+    <text x="1360" y="720" font-size="15" fill="#7c8c9a">+ SQL, + Perfetto</text>
+  </g>
+
+  <text x="90" y="822" font-size="25" fill="#24343f"><tspan font-weight="600">The rows are not the hard part — the last two columns are.</tspan><tspan fill="#7c8c9a"> Four logs you cannot join answer no question that spans them.</tspan></text>
+</svg>

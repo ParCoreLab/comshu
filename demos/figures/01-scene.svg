@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" font-family="Inter, Helvetica Neue, Arial, sans-serif">
+  <title>One run, two transports</title>
+
+  <defs>
+    <marker id="a-nvlink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#2f7d5d"/>
+    </marker>
+    <marker id="a-ib" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b4552d"/>
+    </marker>
+    <marker id="a-host" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7c8c9a"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="#ffffff"/>
+
+  <!-- ── the two nodes ─────────────────────────────────────────────── -->
+  <g>
+    <rect x="90" y="230" width="580" height="410" rx="18" fill="#f5f7f9" stroke="#c9d2da" stroke-width="2"/>
+    <text x="112" y="272" font-size="24" font-weight="600" fill="#3d4f5c">node as04r1b02</text>
+    <text x="112" y="298" font-size="16" fill="#7c8c9a">4 × H100, ranks 0–3</text>
+
+    <rect x="930" y="230" width="580" height="410" rx="18" fill="#f5f7f9" stroke="#c9d2da" stroke-width="2"/>
+    <text x="1488" y="272" font-size="24" font-weight="600" fill="#3d4f5c" text-anchor="end">node as04r1b09</text>
+    <text x="1488" y="298" font-size="16" fill="#7c8c9a" text-anchor="end">4 × H100, ranks 4–7</text>
+  </g>
+
+  <!-- ── GPUs ──────────────────────────────────────────────────────── -->
+  <g font-size="20" font-weight="600" text-anchor="middle">
+    <g fill="#e9eff5" stroke="#5b7c99" stroke-width="2">
+      <rect x="118" y="440" width="118" height="110" rx="10"/>
+      <rect x="253" y="440" width="118" height="110" rx="10"/>
+      <rect x="388" y="440" width="118" height="110" rx="10"/>
+      <rect x="523" y="440" width="118" height="110" rx="10"/>
+      <rect x="958" y="440" width="118" height="110" rx="10"/>
+      <rect x="1093" y="440" width="118" height="110" rx="10"/>
+      <rect x="1228" y="440" width="118" height="110" rx="10"/>
+      <rect x="1363" y="440" width="118" height="110" rx="10"/>
+    </g>
+    <g fill="#24343f">
+      <text x="177" y="495">GPU 0</text><text x="312" y="495">GPU 1</text>
+      <text x="447" y="495">GPU 2</text><text x="582" y="495">GPU 3</text>
+      <text x="1017" y="495">GPU 4</text><text x="1152" y="495">GPU 5</text>
+      <text x="1287" y="495">GPU 6</text><text x="1422" y="495">GPU 7</text>
+    </g>
+    <g fill="#7c8c9a" font-size="15" font-weight="400">
+      <text x="177" y="522">rank 0</text><text x="312" y="522">rank 1</text>
+      <text x="447" y="522">rank 2</text><text x="582" y="522">rank 3</text>
+      <text x="1017" y="522">rank 4</text><text x="1152" y="522">rank 5</text>
+      <text x="1287" y="522">rank 6</text><text x="1422" y="522">rank 7</text>
+    </g>
+  </g>
+
+  <!-- ── NVLink ring, node A ───────────────────────────────────────── -->
+  <g fill="none" stroke="#2f7d5d" stroke-width="3" marker-end="url(#a-nvlink)">
+    <path d="M177 436 C 177 392, 312 392, 312 436"/>
+    <path d="M312 436 C 312 392, 447 392, 447 436"/>
+    <path d="M447 436 C 447 392, 582 392, 582 436"/>
+    <path d="M582 554 C 582 610, 177 610, 177 554"/>
+  </g>
+  <!-- ── NVLink ring, node B ───────────────────────────────────────── -->
+  <g fill="none" stroke="#2f7d5d" stroke-width="3" marker-end="url(#a-nvlink)">
+    <path d="M1017 436 C 1017 392, 1152 392, 1152 436"/>
+    <path d="M1152 436 C 1152 392, 1287 392, 1287 436"/>
+    <path d="M1287 436 C 1287 392, 1422 392, 1422 436"/>
+    <path d="M1422 554 C 1422 610, 1017 610, 1017 554"/>
+  </g>
+
+  <!-- ── NICs and the wire between them ────────────────────────────── -->
+  <g>
+    <rect x="520" y="286" width="130" height="56" rx="10" fill="#fdf1ea" stroke="#b4552d" stroke-width="2"/>
+    <text x="585" y="321" font-size="19" font-weight="600" fill="#8a3f1f" text-anchor="middle">NIC</text>
+
+    <rect x="950" y="286" width="130" height="56" rx="10" fill="#fdf1ea" stroke="#b4552d" stroke-width="2"/>
+    <text x="1015" y="321" font-size="19" font-weight="600" fill="#8a3f1f" text-anchor="middle">NIC</text>
+
+    <line x1="650" y1="314" x2="944" y2="314" stroke="#b4552d" stroke-width="4"
+          marker-end="url(#a-ib)" marker-start="url(#a-ib)"/>
+    <text x="797" y="296" font-size="18" font-weight="600" fill="#8a3f1f" text-anchor="middle">NDR InfiniBand</text>
+
+    <!-- NIC ↔ local GPU staging -->
+    <g stroke="#7c8c9a" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#a-host)">
+      <line x1="585" y1="346" x2="582" y2="434"/>
+      <line x1="1015" y1="346" x2="1017" y2="434"/>
+    </g>
+  </g>
+
+  <!-- ── the collective sitting on top of both ─────────────────────── -->
+  <g>
+    <rect x="440" y="120" width="720" height="66" rx="14" fill="#f2eefa" stroke="#7a5fa8" stroke-width="2"/>
+    <text x="800" y="152" font-size="22" font-weight="600" fill="#4c3a72" text-anchor="middle">ncclAllReduce(sendbuf, recvbuf, 65536, ncclFloat, ncclSum, comm, stream)</text>
+    <text x="800" y="174" font-size="16" fill="#7a5fa8" text-anchor="middle">one call — the application's whole view of what just happened</text>
+    <g stroke="#7a5fa8" stroke-width="2" stroke-dasharray="5 5">
+      <line x1="620" y1="186" x2="480" y2="380"/>
+      <line x1="800" y1="186" x2="797" y2="278"/>
+      <line x1="980" y1="186" x2="1120" y2="380"/>
+    </g>
+  </g>
+
+  <!-- ── legend ────────────────────────────────────────────────────── -->
+  <g font-size="19" fill="#3d4f5c">
+    <line x1="120" y1="708" x2="176" y2="708" stroke="#2f7d5d" stroke-width="3" marker-end="url(#a-nvlink)"/>
+    <text x="192" y="714">GPU-initiated peer store over NVLink</text>
+    <text x="192" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">pcomm run -p gpumem</text>
+
+    <line x1="640" y1="708" x2="696" y2="708" stroke="#b4552d" stroke-width="3" marker-end="url(#a-ib)"/>
+    <text x="712" y="714">InfiniBand verbs on the wire</text>
+    <text x="712" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">pcomm run -p ib</text>
+
+    <rect x="1090" y="698" width="44" height="20" rx="5" fill="#f2eefa" stroke="#7a5fa8" stroke-width="2"/>
+    <text x="1150" y="714">the collective that caused both</text>
+    <text x="1150" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">pcomm run -p nccl</text>
+  </g>
+
+  <line x1="90" y1="788" x2="1510" y2="788" stroke="#e2e8ed" stroke-width="2"/>
+  <text x="90" y="828" font-size="25" fill="#24343f"><tspan font-weight="600">One call, three layers of evidence, two transports.</tspan><tspan fill="#7c8c9a"> Every tool we have sees exactly one of them.</tspan></text>
+</svg>
