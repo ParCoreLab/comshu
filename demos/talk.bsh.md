@@ -11,6 +11,7 @@ koc296797@alogin2.bsc.es%% ls -l ~/asym_patterns-li-sm90
 ```out
 -rwxr-xr-x 1 koc296797 koc 7583976 Aug 17 10:34 /home/koc/koc296797/asym_patterns-li-sm90
 ```
+
 koc296797@alogin2.bsc.es%% command -v pcomm
 ```out
 /home/koc/koc296797/.local/bin/pcomm
@@ -18,12 +19,28 @@ koc296797@alogin2.bsc.es%% command -v pcomm
 
 koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=4 --ntasks-per-node=1 --gres=gpu:1 --cpus-per-task=20 --time=00:40:00
 ```out
-salloc: Granted job allocation 44748293
+salloc: Pending job allocation 44748805
+salloc: job 44748805 queued and waiting for resources
+salloc: job 44748805 has been allocated resources
+salloc: Granted job allocation 44748805
+salloc: Waiting for resource configuration
 salloc: Nodes as02r2b[22,24-25,27] are ready for job
+srun: error: ioctl(TIOCGWINSZ): Inappropriate ioctl for device
+srun: error: Not using a pseudo-terminal, disregarding --pty option
 ```
-koc296797@alogin2.bsc.es%% source ~/proj/pcomm/tests/hpc/suite/common.sh && pcomm_load_runtime && export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH" && echo ready
+
+koc296797@alogin2.bsc.es%% hostname
 ```out
-ready
+as02r2b22
+```
+
+`mpirun` is not on a bare login PATH — it comes from the NVHPC module, which is
+what `pcomm_load_runtime` loads. Run this INSIDE the allocation, before the
+capture cell, or that cell dies with `mpirun: command not found`:
+
+koc296797@alogin2.bsc.es%% source ~/proj/pcomm/tests/hpc/suite/common.sh && pcomm_load_runtime && export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH" && command -v mpirun
+```out
+/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7/comm_libs/mpi/bin/mpirun
 ```
 
 ---
@@ -51,6 +68,9 @@ pcomm providers — pick with -p <name>[,<name>...]
 
   nccl     collective   NCCL collective layer — communicators, collectives, peers, groups
                         aliases: nccl, collectives, coll
+
+Providers that must own the runtime run in their own pass: pcomm re-runs
+the workload once each and merges the passes under one -o directory.
 ```
 
 ---
@@ -62,28 +82,24 @@ koc296797@alogin2.bsc.es%% ls -l ~/asym_patterns-li-sm90
 
 ---
 
+koc296797@alogin2.bsc.es%% rm -rf ~/demo-out
+```out
+(no output)
+```
+
 koc296797@alogin2.bsc.es%% rm -rf ~/demo-out && mpirun -np 4 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP=MPI pcomm run -p ib -o ~/demo-out -- ~/asym_patterns-li-sm90 hub 4096 3
 ```out
-pcomm: 1 provider → 1 pass
-  · ib           → /home/koc/koc296797/demo-out
-        … (once per rank)
-asym_patterns[hub] PE 0/4: 3 edges, 12288 elems/iter, 3 iters
-asym_patterns[hub] PE 1/4: 1 edges, 4096 elems/iter, 3 iters
-asym_patterns[hub] PE 2/4: 1 edges, 4096 elems/iter, 3 iters
-asym_patterns[hub] PE 3/4: 1 edges, 4096 elems/iter, 3 iters
+/bin/bash: line 10: mpirun: command not found
+[exit 127]
 ```
 
 ---
 
 koc296797@alogin2.bsc.es%% ls ~/demo-out ~/demo-out/rank-0
 ```out
-/home/koc/koc296797/demo-out:
-rank-0  rank-1  rank-2  rank-3
-
-/home/koc/koc296797/demo-out/rank-0:
-100.pcs  102.pcs  104.pcs  106.pcs  108.pcs  110.pcs  112.pcs  114.pcs
-116.pcs  118.pcs  120.pcs  122.pcs  124.pcs  126.pcs  128.pcs  510.pcs
-512.pcs  520.pcs  522.pcs  524.pcs  590.pcs  intern-blob.bin
+ls: cannot access '/home/koc/koc296797/demo-out': No such file or directory
+ls: cannot access '/home/koc/koc296797/demo-out/rank-0': No such file or directory
+[exit 2]
 ```
 
 koc296797@alogin2.bsc.es%% pcomm read ~/demo-out | head -24
