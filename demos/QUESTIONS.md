@@ -277,29 +277,70 @@ the 8× asymmetry — the column into rank 0 is heavy, the row out of it is ligh
 
 Two different things are being noticed, and they have different answers.
 
-### The ones with no device: host memory
+### The ones with no device
 
-`device` is `65535` = `0xFFFF`, which is `ObjectRegistry`'s **unknown** sentinel,
-not a device that exists. In this capture:
+`device` is `65535` = `0xFFFF` = `kUnknownDevice`, a sentinel, not a device that
+exists. In this capture:
 
 | device | rows | distinct bases | sizes |
 |---|---|---|---|
 | 0, 1, 2, 3 | 80 | 5 each | 2 KiB – 1 GiB |
 | **65535** | **2,027** | 1,638 | 8 B – 38 MB |
 
-Every one of the 65535 rows comes from `ib_mem_region` — an `ibv_reg_mr`
-registration. They are **host memory pinned for the NIC**: NVSHMEM's own bounce
-buffers, control structures and work queues. Not in the ether — in host RAM, on
-one node, owned by one process.
+All of them come from `ib_mem_region` — `ibv_reg_mr` registrations. Note that 32
+registrations *did* resolve to a GPU (8 per device), so this is not the
+attribution being broken; it is 1,664 registrations that are not device memory.
 
-The field says "unknown" because a host registration genuinely does not name a
-GPU, and the registry refuses to guess 0. That is the same honesty as `Window`:
-an explicit "I don't know" beats a plausible wrong value.
+**Say "not a GPU allocation", not "host memory".** The distinction is real and
+`core/mem_attr.hpp` states it outright:
 
-> This is the exact phenomenon `object_registry.hpp` was written about: captured
-> with a network provider alone you get NVSHMEM's internals and *not* the
-> application's buffers, because NVSHMEM registers what it hands the NIC. The
-> core registry is the other end of that join.
+> `kUnknownDevice` is ambiguous by construction: it means "host memory" *and*
+> "CUDA is not present" *and* "the call failed". Those three imply completely
+> different work and look identical in the capture.
+
+On this run CUDA is obviously present, so host memory is by far the likeliest
+reading — NVSHMEM's own bounce buffers, control structures and work queues. But
+the capture does not *prove* it, and the field is a sentinel rather than a value
+called `host` precisely so it never asserts what it doesn't know. Same discipline
+as `Window`.
+
+> **The bug that ambiguity hid**, if you want to make the point stick: the first
+> version of this shipped with `kAttrDeviceOrdinal = 4`, which is actually
+> `CU_POINTER_ATTRIBUTE_HOST_POINTER`, not `DEVICE_ORDINAL`. It survived the
+> provider's entire life, because every failure mode of the function looks
+> identical from the capture. `PCOMM_TRACE_HOOKS=1` prints the first attribution
+> attempt and is the only thing that tells the three apart — which is why it
+> stays in the tree.
+
+> And the phenomenon behind *which* objects these are is what
+> `object_registry.hpp` was written about: captured with a network provider alone
+> you get NVSHMEM's internals and *not* the application's buffers, because
+> NVSHMEM registers what it hands the NIC.
+
+### "Then why don't you report which host it belongs to?"
+
+**It does.** That fact is in the capture and in the UI already — you saw it in
+the demo, where the agent said *"rank 0 = `n3 · GPU 0`"*. It just isn't in the
+`device` column, because `device` answers a different question.
+
+- `node_identity` (type 524) is emitted **once per rank by the engine at start** —
+  "every provider needs it and none owns it", the same reasoning that put
+  `MemObject` in core. It carries FNV-1a of the hostname; this capture has 16
+  rows resolving to 4 distinct nodes.
+- `rank_identity` in `link_sql.hpp:977` turns that into the label you see:
+  `'n' || dense_rank() over (order by node) || ' · GPU ' || device`.
+- Every `mem_object` row carries `rank`, so the owning host is one join away.
+
+So: **`device` means "which GPU", `rank`→`node_identity` means "which machine".**
+Collapsing them would break exactly the case being asked about — a host buffer
+has no GPU but definitely has a host, and writing `device = 0` for it would be a
+lie in the column people aggregate on.
+
+> Expect one more: *"why hash the hostname instead of storing it?"* — because the
+> id only has to be **comparable between ranks of one job**, and putting a machine
+> name on disk in every capture is a cost with no matching benefit. 64 bits of
+> FNV-1a makes a within-job collision not worth defending against. It's in the
+> comment above the record.
 
 ### The ones on many ranks: the symmetric heap
 
