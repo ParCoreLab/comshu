@@ -393,18 +393,71 @@ check in `build_passes()` instead.
 
 ## 11. What's the overhead?
 
-Say what you measured and no more:
+**Measured for this talk**, jobs `44749977` and `44750126` on 2026-08-18. Same
+allocation, 16 ranks, `-p ib` only, `NVSHMEM_DISABLE_P2P=1` in **both** arms so
+neither uses NVLink and both move identical bytes. Captures written to node-local
+`/tmp`.
 
-- SigmaTrace measured the completion stream (`poll_cq`, `recv_cqe`) as the
-  difference between **<1.5% and 8–13%** overhead; `-m simple` drops it and costs
-  you latency work, receive attribution and the CQE probe. That's ~45% of a
-  capture's rows.
-- NVBit's cost is **fixed, not proportional**: case 05 takes ~435 s regardless of
-  message size, measured at N=100 through 262144 — a 2621× range — while the
-  capture grows 0.6 MB → 47 MB. Uninstrumented is 6 s. It is module lifting: 223
-  device-function specialisations, 434k instructions. Restricting to the single
-  launched kernel does not help (438 s vs 436 s).
-- Today's demo: 84 MB and 209,334 sends for a 3-iteration toy.
+### The first attempt measured nothing, and that is worth saying
+
+Five reps of bare vs traced at the demo's own size (`hub 4096 3`):
+
+| iters | bare | traced |
+|---|---|---|
+| 3 | 13.91 s | 13.84 s |
+| 30 | 13.75 s | 13.86 s |
+
+Indistinguishable — but **ten times the work also took the same time**, which is
+the tell. Wall clock here is ~14 s of NVSHMEM/MPI startup and a few milliseconds
+of communication. That is not "zero overhead", it is an experiment that cannot
+see overhead. Do not quote those numbers as a result.
+
+### Scaling until the work is visible
+
+| iters | bare | traced | capture |
+|---|---|---|---|
+| 30 | 14.27 s | 14.01 s | 160 MB |
+| 300 | 14.21 s | 17.73 s | 1.5 GB |
+| 3,000 | 23.90 s | 58.47 s | 15 GB |
+| 30,000 | 97.20 s | — | (~150 GB, not run) |
+
+Subtracting the ~14 s floor gives the numbers that mean something:
+
+| | bare | traced | |
+|---|---|---|---|
+| per iteration | 3.59 ms | 15.09 ms | **4.2×** |
+| per send | 51 ns | 216 ns | **+165 ns** |
+| total wall @ 3,000 iters | 23.90 s | 58.47 s | 2.45× |
+| communication phase @ 3,000 | 9.63 s | 44.46 s | 4.6× |
+
+209 M sends at 3,000 iterations, 72 bytes of capture per send, written at
+337 MB/s.
+
+### The three caveats, and give them unprompted
+
+1. **This workload is the worst case for a per-send tracer.** `asym_patterns`
+   does element-wise `nvshmem_p` — one 4-byte put per record. So it pays the full
+   per-send cost for every four bytes moved. A workload doing bulk RDMA writes
+   moves the same bytes in orders of magnitude fewer work requests and pays
+   proportionally less. **Do not present 4.2× as "pcomm's overhead"** — present it
+   as the cost per *work request*, which is the thing that actually scales.
+2. **A large part of that 165 ns is capture I/O**, not instrumentation: 15 GB in
+   44 s. To `/tmp`. On GPFS it would be worse, and that is a property of where you
+   point `-o`, not of the tracer.
+3. **`-m simple` exists for exactly this.** Dropping the completion stream
+   (`poll_cq`, `recv_cqe`) removes ~45% of a capture's rows; SigmaTrace measured
+   that stream as the difference between **<1.5%** and **8–13%** overhead. It
+   costs you latency work, receive attribution and the CQE probe.
+
+### And the one that is not proportional at all
+
+NVBit's cost is **fixed**: case 05 takes ~435 s regardless of message size,
+measured at N=100 through 262144 — a 2621× range — while the capture grows
+0.6 MB → 47 MB. Uninstrumented is 6 s. It is module lifting: 223 device-function
+specialisations, 434k instructions. Restricting instrumentation to the single
+launched kernel does not help (438 s vs 436 s). So for `-p gpumem` the honest
+statement is "a fixed ~7 minutes, then it scales", which is a completely
+different shape from the network providers.
 
 **Do not** claim an end-to-end overhead number for the whole tool. You don't have
 one.
