@@ -17,6 +17,14 @@ koc296797@alogin2.bsc.es%% command -v pcomm
 /home/koc/koc296797/.local/bin/pcomm
 ```
 
+**One GPU per node, and that is the whole reason the star is complete.** NVSHMEM
+routes intra-node puts over NVLink, where the NIC never sees them — so with
+4 GPUs per node the three spokes sharing rank 0's node would move over NVLink
+and be invisible to `-p ib`, giving an incomplete star with no error to explain
+it. One PE per node forces every edge across the NIC.
+
+See "the 16-rank variant" at the bottom for the other way to get there.
+
 koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=4 --ntasks-per-node=1 --gres=gpu:1 --cpus-per-task=20 --time=00:40:00
 ```out
 salloc: Pending job allocation 44748805
@@ -182,6 +190,30 @@ src_rank  dst_rank  sends  bytes
 % echo 'pcomm run -p ib,gpumem,nccl -o out -- <your-app>'
 
 ---
+
+## the 16-rank variant
+
+All 4 GPUs on all 4 nodes, still `-p ib` only. `NVSHMEM_DISABLE_P2P=1` forces
+the remote transport even between PEs on one node, so all 30 edges cross the
+NIC instead of three of them vanishing onto NVLink. Verified: job `44748265`.
+
+koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=4 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:40:00
+koc296797@alogin2.bsc.es%% rm -rf ~/demo-out && mpirun -np 16 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 pcomm run -p ib -o ~/demo-out -- ~/asym_patterns-li-sm90 hub 4096 3
+
+A 16×16 Matrix panel is a better picture than a 4×4 one, and that is the case
+for doing it. What it costs, measured on both runs:
+
+| | 4 ranks | 16 ranks |
+|---|---|---|
+| capture, and the rsync | 19 MB | 101 MB |
+| `pcomm read` | 84 lines | 336 — pipe it |
+| ib_sends | 41,721 | 209,334 |
+
+One thing to say rather than hide, if asked: those intra-node edges are going
+through the HCA **in loopback**. That is real device-initiated traffic, but it
+is not how the application would route left alone — so it is a picture of the
+pattern, not a basis for a bandwidth claim. Case 09 pins the same flag for the
+same reason.
 
 ## fallback
 
