@@ -50,6 +50,31 @@ bridge, pi and the model run on the workstation with the GPU; the tools reach
 the capture over the same forwarded `/query` the browser uses. Nothing large
 moves, and `pcomm ui` needs no change to support any of this.
 
+## Reaching it from another machine
+
+Both halves are loopback by default. To serve them on a private network instead
+— a tailnet, so a laptop can open the page on the workstation that holds the
+capture — give `run.sh` the address:
+
+```bash
+agent/run.sh <capture> 8777 --bind 100.64.0.3
+```
+
+One flag, because it sets three things that have to agree, and each one fails
+differently when it does not:
+
+| | wrong value | how it fails |
+|---|---|---|
+| `pcomm ui --bind` | loopback | page unreachable — the obvious one |
+| `bridge.mjs --bind` | loopback | Chat pane says "No agent at …" |
+| `bridge.mjs --ui` | loopback while bound remotely | Chat pane says the agent is reading **a different capture** — a false mismatch, and the one that wastes an afternoon |
+
+The bridge also refuses a non-loopback `--bind` unless you add `--allow-remote`,
+and refuses the third row above outright with a message naming the fix. Neither
+half has any authentication: anyone who can route to the address can read the
+capture and drive the model. `pcomm ui` turns DuckDB's external file access off
+when bound off loopback; the query endpoint stays SELECT-only.
+
 | file | what it is |
 |---|---|
 | `catalog.md` | what the tables mean, the gotchas, worked queries — most of the system prompt |

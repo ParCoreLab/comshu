@@ -11,7 +11,7 @@
 // its passes are separate executions and cannot carry cross-transport
 // causality.
 //
-//   pcomm run -p ib,p2p -- ./app args...  # co-run what can co-run, replay the rest
+//   pcomm run -p ib,gpumem -- ./app args...  # co-run what can co-run, replay the rest
 //   pcomm list                            # what can I capture, and how?
 //
 #include <algorithm>
@@ -69,12 +69,21 @@ const std::vector<Provider>& registry() {
         // unified NVLink+IB timeline possible at all, since replay's two
         // executions can't carry cross-transport causality. Case 06 is the
         // regression test.
+        // Canonical name is `gpumem`, matching the provider directory, the .so
+        // and the record namespace — `p2p` was the short name for a while and
+        // it misdescribes the provider twice. It does not capture DMA: NVBit
+        // rewrites SASS, so a copy-engine cudaMemcpy executes no instruction
+        // and is invisible here. And peer-ness is a FILTER setting, not the
+        // subject — the engine instruments every load/store and RemoteFilter
+        // (providers/gpumem/engine.hpp) is what keeps only mem_dev != run_dev.
+        // Naming the provider after its default filter is how someone concludes
+        // it cannot answer a question about local accesses.
         {"gpumem",
          "libgpumem_trace.so",
-         {"p2p", "nvlink", "gpumem", "snoopie"},
+         {"gpumem", "p2p", "nvlink", "snoopie", "ldst"},
          /*exclusive*/ false,
          /*built*/ true,
-         "GPU-initiated peer read/write over NVLink (NVBit, à la Snoopie)",
+         "GPU-initiated load/store — peer access over NVLink (NVBit, à la Snoopie)",
          "intra-node"},
         // Separate from ibverbs rather than folded into it, because it captures
         // a different plane rather than more of the same one. IBGDA never calls
@@ -82,9 +91,12 @@ const std::vector<Provider>& registry() {
         // directly and the GPU rings the doorbell — so a GPU-initiated run
         // traced with `-p ib` comes back with empty tables and no error. The two
         // co-run happily: a workload that uses both verbs and DEVX needs both.
-        {"mlx5dv",
+        // Canonical name is `ibgda`, not `mlx5dv`: IBGDA is the thing being
+        // captured, mlx5dv/DEVX is merely the door it goes through. The .so and
+        // directory keep the mechanism name because that is what they contain.
+        {"ibgda",
          "libmlx5dv_trace.so",
-         {"devx", "mlx5", "mlx5dv", "ibgda"},
+         {"ibgda", "devx", "mlx5", "mlx5dv"},
          /*exclusive*/ false,
          /*built*/ true,
          "GPU-initiated InfiniBand (IBGDA) — DEVX queue pairs, doorbell pages",
@@ -247,13 +259,13 @@ void usage() {
                "      --dry-run      print the run plan without executing\n"
                "      --enable-doorbell-hijack\n"
                "                     capture the IBGDA data plane by redirecting the\n"
-               "                     GPU's doorbell page (mlx5dv provider). Sits IN the\n"
+               "                     GPU's doorbell page (ibgda provider). Sits IN the\n"
                "                     application's data path and PERTURBS its timing —\n"
                "                     never draw a latency conclusion from such a run.\n"
                "  -h, --help         this message\n"
                "\n"
                "  e.g.  pcomm run -p ib -- ./app      # network only, single run\n"
-               "        pcomm run -p ib,p2p -- ./app  # network co-runs; NVLink "
+               "        pcomm run -p ib,gpumem -- ./app  # network co-runs; NVLink "
                "replayed\n",
                stderr);
 }
