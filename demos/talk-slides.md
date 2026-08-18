@@ -247,9 +247,12 @@ Just the word. Switch to the terminal. Cells are in
 [`talk.bsh.md`](talk.bsh.md) and contain no commentary — everything you say
 over them is here.
 
-One run, end to end. Four nodes on MareNostrum 5, one rank each, NVSHMEM
-hub-and-spoke: three spokes push a full 16 KB slot to rank 0, rank 0 answers
-each with a slot/8. Every edge crosses the NIC.
+One run, end to end. Four nodes on MareNostrum 5, all sixteen H100s, NVSHMEM
+hub-and-spoke: fifteen spokes push a full 16 KB slot to rank 0, rank 0 answers
+each with a slot/8 — asymmetric by 8× on purpose. `NVSHMEM_DISABLE_P2P=1` is
+what makes every edge cross the NIC: without it the three spokes sharing rank
+0's node would move over NVLink and be invisible to `-p ib`, and the star would
+come up missing three arms with no error to explain it.
 
 **`pcomm list`**
 
@@ -276,15 +279,19 @@ Browser, in order — and only these three:
 
 **Matrix**
 
-> Three spokes into the hub, the hub answering all three: a star in *rank*
-> space. QP numbers and LIDs differ on every run, so pcomm got here by reading
-> each queue pair's RTR transition and mapping the destination back to the rank
-> that owns it.
+> Sixteen ranks, and one column lit up: every spoke into the hub, the hub
+> answering every spoke. A star in *rank* space — and QP numbers and LIDs differ
+> on every run, so pcomm got here by reading each queue pair's RTR transition
+> and mapping the destination back to the rank that owns it.
 >
-> And the two directions don't match — ~50 KB in against ~7 KB out. Nobody
-> configured that; it's what the workload does. An aggregate that symmetrised
-> the edge would report both sides at a full slot, and no ring or pingpong
-> capture could ever catch that.
+> And the row doesn't match the column — ~50 KB inbound against ~7 KB out.
+> Nobody configured that; it's what the workload does. An aggregate that
+> symmetrised the edge would paint both at a full slot, and no ring or pingpong
+> capture could ever catch it.
+
+The 16×16 grid is the reason to run all the GPUs: a 4×4 shows the same fact,
+but a full matrix with one bright cross through rank 0 is the picture people
+remember.
 
 If someone does the arithmetic and asks why it's ~6.7× and not the 8× the
 workload implies — that's the best question you can get, and the answer is a

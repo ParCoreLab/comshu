@@ -1,9 +1,20 @@
 # pcomm — live demo
 
-Workload: `asym_patterns hub` — NVSHMEM hub-and-spoke, one rank per node.
-Talking points live in [`talk-slides.md`](talk-slides.md).
+Workload: `asym_patterns hub` — NVSHMEM hub-and-spoke across **all 16 H100s** on
+four nodes. Fifteen spokes push a full 16 KB slot to rank 0; rank 0 answers each
+with a slot/8. Talking points live in [`talk-slides.md`](talk-slides.md).
 
-Every fence below is real output, from job `44748293` on 2026-08-18.
+`NVSHMEM_DISABLE_P2P=1` is the load-bearing flag: NVSHMEM would otherwise route
+the three spokes that share rank 0's node over NVLink, where the NIC never sees
+them, and `-p ib` would return a star missing three arms with no error to
+explain it. With it, all 30 edges cross the HCA and the matrix is complete.
+
+Say it plainly if asked: those intra-node edges go through the NIC **in
+loopback**. Real device traffic, but not how the app would route left alone —
+a picture of the pattern, not a basis for a bandwidth claim. Case 09 pins the
+same flag for the same reason.
+
+Every fence below is real output, from job `44748943` on 2026-08-18.
 
 ## setup — before the talk
 
@@ -17,20 +28,12 @@ koc296797@alogin2.bsc.es%% command -v pcomm
 /home/koc/koc296797/.local/bin/pcomm
 ```
 
-**One GPU per node, and that is the whole reason the star is complete.** NVSHMEM
-routes intra-node puts over NVLink, where the NIC never sees them — so with
-4 GPUs per node the three spokes sharing rank 0's node would move over NVLink
-and be invisible to `-p ib`, giving an incomplete star with no error to explain
-it. One PE per node forces every edge across the NIC.
-
-See "the 16-rank variant" at the bottom for the other way to get there.
-
-koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=4 --ntasks-per-node=1 --gres=gpu:1 --cpus-per-task=20 --time=00:40:00
+koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=4 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:40:00
 ```out
-salloc: Pending job allocation 44748805
-salloc: job 44748805 queued and waiting for resources
-salloc: job 44748805 has been allocated resources
-salloc: Granted job allocation 44748805
+salloc: Pending job allocation 44748943
+salloc: job 44748943 queued and waiting for resources
+salloc: job 44748943 has been allocated resources
+salloc: Granted job allocation 44748943
 salloc: Waiting for resource configuration
 salloc: Nodes as02r2b[22,24-25,27] are ready for job
 srun: error: ioctl(TIOCGWINSZ): Inappropriate ioctl for device
@@ -90,56 +93,58 @@ koc296797@alogin2.bsc.es%% ls -l ~/asym_patterns-li-sm90
 
 ---
 
-koc296797@alogin2.bsc.es%% rm -rf ~/demo-out
+koc296797@alogin2.bsc.es%% rm -rf ~/demo-out && mpirun -np 16 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 pcomm run -p ib -o ~/demo-out -- ~/asym_patterns-li-sm90 hub 4096 3
 ```out
-(no output)
-```
-
-koc296797@alogin2.bsc.es%% rm -rf ~/demo-out && mpirun -np 4 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP=MPI pcomm run -p ib -o ~/demo-out -- ~/asym_patterns-li-sm90 hub 4096 3
-```out
-/bin/bash: line 10: mpirun: command not found
-[exit 127]
+pcomm: 1 provider → 1 pass
+  · ib           → /home/koc/koc296797/demo-out
+        … (once per rank)
+asym_patterns[hub] PE 0/16: 15 edges, 7680 elems/iter, 3 iters
+asym_patterns[hub] PE 1/16: 1 edges, 4096 elems/iter, 3 iters
+        … (PE 2..15, 1 edge each)
 ```
 
 ---
 
-koc296797@alogin2.bsc.es%% ls ~/demo-out ~/demo-out/rank-0
+koc296797@alogin2.bsc.es%% ls ~/demo-out; ls ~/demo-out/rank-0
 ```out
-ls: cannot access '/home/koc/koc296797/demo-out': No such file or directory
-ls: cannot access '/home/koc/koc296797/demo-out/rank-0': No such file or directory
-[exit 2]
+rank-0   rank-10  rank-12  rank-14  rank-2  rank-4  rank-6  rank-8
+rank-1   rank-11  rank-13  rank-15  rank-3  rank-5  rank-7  rank-9
+
+100.pcs  104.pcs  108.pcs  112.pcs  116.pcs  120.pcs  124.pcs  128.pcs
+102.pcs  106.pcs  110.pcs  114.pcs  118.pcs  122.pcs  126.pcs  510.pcs
+512.pcs  520.pcs  522.pcs  524.pcs  590.pcs  intern-blob.bin
 ```
 
 koc296797@alogin2.bsc.es%% pcomm read ~/demo-out | head -24
 ```out
 streams in /home/koc/koc296797/demo-out:
   file                                 type kind       stride   records           schema
-  rank-1/100.pcs                        100 entity         96       187 6a1cf6fbb0b71348
-  rank-1/510.pcs                        510 artifact       64       715 6a1cf6fbb0b71348
-  rank-1/116.pcs                        116 event          56        75 6a1cf6fbb0b71348
-  rank-1/118.pcs                        118 entity         88        26 6a1cf6fbb0b71348
-  rank-1/110.pcs                        110 event          96     12348 6a1cf6fbb0b71348
-  rank-1/520.pcs                        520 entity         80       127 6a1cf6fbb0b71348
-  rank-1/522.pcs                        522 event          56       607 6a1cf6fbb0b71348
-  rank-1/126.pcs                        126 entity         64       108 6a1cf6fbb0b71348
-  rank-1/128.pcs                        128 event          88     12348 6a1cf6fbb0b71348
-  rank-1/102.pcs                        102 entity         64       108 6a1cf6fbb0b71348
-  rank-1/104.pcs                        104 entity         72       194 6a1cf6fbb0b71348
-  rank-1/512.pcs                        512 artifact       72         2 6a1cf6fbb0b71348
-  rank-1/120.pcs                        120 entity         88        79 6a1cf6fbb0b71348
-  rank-1/112.pcs                        112 event          80     12408 6a1cf6fbb0b71348
-  rank-1/114.pcs                        114 event          96     18364 6a1cf6fbb0b71348
-  rank-1/524.pcs                        524 entity         56         1 6a1cf6fbb0b71348
-  rank-1/106.pcs                        106 event          72       132 6a1cf6fbb0b71348
-  rank-1/108.pcs                        108 entity         72        16 6a1cf6fbb0b71348
-  rank-1/122.pcs                        122 entity         64        79 6a1cf6fbb0b71348
-  rank-1/124.pcs                        124 event          80        60 6a1cf6fbb0b71348
-  rank-1/590.pcs                        590 artifact       80         2 6a1cf6fbb0b71348
+  rank-7/100.pcs                        100 entity         96       203 6a1cf6fbb0b71348
+  rank-7/510.pcs                        510 artifact       64       774 6a1cf6fbb0b71348
+  rank-7/116.pcs                        116 event          56        75 6a1cf6fbb0b71348
+  rank-7/118.pcs                        118 entity         88        27 6a1cf6fbb0b71348
+  rank-7/110.pcs                        110 event          96     12408 6a1cf6fbb0b71348
+  rank-7/520.pcs                        520 entity         80       143 6a1cf6fbb0b71348
+  rank-7/522.pcs                        522 event          56       648 6a1cf6fbb0b71348
+  rank-7/126.pcs                        126 entity         64       132 6a1cf6fbb0b71348
+  rank-7/128.pcs                        128 event          88     12408 6a1cf6fbb0b71348
+  rank-7/102.pcs                        102 entity         64       132 6a1cf6fbb0b71348
+  rank-7/104.pcs                        104 entity         72       194 6a1cf6fbb0b71348
+  rank-7/512.pcs                        512 artifact       72         2 6a1cf6fbb0b71348
+  rank-7/120.pcs                        120 entity         88        79 6a1cf6fbb0b71348
+  rank-7/112.pcs                        112 event          80     12528 6a1cf6fbb0b71348
+  rank-7/114.pcs                        114 event          96     18424 6a1cf6fbb0b71348
+  rank-7/524.pcs                        524 entity         56         1 6a1cf6fbb0b71348
+  rank-7/106.pcs                        106 event          72       204 6a1cf6fbb0b71348
+  rank-7/108.pcs                        108 entity         72        16 6a1cf6fbb0b71348
+  rank-7/122.pcs                        122 entity         64        79 6a1cf6fbb0b71348
+  rank-7/124.pcs                        124 event          80       120 6a1cf6fbb0b71348
+  rank-7/590.pcs                        590 artifact       80         2 6a1cf6fbb0b71348
 ```
 
 koc296797@alogin2.bsc.es%% du -sh ~/demo-out
 ```out
-19M	/home/koc/koc296797/demo-out
+84M	/home/koc/koc296797/demo-out
 ```
 
 ---
@@ -149,7 +154,7 @@ koc296797@alogin2.bsc.es%% du -sh ~/demo-out
 
 ```out
 !! serving on 100.64.0.3 — no authentication on either half.
-pcomm ui: capture …/demo-out — 4 ranks, 21 tables, 208925 rows
+pcomm ui: capture …/demo-out — 16 ranks, 21 tables, 968956 rows
 pcomm ui: http://100.64.0.3:8777/  (5 embedded assets)
 
   open  http://100.64.0.3:8777/?agent=http://100.64.0.3:8778
@@ -165,55 +170,44 @@ bridge's `--ui`.
 
 Browser: **Matrix** → **Timeline** → **Chat**, one question.
 
-The matrix, for reference — six heavy edges, then a cliff into NVSHMEM's
-bootstrap mesh:
+The heaviest edges, for reference — every spoke into rank 0, and the whole
+column is that one hub:
 
 ```out
 src_rank  dst_rank  sends  bytes
 --------  --------  -----  -----
-2         0         12318  50172     spokes → hub
-3         0         12303  50112
+8         0         12318  50172
+12        0         12303  50112
+14        0         12302  50048
+15        0         12302  50048
+2         0         12304  49276
+3         0         12289  49216
 1         0         12303  49212
-0         2         1569   7548      hub → spokes
-0         1         1554   7488
-0         3         1554   6588
-1         3         30     1020      ← bootstrap control mesh
-3         1         30     1020
-1         2         15     960
-2         3         15     960
-2         1         15     60
-3         2         15     60
+4         0         12303  49212
 ```
+
+And the two things moving, separated by opcode — this is the query worth
+having ready if anyone asks why the matrix ratio is not exactly 8:
+
+```out
+opcode      len  n       bytes
+----------  ---  ------  ------
+rdma_write  4    207360  829440
+send        4    960     3840
+send        64   960     61440
+rdma_write  128  54      6912
+```
+
+207360 = 15 spokes × 12288 puts + the hub's 15 × 1536 replies, exactly. So the
+application's own traffic is 8× asymmetric to the element; `send` is NVSHMEM's
+synchronisation, 60 per rank regardless of message size, and `comm_edges` sums
+both.
 
 ---
 
 % echo 'pcomm run -p ib,gpumem,nccl -o out -- <your-app>'
 
 ---
-
-## the 16-rank variant
-
-All 4 GPUs on all 4 nodes, still `-p ib` only. `NVSHMEM_DISABLE_P2P=1` forces
-the remote transport even between PEs on one node, so all 30 edges cross the
-NIC instead of three of them vanishing onto NVLink. Verified: job `44748265`.
-
-koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=4 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:40:00
-koc296797@alogin2.bsc.es%% rm -rf ~/demo-out && mpirun -np 16 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 pcomm run -p ib -o ~/demo-out -- ~/asym_patterns-li-sm90 hub 4096 3
-
-A 16×16 Matrix panel is a better picture than a 4×4 one, and that is the case
-for doing it. What it costs, measured on both runs:
-
-| | 4 ranks | 16 ranks |
-|---|---|---|
-| capture, and the rsync | 19 MB | 101 MB |
-| `pcomm read` | 84 lines | 336 — pipe it |
-| ib_sends | 41,721 | 209,334 |
-
-One thing to say rather than hide, if asked: those intra-node edges are going
-through the HCA **in loopback**. That is real device-initiated traffic, but it
-is not how the application would route left alone — so it is a picture of the
-pattern, not a basis for a bandwidth claim. Case 09 pins the same flag for the
-same reason.
 
 ## fallback
 
@@ -224,5 +218,6 @@ same reason.
 - `pcomm list` prints six providers (a stale `pcomm` on `PATH` fails at step 1)
 - `~/waste/pcomm/corpus` exists on the presenting machine — syncthing skips it
 - `agent/run.sh`, never `pcomm ui`: the latter starts no bridge and says nothing
-- `pcomm read` prints all 4 ranks × 21 streams — pipe through `head -24` or it
-  scrolls off the projector
+- `pcomm read` prints all 16 ranks × 21 streams — 336 lines. Pipe through
+  `head -24` or it scrolls off the projector
+- the capture is 84 MB, so start the `rsync` before you need it, not during
