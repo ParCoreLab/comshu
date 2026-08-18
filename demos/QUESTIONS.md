@@ -1,6 +1,6 @@
 # Questions you will get, and the answers with the evidence
 
-Read on the way. Every claim here is checked against the tree at `5d1524e` —
+Read on the way. Every claim here is checked against the tree at `7a52e58` —
 file and line where it matters, so you can say "it's in `X.hpp`" and mean it.
 
 Ordered roughly by how likely you are to be asked. The last section is the
@@ -225,7 +225,110 @@ and keeps the TSC window when none does.
 
 ---
 
-## 8. How do providers share a process? What about NVBit?
+## 8. "You said a star — but the matrix shows spokes talking to each other"
+
+**They do, and none of it is application data.** You can say that as a fact, not
+a hunch, because the accounting closes exactly.
+
+Split this capture's 134 edges by whether rank 0 is on them:
+
+| | edges | sends | bytes |
+|---|---|---|---|
+| touches the hub | 30 | 207,636 | 842,208 |
+| spoke ↔ spoke | 104 | 1,698 | 59,424 |
+
+Now split the same run by opcode:
+
+| opcode | len | n | bytes |
+|---|---|---|---|
+| `rdma_write` | 4 | 207,360 | 829,440 |
+| `send` | 4 | 960 | 3,840 |
+| `send` | 64 | 960 | 61,440 |
+| `rdma_write` | 128 | 54 | 6,912 |
+
+207,360 is exactly the application: 15 spokes × 12,288 puts + the hub's
+15 × 1,536 replies. Everything else — 1,974 sends, 72,192 bytes — is NVSHMEM.
+And it lands where you'd expect:
+
+```
+hub edges  − application  =    276 sends,  12,768 bytes   (control on hub edges)
+spoke ↔ spoke             =  1,698 sends,  59,424 bytes   (control, all of it)
+                    total =  1,974 sends,  72,192 bytes   = all control, exactly
+```
+
+**So every one of the 207,360 application writes is on a hub edge, and the
+spoke↔spoke mesh carries zero of them.** The star is real; what you are also
+seeing is NVSHMEM's bootstrap and synchronisation, which is near all-to-all by
+construction — 104 of the 210 possible spoke pairs here.
+
+> **This is why case 16's assertion is threshold-free**, and it's worth saying:
+> "is there an edge between these ranks" is true for almost every pair, so it is
+> the wrong predicate. The assertion instead takes exactly `2*(ranks-1)` heaviest
+> edges and requires *that set* to be the star. No byte threshold to tune, and
+> no assumption about how chatty a future NVSHMEM is.
+
+And to answer the sub-question directly: the hub **both** receives and sends.
+Fifteen spokes push a full slot in; the hub answers each with a slot/8. That's
+the 8× asymmetry — the column into rank 0 is heavy, the row out of it is light.
+
+---
+
+## 9. "The Objects view has objects with no owner, touched by many ranks — where do they live?"
+
+Two different things are being noticed, and they have different answers.
+
+### The ones with no device: host memory
+
+`device` is `65535` = `0xFFFF`, which is `ObjectRegistry`'s **unknown** sentinel,
+not a device that exists. In this capture:
+
+| device | rows | distinct bases | sizes |
+|---|---|---|---|
+| 0, 1, 2, 3 | 80 | 5 each | 2 KiB – 1 GiB |
+| **65535** | **2,027** | 1,638 | 8 B – 38 MB |
+
+Every one of the 65535 rows comes from `ib_mem_region` — an `ibv_reg_mr`
+registration. They are **host memory pinned for the NIC**: NVSHMEM's own bounce
+buffers, control structures and work queues. Not in the ether — in host RAM, on
+one node, owned by one process.
+
+The field says "unknown" because a host registration genuinely does not name a
+GPU, and the registry refuses to guess 0. That is the same honesty as `Window`:
+an explicit "I don't know" beats a plausible wrong value.
+
+> This is the exact phenomenon `object_registry.hpp` was written about: captured
+> with a network provider alone you get NVSHMEM's internals and *not* the
+> application's buffers, because NVSHMEM registers what it hands the NIC. The
+> core registry is the other end of that join.
+
+### The ones on many ranks: the symmetric heap
+
+Five bases appear on **all 16 ranks**, at the identical virtual address:
+
+```
+0x10020000000   512 MiB      0x1004b005000   256 KiB
+0x10040000000     1 GiB      0x1004b045000    16 KiB   <- 4096 elems x 4 B
+                             0x1004b049000     2 KiB   <- the slot/8 reply
+```
+
+That is not one object being touched by sixteen ranks. **`nvshmem_malloc` is
+collective and returns the same address on every PE** — that is the whole point
+of a symmetric heap, and it is what lets a PE compute a peer's address without
+being told it. So one base is sixteen distinct physical buffers that share a
+name, on four different devices (0–3, whichever GPU each PE owns).
+
+The capture keys objects by `(rank, base)`, which is why those five bases are
+**80 rows** rather than 5. If it keyed on base alone, the symmetric heap would
+collapse sixteen buffers into one and every per-rank number would be wrong.
+
+> Nice detail to land: the 16 KiB one is the application's buffer — 4096 elements
+> × 4 bytes, straight off the command line — and the 2 KiB one is the slot/8 the
+> hub replies with. You can point at the demo's arguments and then at the
+> Objects panel and they match.
+
+---
+
+## 10. How do providers share a process? What about NVBit?
 
 All six co-run in one process, one recorder, one timeline. **Nothing is marked
 exclusive today.**
@@ -247,7 +350,7 @@ check in `build_passes()` instead.
 
 ---
 
-## 9. What's the overhead?
+## 11. What's the overhead?
 
 Say what you measured and no more:
 
@@ -267,7 +370,7 @@ one.
 
 ---
 
-## 10. Why should I believe any of it?
+## 12. Why should I believe any of it?
 
 The suite: 20 cases, expected numbers computed **on paper from the workload's
 arguments before the run**. Four GPUs, two iterations, 1024 threads → 8192 peer
@@ -315,7 +418,7 @@ the finding be specific rather than "something looks off".
 
 ---
 
-## 11. Things you should NOT claim
+## 13. Things you should NOT claim
 
 Have these ready as honest answers rather than getting caught:
 
@@ -343,7 +446,7 @@ Have these ready as honest answers rather than getting caught:
 
 ---
 
-## 12. Two questions you want to be asked
+## 14. Two questions you want to be asked
 
 Steer toward these if you get an opening.
 
