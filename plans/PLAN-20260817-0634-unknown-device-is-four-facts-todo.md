@@ -184,6 +184,49 @@ no stderr and no p2p control:
 Today that requires re-running the workload under `PCOMM_TRACE_HOOKS=1` and
 reading the first line of stderr.
 
+## Addendum, 2026-08-18: say *where* the host memory is
+
+Raised while preparing the lab talk, and it is the other half of the same
+question. Once `attr_status` lets the UI say **host** instead of **unknown**, the
+obvious next question from anyone looking at the Objects panel is *"host memory
+on which host?"* — and today that is answerable from the capture but not from the
+screen.
+
+**The data is already there.** `node_identity` (type 524) is emitted once per
+rank by the engine, and `rank_identity` (`link_sql.hpp:977`) already renders the
+`n0 · GPU 0` label that the chat pane uses. Measured on `demo-out` (job
+`44748943`, 16 ranks): 4 distinct `node_hash` values, 4 ranks each, clean.
+
+**What is missing is one join.** `ui/src/panels/Objects.svelte:50` selects
+`m.rank, m.id, base, size, m.device` and the header row at `:255` is
+`['', 'rank', 'device', 'base', 'size', 'touched by', 'via', 'accesses']`.
+`rank_identity` is never joined, so the panel can tell you a 38 MiB object is on
+rank 9 with no device, and cannot tell you rank 9 is on `n2` — which is the
+entire content of "where does this live".
+
+So, as a step after the ones above:
+
+7. **Join `rank_identity` in the Objects panel** and show the node. Preferably
+   *as* the rank column (`rank 9 · n2`) rather than a seventh column — the table
+   is already wide, and rank and node are one fact about the process, not two.
+   The detail pane at `:186` (`<b>{bytes}</b> object on rank {sel.rank},
+   {dev(sel.device)}`) should read `on rank 9 · n2, host` once `attr_status`
+   exists.
+
+**A boolean `is_device` was considered and is the wrong shape**, for the reason
+already in "Options rejected" above: the question has five answers, not two, and
+`HostNotCuda` / `DriverAbsent` differ by whether we ever asked. A boolean would
+record the *guess* we currently make in prose and freeze it into the schema —
+`DriverAbsent` would have to be filed as either "host" (a lie) or "device" (a
+worse lie). `AttrStatus` collapses to a boolean for display whenever a reader
+wants one; a boolean does not expand back.
+
+**Scope note.** This step is UI-and-derived only and does not depend on steps 1-6
+— the node label is available today. It is listed here rather than as its own
+plan because shipping it *before* `attr_status` would let the panel say "rank 9 ·
+n2" next to a device column reading `unknown`, which invites exactly the
+misreading ("so it is nowhere?") that prompted this. Ship them together.
+
 ## Related
 
 - `things-to-circle-back-to.md:900-935` — the `kAttrDeviceOrdinal = 4` bug.
