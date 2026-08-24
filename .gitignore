@@ -30,3 +30,9 @@ __pycache__/
 # and belong to their upstreams; anything we actually depend on gets vendored
 # under third_party/ with its licence, as mlx5 is.
 reference/
+
+# PNG renders of demos/figures/*.svg. The SVGs are the source and are tracked;
+# the slides reference them by .svg name. These are ad-hoc renders made to show
+# a figure on a projector — 1.5 MB of derived pixels with no script to
+# regenerate them from, which is the wrong thing to carry in history.
+demos/figures/*.png
