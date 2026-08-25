@@ -154,7 +154,24 @@ pcomm::gpumem::Engine* g_engine = nullptr;
 bool                   g_skip_callback = false;
 bool                   g_shutdown_done = false;
 uint32_t               g_next_instr_index = 0;
-uint64_t               g_grid_launch_id = 0;
+// STARTS AT 1, NOT 0, AND THAT IS THE WHOLE REASON IT IS WRITTEN OUT HERE.
+//
+// This id becomes GpuAccess.launch and GpuKernel.correlation, and in BOTH of
+// those 0 is documented as the sentinel for "unknown" (core/records.hpp). Minted
+// from 0, the first launch of every process got a real id that is
+// indistinguishable from the sentinel — so the reader's join, which excludes
+// correlation = 0 by design, could never match it, and every access that kernel
+// issued fell back to the wide host-TSC window with nothing to say why.
+//
+// Silent, permanent, and once per process. Measured on du04 (CUDA 13.0, driver
+// 580, 4x A100) with tests/hpc/cases/03_p2p_kernel: correlations came out 0, 4,
+// 8, 12 and exactly 4096 of 16384 gpu_access rows — 25.0% — could not join. The
+// share is 1/N for an N-kernel run, so it shrinks with runtime and never reaches
+// zero.
+//
+// The ring below is unaffected: it is indexed by id % kLaunchRing and its owner
+// array is filled with ~0ull, so it never confused an unwritten slot for id 0.
+uint64_t               g_grid_launch_id = 1;
 
 // --- Kernel lifetimes, the gpumem half of PLAN-20260813-0600 ---------------
 //

@@ -52,13 +52,14 @@ One source_line row per pc. With -lineinfo and inlined __device__ functions, a
 pc corresponds to a CHAIN of (file, line) frames, and the record can hold only
 one of them — with nothing saying which end it is.
 
-UNVERIFIED, and verify before planning: does nvbit_get_line_info return the
-inline chain or only one frame? If only one, this costs nothing today and the
-finding is that the record cannot express what a future backend might give us.
-Also note source_line is empty in every harvested capture so far (see
-PLAN-20260817-0705 and the -lineinfo work in the case sbatch files), so nobody
-has looked at this data closely yet.
-
+PARTLY ANSWERED (2026-08-25, du04). "source_line is empty in every harvested
+capture" is no longer true: the p2p_kernel capture carries 2 rows, both
+p2p_kernel.cu:30, for two distinct pcs. So nvbit_get_line_info does return
+locations, and on this workload it returns ONE frame per pc — two pcs mapping to
+one line, not one pc mapping to several. That is consistent with the record's
+1:1 shape and is NOT evidence either way about inline chains, because
+p2p_kernel.cu has no inlined __device__ call to produce one. A workload that
+does is what would settle it.
 
 4. The NCCL unattributed-access gap is Edge-shaped
 --------------------------------------------------
@@ -108,49 +109,31 @@ here" is the point of using a type_id instead of an enum. It names the grep
 instead.
 
 
-7. gpu_access spends 54.5% of its width on a stamp — MEASURED, not settled
----------------------------------------------------------------------------
-Measured on this build rather than estimated:
+7. SETTLED (2026-08-25, du04): the stamp is load-bearing — keep it
+-------------------------------------------------------------------
+Measured on hardware, which is what this entry asked for. du04, CUDA 13.0,
+driver 580, 4x A100, case 03's p2p_kernel rebuilt for sm_80, pcomm at 2a3f41d:
 
-    sizeof(GpuAccess)           40
-    sizeof(Stamped<GpuAccess>)  88
-    sizeof(Temporal)            48      -> 54.5% of the firehose record
+    gpu_access rows                16384
+    launch = 0, cannot join         4096   25.0%
+    joins a gpu_kernel span        12288   75.0%
 
-THE STAMP IS NOT DEAD, and the first version of this entry implied it was.
-_tl_raw reads `coalesce(k.<kernel span>, g.<own temporal>)`: the record's own
-Temporal is the FALLBACK used whenever the launch -> correlation join misses. So
-the question is exactly one number, and it needs one query on any current-schema
-gpumem capture:
+So the record's own Temporal is the ONLY timing a quarter of the firehose has.
+Removing it would leave those rows unplaceable on the timeline. The 48 bytes
+stay. Question closed.
 
-    SELECT count(*) FILTER (WHERE k.correlation IS NULL)::DOUBLE / count(*)
-    FROM gpu_access g
-    LEFT JOIN (SELECT rank, correlation FROM gpu_kernel
-               WHERE source <> 2 AND correlation <> 0) k
-      ON k.rank = g.rank AND k.correlation = g.launch
+What the measurement actually found is in the commit beside it: the 25% was a
+DEFECT, not a property. g_grid_launch_id started at 0, so the first launch of
+every process minted a real id equal to the sentinel both fields document as
+"unknown", and the reader's join could never match it. Starting at 1 took the
+same capture to 0.0% unjoinable, 4/4 kernels. The share was 1/N for an N-kernel
+run — small on long runs, never zero, and silent.
 
-Near zero and the 48 bytes are overhead for a value the reader always discards.
-Meaningfully above zero and they are load-bearing. It could not be run locally:
-every capture in ~/waste/pcomm/corpus predates the current schema hash, and the
-hubspoke ones predate the stride 80 -> 88 change as well.
-
-AND THERE IS A THIRD OPTION NEITHER "KEEP" NOR "REMOVE" COVERS. Temporal is 48
-bytes carrying 29 bytes of content:
-
-    kind    1
-    a      16   (TimePoint: domain 2 + ticks 8 = 10 packed, padded to 16)
-    b      16
-    value   8   -- only meaningful for TimeKind::Counter
-
-Nothing emits a Counter — grep for TimeKind::Counter or now_counter across
-libpcomm/src, providers/ and gpu-backends/ returns nothing — so `value` is 8
-bytes that are zero in EVERY record of EVERY capture, not just this one. With
-the TimePoint padding that is 19 bytes of the 48 doing nothing. A packed Temporal
-of ~24 bytes would take gpu_access from 88 to ~64 without losing the fallback,
-which is a ~27% cut on the largest stream in any gpumem capture.
-
-That is a format change and wants a plan, a measurement and a hash bump — not a
-hunch. Note it interacts with item 11's "Counter has no producer": deciding
-`value` is dead and deciding Counter is dead are the same decision.
+The packing observation from the previous version of this entry still stands and
+is now the only live part: Temporal is 48 bytes carrying 29 bytes of content, of
+which `value` (8 B) is meaningful only for TimeKind::Counter, which nothing
+emits. That is a separate change, wants a hash bump, and is the same decision as
+item 11's "Counter has no producer".
 
 8. DONE (2026-08-25): the derived tables declare their columns
 ---------------------------------------------------------------
