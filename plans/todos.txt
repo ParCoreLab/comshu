@@ -103,13 +103,13 @@ if the corpus must be re-run. So (b), under the pre-alpha exception, with the
 hash bump making old captures fail loudly rather than misparse.
 
 
-6. entity_close's schema comment is stale
------------------------------------------
-The comment names four openers (IbMemRegion 100, IbQueuePair 102, Mlx5Umem 200,
-Mlx5Uar 202). The code also emits for ucx endpoints, nccl comms and engine-owned
-entities. One-line fix, listed here because in a codebase where the comments ARE
-the documentation, and are unusually good, a stale one costs more than elsewhere:
-everything else has trained the reader to trust them.
+6. DONE (2026-08-25): entity_close's opener list is no longer enumerated
+------------------------------------------------------------------------
+The comment named four openers and was stale by twelve — sixteen record types
+are closed today across five modules. It no longer lists them: the list going
+stale IS the mechanism working, since "a provider added later needs nothing
+here" is the point of using a type_id instead of an enum. It names the grep
+instead.
 
 
 7. gpu_access spends 55% of its width on a stamp the design says not to trust
@@ -140,8 +140,16 @@ what link_sql actually produces, so renaming a column breaks a build rather than
 a panel. That is a much smaller job than giving them a real schema.
 
 
-9. Local test coverage is inverted relative to consumption
-----------------------------------------------------------
+9. DONE (2026-08-25): comm_edges and object_access have local tests
+-------------------------------------------------------------------
+tests/comm_edges_rule.sh and tests/object_access_rule.sh, on wr_flow_rule.sh's
+pattern, registered in ctest. Eleven mutations were used to check that each
+assertion can actually fail; one found a hole in the fixture itself. The
+original finding follows, since the reasoning still applies to whatever table
+comes next.
+
+9a. The original finding
+------------------------
 wr_flow, timeline_span and link_health have off-cluster ctests built from
 synthetic CSVs (flow_pairing_agree.sh, wr_flow_rule.sh). Those are the best
 tests in the tree — wr_flow_rule.sh exists because deleting a rule clause left

@@ -158,10 +158,18 @@ PCOMM_RECORD(MemObject, RecordKind::Entity, 520, "mem_object") {
 // next missing door.
 PCOMM_RECORD(EntityClose, RecordKind::Event, 522, "entity_close") {
     Handle subject;  // the interned handle the open record carries
-    // The type_id of the record that SHOULD have opened this subject —
-    // IbMemRegion 100, IbQueuePair 102, Mlx5Umem 200, Mlx5Uar 202. A record id
-    // rather than a new enum, so no vocabulary has to be invented or kept in
+    // The type_id of the record that SHOULD have opened this subject. A record
+    // id rather than a new enum, so no vocabulary has to be invented or kept in
     // sync, and a provider added later needs nothing here.
+    //
+    // DELIBERATELY NOT ENUMERATED. This comment used to list four openers and
+    // was stale by twelve: sixteen record types are closed today, across
+    // ibverbs, mlx5dv, ucx, nccl and the engine. The list going stale is the
+    // mechanism working — "a provider added later needs nothing here" is the
+    // whole point, and a comment that must be edited every time one is added is
+    // a comment that will not be. For the current set:
+    //
+    //     grep -rn 'EntityClose\|RecordTrait<.*>::type_id' providers/ libpcomm/src/
     //
     // Without it an unmatched close says only "something closed that nothing
     // opened", which is a signal you cannot act on: hooking ibv_reg_dmabuf_mr
