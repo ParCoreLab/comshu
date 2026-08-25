@@ -64,7 +64,8 @@ std::vector<Stamped<R>> load_stream(const std::filesystem::path& file,
     StreamHeader h{};
     in.read(reinterpret_cast<char*>(&h), sizeof h);
     if (const char* err =
-            stream_header_error(h, core::RecordTrait<R>::type_id, sizeof(Stamped<R>))) {
+            stream_header_error(h, core::RecordTrait<R>::type_id, sizeof(Stamped<R>),
+                                core::RecordTrait<R>::kind)) {
         diag(file, err);
         return out;
     }

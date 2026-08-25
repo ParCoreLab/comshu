@@ -263,7 +263,9 @@ PCOMM_RECORD(UcxAtomic, RecordKind::Event, 620, "ucx_atomic") {
 // wrong: two workers that share a prefix_hash and differ in addr_hash are two
 // workers a prefix join cannot tell apart, and a reader can say so. With only
 // the prefix stored, the same collision reads as a confident, wrong join.
-PCOMM_RECORD(UcxWorkerAddress, RecordKind::Entity, 622, "ucx_worker_address") {
+// Artifact, not Entity (2026-08-25): the worker's address is computed once and
+// never closes; the worker it belongs to is the thing with the lifetime.
+PCOMM_RECORD(UcxWorkerAddress, RecordKind::Artifact, 622, "ucx_worker_address") {
     Handle        worker;
     std::uint64_t addr_hash;    // FNV-1a over the whole address
     std::uint64_t prefix_hash;  // FNV-1a over the first kAddressHashPrefix bytes
@@ -285,7 +287,9 @@ PCOMM_RECORD(UcxWorkerAddress, RecordKind::Entity, 622, "ucx_worker_address") {
 // endpoint created from a socket address or a connection request has no peer
 // address here and gets no row, rather than a row full of zeroes that reads like
 // a measured null peer.
-PCOMM_RECORD(UcxEpConnection, RecordKind::Entity, 624, "ucx_ep_connection") {
+// Artifact, not Entity (2026-08-25): a fact about an endpoint recorded once at
+// connect. The endpoint closes; this does not.
+PCOMM_RECORD(UcxEpConnection, RecordKind::Artifact, 624, "ucx_ep_connection") {
     Handle        endpoint;
     std::uint64_t remote_prefix_hash;
 };

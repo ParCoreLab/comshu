@@ -100,7 +100,8 @@ inline const char* blob_header_error(const BlobHeader& h, std::uint64_t actual_b
 // the fields say what the file claims to be, and this says whether the claim
 // is one this build can honour. Returns nullptr when it is.
 inline const char* stream_header_error(const StreamHeader& h, core::RecordTypeId expected_type,
-                                       std::uint32_t expected_stride) {
+                                       std::uint32_t expected_stride,
+                                       core::RecordKind expected_kind) {
     if (h.magic != kStreamMagic)
         return "not a pcomm stream (bad magic) — a pre-format-1 capture has no "
                "header at all and must be re-captured";
@@ -111,6 +112,18 @@ inline const char* stream_header_error(const StreamHeader& h, core::RecordTypeId
     if (h.stride != expected_stride)
         return "record stride differs — this capture was written by a build "
                "whose record layout does not match this one";
+    // The header has carried `kind` since format 1 and nothing checked it, so a
+    // record that was reclassified between two builds read clean while every
+    // stream said the old archetype. That is the one drift the stride check
+    // structurally cannot see: reclassifying changes no layout, no size and no
+    // field, so the bytes agree while their meaning does not — and the schema
+    // hash does not move either, because a record's kind lives in a comment in
+    // pcomm.fbs rather than in a declaration.
+    //
+    // Found when node_identity and four others moved Entity -> Artifact.
+    if (h.kind != expected_kind)
+        return "record kind differs — this record was reclassified between the "
+               "build that wrote this capture and this one; re-capture";
     return nullptr;
 }
 

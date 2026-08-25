@@ -196,7 +196,7 @@ struct EntityClose {
   opener:uint16;       // type_id of the record that should have opened it
 }
 
-// type 524, Entity. Which machine this rank ran on — FNV-1a of the hostname.
+// type 524, Artifact. Which machine this rank ran on — FNV-1a of the hostname.
 //
 // A device ordinal is node-local, so `run_device 0` on two nodes is two
 // different GPUs. Resolving a peer device to a rank needs (node, device), and
@@ -288,7 +288,7 @@ struct IbQueuePair {
   qp_type:uint8;
 }
 
-// type 126, Entity. A queue pair's signalling policy (ibv_qp_init_attr
+// type 126, Artifact. A queue pair's signalling policy (ibv_qp_init_attr
 // .sq_sig_all). sq_sig_all = 1 certifies that every work request on this queue
 // pair completes, which is the precondition that makes Nth-send-to-Nth-
 // completion matching exact. Additive rather than a field on IbQueuePair: a
@@ -684,7 +684,7 @@ struct UcxWorkerProgress {
   progressed:uint32;
 }
 
-// type 622, Entity. This worker's own address as hashes. Two of them: the
+// type 622, Artifact. This worker's own address as hashes. Two of them: the
 // prefix is what a cross-rank join can use, the full one makes a prefix
 // collision visible instead of silently wrong.
 struct UcxWorkerAddress {
@@ -695,7 +695,7 @@ struct UcxWorkerAddress {
   addr_len:uint32;
 }
 
-// type 624, Entity. Which remote worker an endpoint was dialled at. Join to
+// type 624, Artifact. Which remote worker an endpoint was dialled at. Join to
 // UcxWorkerAddress.prefix_hash from another rank's capture.
 struct UcxEpConnection {
   temporal:Temporal;
@@ -792,7 +792,7 @@ struct NcclWindow {
   pad:int32;
 }
 
-// type 910, Entity. The existence fact "this workload initiates communication
+// type 910, Artifact. The existence fact "this workload initiates communication
 // from the GPU". Nothing else in a capture states it: the device API is all
 // NCCL_DEVICE_INLINE and leaves no symbol to interpose.
 struct NcclDevComm {

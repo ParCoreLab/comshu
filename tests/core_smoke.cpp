@@ -158,7 +158,8 @@ int main() {
         assert(h.stride == sizeof(rec::Stamped<GpuAccess>));
         assert(h.schema_hash == rec::kSchemaHash);
         assert(rec::stream_header_error(h, core::RecordTrait<GpuAccess>::type_id,
-                                        sizeof(rec::Stamped<GpuAccess>)) == nullptr);
+                                        sizeof(rec::Stamped<GpuAccess>),
+                                        core::RecordTrait<GpuAccess>::kind) == nullptr);
 
         // (c) what time do those records claim? The two writers must differ, and
         //     the difference is the point:

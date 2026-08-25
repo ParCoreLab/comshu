@@ -76,32 +76,28 @@ This does not unblock the plan — the blocker is still "there is nothing to joi
 on". It says that when the blocker lifts, the record to carry it already exists.
 
 
-5. RecordKind::Entity is doing two unrelated jobs
--------------------------------------------------
-"Entity — a thing with a lifetime, it opens and it closes." True of about half:
-ib_queue_pair, ib_mem_region, mlx5_umem, mlx5_uar, ucx_endpoint, nccl_comm and
-friends all close, across 12 EntityClose emit sites in 5 modules. Good coverage.
+5. DONE (2026-08-25): the five lifetime-less Entities are Artifacts
+-------------------------------------------------------------------
+node_identity 524, ib_qp_signalling 126, ucx_worker_address 622,
+ucx_ep_connection 624 and nccl_dev_comm 910 are RecordKind::Artifact. Option (b),
+as the project's own preference dictated: take the better schema, re-run the
+corpus.
 
-The other half never open or close anything: node_identity, ucx_worker_address,
-ucx_ep_connection, nccl_dev_comm, ib_qp_signalling. These are per-rank facts
-computed once, which is the Artifact definition verbatim.
+The test, written down in libpcomm/schema/README.md under "The archetypes are a
+test, not a label": does anything ever close it? If no close path exists and
+none is missing, it is not an Entity.
 
-Evidence the categories are not discriminating: demos/figures/04-record-model.svg
-files node_identity under Artifact and entity_close under Edge — both wrong per
-the PCOMM_RECORD declarations. When the project's own figure misclassifies, the
-taxonomy is not carrying its weight.
+ONE THING THIS TURNED UP THAT WAS WORTH MORE THAN THE CHANGE. Reclassifying moves
+no layout, no size and no field, so the stride check cannot see it — and the
+SCHEMA HASH DOES NOT MOVE EITHER, because a record's kind lives in a pcomm.fbs
+comment rather than a declaration. Every stream header has carried `kind` since
+format 1 and nothing ever read it, so the reclassification would have been
+silent: old captures reading clean under the wrong archetype. stream_header_error
+validates `kind` now, and stream_format.cpp has the refusal case. That hole
+existed independently of this change and would have stayed open.
 
-Two ways out, and they are not equal:
-  (a) redefine Entity as "a named thing the capture asserts exists", closure
-      optional. Cheap, no schema change, but it makes the archetype weaker and
-      the Artifact/Entity line blurrier still.
-  (b) reclassify the five as Artifact. Correct, and a schema change: kind is on
-      disk in StreamHeader.kind.
-
-The project's own stated preference decides this — take the better schema even
-if the corpus must be re-run. So (b), under the pre-alpha exception, with the
-hash bump making old captures fail loudly rather than misparse.
-
+Captures predating 2026-08-25 holding any of those five records are refused by
+name and must be re-captured.
 
 6. DONE (2026-08-25): entity_close's opener list is no longer enumerated
 ------------------------------------------------------------------------

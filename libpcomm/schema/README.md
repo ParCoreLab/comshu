@@ -116,6 +116,41 @@ both `pcomm export --csv` and `unhandled_streams`. Nothing about them makes the
 rest of the read fail, which is exactly why they have to be announced: an
 ignored stream produces no rows and no error, and the export looks complete.
 
+## The archetypes are a test, not a label
+
+`Entity` means **a thing with a lifetime — it opens, and it closes.** `Artifact`
+means **a one-off fact, computed once, timeless.** The two are only useful if
+the difference decides something, and for a while it did not: five records were
+`Entity` and never opened or closed anything.
+
+They were `node_identity`, `ib_qp_signalling`, `ucx_worker_address`,
+`ucx_ep_connection` and `nccl_dev_comm` — a per-rank constant, a policy fixed at
+creation, two addresses computed once, and a bare existence fact. None has a
+lifetime; each belongs to something else that does. All five became `Artifact`
+on 2026-08-25.
+
+The evidence that the categories had stopped discriminating was that the
+project's own figure got them wrong: `demos/figures/04-record-model.svg` filed
+`node_identity` under Artifact — which was the right answer to a question the
+declaration answered differently — and `entity_close` under Edge, though it is
+an Event. When the diagram and the code disagree about a taxonomy, the taxonomy
+is not carrying its weight.
+
+**Applying the test, rather than the label:** does anything ever close it? If no
+close path exists and none is missing, it is not an Entity. `ib_qp_signalling`
+is the useful case to think with — it is unmistakably *about* a queue pair, and
+shares that queue pair's lifetime, and is still not an Entity, because the
+queue pair is the thing that opens and closes and this is a fact about it.
+
+**This was a schema change and it moved nothing that the format checks.**
+Reclassifying alters no layout, no size and no field, so the stride check cannot
+see it — and the schema hash does not move either, because a record's kind lives
+in a comment here rather than in a declaration. Every stream written before the
+change says `Entity` in a header field that, until this change, nothing ever
+read. `stream_header_error` now validates `kind`, so such a capture is refused
+by name instead of read clean under the wrong archetype. Captures predating
+2026-08-25 that hold any of those five records must be re-captured.
+
 ## When a relation earns an Edge
 
 Four archetypes, and the one that keeps being re-litigated is `Edge`. The rule

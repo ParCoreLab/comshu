@@ -87,7 +87,8 @@ int main() {
     expect(h.stride == sizeof(Stamped<MemObject>), "stride is sizeof(Stamped<R>)");
     expect(h.schema_hash == rec::kSchemaHash, "schema hash is this build's schema");
     expect(rec::stream_header_error(h, core::RecordTrait<MemObject>::type_id,
-                                    sizeof(Stamped<MemObject>)) == nullptr,
+                                    sizeof(Stamped<MemObject>),
+                                    core::RecordTrait<MemObject>::kind) == nullptr,
            "validates against the expected type and stride");
 
     // The magic is the literal byte sequence, in file order — a reader in
@@ -130,26 +131,41 @@ int main() {
         StreamHeader bad = h;
         bad.magic = 0;
         expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
-                                        sizeof(Stamped<MemObject>)) != nullptr,
+                                        sizeof(Stamped<MemObject>),
+                                        core::RecordTrait<MemObject>::kind) != nullptr,
                "refuses a headerless (pre-format-1) capture");
 
         bad = h;
         bad.format_version = 99;
         expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
-                                        sizeof(Stamped<MemObject>)) != nullptr,
+                                        sizeof(Stamped<MemObject>),
+                                        core::RecordTrait<MemObject>::kind) != nullptr,
                "refuses a future format version");
 
         bad = h;
         bad.type_id = 999;
         expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
-                                        sizeof(Stamped<MemObject>)) != nullptr,
+                                        sizeof(Stamped<MemObject>),
+                                        core::RecordTrait<MemObject>::kind) != nullptr,
                "refuses a stream whose type is not what was asked for");
 
         bad = h;
         bad.stride = h.stride + 8;
         expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
-                                        sizeof(Stamped<MemObject>)) != nullptr,
+                                        sizeof(Stamped<MemObject>),
+                                        core::RecordTrait<MemObject>::kind) != nullptr,
                "refuses a capture whose record layout differs from this build");
+
+        // Reclassifying a record changes no layout, no size and no field, so
+        // every other check here passes on a stream that means something else.
+        // The stride check cannot see it and neither can the schema hash, since
+        // a kind lives in a pcomm.fbs comment rather than a declaration.
+        bad = h;
+        bad.kind = core::RecordKind::Event;
+        expect(rec::stream_header_error(bad, core::RecordTrait<MemObject>::type_id,
+                                        sizeof(Stamped<MemObject>),
+                                        core::RecordTrait<MemObject>::kind) != nullptr,
+               "refuses a stream whose record was reclassified");
     }
 
     // An empty view must not leave a file framed with a stride of zero.

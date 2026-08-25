@@ -57,9 +57,9 @@
     <line x1="1192" y1="292" x2="1484" y2="292" stroke="#e2e8ed" stroke-width="2"/>
     <g font-size="17" fill="#5f7183" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
       <text x="1192" y="326">access → object</text>
-      <text x="1192" y="356">send → qp</text>
-      <text x="1192" y="386">coll → buffer</text>
-      <text x="1192" y="416">entity_close</text>
+      <text x="1192" y="356">pc → source line</text>
+      <text x="1192" y="386">object → device</text>
+      <text x="1192" y="416">endpoint → qp</text>
     </g>
   </g>
 

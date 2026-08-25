@@ -177,7 +177,9 @@ PCOMM_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
 // that needs `send_flags` per work request, which is dense data and therefore a
 // version bump of ib_post_send rather than another additive record. See
 // plans/PLAN-20260813-2238.
-PCOMM_RECORD(IbQpSignalling, RecordKind::Entity, 126, "ib_qp_signalling") {
+// Artifact, not Entity (2026-08-25): a policy fixed at creation, with no
+// lifetime of its own — the queue pair opens and closes, this does not.
+PCOMM_RECORD(IbQpSignalling, RecordKind::Artifact, 126, "ib_qp_signalling") {
     Handle        qp;      // interned ibv_qp*, as IbQueuePair.qp
     std::uint32_t qp_num;  // denormalised so the join is optional
     // ibv_qp_init_attr.sq_sig_all, verbatim. 1 = every WR completes whatever

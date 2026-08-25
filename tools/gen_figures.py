@@ -124,7 +124,7 @@ b.append(box(590, 40, "gpu_kernel", 530, "EVT", "correlation · stream · name",
 b.append(box(300, 145, "source_line", 740, "ART", "pc · file · line", "gpu"))
 b.append(box(10, 145, "peer_mapping", 526, "ENT", "allocation · range · offset", "int"))
 b.append(box(590, 145, "attribution", 760, "EDG", "subject · object · pred", "gpu"))
-b.append(box(10, 230, "node_identity", 524, "ENT", "node_hash", "int"))
+b.append(box(10, 230, "node_identity", 524, "ART", "node_hash", "int"))
 b.append(box(300, 230, "entity_close", 522, "EVT", "subject · opener", "int"))
 b.append(box(590, 230, "clock_anchor", 590, "ART", "domain · local_ticks · wall_ns", "int"))
 b.append(box(150, 336, "intern_key", 510, "ART", "key → handle · domain", "int"))
@@ -148,7 +148,7 @@ b.append(band(292, 178, 250, 298, "ib", "pd handle · nothing creates it", label
 b.append(box(10, 60, "ib_device", 120, "ENT", "context · node_guid · fw_ver", "ib"))
 b.append(box(10, 140, "ib_port", 122, "ENT", "context · lid · port_num", "ib"))
 b.append(box(300, 40, "ib_completion_queue", 104, "ENT", "cq · context · cqe", "ib"))
-b.append(box(300, 110, "ib_qp_signalling", 126, "ENT", "qp · qp_num · sq_sig_all", "ib"))
+b.append(box(300, 110, "ib_qp_signalling", 126, "ART", "qp · qp_num · sq_sig_all", "ib"))
 b.append(box(300, 200, "ib_queue_pair", 102, "ENT", "qp · pd · qp_num", "ib"))
 b.append(box(300, 270, "ib_shared_recv_queue", 108, "ENT", "srq · pd · max_wr", "ib"))
 b.append(box(300, 340, "ib_mem_region", 100, "ENT", "mr · pd · range · lkey · rkey", "ib"))
@@ -206,11 +206,11 @@ b.append(box(10, 40, "ucx_context", 600, "ENT", "context · api_major/minor", "u
 b.append(box(300, 40, "ucx_worker", 602, "ENT", "worker · context", "ucx"))
 b.append(box(620, 40, "ucx_endpoint", 604, "ENT", "endpoint · worker", "ucx"))
 b.append(box(10, 145, "ucx_mem_map", 614, "ENT", "memh · context · address", "ucx"))
-b.append(box(300, 145, "ucx_worker_address", 622, "ENT", "worker · prefix_hash", "ucx"))
+b.append(box(300, 145, "ucx_worker_address", 622, "ART", "worker · prefix_hash", "ucx"))
 b.append(box(300, 215, "ucx_tag_recv", 608, "EVT", "worker · tag · tag_mask", "ucx"))
 b.append(box(300, 285, "ucx_tag_probe", 618, "EVT", "worker · message · length", "ucx"))
 b.append(box(300, 355, "ucx_worker_progress", 616, "EVT", "worker · progressed", "ucx"))
-b.append(box(620, 145, "ucx_ep_connection", 624, "ENT", "endpoint · remote_prefix_hash", "ucx"))
+b.append(box(620, 145, "ucx_ep_connection", 624, "ART", "endpoint · remote_prefix_hash", "ucx"))
 b.append(box(620, 215, "ucx_tag_send", 606, "EVT", "endpoint · tag · buffer", "ucx"))
 b.append(box(620, 285, "ucx_rma", 610, "EVT", "endpoint · op · remote_addr", "ucx"))
 b.append(box(620, 355, "ucx_atomic", 620, "EVT", "endpoint · op · remote_addr", "ucx"))
@@ -242,7 +242,7 @@ b.append(box(10, 130, "nccl_comm", 900, "ENT", "comm · comm_hash · rank", "ncc
 b.append(box(360, 40, "nccl_collective", 902, "EVT", "comm · count · root · op", "ncc"))
 b.append(box(360, 110, "nccl_p2p", 904, "EVT", "comm · peer · dir · count", "ncc"))
 b.append(box(360, 180, "nccl_window", 908, "ENT", "window · comm · buffer · size", "ncc"))
-b.append(box(360, 250, "nccl_dev_comm", 910, "ENT", "comm", "ncc"))
+b.append(box(360, 250, "nccl_dev_comm", 910, "ART", "comm", "ncc"))
 b.append(box(360, 336, "nccl_group", 906, "EVT", "depth · edge", "ncc"))
 b.append(bracket([(360, 63), (360, 133), (360, 203), (360, 273)], 320, (245, 153), "comm", 316, 42, anchor="end"))
 b.append(note(360, 310, "Group boundaries stand outside the communicator:", cls="fnote"))
@@ -502,7 +502,7 @@ IB = [
  ("ib_device", 120, "Entity", "The HCA behind one context. node_guid is the globally unique name a LID only approximates."),
  ("ib_port", 122, "Entity", "One physical port and its LID, read at device open, so a rank that never moves traffic still has one."),
  ("ib_recv_cqe", 124, "Event", "The raw CQE's own account of a receive \u2014 written only where it agreed with the ibv_wc beside it."),
- ("ib_qp_signalling", 126, "Entity", "sq_sig_all, which certifies that every work request completes. Additive, because a layout is immutable once a capture holds it."),
+ ("ib_qp_signalling", 126, "Artifact", "sq_sig_all, which certifies that every work request completes. Additive, because a layout is immutable once a capture holds it."),
  ("ib_post_send_sg", 128, "Event", "One scatter-gather entry \u2014 the LOCAL buffer, which ib_post_send does not keep. Full mode only."),
 ]
 MLX = [
@@ -520,7 +520,7 @@ INT = [
  ("intern_string", 512, "Artifact", "handle \u2192 (offset, length) into intern-blob.bin. Strings are the one thing that cannot sit in a fixed-stride record."),
  ("mem_object", 520, "Entity", "A memory object, [alloc, free). Internal rather than gpumem's range because any provider holding an address may emit one."),
  ("entity_close", 522, "Event", "An entity's lifetime ended. One shared type for every provider; opener is the type_id of the record that should have opened it."),
- ("node_identity", 524, "Entity", "Which machine this rank ran on. A device ordinal is node-local, so run_device 0 on two nodes is two different GPUs."),
+ ("node_identity", 524, "Artifact", "Which machine this rank ran on. A device ordinal is node-local, so run_device 0 on two nodes is two different GPUs."),
  ("peer_mapping", 526, "Entity", "One process's mapping of a shared allocation, keyed by the CUDA fabric handle \u2014 FABRIC only, because a POSIX fd names the driver node."),
  ("gpu_kernel", 530, "Event", "One kernel's EXECUTION window. Never submission: the two are ~800x the kernel's own duration apart."),
  ("clock_anchor", 590, "Artifact", "A clock-domain calibration anchor. Two per rank per domain, which is exactly what a line needs."),
@@ -537,8 +537,8 @@ UCX = [
  ("ucx_worker_progress", 616, "Event", "A progress call that progressed something. Full mode only, and telemetry rather than a golden."),
  ("ucx_tag_probe", 618, "Event", "A probe that FOUND a message. length is the one true byte count in the UCX family."),
  ("ucx_atomic", 620, "Event", "A remote atomic, with op NORMALISED across the three UCX opcode spaces that number the same operations differently."),
- ("ucx_worker_address", 622, "Entity", "This worker's own address, as two hashes: the prefix a cross-rank join uses, and a full one that makes a prefix collision visible."),
- ("ucx_ep_connection", 624, "Entity", "Which remote worker an endpoint was dialled at."),
+ ("ucx_worker_address", 622, "Artifact", "This worker's own address, as two hashes: the prefix a cross-rank join uses, and a full one that makes a prefix collision visible."),
+ ("ucx_ep_connection", 624, "Artifact", "Which remote worker an endpoint was dialled at."),
 ]
 GPU = [
  ("gpu_access", 700, "Event", "One GPU memory access \u2014 the firehose, one row per instrumented SASS load or store."),
@@ -551,7 +551,7 @@ NCC = [
  ("nccl_p2p", 904, "Event", "The only NCCL call that names a peer, and so the only one an exact edge follows from."),
  ("nccl_group", 906, "Event", "Group boundaries: N grouped sends are ONE launch, and nothing in a send row says so."),
  ("nccl_window", 908, "Entity", "A registered symmetric window \u2014 what makes GPU-initiated NCCL attributable where internal channel buffers are not."),
- ("nccl_dev_comm", 910, "Entity", "The existence fact 'this workload initiates communication from the GPU'. Nothing else in a capture states it."),
+ ("nccl_dev_comm", 910, "Artifact", "The existence fact 'this workload initiates communication from the GPU'. Nothing else in a capture states it."),
 ]
 FAMILIES = [
  ("int", "the engine", "500\u2013599", INT),

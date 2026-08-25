@@ -181,7 +181,14 @@ PCOMM_RECORD(EntityClose, RecordKind::Event, 522, "entity_close") {
 
 // ARTIFACT — clock-domain calibration anchor (UNIFICATION §4). Emitted at
 // start/end per domain so pcomm-read can fit offset + skew.
-// ENTITY — which machine this rank ran on.
+// ARTIFACT — which machine this rank ran on.
+//
+// Artifact and not Entity, as of 2026-08-25. It has no lifetime: it does not
+// open, nothing ever closes it, and it is emitted once per rank at start. The
+// Entity definition is "a thing with a lifetime — it opens and it closes", and
+// applying that to a per-rank constant made the archetype mean two things at
+// once. See libpcomm/schema/README.md, "The archetypes are a test, not a
+// label".
 //
 // Exists because a device ordinal is NODE-LOCAL and therefore does not name a
 // GPU on its own: rank 0 and rank 4 of an 8-rank two-node run both report
@@ -203,7 +210,7 @@ PCOMM_RECORD(EntityClose, RecordKind::Event, 522, "entity_close") {
 // Emitted once per rank by the engine at start, not by a provider: every
 // provider needs it and none owns it — the same reasoning that put MemObject in
 // the internal range rather than gpumem's.
-PCOMM_RECORD(NodeIdentity, RecordKind::Entity, 524, "node_identity") {
+PCOMM_RECORD(NodeIdentity, RecordKind::Artifact, 524, "node_identity") {
     std::uint64_t node_hash;  // FNV-1a of the hostname; 0 if it could not be read
 };
 

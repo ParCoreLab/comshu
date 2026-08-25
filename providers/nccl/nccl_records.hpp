@@ -164,7 +164,9 @@ PCOMM_RECORD(NcclWindow, RecordKind::Entity, 908, "nccl_window") {
 // `version` fields precisely because NVIDIA expects it to change. A record that
 // silently misreads an int after an NCCL upgrade is worse than one that does
 // not have it.
-PCOMM_RECORD(NcclDevComm, RecordKind::Entity, 910, "nccl_dev_comm") {
+// Artifact, not Entity (2026-08-25): an existence fact, which is the Artifact
+// definition almost word for word. Nothing opens or closes it.
+PCOMM_RECORD(NcclDevComm, RecordKind::Artifact, 910, "nccl_dev_comm") {
     Handle       comm;
     std::int32_t pad;
 };
