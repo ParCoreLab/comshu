@@ -116,6 +116,51 @@ both `pcomm export --csv` and `unhandled_streams`. Nothing about them makes the
 rest of the read fail, which is exactly why they have to be announced: an
 ignored stream produces no rows and no error, and the export looks complete.
 
+## When a relation earns an Edge
+
+Four archetypes, and the one that keeps being re-litigated is `Edge`. The rule
+was stated once, in a comment on `GpuAccess` — "the object link is inline (hot
+1:1 edge), richer relations become Edge rows" — and nowhere else, so every new
+relation has had to rediscover it. It is:
+
+**Inline the relation as a field when all three hold.** It is 1:1 from this
+record's side; it is known at the moment the record is written; and it is on a
+path hot enough that a second record would cost more than the field does.
+
+**Use an Edge when any one of them fails.** The relation is 1:N or N:M; or it is
+*learned later*; or it is *time-varying*.
+
+The middle case is the load-bearing one, and it is a property of the format
+rather than a preference. A stream is a packed array with no index, which is
+what makes the writer a memcpy — so **a field can never be filled in
+afterwards.** Revising an already-written record would mean buffering every open
+one and reordering the stream, which is a different writer. `EntityClose` exists
+for exactly this reason rather than being a window back-filled into the open
+record, and an Edge is the general form of the same move: a fact learned after
+the record was written becomes its own record.
+
+Case 05 is what that costs when the rule is got wrong. Its 1,179,948 accesses
+carry `object = 0` because NCCL's channel buffers arrive through a door gpumem
+does not record — and that zero is *permanent*. There is no door through which
+anything could ever fill it in. When the blocker in
+`plans/PLAN-20260817-0705` lifts, whatever finally names those buffers will be a
+different component learning it at a different time, and an Edge is the only
+shape in the format that can carry it.
+
+**Today `attribution` (760) has no producer**, and that is not rot: `records.hpp`
+seeded one record of each archetype from day one so the writer and reader
+exercise all four paths. Each predicate was then solved another way —
+`TouchedObject` by the inline `gpu_access.object`, `MapsToSourceLine` by the
+`source_line` record, `ResidesOn` by the inline `mem_object.device`, `MapsToQp`
+by a reader-side join. That is the rule working, not the archetype failing.
+
+By the same rule two of those inline choices are already strained: a managed
+allocation's residency is time-varying and `mem_object.device` can only record
+where it started, and a pc under inlined device functions maps to a *chain* of
+source locations where `source_line` holds one. Both are written up in
+`plans/todos.txt`; neither is urgent, and both are places where the field is
+quietly asserting a cardinality that is not true.
+
 ## The schema hash
 
 `StreamHeader.schema_hash` is FNV-1a over `pcomm.fbs` with comments stripped and

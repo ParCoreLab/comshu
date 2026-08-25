@@ -94,6 +94,17 @@ struct MemRange {
 };
 
 // Predicates for Edge records (extend as attribution grows).
+//
+// WHEN A RELATION EARNS ONE is in libpcomm/schema/README.md, under "When a
+// relation earns an Edge". Short version: inline it as a field when it is 1:1,
+// known at write time, and hot; use an Edge when it is 1:N, TIME-VARYING, or
+// LEARNED LATER. The last is not a preference — a stream is a packed array with
+// no index, so a field can never be filled in afterwards, and an Edge is the
+// only shape that can carry a fact discovered after the record was written.
+//
+// All four below are currently served by an inline field or a reader-side join,
+// so `Attribution` has no producer today. It is the one-of-each-archetype
+// example records.hpp seeded so the writer and reader exercise the Edge path.
 enum class EdgePredicate : std::uint8_t {
     TouchedObject,     // access -> mem object
     MapsToSourceLine,  // pc -> source line
