@@ -84,6 +84,45 @@ def flatten(fields, structs, prefix, expr):
     return out
 
 
+# A record field whose name collides with an injected column.
+#
+# `rank` is injected into every raw table and means THE CAPTURE RANK. NcclComm
+# also has a field called `rank`, meaning this process's rank INSIDE the
+# communicator — a different number entirely, and 3 of 4 on a 4-rank job need not
+# be 3. Emitted as-is that produced CREATE TABLE nccl_comm(... "rank" ... "rank"
+# ...), which DuckDB refuses: "Column with name rank already exists". So the
+# table did not mount, and nccl_comm was absent from every DuckDB consumer — the
+# UI, the agent, `pcomm sql` — while --csv exported it fine, because the CSV
+# writer had already hit this and renamed it by hand.
+#
+# The two paths disagreeing is the actual defect; this makes them agree, on the
+# name --csv chose (pcomm-read/main.cpp, Table<NcclComm>::cols).
+#
+# CLOSED BY CONSTRUCTION. A collision not listed here is a hard error, not a
+# silently duplicated column: the failure mode is a table that vanishes with one
+# line on stderr, which is exactly what hid this one.
+RENAMES = {
+    ("nccl_comm", "rank"): "nccl_rank",
+}
+
+INJECTED = {"rank"}
+
+
+def rename_collisions(rec, cols):
+    out = []
+    for c, t, suffix, acc in cols:
+        if c in INJECTED:
+            key = (rec["wire"], c)
+            if key not in RENAMES:
+                sc.fail(f"{rec['wire']}.{c} collides with the injected `{c}` column "
+                        f"and has no entry in RENAMES — add one, and match the "
+                        f"--csv column name in pcomm-read/main.cpp for it")
+                continue  # the run dies below; do not index past the failure
+            c = RENAMES[key]
+        out.append((c, t, suffix, acc))
+    return out
+
+
 def namespace_of(path):
     """The namespace a record is declared in, read from its own file."""
     for line in path.read_text().splitlines():
@@ -142,7 +181,7 @@ def main():
         # found in — and every table needs it to be joinable across ranks.
         cols = [("rank", "INTEGER", "int32", "rank")]
         cols += flatten(temporal, structs, "temporal_", "s.temporal")
-        cols += flatten(rec["fields"], structs, "", "s.payload")
+        cols += rename_collisions(rec, flatten(rec["fields"], structs, "", "s.payload"))
 
         ddl = ",".join(f'\\"{c}\\" {t}' for c, t, _, _ in cols)
         lines += [
@@ -170,6 +209,16 @@ def main():
         "}  // namespace pcomm::raw",
         "",
     ]
+
+    # sc.fail only APPENDS to schema_check's error list — it does not exit. This
+    # script never looked at that list, so every "hard error" above was in fact a
+    # silently dropped column and a table that looked complete: exactly the shape
+    # the comment at the top of this file says it is closed against. Checked now,
+    # before anything is written, so a broken header is never produced at all.
+    if sc.errors:
+        for e in sc.errors:
+            print(f"gen_raw_columns: {e}", file=sys.stderr)
+        sys.exit(1)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines))

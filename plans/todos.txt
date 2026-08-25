@@ -122,6 +122,26 @@ what makes timeline_span one query. Measure before touching: this may be a
 correct trade already made.
 
 
+8a. FOUND while working on 8 (2026-08-25): nccl_comm never mounted in DuckDB
+----------------------------------------------------------------------------
+NcclComm has a field called `rank` — the rank INSIDE the communicator — and the
+raw-table generator injects a column called `rank` meaning THE CAPTURE RANK. The
+generated DDL declared both, DuckDB refused the table ("Column with name rank
+already exists"), and nccl_comm was absent from every DuckDB consumer: the UI,
+the agent and `pcomm sql`. --csv exported it fine, because that writer had
+already hit this and renamed the field nccl_rank by hand.
+
+The two export paths disagreeing was the defect. Fixed by making the generator
+agree with --csv, with a RENAMES table that is closed by construction: an
+unlisted collision is now a hard error.
+
+Which turned up the second half. gen_raw_columns.py reported those errors with
+schema_check's sc.fail(), which only APPENDS to a list — and this script never
+read the list. So every "hard error" in it was a no-op, and the file's own
+comment ("an unknown type is a hard error below rather than a skipped column")
+was false: an unmapped C++ type was silently dropped, leaving a table that
+looked complete. It exits non-zero now, before writing anything.
+
 8. The output contract is weaker than the input contract
 --------------------------------------------------------
 On-disk format: magic, format version, stride, schema hash, byte-level
