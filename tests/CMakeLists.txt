@@ -96,6 +96,28 @@ add_test(NAME flow_pairing_agree
 add_test(NAME wr_flow_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/wr_flow_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# The two derived tables the UI actually opens with, on the same pattern and for
+# the reason the pattern exists. Both were verifiable only through tests/hpc
+# until now — that is, only by booking a GPU cluster — which put the weakest
+# regression net under the most-read output. Neither needs a NIC, a GPU or a
+# capture: they build their own tables, like wr_flow_rule.sh above.
+#
+# Both fixtures are two-sided on every key that is a PAIR: qp_num 5 exists on
+# two HCAs, device 1 exists on two nodes, and one symmetric buffer has a
+# different intern id on every rank. A fixture where the second half of each key
+# is unique cannot tell a correct join from one that dropped it.
+#
+# Every clause each asserts was checked by DELETING it and watching the test go
+# red. That found a hole the first time round: removing the remote_addr > 0
+# guard left object_access_rule.sh green, because no object in the fixture
+# contained address 0, so the range join dropped the row for the right answer by
+# the wrong reason. The fixture carries an object at base 0 now.
+add_test(NAME comm_edges_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/comm_edges_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
+add_test(NAME object_access_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_access_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # The UCX provider's record gate. Registered only when that provider is built,
 # because it needs both the .so and UCX itself — but it does NOT need a cluster:
 # the self transport runs the whole workload in one process, which is why this
