@@ -186,10 +186,19 @@ the rule true by construction rather than by discipline.
     ucx_deep 800-899.
 
 
-12. demos/entity-map.html has no tie to the record declarations
----------------------------------------------------------------
-tools/gen_figures.py hardcodes the 53 (name, type_id, kind) triples. Add a
-PCOMM_RECORD tomorrow and the figure omits it, the index omits it, and every
-check in the tree still passes — the exact failure schema_check.py exists to
-prevent ("Absence is invisible"). A ctest comparing the two lists is ~30 lines
-and the pattern is already in the tree.
+12. DONE (2026-08-25): the figures are checked against the declarations
+------------------------------------------------------------------------
+tools/check_figures.py, registered as ctest `figures_current`. Three lists
+checked against each other: the PCOMM_RECORD declarations (source of truth,
+parsed with schema_check.py's own parser), gen_figures.DRAWN (what the diagrams
+drew), and gen_figures.FAMILIES (what the index table lists). Catches a record
+that exists and is not drawn, one drawn and not declared, and a type_id or
+archetype that disagrees.
+
+The layout still is not derived from anything, and should not be — a figure is
+an argument about which relationships matter. Only the SET is checked.
+
+Worth remembering: it executes gen_figures.py from source instead of importing
+it, because Python validates a cached .pyc on (mtime, size) at one-second
+granularity — so a same-length edit in the same second reuses stale bytecode.
+That fooled this check during its own mutation test, which is how it was found.

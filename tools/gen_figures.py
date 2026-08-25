@@ -22,6 +22,12 @@ range, no <style> block, every attribute inline, so the files open anywhere.
 """
 
 W, H = 230, 46          # one record box
+
+# What the figures actually drew, filled in by box(). The index table at the
+# foot of this file and the boxes in the diagrams are two hand-maintained lists
+# of the same 53 records, and nothing but this registry connects them —
+# tools/check_figures.py compares both against the PCOMM_RECORD declarations.
+DRAWN = {}
 CX, CY = 290, 70        # column / row step
 
 def esc(s):
@@ -32,6 +38,11 @@ def box(x, y, name, tid, kind, fields, fam, w=W):
     # The field line runs until the kind tag; past ~30 chars the two collide.
     assert len(fields) <= 30, f"{name}: field line is {len(fields)} chars, max 30"
     assert len(name) <= 22, f"{name}: name is {len(name)} chars, max 22"
+    # kind is "" for the cross-rank and derived figures, which redraw records
+    # already drawn in their family figure or name views rather than records.
+    if kind:
+        assert name not in DRAWN, f"{name}: drawn in two family figures"
+        DRAWN[name] = (tid, kind)
     return (
 f'<g><rect x="{x}" y="{y}" width="{w}" height="{H}" rx="3" fill="var(--surface)" '
 f'stroke="var(--fam-{fam})" stroke-width="1.4"/>'

@@ -166,6 +166,18 @@ else()
                   "with no schema entry")
 endif()
 
+# Figure drift: demos/figures must draw every record that exists, with the right
+# type_id and archetype. gen_figures.py hardcodes the record set twice — as boxes
+# and as index rows — and reads neither the schema nor the declarations, which is
+# right for the LAYOUT (an argument about which relationships matter, not
+# derivable from a struct) and indefensible for the SET. Without this, adding a
+# record leaves the figure quietly missing it while every other check stays
+# green: the same "absence is invisible" failure schema_check.py exists for.
+if(PCOMM_BUILD_TESTS AND Python3_Interpreter_FOUND)
+  add_test(NAME figures_current
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_figures.py)
+endif()
+
 # Generated-header drift: pcomm_generated.h must be what flatc makes of
 # pcomm.fbs today. A test, not a build step — it needs flatc, which MN5 does not
 # have, and the whole reason the header is committed is that the build must work
