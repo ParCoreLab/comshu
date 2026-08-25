@@ -1,0 +1,199 @@
+plans/todos.txt — design findings not yet worth a PLAN
+=======================================================
+
+Seeds, not plans. Each is a finding with enough reasoning attached that writing
+the PLAN later does not mean re-deriving it. When one graduates, it becomes
+PLAN-{YYYYMMDD-HHMM}-{title}-todo.md per plans/README.md and its entry here is
+deleted — not left behind as a second copy that drifts.
+
+Raised 2026-08-25, from a review of the record model while drawing
+demos/entity-map.html. Scope of that review: libpcomm/schema, core/records.hpp,
+core/ids.hpp, pcomm-read/link_sql.hpp, the provider greps. NOT reviewed: the
+hook layer, the recorder hot path, ui/, agent/. Nothing here is a bug report —
+these are design questions, and a few may be answered "leave it alone".
+
+
+1. Edge has no producer, and the rule for earning one was never written down
+----------------------------------------------------------------------------
+`attribution` (760) is the sole Edge record and nothing emits it. All four
+EdgePredicate values appear only in vocab.hpp and the conformance test that
+checks the enum values match the schema.
+
+This is NOT rot. records.hpp says at the top: "One example of each archetype
+exists from day one so the writer/reader handle all four paths." Attribution is
+that example. Each predicate was then solved another way:
+
+    TouchedObject      -> inline field, gpu_access.object
+    MapsToSourceLine   -> its own record, source_line 740 (Artifact)
+    ResidesOn          -> inline field, mem_object.device
+    MapsToQp           -> computed in the reader (_peer_of_qp, endpoint)
+
+The real finding is the missing rule. records.hpp states it once, in a comment
+on one record — "the object link is inline (hot 1:1 edge), richer relations
+become Edge rows" — and nowhere else, so every new relation re-litigates it.
+
+Write the rule down, then apply it. The candidate rule: inline when the relation
+is 1:1, known at record time, and on a hot path; use an Edge when it is 1:N,
+discovered later, or time-varying. See items 2 and 3 — by that rule two existing
+inline fields are already wrong.
+
+
+2. Inlining a relation asserts 1:1 and time-invariant. Managed memory is neither
+-------------------------------------------------------------------------------
+`mem_object.device` is one DeviceId set at allocation. cuMemAllocManaged funnels
+into the same handle_alloc as cuMemAlloc (nvbit_backend.cu:1186), so a managed
+allocation gets a single residency recorded once — and managed memory migrates
+by definition. The field can only ever hold a point-in-time claim and there is
+nowhere to put the migration.
+
+ResidesOn + a Temporal is exactly the shape that fits. This is the strongest
+argument that Edge should stay rather than be retired.
+
+Check first whether any case actually uses managed memory for a buffer we
+attribute; if none does, this is latent rather than live, and the cost of being
+wrong is a device column that silently means "where it started".
+
+
+3. source_line is 1:1 pc -> line; inlined device functions are 1:N
+------------------------------------------------------------------
+One source_line row per pc. With -lineinfo and inlined __device__ functions, a
+pc corresponds to a CHAIN of (file, line) frames, and the record can hold only
+one of them — with nothing saying which end it is.
+
+UNVERIFIED, and verify before planning: does nvbit_get_line_info return the
+inline chain or only one frame? If only one, this costs nothing today and the
+finding is that the record cannot express what a future backend might give us.
+Also note source_line is empty in every harvested capture so far (see
+PLAN-20260817-0705 and the -lineinfo work in the case sbatch files), so nobody
+has looked at this data closely yet.
+
+
+4. The NCCL unattributed-access gap is Edge-shaped
+--------------------------------------------------
+PLAN-20260817-0705 is blocked on naming an allocation the application never
+made: 1,179,948 accesses on case 05 land in no tracked object, because NCCL's
+internal channel buffers arrive through a door gpumem does not record.
+
+Whatever eventually names them will do so LATER, and from a different component
+than the one that recorded the access. An inline field cannot serve that by
+construction — the field is written when the access is. An Edge can: subject =
+the address band or access, object = the allocation, pred = TouchedObject,
+emitted by whoever learns it, whenever they learn it.
+
+This does not unblock the plan — the blocker is still "there is nothing to join
+on". It says that when the blocker lifts, the record to carry it already exists.
+
+
+5. RecordKind::Entity is doing two unrelated jobs
+-------------------------------------------------
+"Entity — a thing with a lifetime, it opens and it closes." True of about half:
+ib_queue_pair, ib_mem_region, mlx5_umem, mlx5_uar, ucx_endpoint, nccl_comm and
+friends all close, across 12 EntityClose emit sites in 5 modules. Good coverage.
+
+The other half never open or close anything: node_identity, ucx_worker_address,
+ucx_ep_connection, nccl_dev_comm, ib_qp_signalling. These are per-rank facts
+computed once, which is the Artifact definition verbatim.
+
+Evidence the categories are not discriminating: demos/figures/04-record-model.svg
+files node_identity under Artifact and entity_close under Edge — both wrong per
+the PCOMM_RECORD declarations. When the project's own figure misclassifies, the
+taxonomy is not carrying its weight.
+
+Two ways out, and they are not equal:
+  (a) redefine Entity as "a named thing the capture asserts exists", closure
+      optional. Cheap, no schema change, but it makes the archetype weaker and
+      the Artifact/Entity line blurrier still.
+  (b) reclassify the five as Artifact. Correct, and a schema change: kind is on
+      disk in StreamHeader.kind.
+
+The project's own stated preference decides this — take the better schema even
+if the corpus must be re-run. So (b), under the pre-alpha exception, with the
+hash bump making old captures fail loudly rather than misparse.
+
+
+6. entity_close's schema comment is stale
+-----------------------------------------
+The comment names four openers (IbMemRegion 100, IbQueuePair 102, Mlx5Umem 200,
+Mlx5Uar 202). The code also emits for ucx endpoints, nccl comms and engine-owned
+entities. One-line fix, listed here because in a codebase where the comments ARE
+the documentation, and are unusually good, a stale one costs more than elsewhere:
+everything else has trained the reader to trust them.
+
+
+7. gpu_access spends 55% of its width on a stamp the design says not to trust
+-----------------------------------------------------------------------------
+gpu_access is 88 bytes, 48 of them Temporal. records.hpp documents that Window
+as measured 1.94 s wide against a 48 us kernel — three orders out — with the
+real timing coming from the `launch` join instead, which is why the field exists.
+
+At 1.18M-2.53M rows per capture that is tens of MB per run of a field the reader
+is instructed to narrow away. Temporal-on-every-record is the right default; the
+question is whether the firehose should be able to opt out, and what that costs
+in reader uniformity — probably a lot, since "every record has a temporal" is
+what makes timeline_span one query. Measure before touching: this may be a
+correct trade already made.
+
+
+8. The output contract is weaker than the input contract
+--------------------------------------------------------
+On-disk format: magic, format version, stride, schema hash, byte-level
+conformance, a Python reader proving portability, four separate checks.
+
+The seven derived tables that the UI, the agent and every assertion actually
+read: no schema at all, by libpcomm/schema/README.md's own admission. Consumers
+bind to column names inside SQL string literals in a C++ header.
+
+At minimum, name the contract: a column list per derived table, checked against
+what link_sql actually produces, so renaming a column breaks a build rather than
+a panel. That is a much smaller job than giving them a real schema.
+
+
+9. Local test coverage is inverted relative to consumption
+----------------------------------------------------------
+wr_flow, timeline_span and link_health have off-cluster ctests built from
+synthetic CSVs (flow_pairing_agree.sh, wr_flow_rule.sh). Those are the best
+tests in the tree — wr_flow_rule.sh exists because deleting a rule clause left
+the other one green TWICE.
+
+comm_edges and object_access — the two tables behind the headline panels — have
+ZERO local tests and are verifiable only on MN5, where the queue is slow and a
+red board has more than once been the harness rather than the tracer.
+
+The fixture pattern already exists and is pointed at the least-consumed tables.
+Point it at the most-consumed ones. Probably the highest value-per-hour item in
+this file.
+
+
+10. The vendor-free rule on libpcomm is a convention, not a check
+-----------------------------------------------------------------
+README states it absolutely: no cuda*/hip*/ibv_*/Sanitizer_* types in libpcomm.
+Nothing in the build enforces it, and core/mem_attr.hpp already dlopens
+libcuda.so.1 and hardcodes kAttrDeviceOrdinal = 9.
+
+The letter holds — no vendor TYPES, RTLD_NOLOAD so it never loads CUDA into a
+process that declined it, and the reasoning in that file is sound. But core now
+depends on a vendor ABI numerically, and its own comment records that a wrong
+constant already caused a silent bug. A grep-level check in the build would keep
+the rule true by construction rather than by discipline.
+
+
+11. Known and already written down, listed so they are not re-derived
+---------------------------------------------------------------------
+  - pd is carried by four ibverbs entities and created by no record. A query can
+    group by it and never name it.
+  - The versioning machinery has no production user; the only exercise is a demo
+    family at ids 900+ inside record_versioning.cpp. First real bump is where the
+    convention meets a provider that must emit both versions.
+  - Range-containment object identity is sound only within a lifetime, and
+    lifetimes are only sometimes recorded (records.hpp says so).
+  - Three id ranges are allocated and empty: cupti 300-399, libfabric 400-499,
+    ucx_deep 800-899.
+
+
+12. demos/entity-map.html has no tie to the record declarations
+---------------------------------------------------------------
+tools/gen_figures.py hardcodes the 53 (name, type_id, kind) triples. Add a
+PCOMM_RECORD tomorrow and the figure omits it, the index omits it, and every
+check in the tree still passes — the exact failure schema_check.py exists to
+prevent ("Absence is invisible"). A ctest comparing the two lists is ~30 lines
+and the pattern is already in the tree.
