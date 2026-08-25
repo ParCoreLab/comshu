@@ -142,19 +142,23 @@ comment ("an unknown type is a hard error below rather than a skipped column")
 was false: an unmapped C++ type was silently dropped, leaving a table that
 looked complete. It exits non-zero now, before writing anything.
 
-8. The output contract is weaker than the input contract
---------------------------------------------------------
-On-disk format: magic, format version, stride, schema hash, byte-level
-conformance, a Python reader proving portability, four separate checks.
+8. DONE (2026-08-25): the derived tables declare their columns
+---------------------------------------------------------------
+Every kTables entry in pcomm-read/link_sql.hpp now carries a `columns` line —
+the columns it promises, in order — and link::columns_match checks it against
+what the SQL really produces. Renaming a column is loud now instead of blanking
+a panel.
 
-The seven derived tables that the UI, the agent and every assertion actually
-read: no schema at all, by libpcomm/schema/README.md's own admission. Consumers
-bind to column names inside SQL string literals in a C++ header.
+Checked on BOTH paths, which is the part that took a second try. It asks the
+SQL, not the catalog: `pcomm ui` defines the layer as views so a relation
+exists, but `pcomm link` COPYs each entry straight to Parquet and never CREATEs
+one, so a catalog lookup checked nothing on exactly the path that writes the
+fixture everything else reads. link_health fell into that same trap once — the
+comment beside it in main.cpp records it.
 
-At minimum, name the contract: a column list per derived table, checked against
-what link_sql actually produces, so renaming a column breaks a build rather than
-a panel. That is a much smaller job than giving them a real schema.
-
+Not a schema. A schema for these is still the larger job (types, nullability, a
+version), and the README's "what is still not covered" section still stands. But
+the names are pinned, which was the part that could silently rot.
 
 9. DONE (2026-08-25): comm_edges and object_access have local tests
 -------------------------------------------------------------------

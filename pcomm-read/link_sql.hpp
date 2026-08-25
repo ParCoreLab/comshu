@@ -707,6 +707,22 @@ WHERE c.opcode = 128 AND c.status = 0
 // Derived tables, materialised and written as Parquet in this order.
 struct Table {
     const char* name;
+    // The columns this table promises, in order. THIS IS THE CONTRACT, and it is
+    // the only one the derived layer has.
+    //
+    // The on-disk format is defended four ways — magic, format version, stride,
+    // schema hash, a byte-level conformance test and a Python reader proving
+    // portability. These seven tables, which are what the UI panels, the agent
+    // and every suite assertion actually read, had nothing: consumers bound to
+    // column names that existed only inside a SQL string in this header. Rename
+    // one and nothing failed to build; a panel went blank and a query returned
+    // no rows, which reads exactly like a workload that did nothing.
+    //
+    // Checked against what the SQL really produces every time the layer is
+    // defined — see define(). Cheap (one LIMIT 0 per table) and it runs
+    // everywhere the reader runs, rather than only where someone remembered to
+    // add a test.
+    const char* columns;
     const char* sql;
 };
 
@@ -742,7 +758,9 @@ inline constexpr Table kTables[] = {
     // providers loaded has two independent views of the same object, and being
     // able to see them apart is how you tell a provider that is missing traffic
     // from a workload that did not send any.
-    {"object_access", R"sql(
+    {"object_access",
+     "owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact",
+     R"sql(
 WITH p2p AS (
     -- OWNER IS THE RANK THAT OWNS THE MEMORY, NEVER THE RANK THAT WROTE IT.
     --
@@ -974,7 +992,9 @@ SELECT * FROM verbs_recv
     //
     // `device` is NULL when a rank drives more than one GPU (`devices` says how
     // many). That is a real state, not a gap to paper over.
-    {"rank_identity", R"sql(
+    {"rank_identity",
+     "rank,node_ix,node_hash,device,devices,label",
+     R"sql(
 SELECT n.rank,
        (dense_rank() OVER (ORDER BY n.node) - 1)::BIGINT AS node_ix,
        n.node                                            AS node_hash,
@@ -987,7 +1007,9 @@ LEFT JOIN _rank_device d ON d.rank = n.rank
 ORDER BY n.rank
 )sql"},
 
-    {"endpoint", R"sql(
+    {"endpoint",
+     "rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes",
+     R"sql(
 SELECT r.rank,
        r.qp_num,
        o_self.lid              AS lid,
@@ -1039,7 +1061,9 @@ ORDER BY r.rank, r.qp_num
     // COUNTED in link_health.timeline_unanchored, which is the same trade
     // unresolved_nvlink makes: a hole you can see beats a chart that looks
     // complete.
-    {"timeline_span", R"sql(
+    {"timeline_span",
+     "rank,stream,ep,bytes,kind,t0_ns,t1_ns",
+     R"sql(
 SELECT e.rank,
        e.stream,
        e.ep,
@@ -1085,7 +1109,9 @@ JOIN _clock c ON c.rank = e.rank AND c.domain = e.domain
     // transport IN ('verbs','devx'), projected to (src,dst,sends,bytes), are
     // still byte-identical to CsvAgg's comm_edges — which is the only check
     // the derived layer has, and is kept executable rather than described.
-    {"comm_edges", R"sql(
+    {"comm_edges",
+     "src_rank,dst_rank,transport,unit,sends,bytes",
+     R"sql(
 SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM (
     SELECT s.rank               AS src_rank,
            coalesce(o.rank, -1) AS dst_rank,
@@ -1119,7 +1145,9 @@ ORDER BY transport, src_rank, dst_rank
     // its own HUGEINT before subtracting and loses sub-microsecond spans, which
     // is the same float64 trap _clock's comment describes, arriving a third
     // time in a different arithmetic.
-    {"wr_flow", R"sql(
+    {"wr_flow",
+     "rank,qp_num,wr_id,bytes,opcode,status,wc_opcode,t0_ns,t1_ns,latency_ns",
+     R"sql(
 SELECT f.rank,
        f.qp_num,
        f.wr_id,
@@ -1136,7 +1164,9 @@ FROM _wr_flight f
 JOIN _clock c ON c.rank = f.rank AND c.domain = f.domain
 )sql"},
 
-    {"link_health", R"sql(
+    {"link_health",
+     "finding,n,note",
+     R"sql(
 SELECT 'colliding_endpoints' AS finding,
        count(*)              AS n,
        'two ranks claim one (lid, qp_num) — impossible on a sane fabric' AS note
@@ -1327,15 +1357,57 @@ FROM (
 // fixture other tools read. A UI holds the capture in memory and only ever
 // queries, so a view is the same answer without the copy — and, more to the
 // point, without a temp directory the server would have to own and clean up.
+// Does this table still produce the columns it promises?
+//
+// ASKS THE SQL, NOT THE CATALOG, and that is what makes it work in both callers.
+// `pcomm ui` defines the layer as views, so a relation exists; `pcomm link` COPYs
+// each entry straight to Parquet and never CREATEs one, so a catalog lookup here
+// would silently check nothing on exactly the path that writes the fixture other
+// tools read. That is the same trap link_health fell into — see the comment
+// beside it in pcomm-read/main.cpp.
+//
+// LIMIT 0 so it costs a plan and no rows.
+inline bool columns_match(duckdb_connection con, const Table& t) {
+    duckdb_result     res;
+    const std::string q = "SELECT * FROM (" + std::string(t.sql) + ") LIMIT 0";
+    if (duckdb_query(con, q.c_str(), &res) != DuckDBSuccess) {
+        duckdb_destroy_result(&res);
+        return false;  // the CREATE already reported why
+    }
+    std::string got;
+    for (idx_t i = 0; i < duckdb_column_count(&res); i++) {
+        if (i)
+            got += ',';
+        got += duckdb_column_name(&res, i);
+    }
+    duckdb_destroy_result(&res);
+    if (got == t.columns)
+        return true;
+    std::fprintf(stderr,
+                 "pcomm: %s does not match its declared columns\n"
+                 "  declared: %s\n"
+                 "  produced: %s\n"
+                 "  Update the `columns` line beside its SQL in "
+                 "pcomm-read/link_sql.hpp — and check ui/, agent/ and\n"
+                 "  tests/hpc/*/asserts/ for consumers of the old name.\n",
+                 t.name, t.columns, got.c_str());
+    return false;
+}
+
 inline std::size_t define(duckdb_connection con) {
     std::size_t failed = 0;
     for (const auto& v : kViews)
         if (!duck::exec(con, v.sql, v.name))
             failed++;
-    for (const auto& t : kTables)
+    for (const auto& t : kTables) {
         if (!duck::exec(con, "CREATE OR REPLACE VIEW \"" + std::string(t.name) + "\" AS " + t.sql,
-                        t.name))
+                        t.name)) {
             failed++;
+            continue;
+        }
+        if (!columns_match(con, t))
+            failed++;
+    }
     return failed;
 }
 

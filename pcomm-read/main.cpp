@@ -1897,6 +1897,14 @@ int run_link(const fs::path& dir) {
 
     std::size_t written = 0;
     for (const auto& t : link::kTables) {
+        // The declared column contract, checked here too and not only in
+        // link::define(): this is the path that writes the fixture the suite,
+        // the agent and every other tool read, so it is the one where a renamed
+        // column does the most damage before anyone notices.
+        if (!link::columns_match(con, t)) {
+            failed++;
+            continue;
+        }
         const auto out = (dir / (std::string(t.name) + ".parquet")).string();
         if (duck_exec(con, "COPY (" + std::string(t.sql) + ") TO '" + out + "' (FORMAT PARQUET)",
                       t.name))
