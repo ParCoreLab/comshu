@@ -468,6 +468,344 @@ def convert(svg_text, title, scale=1.7):
     root.insert(0, bg); root.insert(0, d); root.insert(0, t)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
+
+# ------------------------------------------------- the page: demos/entity-map.html
+#
+# The figures say which records exist and how they join. The page is what carries
+# the rest: the archetype legend, the full index of all 53 with their type_ids, and
+# the list of places the model is still open. It <img>s the committed SVGs rather
+# than inlining a copy of them, so there is exactly one of each figure in the tree.
+#
+# No webfonts, no CDN, no script: MN5's login node is airgapped and an external
+# stylesheet there is a silent fallback, which is the same failure shape the schema
+# hash exists to make loud.
+
+SANS_STACK = ('ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, '
+              '"Helvetica Neue", Arial, sans-serif')
+MONO_STACK = ('ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, '
+              '"Liberation Mono", monospace')
+
+# name, type_id, kind, one line. Cross-checked against the PCOMM_RECORD declarations
+# in libpcomm/, providers/ and gpu-backends/ when written: 53 records, no duplicates.
+IB = [
+ ("ib_mem_region", 100, "Entity", "A registered region, [reg, dereg). lkey/rkey are what a send or a receive resolves its buffer through."),
+ ("ib_queue_pair", 102, "Entity", "A queue-pair endpoint, [create, destroy)."),
+ ("ib_completion_queue", 104, "Entity", "A completion queue. Hangs off a context, not a pd \u2014 the one verbs object that can exist before any protection domain."),
+ ("ib_modify_qp", 106, "Event", "A state transition. The \u2192RTR row carries the remote endpoint, which is what makes the connection topology recoverable."),
+ ("ib_shared_recv_queue", 108, "Entity", "A shared receive queue. Depths are the device's answers, not the caller's request."),
+ ("ib_post_send", 110, "Event", "One posted work request \u2014 the network firehose."),
+ ("ib_poll_cq", 112, "Event", "One completion drained from a CQ."),
+ ("ib_post_recv", 114, "Event", "One posted receive. addr/lkey resolve the receive buffer to a region \u2014 the question a capture could not answer before this record."),
+ ("ib_req_notify_cq", 116, "Event", "A CQ armed for notification: the only evidence an application sleeps on interrupts rather than spinning."),
+ ("ib_address_handle", 118, "Entity", "A UD address handle. Carries the destination a UD send is aimed at, which lives nowhere else in the API."),
+ ("ib_device", 120, "Entity", "The HCA behind one context. node_guid is the globally unique name a LID only approximates."),
+ ("ib_port", 122, "Entity", "One physical port and its LID, read at device open, so a rank that never moves traffic still has one."),
+ ("ib_recv_cqe", 124, "Event", "The raw CQE's own account of a receive \u2014 written only where it agreed with the ibv_wc beside it."),
+ ("ib_qp_signalling", 126, "Entity", "sq_sig_all, which certifies that every work request completes. Additive, because a layout is immutable once a capture holds it."),
+ ("ib_post_send_sg", 128, "Event", "One scatter-gather entry \u2014 the LOCAL buffer, which ib_post_send does not keep. Full mode only."),
+]
+MLX = [
+ ("mlx5_umem", 200, "Entity", "A buffer handed to the NIC. base is 0 under dmabuf: the buffer is named by fd and the address is an offset."),
+ ("mlx5_uar", 202, "Entity", "A User Access Region \u2014 the doorbell page a GPU writes to say a WQE is ready."),
+ ("mlx5_devx_cmd", 204, "Event", "One DEVX command, decoded or not. Recorded even when the opcode is unknown, so a version boundary is visible."),
+ ("mlx5_devx_qp", 206, "Entity", "A DEVX queue pair \u2014 the GPU-initiated counterpart of ib_queue_pair."),
+ ("mlx5_devx_qp_connect", 208, "Event", "The \u2192RTR transition on the DEVX plane, carrying src_lid for the same reason verbs does."),
+ ("mlx5_queue_pair", 210, "Entity", "An ordinary verbs QP reached through mlx5dv_create_qp. perftest creates its queue pairs this way and never calls ibv_create_qp."),
+ ("mlx5_doorbell", 212, "Event", "The GPU rang a doorbell. Emitted even when the WQE cannot be read, so an undecodable doorbell is a visible row."),
+ ("mlx5_device_send", 214, "Event", "A GPU-initiated send decoded from the WQE. Same shape as ib_post_send so a reader can union the two planes."),
+]
+INT = [
+ ("intern_key", 510, "Artifact", "handle \u2192 uint64 for the numeric domains. The dictionary behind every Handle."),
+ ("intern_string", 512, "Artifact", "handle \u2192 (offset, length) into intern-blob.bin. Strings are the one thing that cannot sit in a fixed-stride record."),
+ ("mem_object", 520, "Entity", "A memory object, [alloc, free). Internal rather than gpumem's range because any provider holding an address may emit one."),
+ ("entity_close", 522, "Event", "An entity's lifetime ended. One shared type for every provider; opener is the type_id of the record that should have opened it."),
+ ("node_identity", 524, "Entity", "Which machine this rank ran on. A device ordinal is node-local, so run_device 0 on two nodes is two different GPUs."),
+ ("peer_mapping", 526, "Entity", "One process's mapping of a shared allocation, keyed by the CUDA fabric handle \u2014 FABRIC only, because a POSIX fd names the driver node."),
+ ("gpu_kernel", 530, "Event", "One kernel's EXECUTION window. Never submission: the two are ~800x the kernel's own duration apart."),
+ ("clock_anchor", 590, "Artifact", "A clock-domain calibration anchor. Two per rank per domain, which is exactly what a line needs."),
+]
+UCX = [
+ ("ucx_context", 600, "Entity", "A public UCP context."),
+ ("ucx_worker", 602, "Entity", "A worker owned by a context."),
+ ("ucx_endpoint", 604, "Entity", "An endpoint owned by a worker."),
+ ("ucx_tag_send", 606, "Event", "A tagged-send intent. count is the raw UCP datatype count."),
+ ("ucx_tag_recv", 608, "Event", "A tagged receive POSTED \u2014 capacity offered, not bytes delivered. Keyed by worker: the match is by tag across every peer."),
+ ("ucx_rma", 610, "Event", "A one-sided put or get."),
+ ("ucx_am_send", 612, "Event", "An active-message send. Header and payload keep separate lengths \u2014 one is control traffic, the other is data."),
+ ("ucx_mem_map", 614, "Entity", "A UCP memory registration. resolved says whether the extent is the effective one or the requested one."),
+ ("ucx_worker_progress", 616, "Event", "A progress call that progressed something. Full mode only, and telemetry rather than a golden."),
+ ("ucx_tag_probe", 618, "Event", "A probe that FOUND a message. length is the one true byte count in the UCX family."),
+ ("ucx_atomic", 620, "Event", "A remote atomic, with op NORMALISED across the three UCX opcode spaces that number the same operations differently."),
+ ("ucx_worker_address", 622, "Entity", "This worker's own address, as two hashes: the prefix a cross-rank join uses, and a full one that makes a prefix collision visible."),
+ ("ucx_ep_connection", 624, "Entity", "Which remote worker an endpoint was dialled at."),
+]
+GPU = [
+ ("gpu_access", 700, "Event", "One GPU memory access \u2014 the firehose, one row per instrumented SASS load or store."),
+ ("source_line", 740, "Artifact", "One pc \u2192 source location row. Needs -lineinfo; empty without it."),
+ ("attribution", 760, "Edge", "The generic relation row, for links too sparse to inline: subject, object, and a predicate."),
+]
+NCC = [
+ ("nccl_comm", 900, "Entity", "A communicator. comm_hash is equal on every rank; the comm pointer is not, so the hash is the only cross-rank join."),
+ ("nccl_collective", 902, "Event", "One enqueued collective. count is ELEMENTS, and the product with the datatype width is LOGICAL size \u2014 not what crosses the wire."),
+ ("nccl_p2p", 904, "Event", "The only NCCL call that names a peer, and so the only one an exact edge follows from."),
+ ("nccl_group", 906, "Event", "Group boundaries: N grouped sends are ONE launch, and nothing in a send row says so."),
+ ("nccl_window", 908, "Entity", "A registered symmetric window \u2014 what makes GPU-initiated NCCL attributable where internal channel buffers are not."),
+ ("nccl_dev_comm", 910, "Entity", "The existence fact 'this workload initiates communication from the GPU'. Nothing else in a capture states it."),
+]
+FAMILIES = [
+ ("int", "the engine", "500\u2013599", INT),
+ ("gpu", "gpumem", "700\u2013799", GPU),
+ ("ib", "ibverbs", "100\u2013199", IB),
+ ("mlx", "mlx5dv / DEVX", "200\u2013299", MLX),
+ ("ucx", "ucx", "600\u2013699", UCX),
+ ("ncc", "nccl", "900\u2013999", NCC),
+]
+KINDTAG = {"Entity": "ENT", "Event": "EVT", "Artifact": "ART", "Edge": "EDG"}
+
+PAGE_FIGURES = [
+ ("05-capture-anatomy", "What holds them",
+  "No record is self-describing on its own. A record is a fixed-stride element of a packed array; its type "
+  "comes from the stream header above it, and its high-cardinality fields are dense handles that mean nothing "
+  "without the capture's own dictionary.",
+  "A capture is one directory per rank. Lookups into the dictionary are keyed by <b>(domain, handle)</b>, not "
+  "handle alone: handles restart at 1 in every domain."),
+ ("06-engine-records", "The engine's records, and gpumem's",
+  "Records every provider needs and none owns. <code>mem_object</code> sits here rather than in gpumem's range "
+  "because any provider holding an address may emit one; <code>gpu_kernel</code> sits here because the fact has "
+  "two possible instruments and a capture must know it under either.",
+  "The three arrows out of <code>gpu_access</code> are the whole of its attribution: an object, a kernel launch, "
+  "and a source line. <code>launch</code> is a join key and not a time \u2014 the producer records the key and the "
+  "reader does the join."),
+ ("07-ibverbs-records", "ibverbs",
+  "LD_PRELOAD over libibverbs: the host control and data plane, as the application called it. Fifteen record "
+  "types, the largest family in the model.",
+  "The dashed enclosure is a <b>gap, not a grouping</b>: four of these entities carry a <code>pd</code> handle "
+  "and no record ever creates a protection domain, so a query can group by it but never name it."),
+ ("08-mlx5-records", "mlx5dv / DEVX",
+  "The control plane IBGDA uses instead of verbs. A GPU-initiated run creates its queue pairs with "
+  "<code>mlx5dv_devx_obj_create</code>, so nothing in the ibverbs range sees any of it.",
+  "<code>mlx5_device_send</code> is deliberately the same shape as <code>ib_post_send</code> so the reader can "
+  "union them and a consumer of the comm matrix never learns which plane a run used."),
+ ("09-ucx-records", "ucx",
+  "UCP transport hooks. The spine is ownership \u2014 a context owns workers, a worker owns endpoints \u2014 and every "
+  "operation attaches to whichever of the two the API itself names.",
+  "Which side an operation is keyed to is the API's own shape, not a convention: a tagged send names its "
+  "endpoint, while a tagged receive cannot, because it matches by tag across every peer at once."),
+ ("10-nccl-records", "nccl",
+  "The one provider whose door is a supported profiling interface rather than an interposition. Six record "
+  "types, all hanging off the communicator.",
+  "Everything here is an <b>enqueue</b> fact. NCCL is stream-ordered, so a collective's temporal is the host "
+  "call, not the execution."),
+ ("11-cross-rank-keys", "The five cross-rank keys",
+  "Everything above is rank-local. A capture is N independent directories written by N processes that never "
+  "coordinate, so joining them needs an identity both sides mint independently and agree on. There are exactly five.",
+  "Where a key is absent the reader does not guess. A pure-NVLink capture has no LID to derive a node from, and "
+  "that shows up as a counted row in <code>link_health</code> rather than as a confident matrix over a hole."),
+ ("12-derived-tables", "What the reader builds",
+  "The records are what a capture holds; these seven tables are what anything actually queries \u2014 the UI panels, "
+  "the suite's assertions, the agent's SQL. They are outputs of the reader rather than parts of the format, "
+  "which is why they carry no schema.",
+  "Dashed boxes are intermediate views, created in order, each free to reference the ones above it. "
+  "<code>link_health</code> is the one table whose expected state is empty."),
+]
+
+PAGE_CSS = """
+:root {
+  --bg:#ffffff; --fg:#1c2b36; --muted:#5f7183; --rule:#e2e8ed; --panel:#f7f9fb;
+  --figure-ground:#ffffff;
+  --int:#5b7c99; --gpu:#4f7d3f; --ib:#a06a24; --mlx:#6a5aa0; --ucx:#1f7a70; --ncc:#a04a58;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#12181e; --fg:#dde5ec; --muted:#93a3b1; --rule:#26313b; --panel:#182029;
+    --figure-ground:#f3f6f8;
+    --int:#7fadd6; --gpu:#8cc172; --ib:#d79f5c; --mlx:#a795dd; --ucx:#4fb3a6; --ncc:#dd8894;
+  }
+}
+* { box-sizing: border-box; }
+html { color-scheme: light dark; }
+body {
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:SANS; font-size:16px; line-height:1.62;
+  -webkit-text-size-adjust:100%;
+}
+.wrap { max-width:1120px; margin:0 auto; padding:0 24px 96px; }
+.prose { max-width:70ch; }
+h1,h2,h3 { line-height:1.15; margin:0; }
+h1 { font-size:2.6rem; font-weight:700; letter-spacing:-.022em; }
+h2 { font-size:1.4rem; font-weight:650; letter-spacing:-.012em; }
+h3 { font-size:1rem; font-weight:650; }
+p { margin:0; }
+code { font-family:MONO; font-size:.87em; background:var(--panel);
+       border:1px solid var(--rule); border-radius:3px; padding:.05em .32em; }
+a { color:inherit; }
+header { padding:72px 0 36px; border-bottom:1px solid var(--rule); }
+.eyebrow { font-family:MONO; font-size:.7rem; letter-spacing:.16em; text-transform:uppercase;
+           color:var(--muted); margin-bottom:14px; }
+.lede { margin-top:20px; font-size:1.1rem; }
+.counts { display:flex; flex-wrap:wrap; margin-top:34px; border:1px solid var(--rule);
+          border-radius:5px; overflow:hidden; background:var(--panel); }
+.counts div { flex:1 1 110px; padding:13px 16px; border-right:1px solid var(--rule); }
+.counts div:last-child { border-right:0; }
+.counts .n { font-family:MONO; font-size:1.4rem; font-variant-numeric:tabular-nums; line-height:1.1; }
+.counts .l { font-family:MONO; font-size:.64rem; letter-spacing:.11em; text-transform:uppercase;
+             color:var(--muted); margin-top:4px; }
+section { padding-top:60px; }
+.sub { color:var(--muted); margin-top:9px; max-width:72ch; }
+figure { margin:26px 0 0; padding:18px; background:var(--figure-ground);
+         border:1px solid var(--rule); border-radius:6px; overflow-x:auto; }
+figure img { display:block; width:100%; min-width:660px; height:auto; }
+figcaption { margin-top:15px; padding-top:13px; border-top:1px solid var(--rule);
+             color:#5f7183; font-size:.86rem; max-width:84ch; }
+.legend { display:grid; grid-template-columns:repeat(auto-fit,minmax(205px,1fr)); gap:1px;
+          background:var(--rule); border:1px solid var(--rule); border-radius:5px;
+          overflow:hidden; margin-top:26px; }
+.legend > div { background:var(--panel); padding:14px 16px; }
+.legend .tag { font-family:MONO; font-size:.64rem; letter-spacing:.11em; color:var(--muted); }
+.legend .nm { font-family:MONO; font-weight:600; font-size:.9rem; margin-top:3px; }
+.legend .say { font-size:.82rem; color:var(--muted); margin-top:5px; line-height:1.45; }
+.tblwrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; margin-top:22px; font-size:.85rem; }
+caption { text-align:left; color:var(--muted); font-size:.84rem; padding-bottom:12px; max-width:80ch; }
+th { text-align:left; font-family:MONO; font-size:.64rem; letter-spacing:.11em; text-transform:uppercase;
+     color:var(--muted); font-weight:500; padding:0 12px 8px 0; border-bottom:1px solid var(--muted); }
+td { padding:9px 12px 9px 0; border-bottom:1px solid var(--rule); vertical-align:top; }
+tr.fam td { padding-top:26px; border-bottom:1px solid var(--muted); }
+tr.fam .fname { font-weight:650; font-size:1rem; }
+td.id { font-family:MONO; font-variant-numeric:tabular-nums; width:1%; white-space:nowrap; font-weight:500; }
+td.nm { font-family:MONO; font-weight:600; width:1%; white-space:nowrap; }
+td.kd { width:1%; white-space:nowrap; }
+td.kd span { font-family:MONO; font-size:.62rem; letter-spacing:.09em; border:1px solid var(--muted);
+             color:var(--muted); border-radius:3px; padding:.15em .4em; }
+td.ds { color:var(--muted); line-height:1.5; }
+.holes { margin-top:24px; display:grid; gap:1px; background:var(--rule);
+         border:1px solid var(--rule); border-radius:5px; overflow:hidden; }
+.holes > div { background:var(--panel); padding:16px 18px; }
+.holes p { color:var(--muted); font-size:.87rem; margin-top:5px; }
+footer { margin-top:76px; padding-top:20px; border-top:1px solid var(--rule);
+         color:var(--muted); font-size:.8rem; max-width:80ch; }
+@media (max-width:720px) { h1 { font-size:2rem; } .wrap { padding:0 16px 64px; } }
+"""
+
+
+def page_html():
+    kinds = {}
+    for _, _, _, recs in FAMILIES:
+        for _, _, k, _ in recs:
+            kinds[k] = kinds.get(k, 0) + 1
+    total = sum(kinds.values())
+
+    figs_html = []
+    for slug, title, blurb, caption in PAGE_FIGURES:
+        figs_html.append(
+            f'<section id="{slug}">\n  <h2>{title}</h2>\n  <p class="sub">{blurb}</p>\n'
+            f'  <figure>\n    <img src="figures/{slug}.svg" alt="{title}">\n'
+            f'    <figcaption>{caption}</figcaption>\n  </figure>\n</section>')
+
+    rows = []
+    for key, title, rng, recs in FAMILIES:
+        rows.append(f'<tr class="fam"><td colspan="4"><span class="fname" style="color:var(--{key})">'
+                    f'{title}</span> <span style="color:var(--muted);font-size:.8rem">&nbsp;{rng}</span></td></tr>')
+        for name, tid, kind, desc in recs:
+            rows.append(f'<tr><td class="id" style="color:var(--{key})">{tid}</td><td class="nm">{name}</td>'
+                        f'<td class="kd"><span>{KINDTAG[kind]}</span></td><td class="ds">{desc}</td></tr>')
+
+    css = PAGE_CSS.replace("SANS", SANS_STACK).replace("MONO", MONO_STACK)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pcomm entity map</title>
+<style>{css}</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">pcomm &middot; the record model, concretely</div>
+  <h1>The entity map</h1>
+  <div class="prose">
+    <p class="lede">Every entity a pcomm capture can hold, what it is keyed by, and which join carries it to
+    the next one. Four archetypes, six provider ranges, {total} record types &mdash; and five keys that turn N
+    per-rank directories into one picture.</p>
+  </div>
+  <div class="counts">
+    <div><div class="n">{total}</div><div class="l">record types</div></div>
+    <div><div class="n" style="color:var(--int)">{kinds['Entity']}</div><div class="l">entity</div></div>
+    <div><div class="n" style="color:var(--ib)">{kinds['Event']}</div><div class="l">event</div></div>
+    <div><div class="n" style="color:var(--ucx)">{kinds['Artifact']}</div><div class="l">artifact</div></div>
+    <div><div class="n" style="color:var(--ncc)">{kinds['Edge']}</div><div class="l">edge</div></div>
+    <div><div class="n">7</div><div class="l">derived tables</div></div>
+  </div>
+</header>
+
+<section id="read">
+  <h2>How to read a box</h2>
+  <p class="sub">Every box is one record type. The border colour is its <em>provider range</em>, which is a real
+  constraint and not a decoration: each provider owns a disjoint block of type_ids, which is what lets two passes
+  over the same workload merge into one rank's picture without either knowing about the other.</p>
+  <div class="legend">
+    <div><div class="tag">ENT</div><div class="nm">Entity</div>
+      <div class="say">A thing with a lifetime. It opens, and it should close.</div></div>
+    <div><div class="tag">EVT</div><div class="nm">Event</div>
+      <div class="say">Something that happened, at or over a time.</div></div>
+    <div><div class="tag">ART</div><div class="nm">Artifact</div>
+      <div class="say">A one-off fact, computed once and timeless.</div></div>
+    <div><div class="tag">EDG</div><div class="nm">Edge</div>
+      <div class="say">A relation between two handles, for links too sparse to inline.</div></div>
+  </div>
+</section>
+
+{"".join(figs_html)}
+
+<section id="index">
+  <h2>The full index</h2>
+  <div class="tblwrap"><table>
+    <caption>All {total} record types, in type_id order within each provider range. The id is the on-disk
+    discriminator and never means two things; the name is the stable identity every table, golden and query is
+    written against.</caption>
+    <thead><tr><th>id</th><th>record</th><th>kind</th><th>what it is</th></tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+  </table></div>
+</section>
+
+<section id="holes">
+  <h2>Where the model is still open</h2>
+  <p class="sub">Read alongside the figures: these are places a box is missing, not places a box is wrong.</p>
+  <div class="holes">
+    <div><h3>A protection domain has no record</h3>
+      <p><code>ib_queue_pair</code>, <code>ib_mem_region</code>, <code>ib_shared_recv_queue</code> and
+      <code>ib_address_handle</code> all carry a <code>pd</code> handle that nothing ever creates. Grouping by it
+      works; naming it does not.</p></div>
+    <div><h3>Closes cover four openers</h3>
+      <p><code>entity_close.opener</code> is a type_id, so the mechanism is open to every provider &mdash; but a close
+      naming a subject no open record created is not a bug in the close hook. It is evidence of a creation door
+      that is not hooked, and it is counted rather than suppressed.</p></div>
+    <div><h3>Three ranges are reserved and empty</h3>
+      <p>cupti (300&ndash;399), libfabric (400&ndash;499) and ucx_deep (800&ndash;899) are allocated in
+      <code>ids.hpp</code> and have no records. The cupti range names an instrument, which is why
+      <code>gpu_kernel</code> deliberately does not live there.</p></div>
+    <div><h3>Counter has no producer</h3>
+      <p>Of the five temporal kinds, four are in use. Nothing yet emits a Counter &mdash; and <code>gpu_access</code>'s
+      Window is a <em>bound</em>, not a measurement, which a renderer that draws it as a duration would silently
+      turn into a false claim.</p></div>
+  </div>
+</section>
+
+<footer>
+  This page and the figures it shows are generated by <code>tools/gen_figures.py</code>; edit that, not these.
+  Sources: <code>libpcomm/schema/pcomm.fbs</code>, the <code>PCOMM_RECORD</code> declarations in
+  <code>libpcomm/</code>, <code>providers/</code> and <code>gpu-backends/</code>, and the view definitions in
+  <code>pcomm-read/link_sql.hpp</code>. No webfonts and no scripts: it opens from the filesystem, offline.
+</footer>
+
+</div>
+</body>
+</html>
+"""
+
+
 if __name__ == "__main__":
     import os, sys
 
@@ -489,3 +827,7 @@ if __name__ == "__main__":
         assert 'class="' not in out, name
         open(f"{OUT}/{name}.svg", "w").write(out)
         print(f"{name}.svg  {len(out):6d} B")
+
+    page = os.path.join(OUT, "..", "entity-map.html")
+    open(page, "w").write(page_html())
+    print(f"entity-map.html  {os.path.getsize(page):6d} B")
