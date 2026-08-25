@@ -108,39 +108,49 @@ here" is the point of using a type_id instead of an enum. It names the grep
 instead.
 
 
-7. gpu_access spends 55% of its width on a stamp the design says not to trust
------------------------------------------------------------------------------
-gpu_access is 88 bytes, 48 of them Temporal. records.hpp documents that Window
-as measured 1.94 s wide against a 48 us kernel — three orders out — with the
-real timing coming from the `launch` join instead, which is why the field exists.
+7. gpu_access spends 54.5% of its width on a stamp — MEASURED, not settled
+---------------------------------------------------------------------------
+Measured on this build rather than estimated:
 
-At 1.18M-2.53M rows per capture that is tens of MB per run of a field the reader
-is instructed to narrow away. Temporal-on-every-record is the right default; the
-question is whether the firehose should be able to opt out, and what that costs
-in reader uniformity — probably a lot, since "every record has a temporal" is
-what makes timeline_span one query. Measure before touching: this may be a
-correct trade already made.
+    sizeof(GpuAccess)           40
+    sizeof(Stamped<GpuAccess>)  88
+    sizeof(Temporal)            48      -> 54.5% of the firehose record
 
+THE STAMP IS NOT DEAD, and the first version of this entry implied it was.
+_tl_raw reads `coalesce(k.<kernel span>, g.<own temporal>)`: the record's own
+Temporal is the FALLBACK used whenever the launch -> correlation join misses. So
+the question is exactly one number, and it needs one query on any current-schema
+gpumem capture:
 
-8a. FOUND while working on 8 (2026-08-25): nccl_comm never mounted in DuckDB
-----------------------------------------------------------------------------
-NcclComm has a field called `rank` — the rank INSIDE the communicator — and the
-raw-table generator injects a column called `rank` meaning THE CAPTURE RANK. The
-generated DDL declared both, DuckDB refused the table ("Column with name rank
-already exists"), and nccl_comm was absent from every DuckDB consumer: the UI,
-the agent and `pcomm sql`. --csv exported it fine, because that writer had
-already hit this and renamed the field nccl_rank by hand.
+    SELECT count(*) FILTER (WHERE k.correlation IS NULL)::DOUBLE / count(*)
+    FROM gpu_access g
+    LEFT JOIN (SELECT rank, correlation FROM gpu_kernel
+               WHERE source <> 2 AND correlation <> 0) k
+      ON k.rank = g.rank AND k.correlation = g.launch
 
-The two export paths disagreeing was the defect. Fixed by making the generator
-agree with --csv, with a RENAMES table that is closed by construction: an
-unlisted collision is now a hard error.
+Near zero and the 48 bytes are overhead for a value the reader always discards.
+Meaningfully above zero and they are load-bearing. It could not be run locally:
+every capture in ~/waste/pcomm/corpus predates the current schema hash, and the
+hubspoke ones predate the stride 80 -> 88 change as well.
 
-Which turned up the second half. gen_raw_columns.py reported those errors with
-schema_check's sc.fail(), which only APPENDS to a list — and this script never
-read the list. So every "hard error" in it was a no-op, and the file's own
-comment ("an unknown type is a hard error below rather than a skipped column")
-was false: an unmapped C++ type was silently dropped, leaving a table that
-looked complete. It exits non-zero now, before writing anything.
+AND THERE IS A THIRD OPTION NEITHER "KEEP" NOR "REMOVE" COVERS. Temporal is 48
+bytes carrying 29 bytes of content:
+
+    kind    1
+    a      16   (TimePoint: domain 2 + ticks 8 = 10 packed, padded to 16)
+    b      16
+    value   8   -- only meaningful for TimeKind::Counter
+
+Nothing emits a Counter — grep for TimeKind::Counter or now_counter across
+libpcomm/src, providers/ and gpu-backends/ returns nothing — so `value` is 8
+bytes that are zero in EVERY record of EVERY capture, not just this one. With
+the TimePoint padding that is 19 bytes of the 48 doing nothing. A packed Temporal
+of ~24 bytes would take gpu_access from 88 to ~64 without losing the fallback,
+which is a ~27% cut on the largest stream in any gpumem capture.
+
+That is a format change and wants a plan, a measurement and a hash bump — not a
+hunch. Note it interacts with item 11's "Counter has no producer": deciding
+`value` is dead and deciding Counter is dead are the same decision.
 
 8. DONE (2026-08-25): the derived tables declare their columns
 ---------------------------------------------------------------
