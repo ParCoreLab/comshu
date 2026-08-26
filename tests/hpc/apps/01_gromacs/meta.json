@@ -1,0 +1,99 @@
+{
+  "case": "01_gromacs",
+  "app": "GROMACS 2025.2 (MN5 module gromacs/2025.2-gcc-nvhpcx)",
+  "providers": [
+    "ib",
+    "ucx"
+  ],
+  "topology": "2 nodes x 4 H100, 8 MPI ranks, 7 PP + 1 PME, OpenMPI 4.1.5 over UCX 1.15 (HPC-X 2.16) over NDR InfiniBand",
+  "why": "GROMACS is the cleanest available instance of claim (3): one environment variable, GMX_DISABLE_DIRECT_GPU_COMM, switches halo exchange and PME-PP exchange between staging through host memory and handing device pointers straight to MPI. The application's own documentation asserts this is faster; nobody here has ever seen the switch in a trace. It also has an unusually derivable topology: with -npme 1 the PP/PME split and the DD grid are both forced by the command line (7 is prime, so the only DD grid is 7x1x1), so the halo partner set and the PME fan-in are oracles that name no identifier the run produced.",
+  "workload": {
+    "ranks": 8,
+    "nodes": 2,
+    "gpus": 4,
+    "npp": 7,
+    "npme": 1,
+    "dd_x": 7,
+    "dd_y": 1,
+    "dd_z": 1,
+    "nsteps": 1000,
+    "nstlist": 100,
+    "natoms": 2136412,
+    "rvec_bytes": 12,
+    "real_bytes": 4,
+    "gpudirect": 1
+  },
+  "variants": {
+    "direct_on": {
+      "gpudirect": 1,
+      "env": "GMX_DISABLE_DIRECT_GPU_COMM unset"
+    },
+    "direct_off": {
+      "gpudirect": 0,
+      "env": "GMX_DISABLE_DIRECT_GPU_COMM=1"
+    }
+  },
+  "workload_note": "Every number above is a command-line input or a tpr header field, not an observation of a capture. `ranks`, `npp`, `npme`, `dd_*`, `nsteps`, `nstlist` come from the mdrun invocation in job.sbatch. `natoms` is offset 72 of benchRIB.tpr (big-endian uint32 = 2136412), which matches the figure the Max Planck benchmark set publishes for benchRIB; it is read from the input file, never from md.log and never from the capture. `gpudirect` is the knob, and it is the only value that differs between the two captures \u2014 it is what lets one assertion file be the specification for both runs.",
+  "oracle_derivation": {
+    "pme_rank_of_pp_rank": "src/gromacs/domdec/domdec.cpp:540 ddindex2pmeindex() = (ddCellIndex*npme + npme/2)/npp, and :623 dd_simnode2pmenode() pmeRanks.empty() branch = numPPRanks + ddindex2pmeindex(sim_nodeid). With -ddorder pp_pme and npme=1 this is 7 for every PP rank 0..6. Each PP rank sends coordinates to, and receives forces from, exactly that one rank (src/gromacs/ewald/pme_pp.cpp:296 MPI_Isend(x.data(), n*sizeof(rvec), ..., dd->pme_nodeid) on the staged path, :256 of pme_pp_comm_gpu_impl_gpu.cpp MPI_Isend(sendptr_x, sendSize*DIM, MPI_FLOAT, pmeRank_) on the direct path).",
+    "dd_grid": "npp = 7 is prime, so nx*ny*nz = 7 admits only a permutation of 7x1x1, and GROMACS decomposes x first. -dd 7 1 1 states it explicitly so the run cannot silently choose otherwise.",
+    "halo_partners": "A 1-D DD grid of 7 cells is periodic, so cell x exchanges halo data only with cells (x+1) mod 7 and (x-1) mod 7. GROMACS stages halo exchange one dimension at a time (src/gromacs/domdec/gpuhaloexchange_impl_gpu.cpp communicateHaloData, src/gromacs/domdec/haloexchange.cpp on the staged path), so a PP rank's direct MPI partners for halo traffic are its two grid neighbours and nothing else.",
+    "pme_coordinate_volume": "Every PP rank sends its home atoms' coordinates to its PME rank once per step, and the home-atom counts of the PP ranks partition the system, so the PP->PME coordinate volume per step is natoms * 12 B regardless of how the decomposition moved atoms around. Over nsteps+1 force evaluations that is 12 * natoms * (nsteps+1) bytes. Charges are re-sent on each pair-list/DD rebuild (PP_PME_CHARGE, pme_pp.cpp:212), i.e. nsteps/nstlist + 1 times, adding 4 * natoms * (nsteps/nstlist + 1) bytes.",
+    "gpudirect": "src/gromacs/taskassignment/decidegpuusage.cpp:794 -- direct GPU communication is ON BY DEFAULT in a CUDA + library-MPI build and is turned off only by GMX_DISABLE_DIRECT_GPU_COMM. On the ON path the buffer handed to MPI is a device pointer (gpuhaloexchange_impl_gpu.cpp:489 MPI_Irecv(recvPtr,...)/:492 MPI_Send(sendPtr,...) where both are Float3* into device memory); on the OFF path GROMACS copies to host staging buffers first and MPI only ever sees host memory. So the discriminator in the capture is not the message count and not the byte count -- it is whether the memory the NIC was asked to register is device memory."
+  },
+  "expect_tables": [
+    "ucx_context",
+    "ucx_worker",
+    "ucx_endpoint",
+    "ucx_tag_send",
+    "ucx_tag_recv",
+    "ucx_worker_address",
+    "ucx_ep_connection",
+    "ib_device",
+    "ib_queue_pair",
+    "ib_mem_region",
+    "ib_post_send",
+    "mem_object"
+  ],
+  "not_covered": "No gpumem/NVBit pass. The question here is which door the traffic went through, not which byte a kernel touched, and NVBit's module-processing cost (~440 s in case 05) buys nothing for it. No nccl provider: GROMACS 2025.2 links libnvshmem_host but uses NCCL for nothing on this path, and GMX_ENABLE_NVSHMEM is not set.",
+  "runner_note": "This case does NOT use suite/sql_check.sh. That script materialises `params` from a HARD-CODED column list (PARAM_COLS = ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding gpudirect rx_depth colls_per_iter p2p_per_iter groups_per_iter) and exits 2 on any workload key outside it, so npp/npme/nsteps/natoms -- the entire oracle of this case -- cannot be stated to it at all. asserts.sh here is the assertion half of sql_check.sh with the column list taken from meta.json instead. See NOTES.md.",
+  "expect_fail_asserts": {
+    "pme_coord_volume": "Cannot be evaluated on this stack: the UCX cross-rank join is broken, so the PP->PME edge carries ~7 B instead of 25.76 GB. Open MPI 4.1.5's pml_ucx publishes its worker address through ucp_worker_query (nm -D mca_pml_ucx.so: 'U ucp_worker_query', and NO ucp_worker_get_address), which the ucx provider does not hook -- so ucx_worker_address holds 1 of the 2 workers per rank and 64 of 117 ucx_ep_connection rows resolve, none of them the pml worker that carries the traffic. The same oracle, asked without the join, is pme_rank_force_volume.sql and it passes to 4 parts per million. Fix: hook ucp_worker_query (and ucp_worker_get_address_v2) as address doors.",
+    "halo_partners": "Same cause as pme_coord_volume: the rank-to-rank matrix this assertion filters is built from the broken cross-rank join, so 61 of 64 resolved edges carry 1 byte and the two that carry bulk (0->4, 4->0) are OMPI wireup on the second, non-pml worker. The claim itself is unverified rather than violated -- nothing in this capture can currently place a tagged send at a named peer.",
+    "verbs_is_internode_only": "Vacuous rather than passing: comm_edges is EMPTY because ib_post_send is empty. UCX's InfiniBand transport has no undefined reference to ibv_post_send at all (nm -D libuct_ib.so.0 / libucp.so.0: zero), it posts by writing WQEs into an mlx5dv_devx_umem_reg'd queue and ringing its own doorbell. Reported as [skip], which is the honest verdict.",
+    "entity_close_accounted": "Pre-existing, not specific to this case: 3,726 entity_close rows against openers that were never recorded, opener 100 = ib_mem_region. Same shape as the unmatched closes documented on IbMemRegion.origin (uct_ib_dereg_mr / dm cleanup).",
+    "mem_owner_unambiguous": "Pre-existing: UCX's registration cache re-registers the same base address at growing lengths (0x102b0110 at 88128, 88352, 88640, 200672 ... bytes), so one address legitimately resolves to several mem_object rows of different size. That is rcache behaviour, not an attribution fault, and the assertion's model of one address -> one object does not fit a caching registrar."
+  },
+  "runs": {
+    "main": {
+      "job": 45082564,
+      "elapsed": "00:04:13",
+      "nodes": 2,
+      "stdout": "~/proj/pcomm/pcomm-app-gromacs.45082564.out",
+      "logs": "~/pcomm-apps/gromacs/run-45082564/{smoke,bare-on,bare-off,trace-on,trace-off}.log",
+      "captures": "~/pcomm-apps/gromacs/gromacs-{on,off}-45082564{,.csv,.pq}"
+    },
+    "probe": {
+      "job": 45088478,
+      "nsteps": 200,
+      "providers": [
+        "ib",
+        "ucx",
+        "mlx5dv"
+      ],
+      "stdout": "~/proj/pcomm/pcomm-app-gromacs-probe.45088478.out",
+      "captures": "~/pcomm-apps/gromacs/gromacs-probe-45088478{,.csv}",
+      "why": "separates 'UCX never used GPUDirect RDMA' from 'the device registration went through a door -p ib,ucx did not load'. Answer: the former."
+    }
+  },
+  "input": {
+    "system": "benchRIB",
+    "source": "https://www.mpinat.mpg.de/grubmueller/bench",
+    "file": "~/pcomm-apps/gromacs/benchRIB.tpr",
+    "md5": "f16f0e021ef1a2c43ad21800943b2d45",
+    "tpx_version": 83,
+    "natoms_offset": 72,
+    "note": "natoms is read from the tpr header (big-endian uint32 at byte 72 = 2136412), not from md.log and not from the capture."
+  },
+  "expect_tables_note": "ib_post_send is left in expect_tables even though it CANNOT be non-empty on this stack, and it reports [XX] in both arms on purpose. UCX's IB transport has no undefined reference to ibv_post_send at all (nm -D libucp.so.0 / libuct_ib.so.0: zero), so the verbs data plane is structurally unreachable here and comm_edges is empty with it. Silencing that would hide the single biggest coverage gap this case found -- see REPORT.md F1. expect_tables has no xfail mechanism, which is itself worth fixing."
+}
