@@ -23,9 +23,19 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 # first version of this check failed on its own explanation of what it forbids.
 # The filter keys on `<file>:<line>:` followed by whitespace and `#`, so a real
 # call with a trailing comment still matches.
+#
+# Lines that only PRINT the command are dropped for the same reason and were
+# added for the same reason: a job script that echoes the invocation it is about
+# to make is doing something useful, and `echo "=== pcomm -p ib,ucx ... ==="` can
+# no more invoke the binary than a comment can. Found by
+# tests/hpc/apps/03_quantumespresso/job.sbatch, which labels each of its four
+# runs that way. Keyed on a line that STARTS with echo/printf and carries no
+# command separator after it, so `echo hi && "$PCOMM" -p ib -- ./app` is still
+# caught — the first version of this exclusion let that through, which the
+# mutation test found.
 bad=$(git ls-files '*.sh' '*.sbatch' |
       xargs grep -nE '(\$\{?PCOMM\}?"?|\bpcomm)[[:space:]]+(-p|--providers|-o|--output|--list|--dry-run|--enable-doorbell-hijack)\b' \
-        2>/dev/null | grep -vE ':[[:space:]]*#')
+        2>/dev/null | grep -vE ':[[:space:]]*#' | grep -vE ':[[:space:]]*(echo|printf)[[:space:]][^;|&]*$')
 
 if [ -n "$bad" ]; then
   echo "pcomm CLI: these call the binary with a flag where the verb goes:" >&2
