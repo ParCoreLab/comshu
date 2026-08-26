@@ -3,7 +3,9 @@
 - **Created:** 2026-08-15 15:40 +03
 - **Status:** **PAUSED 2026-08-16**, deliberately and at a defensible point.
   Stages 0-2 are done; the record layer is complete and locally gated. Stage 3
-  (attribution) is blocked on research, not effort — see *Future work*. The
+  (attribution) WAS blocked on research; the research ran on 2026-08-27 and the
+  answer is that UCX has no exported send door at all, so Stage 3 is not a UCX
+  work item — it is the doorbell hijack. See *Future work* 1. The
   sections below are kept in the order they were written, so the measurements
   read as they were made; **this header and the two sections that follow it are
   the current state.**
@@ -21,7 +23,7 @@
 | 0 — establish the oracle | **done** | jobs 44578355, 44629699/44629730, 44635003; plus a login-node ELF sweep of the whole HPC-X stack |
 | 1 — provider vertical slice | **done** | validated on MN5, job 44675611 |
 | 2 — complete the surface | **done** | 29 doors, 13 records; parity with SigmaTrace audited and exceeded |
-| 3 — cross-layer attribution | **BLOCKED** | `ibv_post_send` is not UCX's send door on MN5 (job 44635003); no replacement door identified yet |
+| 3 — cross-layer attribution | **RESOLVED INTO THE HIJACK** | the door sweep ran 2026-08-27: there is no exported send door at all. Becomes `PLAN-20260807-1746-ibgda-data-plane-hijack`. See *Future work* 1 |
 | 4 — parity and regression gates | **partial** | a local gate exists and runs in 0.08 s; there is no MN5 gate, and nothing on du04 |
 
 **What exists.** `providers/ucx/`, built by `PCOMM_PROVIDER_UCX=ON`: 29
@@ -612,25 +614,44 @@ Ordered by value per unit of effort, not by stage number. Every item names why
 it matters, so a later reader can drop one on its merits rather than on its
 position in a list.
 
-## 1. The Stage 3 door sweep — free, and it decides the whole goal
+## 1. DONE (2026-08-27): the door sweep ran, and the answer is the middle one
 
-The attribution stage is blocked because job 44635003 measured that MN5's UCX
-posts no work through `ibv_post_send`. What has NOT been done is the obvious
-next question, and it costs no allocation: **sweep `libuct_ib_mlx5.so`'s
-undefined symbols the way the UCP sweep was done, and find out what it actually
-calls to post a WQE.** Three outcomes, all decisive:
+Executed by `tests/hpc/apps/01_gromacs`, corroborated by
+`tests/hpc/apps/02_lammps`. **Outcome 2: UCX writes WQEs and rings the UAR
+inline, with no interposable symbol.** Stage 3 is not unblocked and does not
+close — it becomes the doorbell-hijack work.
 
-- it calls `mlx5dv_*` or another exported symbol → there is a door, Stage 3 is
-  unblocked, and the call-extent attribution design already sketched above
-  applies unchanged;
-- it writes WQEs and rings the UAR inline with no interposable symbol → Stage 3
-  needs the existing `providers/mlx5dv` UAR machinery, which was built for
-  device-initiated IBGDA traffic and would have to be shown to work for a
-  host-side sender;
-- neither → Stage 3 closes the way libfabric did, with a written reason.
+    nm -D --undefined-only  libucp.so.0     ibv_post_send 0   ibv_reg_mr 0
+                            libuct_ib.so.0  ibv_post_send 0   ibv_reg_mr 1
 
-Do this before designing anything else in Stage 3, and before the MN5 run below,
-because the answer changes what that run should measure.
+UCX registers memory through ibverbs, which is why `ib_mem_region` fills and
+the control plane looks complete, and posts through nothing exported.
+
+The static sweep was then confirmed at a second level, which is what makes this
+decisive rather than suggestive: a probe job loading `-p ib,ucx,mlx5dv`
+captured the **entire DEVX control plane** — 1,328 `mlx5_devx_qp`, 304
+`mlx5_uar`, 2,032 `mlx5_umem` — and `mlx5_device_send` stayed **empty** against
+24,452 tagged sends. So it is not merely that ibverbs is the wrong layer; the
+DEVX provider is at the right layer and still sees no traffic, because there is
+no call to see.
+
+**THIS IS THE IBGDA PROBLEM, NOT A UCX PROBLEM.** Anything that builds its own
+WQE in mapped memory and rings its own doorbell is invisible to every
+function-interposition provider we have, and the identity of the writer — a GPU
+thread under NVSHMEM, or UCX on the host — changes nothing about the mechanism.
+`PLAN-20260807-1746-ibgda-data-plane-hijack` is therefore the answer to both,
+and its cost/benefit changes accordingly: it was scoped as the price of seeing
+one device-initiated transport, and it is actually the price of seeing the
+host-side MPI traffic of most of the science software on MN5.
+
+Two consequences already measured, in both studies independently:
+
+- `comm_edges` is **empty for the whole HPC-X/UCX class**. `_sends`
+  (`link_sql.hpp:532`) is built from `ib_post_send` and `mlx5_device_send`
+  only, and on this stack both are empty, so the headline derived table has
+  zero rows over a capture holding tens of GB of correctly recorded traffic.
+- Every rank-space topology question is unanswerable for such an application,
+  which is what `comm_edges` exists to answer.
 
 ## 2. One MN5 job, to observe what is currently only inferred
 
