@@ -1,0 +1,19 @@
+diff --git a/llmc/cuda_utils.cuh b/llmc/cuda_utils.cuh
+index 030ec07..cc6f133 100644
+--- a/llmc/cuda_utils.cuh
++++ b/llmc/cuda_utils.cuh
+@@ -217,7 +217,14 @@ int cudaMallocConditionallyManaged(void** out, size_t bytes, const char *file, i
+         // if we OOM, fallback to a managed allocation. slower but at least won't crash.
+         cudaGetLastError(); // reset the error before the next API call
+         cudaCheck_(cudaMallocManaged(out, bytes), file, line);
++#if CUDART_VERSION >= 13000
++        // CUDA 13 changed cudaMemAdvise's 4th parameter from an int device ordinal to
++        // a cudaMemLocation struct. Portability only; the behaviour is unchanged.
++        cudaMemLocation cpu_loc{}; cpu_loc.type = cudaMemLocationTypeHost; cpu_loc.id = 0;
++        cudaCheck_(cudaMemAdvise(*out, bytes, cudaMemAdviseSetPreferredLocation, cpu_loc), file, line);
++#else
+         cudaCheck_(cudaMemAdvise(*out, bytes, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId), file, line);
++#endif
+         return 1;
+     } else {
+         cudaCheck_(err, file, line);

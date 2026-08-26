@@ -1,0 +1,31 @@
+{
+  "case": "04_llmc",
+  "app": "llm.c (karpathy/llm.c), train_gpt2.cu, upstream commit f1e2ace",
+  "providers": [
+    "nccl",
+    "ib"
+  ],
+  "topology": "MN5: 2 nodes x 4 H100, 8 ranks, NCCL over NVLink intra-node and NDR IB inter-node. du04: 1 node x 4 A100, 4 ranks, NVLink only, -p nccl.",
+  "golden": "none — a third-party application is not a regression gate (see apps/README.md)",
+  "why": "The suite's own NCCL workload (case 20) is 40 lines we wrote. llm.c is a real GPT-2 trainer whose collective schedule is fixed by its source and its command line, so the collective count, the element count and the datatype are all derivable BEFORE the capture exists. It is also the only workload available to us where one flag (-z) changes the collective ALGEBRA rather than the volume.",
+  "workload": {
+    "ranks": 8,
+    "nodes": 2,
+    "gpus": 4,
+    "iters": 4,
+    "elems": 30357504,
+    "elem_bytes": 2,
+    "colls_per_iter": 76,
+    "groups_per_iter": 7,
+    "p2p_per_iter": 0
+  },
+  "workload_note": "Command line: `-e d6 -b 2 -t 1024 -x 4 -v 1000 -m 1 -s 0 -h 0 -d <ranks*2048>`, plus `-z 0` or `-z 1`. Every number in the workload block is read out of llm.c's source, not out of a capture.\n\n  iters = 4          -x 4, so the training section runs for step = 0..3 (train_gpt2.cu:1712, 1819).\n  elems = 30357504   the gradient elements reduced per optimizer step:\n                     L*(12*C^2 + 13*C) + Vp*C + T*C + 2*C with L=6, C=384, Vp=50304, T=1024\n                     (train_gpt2.cu:930-945 for the 12 per-layer tensors, :963-964 for the 4\n                     non-block ones). At T = max_seq_len this equals the model's total\n                     parameter count, which llm.c prints itself: `num_parameters: 30357504`.\n  elem_bytes = 2     floatX is bfloat16 by default, so ncclFloatX = ncclBfloat16 (zero.cuh:27-33).\n  colls_per_iter=76  12*L + 4: multi_gpu_async_reduce_gradient is called once per transformer\n                     layer with N=12 pointers (train_gpt2.cu:946) and once at the end with N=4\n                     (train_gpt2.cu:964). Its loop makes exactly one collective per pointer\n                     (zero.cuh:531-550). This is the count of GRADIENT collectives only; the\n                     scalar bookkeeping all-reduces are counted separately by their datatype.\n  groups_per_iter=7  L + 1 ncclGroupStart/End pairs from backward — one per call of\n                     multi_gpu_async_reduce_gradient (zero.cuh:530, 551), which brackets the\n                     group unconditionally, ZeRO stage or not.\n  p2p_per_iter = 0   llm.c calls no ncclSend and no ncclRecv anywhere. `grep -c 'ncclSend\\|ncclRecv' train_gpt2.cu llmc/*.cuh` is 0.\n\nWhy this arithmetic is legitimate here and is NOT in cases 02/05: the nccl provider records\nthe calls the APPLICATION made. NCCL's channel count, protocol and chunking change the wire\nand cannot change how many times llm.c called ncclAllReduce. Case 20's workload_note states\nthe same distinction for a workload we wrote; this is the same claim against 3000 lines we\ndid not.\n\nTHE TWO ZERO STAGES ARE ONE ASSERTION, NOT TWO META FILES. zero.cuh:531-550 is a two-way\nbranch on config->zero_stage with no third arm, so the capture must match one of exactly two\nfully-specified algebras. asserts/collective_algebra_matches_zero_stage.sql states both and\nfails if the capture is neither — which is a stronger claim than pinning one stage, and it is\nwhy a single workload block covers both runs.",
+  "expect_tables": [
+    "nccl_comm",
+    "nccl_collective",
+    "nccl_group"
+  ],
+  "not_covered": "nccl_p2p, nccl_window and nccl_dev_comm are absent, and that is the correct capture: llm.c uses no point-to-point, no ncclCommWindowRegister and no device-initiated NCCL. asserts/no_point_to_point.sql states the first of those as a claim rather than leaving it as an absence.",
+  "grad_accum_note": "The third capture repeats the -z 0 configuration with -d doubled, which llm.c turns into grad_accum_steps=2 (train_gpt2.cu:1519). multi_gpu_async_reduce_gradient is called only under `if(last_step)` (train_gpt2.cu:929 and :953), so the gradient reduction happens once per OPTIMIZER step and not once per micro-step. Prediction: every number in the workload block is unchanged while the step wall time doubles. The check is that the same assertions pass unmodified on that capture.",
+  "cost_note": "Seconds. gpt2-tiny (d6, 30.4 M parameters) for 4 steps is ~9 ms/step on 4x A100; the whole du04 sweep including three captures is under a minute. No NVBit anywhere — `gpumem`/`p2p` were deliberately not used, per apps/README.md."
+}
