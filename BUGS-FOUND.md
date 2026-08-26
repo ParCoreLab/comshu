@@ -160,6 +160,28 @@ starts passing, which is the signal that HPC-X fixed it.
 
 ---
 
+## 2. llm.c reduces 4 floats where it means 1, and overflows a 4-byte managed buffer
+
+**One line.** Four call sites in `llm.c` pass `sizeof(float)` as the *element
+count* argument of `ncclAllReduce`, so every scalar reduction moves 4 floats
+instead of 1 — and one of them writes 16 bytes into a 4-byte
+`cudaMallocManaged` allocation, a 12-byte heap overflow on every multi-GPU
+barrier.
+
+| | |
+|---|---|
+| Environment | llm.c at upstream `f1e2ace`; NCCL 2.29.3; verified on du04 (4x A100, CUDA 13.0, driver 580.95.05) and MN5 (8 ranks, 2 nodes, 4x H100) |
+| What fired | `tests/hpc/apps/04_llmc/asserts/scalar_reduction_count_is_sizeof_float.sql`, over `nccl_collective` from job 45082117 and the du04 run |
+| Evidence | `ncclAllReduce`'s third parameter is `size_t count`, a COUNT OF ELEMENTS, with the datatype given separately as the fourth. `sizeof(float)` is 4. The capture records `count = 4` with `datatype = ncclFloat` at all four sites, where the surrounding code reduces one scalar. The allocation is `cudaMallocManaged(&result.unified_buffer, sizeof(float))` — 4 bytes — at `llmc/zero.cuh:455`; `multi_gpu_barrier` (`zero.cuh:483`) reduces into it with `count = 4`, i.e. 16 bytes. |
+| Sites | `llmc/zero.cuh:483` (barrier, the overflowing one), `llmc/zero.cuh:588`, `train_gpt2.cu:958` (`accumulated_mean_loss`), `train_gpt2.cu:1022` (`grad_norm_squared`, stage-1 only) |
+| Excluded | *Not* a capture artefact: the number is `4` in the capture because `4` is what the source passes, and the assertion derives its expectation from `sizeof(float)` in the C language rather than from the capture. *Not* a datatype confusion in pcomm's decode: `datatype` decodes as `ncclFloat` while `count` decodes as `4`, and the two are separate fields recorded from separate arguments. *Not* deliberate padding: the allocation is `sizeof(float)`, so the code's own two uses of the constant contradict each other. |
+| Impact | Honest limits: the three non-buffer sites reduce a scalar redundantly and are *harmless in result* — a sum or average over 4 copies of correlated garbage is still written back to a slot the code then reads as one float, and the extra 12 bytes read are within the surrounding allocation for those three. The barrier site is the real defect: the 4-byte managed allocation has 12 bytes written past its end, every barrier, on every rank. Whether it corrupts anything depends on what the CUDA managed allocator placed after it, which is why this is a latent memory-safety bug rather than an observed wrong answer. Bare and captured runs print identical losses to six decimals, so it is not currently producing visible numerical damage. |
+| Reproduction | `tests/hpc/apps/04_llmc/run.sh` on du04, or `job.sbatch` on MN5; the assertion is `asserts/scalar_reduction_count_is_sizeof_float.sql` |
+| How found | Not by suspicion. The `nccl` provider records the arguments the application passed, so `count` was in the capture as an ordinary column; the study was predicting collective counts and volumes from `llmc/zero.cuh`, and the scalar reductions were the one place where predicted and recorded element counts could not be reconciled by any reading of the source. The allocation size was then read to see what the count implied. |
+| Status | Not reported upstream. The claim covers `f1e2ace` only; it was not checked against later commits, and no fix was attempted. |
+
+**Full investigation:** `tests/hpc/apps/04_llmc/REPORT.md`
+
 ## Template for the next entry
 
 ```

@@ -297,3 +297,98 @@ Worth remembering: it executes gen_figures.py from source instead of importing
 it, because Python validates a cached .pyc on (mtime, size) at one-second
 granularity — so a same-length edit in the same second reuses stale bytecode.
 That fooled this check during its own mutation test, which is how it was found.
+
+
+Raised 2026-08-27, from the four real-application studies in tests/hpc/apps/
+(GROMACS, LAMMPS, QuantumESPRESSO, llm.c). Each of these was found by an
+application nobody here wrote, and each is cross-cutting — the studies could
+not fix them, because a study that edits the tool it is validating proves
+nothing. Ordered by value per unit of effort.
+
+
+13. ucp_worker_query is unhooked — one DEFINE_PRELOAD_HOOK, three studies
+------------------------------------------------------------------------
+FOUND INDEPENDENTLY BY THREE OF THE FOUR, from three different angles, which is
+the strongest signal this exercise produced. pcomm hooks `ucp_worker_create`
+(ucx_hooks.hpp:10) and `ucp_worker_get_address` (ucx_hooks.hpp:181, ucx.map:17).
+OpenMPI's `mca_pml_ucx.so` — the layer under every MPI_Send, MPI_Alltoall and
+halo exchange — imports `ucp_worker_query` and NOT `ucp_worker_get_address`.
+Only the one-sided `mca_osc_ucx` and `mca_spml_ucx` use the hooked door.
+
+So for EVERY OpenMPI point-to-point application, `ucx_worker_address` describes
+the wrong one of each rank's two workers — the one-sided worker, which carries
+no traffic — and `ucx_ep_connection.remote_prefix_hash`, which ucx_records.hpp
+:275-279 itself calls "the only thing in the UCX records that crosses a rank
+boundary", points at nothing.
+
+Measured consequences: LAMMPS `with_peer_rank` = 0 of 621 halo sends per rank;
+GROMACS's PP->PME edge reads 7 bytes instead of 25.76 GB; QE cannot produce a
+communication matrix for MPI p2p at all. Five of LAMMPS's assertions and two of
+GROMACS's flip from vacuous or xfail to real once it is hooked.
+
+Same shape as case 08's empty ib_queue_pair: an API hooked in one of its two
+spellings. Cheapest item in this file by a wide margin.
+
+
+14. comm_edges has no UCX lane, so the headline table is empty for MPI-over-UCX
+-------------------------------------------------------------------------------
+`_sends` (link_sql.hpp:532) is built from `ib_post_send` and `mlx5_device_send`
+and nothing else. On the HPC-X stack both are empty — see the door-sweep result
+now recorded in PLAN-20260815-1540 Future work 1 — so `comm_edges` has ZERO ROWS
+over captures holding tens of GB of correctly recorded traffic. LAMMPS: 51 MB
+and ~800 messages per rank captured, comm_edges empty. GROMACS: 24,452 tagged
+sends, comm_edges empty in both arms. QE: 18.7M sends, and on the default
+transport no verbs traffic at all.
+
+This is not the same item as 13, and fixing 13 does not fix it: 13 supplies the
+rank correspondence, and this is the absence of a lane that would use it. Both
+are needed before any HPC-X application has a rank matrix.
+
+Note what it is NOT: the traffic is captured. The derived layer cannot see it.
+
+
+15. There is no flush on an abnormal exit, and the failure is inverted
+----------------------------------------------------------------------
+No `sigaction`, no signal handler, no signal-path flush anywhere in the engine —
+the only SIGSEGV tokens in libpcomm/src are comments about a fault seen
+elsewhere. A process killed by a signal loses whatever is still buffered.
+
+QE's pw.x reaches JOB DONE and then faults in its own teardown (confirmed QE's
+own with a no-pcomm, no-preload control). The result is not a smaller capture.
+It is a capture that keeps 100% of the event volume and loses the records that
+make it interpretable, because high-volume streams flushed incrementally when
+their buffers filled and low-volume ones never did:
+
+    ib_post_send   18,700,773 rows   survived
+    ib_modify_qp           94 rows   lost
+    node_identity     2 of 4 ranks   lost
+    => 84% of sends land on dst_rank = -1; 6 edges reported where 12 exist
+
+THE BROKEN CAPTURE IS THE BIGGER ONE. That is the property that makes this worth
+more than its size suggests — every heuristic a human or a check uses to notice
+a bad capture points the wrong way. Anything that aborts, or is SLURM-cancelled
+after doing its work, lands here, and nothing says so.
+
+
+16. sql_check.sh cannot run an application case
+------------------------------------------------
+`PARAM_COLS` is hard-coded, so a `meta.json` naming `npp`, `npme`, `nsteps`,
+`natoms` — or any oracle an application actually has — is rejected wholesale
+with "unknown workload key(s)". Found independently by GROMACS and LAMMPS; both
+shipped an in-case runner instead, and GROMACS's `asserts.sh` takes the column
+list from meta.json, which is where the fix belongs.
+
+Only matters if an app study is ever promoted to a gate. It is written down
+because that decision is now live and the reason would otherwise be rediscovered.
+
+
+17. ucx_tag_send carries no memory type
+----------------------------------------
+On the HPC-X stack the UCX layer is often the ONLY layer that saw the traffic
+(items 14, and the door sweep). It records no memory type, so it cannot say
+whether a send came from host or device memory — which is exactly the question
+GROMACS's direct-GPU-comm arms differ on, and the reason that study had to reach
+its central negative by inference from registration counts rather than measure
+it. `core::device_of()` already exists and the ibverbs provider already applies
+it. Related to PLAN-20260817-0634: the same call's four meanings of
+kUnknownDevice are what make the inference awkward.
