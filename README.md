@@ -19,6 +19,7 @@ The claim a tool makes is what it found, not what it can in principle see.
 
 ```
 libpcomm/        L0–L2 core — vendor-free (no cuda*/hip*/ibv_*/Sanitizer_* types allowed)
+                 checked by tools/check_vendor_free.py (ctest `vendor_free`)
   include/pcomm/
     core/        record model (Event/Entity/Artifact/Edge), time, ids, neutral vocabulary
     rec/         Recorder, ThreadLocalBuffer, InternTable, sinks (the hot path)
@@ -36,6 +37,16 @@ pcomm-ui/        the serving half — `pcomm ui`, linked in when built with Duck
 ui/              the Svelte frontend, built to ui/dist and embedded in the binary
 tests/           core unit/smoke tests (no GPU required)
 ```
+
+The vendor-free rule bans **types and headers**, not names. Core may *name* a
+vendor symbol, because interposition and `dlsym` work by name and need no
+header: `core/mem_attr.hpp` declares libcuda's signature itself rather than
+including `cuda.h`, `core/dmabuf_registry.hpp` copies `CUresult`'s ABI under the
+name `CuResult`, and `src/engine.cpp` defines five `extern "C"` doors whose
+signatures are `void*` and `size_t` throughout. The property being protected is
+that core compiles and runs on a host with no CUDA and no verbs — which is
+MN5's own core partition. `tools/check_vendor_free.py` enforces exactly that,
+and carries the allowlist of symbols core interposes on purpose.
 
 ## Usage
 

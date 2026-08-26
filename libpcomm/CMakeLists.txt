@@ -178,6 +178,18 @@ if(PCOMM_BUILD_TESTS AND Python3_Interpreter_FOUND)
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_figures.py)
 endif()
 
+# The layer rule, checked instead of merely stated. README says libpcomm is
+# vendor-free; nothing enforced it, and core/mem_attr.hpp already depends on the
+# CUDA driver ABI numerically. This checks the mechanical half — no vendor
+# headers, no vendor types, and no vendor symbol outside the short allowlist the
+# script carries. It strips comments and string literals first, because naming
+# ibv_create_qp in a comment or dlsym'ing "cuPointerGetAttribute" by name is how
+# core stays vendor-free rather than how it stops being so.
+if(PCOMM_BUILD_TESTS AND Python3_Interpreter_FOUND)
+  add_test(NAME vendor_free
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_vendor_free.py)
+endif()
+
 # Generated-header drift: pcomm_generated.h must be what flatc makes of
 # pcomm.fbs today. A test, not a build step — it needs flatc, which MN5 does not
 # have, and the whole reason the header is committed is that the build must work

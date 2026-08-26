@@ -33,7 +33,7 @@ are already wrong, and the one prospective producer.
 2. Inlining a relation asserts 1:1 and time-invariant. Managed memory is neither
 -------------------------------------------------------------------------------
 `mem_object.device` is one DeviceId set at allocation. cuMemAllocManaged funnels
-into the same handle_alloc as cuMemAlloc (nvbit_backend.cu:1186), so a managed
+into the same handle_alloc as cuMemAlloc (nvbit_backend.cu:1203), so a managed
 allocation gets a single residency recorded once — and managed memory migrates
 by definition. The field can only ever hold a point-in-time claim and there is
 nowhere to put the migration.
@@ -41,9 +41,38 @@ nowhere to put the migration.
 ResidesOn + a Temporal is exactly the shape that fits. This is the strongest
 argument that Edge should stay rather than be retired.
 
-Check first whether any case actually uses managed memory for a buffer we
-attribute; if none does, this is latent rather than live, and the cost of being
-wrong is a device column that silently means "where it started".
+MEASURED 2026-08-26, and the answer is "latent, but not safely latent".
+
+  - No first-party workload allocates managed memory. Grep over every source in
+    tests/hpc/ and bench/ for cudaMallocManaged / cuMemAllocManaged /
+    cudaMemAdvise / cudaMemPrefetchAsync: zero hits.
+  - The libraries can. MN5 login-node ELF sweep of the 26.5 stack: libnccl
+    .so.2.29.3 and libnvshmem_host.so.3.6.5 each carry `cuMemAllocManaged` and
+    `cudaMallocManaged` as runtime-resolved STRINGS with no undefined symbol —
+    i.e. reached through cuGetProcAddress, the door dmabuf_registry.hpp already
+    hooks. libucp carries neither. So the door is open in exactly the two
+    libraries our corpus runs, and closed in the third.
+  - `handle_alloc` records `cudaGetDevice()` — the CURRENT device, not where the
+    memory lives. For a managed allocation that is not merely a point-in-time
+    claim, it is a claim about the wrong thing entirely.
+  - pcomm itself allocates managed memory: `cudaMallocManaged(&state->
+    channel_dev, ...)` in nvbit_at_ctx_init (nvbit_backend.cu:1292). It is not
+    self-recorded, but only because NVBit suppresses callbacks for calls made
+    from inside a callback — the same unwritten property handle_alloc's own
+    cudaGetDevice relies on (the comment at :417 says so). Nothing asserts it.
+
+So this stays latent while the corpus is what it is, and the corpus is about to
+change. QuantumESPRESSO built with the NVIDIA HPC SDK uses CUDA Fortran managed
+arrays, and LAMMPS/Kokkos has a CudaUVM backend — both are on the real-app list
+agreed 2026-08-26, and either would make this live on its first capture.
+
+WHAT IS MISSING BEFORE THAT IS A DISCRIMINATOR. Today a managed allocation and a
+device allocation are byte-identical in `mem_object`: nothing records which door
+the allocation came through, so we could not tell a live case from a latent one
+even while looking at it. That is the same shape as item 11's `pd` — a fact the
+capture carries and cannot name. Recording the door is a smaller change than
+ResidesOn and is a prerequisite for knowing whether ResidesOn is needed; it also
+wants a hash bump, so it pairs with item 7r.
 
 
 3. source_line is 1:1 pc -> line; inlined device functions are 1:N
@@ -177,17 +206,38 @@ Point it at the most-consumed ones. Probably the highest value-per-hour item in
 this file.
 
 
-10. The vendor-free rule on libpcomm is a convention, not a check
------------------------------------------------------------------
-README states it absolutely: no cuda*/hip*/ibv_*/Sanitizer_* types in libpcomm.
-Nothing in the build enforces it, and core/mem_attr.hpp already dlopens
-libcuda.so.1 and hardcodes kAttrDeviceOrdinal = 9.
+10. DONE (2026-08-26): the vendor-free rule is checked, and it is narrower
+--------------------------------------------------------------------------
+`tools/check_vendor_free.py`, ctest `vendor_free`. libpcomm was already clean;
+what the check did was force the rule to be stated precisely enough to run.
 
-The letter holds — no vendor TYPES, RTLD_NOLOAD so it never loads CUDA into a
-process that declined it, and the reasoning in that file is sound. But core now
-depends on a vendor ABI numerically, and its own comment records that a wrong
-constant already caused a silent bug. A grep-level check in the build would keep
-the rule true by construction rather than by discipline.
+IT CANNOT BE A GREP. Vendor names are on nearly every page of libpcomm — in
+COMMENTS, which is where this codebase keeps its reasoning, and in dlsym string
+literals, which is HOW core stays vendor-free. A check over raw text flags all
+of those, and a check nobody can keep green gets deleted. So it strips comments
+and string literals first and judges what is left.
+
+THE RULE IS TYPES AND HEADERS, NOT NAMES. Core may name a vendor symbol, because
+interposition and dlsym work by name and need no header: engine.cpp defines five
+`extern "C"` doors — nvshmem_malloc/calloc/align/free and ibv_destroy_qp — whose
+signatures are `void*` and `size_t` throughout, and engine_abi.h already records
+why the QP close door can belong to neither provider. Those are allowlisted BY
+NAME in the script, so a sixth door drifting into core has to be written down;
+that is the layering violation worth catching, and it was invisible before.
+
+The two files nearest the line pass, and how is the rule in miniature:
+mem_attr.hpp declares libcuda's signature itself instead of including cuda.h,
+dmabuf_registry.hpp copies CUresult's ABI under the name `CuResult`. Twelve
+mutations were used to check each rule can fail and each exemption can not;
+removing one allowlist entry turns engine.cpp red, so the list is load-bearing.
+
+WHAT IT STILL CANNOT CHECK, and this half of the original finding stands:
+core/mem_attr.hpp hardcodes kAttrDeviceOrdinal = 9 — a vendor ABI constant with
+no vendor type in sight. Its own comment records that a wrong constant (4,
+CU_POINTER_ATTRIBUTE_HOST_POINTER) survived a provider's entire lifetime because
+every failure mode of device_of looks like kUnknownDevice. No regex can check a
+magic number against a header it is forbidden to include. That is the same
+ambiguity PLAN-20260817-0634 is about, and it is where the residue lives.
 
 
 11. Known and already written down, listed so they are not re-derived
