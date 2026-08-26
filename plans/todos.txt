@@ -66,6 +66,34 @@ change. QuantumESPRESSO built with the NVIDIA HPC SDK uses CUDA Fortran managed
 arrays, and LAMMPS/Kokkos has a CudaUVM backend — both are on the real-app list
 agreed 2026-08-26, and either would make this live on its first capture.
 
+LAMMPS ANSWERED, AND THE ANSWER IS NO (2026-08-27, tests/hpc/apps/02_lammps).
+MN5's LAMMPS/KOKKOS does not allocate managed memory. Kokkos 4.6.02 gives
+`Cuda::memory_space = CudaUVMSpace` only under KOKKOS_ENABLE_CUDA_UVM, which
+kokkos_arch.cmake now deprecates and FATAL_ERRORs unless the deprecated-code
+flag is also set; LAMMPS's `"  using unified memory"` log line is absent from
+the binary while its siblings from the same block are present; `nm -D` gives
+LAMMPS_NS x CudaUVMSpace = 0 against CudaSpace = 595, in all four KOKKOS-CUDA
+modules on the machine; and an LD_PRELOAD counter over 8 ranks on 2 nodes
+measured cudaMallocManaged = 0, cuMemAllocManaged = 0 against cudaMalloc =
+228-240. QE is now the only remaining candidate of the two.
+
+AND IT CORRECTED THE METHOD THIS ENTRY USED. `nm -D --undefined-only` reports
+`cudaMallocManaged@libcudart.so.12` in EVERY Kokkos/CUDA binary on the machine,
+including the ones with zero UVM Views, because Kokkos compiles
+CudaUVMSpace::impl_allocate unconditionally. An ELF sweep proves the symbol is
+REACHABLE and nothing more — which is all the libnccl/libnvshmem result above
+ever claimed, but the distinction is one step from being read as "these
+libraries allocate managed memory", and they may well not. The decisive
+instrument is the LD_PRELOAD counter, it costs no queue slot, and it has not
+been pointed at NCCL or NVSHMEM yet. Do that before treating either as live.
+
+The first workload in this project's corpus that certainly DOES allocate
+managed memory is llm.c: `cudaMallocManaged(&result.unified_buffer,
+sizeof(float))` (zero.cuh:455), used directly as an NCCL reduction target and
+host-read on every barrier. Four bytes, migrating, touched from both sides —
+the smallest possible test of what mem_object.device claims. It needs a
+`-p gpumem` pass, which tests/hpc/apps/04_llmc deliberately did not take.
+
 WHAT IS MISSING BEFORE THAT IS A DISCRIMINATOR. Today a managed allocation and a
 device allocation are byte-identical in `mem_object`: nothing records which door
 the allocation came through, so we could not tell a live case from a latent one
