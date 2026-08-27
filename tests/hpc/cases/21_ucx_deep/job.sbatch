@@ -122,7 +122,13 @@ run_arm() {   # <out-dir> <extra -x flags...>
 # messages and `remote_addr` — the object-heatmap key the whole HPC-X class has
 # never had — is never written by anything.
 
-PRIMARY="$(pcomm_out ucx_deep_tm_on)"
+# THE PRIMARY ARM IS NAMED FOR THE CASE, not for the arm, and that is a harness
+# requirement rather than a preference: run_on_mn5.sh aggregates the board by
+# looking for `<case-without-its-NN_-prefix>-<jobid>.csv`. Naming this one
+# `ucx_deep_tm_on` cost a full queue slot — job 45114566 ran correctly, passed
+# every assertion it had, and came back as `21_ucx_deep ---- no result` because
+# the aggregator was looking for a directory nobody had written.
+PRIMARY="$(pcomm_out ucx_deep)"
 run_arm "$PRIMARY" "${UCX_ARM_ENV[@]}"
 
 # The contrast arm: same thresholds, tag offload OFF. Everything else identical,
