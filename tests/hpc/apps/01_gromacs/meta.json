@@ -23,6 +23,19 @@
     "real_bytes": 4,
     "gpudirect": 1
   },
+  "workload_params": [
+    "dd_x",
+    "dd_y",
+    "dd_z",
+    "env",
+    "natoms",
+    "npme",
+    "npp",
+    "nsteps",
+    "nstlist",
+    "real_bytes",
+    "rvec_bytes"
+  ],
   "variants": {
     "direct_on": {
       "gpudirect": 1,

@@ -178,9 +178,57 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # NCCL internal choice changes how many times the application called
 # ncclAllReduce.
 PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding gpudirect rx_depth colls_per_iter p2p_per_iter groups_per_iter"
+
+# ...AND A CASE MAY ADD ITS OWN, by naming them in meta.json:
+#
+#   "workload":        { "ranks": 8, "npool": 2, "fft_dense_nr3": 288 },
+#   "workload_params": ["npool", "fft_dense_nr3"]
+#
+# The list above is the SHARED vocabulary - names meaning the same thing in
+# every case, so an assertion in suite/asserts/ can rely on them. It was also
+# closed, which made this suite unable to run a real application at all:
+# GROMACS needs npp/npme/dd_x, Quantum ESPRESSO needs npool and
+# fft_dense_sticks_total, and every one of those was rejected wholesale with
+# "unknown workload key(s)". Found independently by two of the four studies in
+# tests/hpc/apps/, both of which had to ship a private runner instead.
+#
+# DECLARING THEM IS THE POINT, rather than simply accepting every key. The
+# closed list was never arbitrary: an unrecognised key is almost always a typo,
+# and a typo'd `msg_byte` would create a silent NULL column while the assertion
+# reading `msg_bytes` compares against nothing and passes. Requiring the case to
+# write the name twice keeps that catch - a name in "workload" and in neither
+# list is still an error - while letting an application state an oracle this
+# suite has never heard of. Same bargain as the allowlist in
+# tools/check_vendor_free.py: the value is not the ban, it is that the
+# exception has to be deliberate.
+#
+# Case-specific names are NOT available to suite/asserts/. Those run everywhere
+# and may use only the shared list; a cross-cutting assertion reaching for
+# `npool` would be a case assertion in the wrong directory.
+case_cols="$(python3 - "$meta" 2>&1 <<'EXTRA_PY'
+import json, re, sys
+extra = json.load(open(sys.argv[1])).get("workload_params", [])
+if not isinstance(extra, list):
+    sys.exit("workload_params must be a list of names")
+for name in extra:
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        sys.exit("workload_params name %r must match [a-z][a-z0-9_]*" % (name,))
+print(" ".join(extra))
+EXTRA_PY
+)" || { echo "$case_name: bad workload_params in meta.json: $case_cols" >&2; exit 2; }
+# Belt as well as braces, for the reason the identical guard below records: this
+# shape has already lost its non-zero status once in this file. Checked by VALUE
+# as well, and the value is easy to check because a valid answer is only names
+# and spaces -- an error message is not. Without this, a rejected
+# workload_params would print its complaint and then be spliced into PARAM_COLS
+# as if it were a column list.
+case "$case_cols" in
+  *[!a-z0-9_\ ]*) echo "$case_name: bad workload_params in meta.json: $case_cols" >&2; exit 2 ;;
+esac
+PARAM_COLS="$PARAM_COLS $case_cols"
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
-params_sql="$(meta_py <<'PY'
+params_sql="$(meta_py 2>&1 <<'PY'
 import json, sys
 meta, cols = sys.argv[1], sys.argv[2].split()
 w = json.load(open(meta)).get("workload", {})
@@ -191,11 +239,21 @@ print("CREATE TABLE params (%s);" % ", ".join("%s INTEGER" % c for c in cols))
 vals = ["NULL" if w.get(c) is None else str(int(w[c])) for c in cols]
 print("INSERT INTO params VALUES (%s);" % ", ".join(vals))
 PY
-2>&1)" || { echo "$case_name: bad workload block in meta.json: $params_sql" >&2; exit 2; }
+)" || { echo "$case_name: bad workload block in meta.json: $params_sql" >&2; exit 2; }
 # Belt as well as braces. The guard above returns non-zero and its message was
 # still lost once: every assertion then reported "no such table: params", which
 # names the symptom rather than the cause and reads as five broken assertions
 # instead of one unrecognised key. Check the value itself.
+#
+# DIAGNOSED 2026-08-27, having been worked around here since it was written. The
+# `2>&1` used to sit on its own line AFTER the heredoc terminator, where it is
+# not a redirection on python at all: the command line ended at the newline
+# following `<<'PY'`, so a later `2>&1` parses as a separate null command inside
+# the substitution. It succeeded, so the substitution's status was ITS status —
+# always 0 — and `||` could never fire, while python's message went to the
+# script's own stderr instead of into the variable. Moving the redirection onto
+# the command line fixes it. This value check stays: it is now a real second
+# line of defence rather than the only one.
 case "$params_sql" in
   "CREATE TABLE params"*) ;;
   *) echo "$case_name: bad workload block in meta.json: $params_sql" >&2; exit 2 ;;

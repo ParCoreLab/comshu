@@ -7,7 +7,7 @@
     "ucx"
   ],
   "topology": "2 nodes x 4 H100, 8 MPI ranks, 1 GPU per rank, OpenMPI 4.1.5 over UCX 1.20.0 over NDR InfiniBand",
-  "why": "A third-party MD code whose halo-exchange pattern follows from its own source: the processor grid is fixed on the command line, CommBrick exchanges with its face neighbours and with nobody else, and `-pk kokkos gpu/aware on|off` provably does not change WHICH messages are sent — only which memory they are sent from. That makes both the topology and the knob's null effect derivable before the capture exists.",
+  "why": "A third-party MD code whose halo-exchange pattern follows from its own source: the processor grid is fixed on the command line, CommBrick exchanges with its face neighbours and with nobody else, and `-pk kokkos gpu/aware on|off` provably does not change WHICH messages are sent \u2014 only which memory they are sent from. That makes both the topology and the knob's null effect derivable before the capture exists.",
   "workload": {
     "ranks": 8,
     "nodes": 2,
@@ -27,7 +27,23 @@
     "forward_doubles_per_atom": 3,
     "uses_managed_memory": 0
   },
-  "workload_note": "Every number above is an INPUT, not a reading. `ranks/nodes/tasks_per_node` are the sbatch and mpirun lines; `procgrid_*` is the `processors 2 2 2` line in in.lj; `steps/atoms/lattice_cells/reneighbour_every` are in.lj. The three derived ones: (1) halo_peers_per_rank = 3, because src/comm_brick.cpp:351 sets nswap = 2*(maxneed[0]+maxneed[1]+maxneed[2]) and for this box maxneed[d] = int(cutghost[d]*procgrid[d]/prd[d])+1 = int(2.8*2/67.19)+1 = 1 in every dimension, so six swaps, and with procgrid[d]=2 the left and right neighbour in a dimension are the SAME rank -> three distinct peers; (2) internode_peers_per_rank = 1, because src/procmap.cpp ProcMap::cart_map calls MPI_Cart_create with reorder=0, so rank = 4*cx + 2*cy + cz, and `--map-by ppr:4:node` puts ranks 0-3 on one node and 4-7 on the other, making cx the node index and the x-neighbour the only off-node face neighbour; (3) uses_managed_memory = 0, established from the build and the binary before any capture existed — see REPORT.md section A. halo_min_bytes = 4096 separates the halo (~64 kB/message: 32000 atoms/rank, ghost slab 2.8/33.6 of the subdomain, 24 B/ghost atom) from LAMMPS's thermo Allreduces (8-64 B), and names no identifier the run produced.",
+  "workload_params": [
+    "atoms",
+    "double_bytes",
+    "forward_doubles_per_atom",
+    "halo_min_bytes",
+    "halo_peers_per_rank",
+    "internode_peers_per_rank",
+    "lattice_cells",
+    "procgrid_x",
+    "procgrid_y",
+    "procgrid_z",
+    "reneighbour_every",
+    "steps",
+    "tasks_per_node",
+    "uses_managed_memory"
+  ],
+  "workload_note": "Every number above is an INPUT, not a reading. `ranks/nodes/tasks_per_node` are the sbatch and mpirun lines; `procgrid_*` is the `processors 2 2 2` line in in.lj; `steps/atoms/lattice_cells/reneighbour_every` are in.lj. The three derived ones: (1) halo_peers_per_rank = 3, because src/comm_brick.cpp:351 sets nswap = 2*(maxneed[0]+maxneed[1]+maxneed[2]) and for this box maxneed[d] = int(cutghost[d]*procgrid[d]/prd[d])+1 = int(2.8*2/67.19)+1 = 1 in every dimension, so six swaps, and with procgrid[d]=2 the left and right neighbour in a dimension are the SAME rank -> three distinct peers; (2) internode_peers_per_rank = 1, because src/procmap.cpp ProcMap::cart_map calls MPI_Cart_create with reorder=0, so rank = 4*cx + 2*cy + cz, and `--map-by ppr:4:node` puts ranks 0-3 on one node and 4-7 on the other, making cx the node index and the x-neighbour the only off-node face neighbour; (3) uses_managed_memory = 0, established from the build and the binary before any capture existed \u2014 see REPORT.md section A. halo_min_bytes = 4096 separates the halo (~64 kB/message: 32000 atoms/rank, ghost slab 2.8/33.6 of the subdomain, 24 B/ghost atom) from LAMMPS's thermo Allreduces (8-64 B), and names no identifier the run produced.",
   "expect_tables": [
     "ucx_context",
     "ucx_worker",
@@ -38,7 +54,7 @@
     "ib_mem_region",
     "mem_object"
   ],
-  "not_covered": "ib_post_send and ib_poll_cq are expected EMPTY and are deliberately not in expect_tables. UCX's mlx5 transports build their send WQEs and ring the doorbell themselves, so ibv_post_send is not on the path; this is the same measurement PLAN-20260815-1540 Stage 3 recorded for job 44635003, reproduced here by a third-party application rather than by a microbenchmark. The consequence is that `comm_edges` — built in pcomm-read/link_sql.hpp:1112 from ib_post_send / mlx5_device_send / gpu_access only — is EMPTY for this workload, and the rank matrix has to be assembled from the UCX records by hand. gpumem/p2p is not run: NVBit costs ~8 min of module processing and this case is about the network layer.",
+  "not_covered": "ib_post_send and ib_poll_cq are expected EMPTY and are deliberately not in expect_tables. UCX's mlx5 transports build their send WQEs and ring the doorbell themselves, so ibv_post_send is not on the path; this is the same measurement PLAN-20260815-1540 Stage 3 recorded for job 44635003, reproduced here by a third-party application rather than by a microbenchmark. The consequence is that `comm_edges` \u2014 built in pcomm-read/link_sql.hpp:1112 from ib_post_send / mlx5_device_send / gpu_access only \u2014 is EMPTY for this workload, and the rank matrix has to be assembled from the UCX records by hand. gpumem/p2p is not run: NVBit costs ~8 min of module processing and this case is about the network layer.",
   "cost_note": "Four captured runs plus two bare runs in one allocation. LAMMPS itself is seconds; the allocation is sized by the export and the SQL, not the science.",
   "expect_fail_asserts": {
     "peer_rank_resolvable": "pcomm hooks ucp_worker_get_address (providers/ucx/ucx_hooks.hpp:181) and not ucp_worker_query. OpenMPI 4.1.5's mca_pml_ucx -- the two-sided path every LAMMPS halo message takes -- obtains its worker address through ucp_worker_query with UCP_WORKER_ATTR_FIELD_ADDRESS (ompi/mca/pml/ucx/pml_ucx.c:95-99) and does not import ucp_worker_get_address at all; only mca_osc_ucx does. So the one ucx_worker_address row per rank belongs to the ONE-SIDED worker, which carries no application traffic, and the PML endpoints' remote_prefix_hash matches nothing. Measured on the login-node shakeout: rank 0's 81-send / 3.13 MB endpoint has remote_prefix_hash 16991725616488086498, present in no ucx_worker_address row in the capture. See REPORT.md finding 2.",
