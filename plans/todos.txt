@@ -594,13 +594,17 @@ interfaces and four endpoints never collide and nothing over `self` ever fails;
 that is what moved the lookup tables and the length rules into their own header
 with tests/ucx_deep_tables.cpp over them. Details in PLAN-20260827-1449.
 
-WHAT IT DOES NOT CLOSE. Nothing has run on real hardware, so rc_mlx5, HW tag
-matching, zcopy and rendezvous are all unexercised -- the entire reason the
-provider exists is untested on the machine it exists for. link_sql.hpp still has
-no ucx_deep lane, so comm_edges still cannot say which transport carried an
-edge, which is the most valuable thing these records add. And nothing joins a
-ucx_tag_send to the uct_send rows it became: PLAN-20260815-1540's Stage 3 scope
-is now buildable for the first time, because its lower half exists.
+WHAT IT DID NOT CLOSE -- RESOLVED 2026-08-27, jobs 45113099 and 45115011.
+rc_mlx5, HW tag matching, zcopy and rendezvous are all exercised on MN5 by case
+21_ucx_deep, which pins the UCX thresholds and sweeps four sizes across them
+(the earlier all-active-messages result was the DEFAULTS, not the provider).
+uct_send.tag decodes to the workload's own MPI tags. The derived layer reads the
+transport through `transport_mix`, which needed `intern_text` -- the dictionary
+had never reached DuckDB, so every interned column below the reader was an
+opaque integer. Deliberately NOT a comm_edges lane; PLAN-20260827-1449 says why
+at length. STILL OPEN: nothing joins a ucx_tag_send to the uct_send rows it
+became -- PLAN-20260815-1540's Stage 3 -- and the short/bcopy RMA doors are
+unwitnessed because this workload's one-sided traffic is 1 MB, always zero-copy.
 
 AND ONE THING WORTH SOMEONE ELSE'S ATTENTION: rec().intern() is a call across
 the engine's C ABI into a table behind a per-domain mutex, measured at 86 ns
