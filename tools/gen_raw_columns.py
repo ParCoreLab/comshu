@@ -71,6 +71,23 @@ def flatten(fields, structs, prefix, expr):
     for name, ctype in fields:
         col = f"{prefix}{name}"
         acc = f"{expr}.{name}"
+        # A provider's records live outside `pcomm::core`, so they must spell the
+        # shared vocabulary qualified: `core::DeviceId` where core's own records
+        # write `DeviceId`. Same word, same type, same column — the namespace is
+        # a property of where the struct is declared, not of the vocabulary.
+        #
+        # Stripping the prefix is NOT the transitive alias resolution the SCALARS
+        # comment refuses. That refusal is about `DeviceId -> std::uint16_t`,
+        # where following the alias would let a change to it pass unnoticed here.
+        # This follows nothing: `core::DeviceId` and `DeviceId` are the same
+        # entry, and adding a genuinely new alias still has to be spelled out.
+        #
+        # It refuses instead of guessing when it cannot map a type, which is what
+        # caught this: providers/ucx gained a `core::DeviceId` field and the
+        # generator exited 1 and wrote NOTHING, rather than dropping the column
+        # from every DuckDB consumer while --csv kept exporting it. That is the
+        # nccl_comm failure below, arriving from the other direction.
+        ctype = ctype[6:] if ctype.startswith("core::") else ctype
         if ctype in SCALARS:
             ddb, suffix, _ = SCALARS[ctype]
             out.append((col, ddb, suffix, acc))

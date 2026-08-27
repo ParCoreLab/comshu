@@ -150,6 +150,11 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 CSV
 
 # status_class: 0 Immediate, 1 Error, 2 Request. door is not read by this lane.
+# `device` is kUnknownDevice (65535) throughout: this lane does not read it, but
+# these CSVs are bound to the RAW column contract, so a record gaining a field
+# means every fixture row for it gains a column. A stale fixture does not error
+# — the import just produces no rows, and every assertion below reads back a
+# column header instead of a value.
 #
 # EVERY ROW IS A CLAIM ABOUT THE PREDICATES.
 #   rank 0 ep 200  two sends, 100 + 200 units          -> 0>1, 2 sends, 300
@@ -159,19 +164,19 @@ CSV
 #
 # The error row is 9999 units so that counting it is loud rather than subtle.
 cat > "$WORK/ucx_tag_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,count,tag,status,status_class,door
-0,2,0,1000,0,1010,0,200,1,0,100,44,0,0,0
-0,2,0,1020,0,1030,0,200,1,0,200,44,0,2,0
-0,2,0,1040,0,1050,0,200,1,0,9999,44,-3,1,0
-1,2,0,1060,0,1070,0,201,1,0,50,44,0,0,0
-0,2,0,1080,0,1090,0,202,1,0,7,44,0,0,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,count,tag,status,status_class,door,device
+0,2,0,1000,0,1010,0,200,1,0,100,44,0,0,0,65535
+0,2,0,1020,0,1030,0,200,1,0,200,44,0,2,0,65535
+0,2,0,1040,0,1050,0,200,1,0,9999,44,-3,1,0,65535
+1,2,0,1060,0,1070,0,201,1,0,50,44,0,0,0,65535
+0,2,0,1080,0,1090,0,202,1,0,7,44,0,0,0,65535
 CSV
 
 # An active message adds to the same edge: payload only, since UcxAmSend keeps
 # header_length separate on purpose and a header is control traffic.
 cat > "$WORK/ucx_am_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,am_id,count,header_length,status,status_class
-0,2,0,1100,0,1110,0,200,1,0,7,25,999,0,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,am_id,count,header_length,status,status_class,device
+0,2,0,1100,0,1110,0,200,1,0,7,25,999,0,0,65535
 CSV
 
 # op: 0 Put, 1 Get.
@@ -180,9 +185,9 @@ CSV
 #                            rank 0, so the edge is 0>2 and not 2>0
 # A lane that ignores op counts the get as outbound and reverses that edge.
 cat > "$WORK/ucx_rma.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,rkey,count,remote_addr,status,status_class,op,door
-1,2,0,1200,0,1210,0,201,1,0,9,30,4096,0,0,0,0
-2,2,0,1300,0,1310,0,203,1,0,9,80,4096,0,0,1,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,rkey,count,remote_addr,status,status_class,op,door,device
+1,2,0,1200,0,1210,0,201,1,0,9,30,4096,0,0,0,0,65535
+2,2,0,1300,0,1310,0,203,1,0,9,80,4096,0,0,1,0,65535
 CSV
 
 # op: 0 = Load, 1 = Store, 2 = Atomic, 3 = Prefetch. space 0 = Global.
