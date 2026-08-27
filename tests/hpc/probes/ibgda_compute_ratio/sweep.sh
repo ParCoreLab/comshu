@@ -22,7 +22,10 @@
 # whichever configuration got the quietest slot.
 set -u
 ROOT="${PCOMM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
-PCOMM="${PCOMM:-$ROOT/build/pcomm/pcomm}"
+# shellcheck source=/dev/null
+. "$ROOT/tests/hpc/suite/common.sh"
+pcomm_load_runtime
+MPIRUN="${PCOMM_MPIRUN:-mpirun}"
 APP="${PCOMM_IBGDA_APP:-$HOME/stencil_putget}"
 OUT="${PCOMM_OUT_ROOT:-/tmp/pcomm-ratio-$$}"
 ELEMS="${PCOMM_ELEMS:-1024}"
@@ -34,11 +37,23 @@ STEPS="${PCOMM_STEPS:-0 200 2000 20000}"
 
 mkdir -p "$OUT"
 
-# IBGDA on, and the same env every configuration sees -- a difference in the
+# GPU-INITIATED IB, and this is copied from 12_ibgda_doorbell/job.sbatch rather
+# than reinvented. All five matter: without REMOTE_TRANSPORT=ibgda and
+# NIC_HANDLER=gpu the sends go through the host proxy, no doorbell is ever rung
+# from the device, and the hijack would measure as free because it never
+# engaged. The same env goes to every configuration -- a difference in the
 # transport between columns would make the whole table meaningless.
+export NVSHMEM_BOOTSTRAP=MPI
+export NVSHMEM_DISABLE_P2P=1
+export NVSHMEM_REMOTE_TRANSPORT=ibgda
 export NVSHMEM_IB_ENABLE_IBGDA=1
-export NVSHMEM_DISABLE_P2P=1          # force the NIC path on a single node
-export NVSHMEM_HCA_LIST="${NVSHMEM_HCA_LIST:-mlx5_0:1}"
+export NVSHMEM_IBGDA_NIC_HANDLER=gpu
+export NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE=gpumem
+
+NV_ENV="-x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT
+        -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER
+        -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE
+        -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH"
 
 # Wall clock of one run, in ms, from the application's OWN cuda events -- not
 # from `time`. Process startup, NVSHMEM bootstrap and the provider's own
@@ -47,10 +62,11 @@ export NVSHMEM_HCA_LIST="${NVSHMEM_HCA_LIST:-mlx5_0:1}"
 run_once() {   # <mode> <steps> -> ms on stdout, or empty on failure
   local mode="$1" steps="$2" line=""
   case "$mode" in
-    bare)    line=$(mpirun -np 2 --allow-run-as-root "$APP" "$ELEMS" "$ITERS" "$steps" 2>/dev/null) ;;
-    passive) line=$(mpirun -np 2 --allow-run-as-root "$PCOMM" run -p mlx5dv \
+    bare)    line=$(timeout 300 $MPIRUN -np 2 $NV_ENV \
+                      "$APP" "$ELEMS" "$ITERS" "$steps" 2>/dev/null) ;;
+    passive) line=$(timeout 300 $MPIRUN -np 2 $NV_ENV "$PCOMM" run -p mlx5dv \
                       -o "$OUT/passive" -- "$APP" "$ELEMS" "$ITERS" "$steps" 2>/dev/null) ;;
-    hijack)  line=$(mpirun -np 2 --allow-run-as-root "$PCOMM" run -p mlx5dv \
+    hijack)  line=$(timeout 300 $MPIRUN -np 2 $NV_ENV "$PCOMM" run -p mlx5dv \
                       --enable-doorbell-hijack \
                       -o "$OUT/hijack" -- "$APP" "$ELEMS" "$ITERS" "$steps" 2>/dev/null) ;;
   esac
