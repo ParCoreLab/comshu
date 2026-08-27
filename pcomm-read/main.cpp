@@ -1082,9 +1082,8 @@ template<> struct Table<udr::UctIface> {
     static void row(std::FILE* f, const Stamped<udr::UctIface>& s,
                     const rec::InternDictionary& dict) {
         std::fprintf(f, "%llu,%u,%u,%u,%s,%s,0x%llx,%s,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.iface, s.payload.worker, s.payload.md,
-                     dict.str(s.payload.tl_name), dict.str(s.payload.dev_name),
-                     (unsigned long long)s.payload.open_mode,
+                     s.payload.iface, s.payload.worker, s.payload.md, dict.str(s.payload.tl_name),
+                     dict.str(s.payload.dev_name), (unsigned long long)s.payload.open_mode,
                      uct_instrumented_name(s.payload.instrumented), s.payload.patched_ops);
     }
 };
@@ -1341,8 +1340,8 @@ using TableRecords =
                ucr::UcxEndpoint, ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend,
                ucr::UcxMemMap, ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic,
                ucr::UcxWorkerAddress, ucr::UcxEpConnection, udr::UctBinding, udr::UctIface,
-               udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective,
-               ncr::NcclP2p, ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm>;
+               udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective, ncr::NcclP2p,
+               ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.
@@ -1957,6 +1956,12 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     // part that is actually about Parquet: writing each loaded table out.
     auto st = capture::load_raw_tables(con, ranks);
 
+    // The dictionary rides along as a table. `--csv` resolves handles inline in
+    // its printers; Parquet deliberately does not decode, which left the
+    // derived layer able to group by an interned column but not to NAME one —
+    // "uct_iface grouped by tl_name = 4123" is not an answer about a transport.
+    const std::size_t intern_rows = capture::load_intern_text(con, ranks);
+
     std::size_t tables = 0, rows_total = st.rows, failed = st.failed;
     for_each_type<raw::RawRecords>([&]<typename R>() {
         using Raw = raw::RawTable<R>;
@@ -1979,6 +1984,19 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
         else
             failed++;
     });
+
+    if (intern_rows) {
+        const auto out = (outdir / (std::string(duck::kInternTextTable) + ".parquet")).string();
+        if (duck_exec(con,
+                      "COPY \"" + std::string(duck::kInternTextTable) + "\" TO '" + out +
+                          "' (FORMAT PARQUET)",
+                      duck::kInternTextTable)) {
+            tables++;
+            rows_total += intern_rows;
+        } else {
+            failed++;
+        }
+    }
 
     duckdb_disconnect(&con);
     duckdb_close(&db);

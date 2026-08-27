@@ -128,6 +128,14 @@ add_test(NAME comm_edges_rule
 add_test(NAME object_access_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_access_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# Transport attribution — the two joins the derived layer gained on 2026-08-27,
+# an intern handle to its string and a uct_send to its interface. It also covers
+# the op families NO HARDWARE CAPTURE HAS PRODUCED: MN5 job 45113099 recorded
+# 295 UCT operations and every one was an active message, so the get / rendezvous
+# split is asserted here or nowhere.
+add_test(NAME transport_mix_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/transport_mix_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # ucx_deep's hot-path lookup tables, driven directly.
 #
 # UNCONDITIONAL, unlike everything else UCX in this file, and deliberately so:

@@ -470,6 +470,129 @@ FROM (
 GROUP BY rank, endpoint, inbound
 )sql"},
 
+    // --- naming what was interned ------------------------------------------
+    //
+    // (rank, domain, handle) -> the string, WITH the evidence that it is one
+    // string. Same shape and same reason as _ucx_rank_of_prefix above: the join
+    // reports its own ambiguity instead of resolving it silently.
+    //
+    // Ambiguity is possible here and is not hypothetical. A REPLAYED capture
+    // nests one rank-* directory per pass (out/ib/rank-0, out/gpumem/rank-0);
+    // both load as rank 0 with independent dictionaries, and handles restart at
+    // 1 in every domain of every rank. So handle 3 can be "rc_mlx5" in one pass
+    // and a kernel name in the other, and a consumer that took min(text) would
+    // get a confident wrong name on exactly the captures that are hardest to
+    // check by eye.
+    //
+    // `texts = 1` is therefore the condition every caller must apply, and the
+    // callers below do it in the SELECT rather than in the JOIN so the ROW
+    // survives with a NULL name — unresolvable traffic stays counted, which is
+    // the rule comm_edges' dst_rank = -1 follows for the same reason.
+    {"_intern_name", R"sql(
+CREATE OR REPLACE VIEW _intern_name AS
+SELECT rank, domain, handle,
+       min(text)            AS text,
+       count(DISTINCT text) AS texts
+FROM intern_text
+GROUP BY rank, domain, handle
+)sql"},
+
+    // --- the UCT layer: which transport actually carried it ------------------
+    //
+    // (rank, iface) -> the transport and device it was opened on. `domain = 2`
+    // is InternDomain::String (rec/intern_table.hpp: Pc, Pointer, String,
+    // KernelName, TypeName) — a NUMBER for the same reason `status_class <> 1`
+    // is a number: this layer mounts the RAW streams, where an enum is the
+    // integer that went on disk.
+    //
+    // An iface pointer is reusable after close, so (rank, iface) is grouped and
+    // not assumed unique, and `tl_names` reports it when one pointer carried two
+    // transports across a run.
+    {"_uct_iface_named", R"sql(
+CREATE OR REPLACE VIEW _uct_iface_named AS
+SELECT i.rank,
+       i.iface,
+       min(CASE WHEN t.texts = 1 THEN t.text END) AS tl_name,
+       min(CASE WHEN d.texts = 1 THEN d.text END) AS dev_name,
+       count(DISTINCT t.text)                     AS tl_names,
+       max(i.patched_ops)                         AS patched_ops
+FROM uct_iface i
+LEFT JOIN _intern_name t ON t.rank = i.rank AND t.domain = 2 AND t.handle = i.tl_name
+LEFT JOIN _intern_name d ON d.rank = i.rank AND d.domain = 2 AND d.handle = i.dev_name
+GROUP BY i.rank, i.iface
+)sql"},
+
+    // UCT operations per (rank, iface, op), split by WHERE THE BYTES WENT.
+    //
+    // The three sums are three different quantities and the record declaration
+    // is explicit that they must not be added:
+    //
+    //   out         Am*/Put*/TagEager*  — payload LEFT this node during the call
+    //   in          Get*                — payload was REQUESTED; it arrives later
+    //   advertised  TagRndvZcopy        — payload was OFFERED for the peer to
+    //                                     pull, and only `header` bytes went out
+    //
+    // Collapsing them into one "bytes" column would count a rendezvous
+    // advertisement as a transfer and then count the transfer again when the
+    // peer's Get* records it — the same buffer billed twice, in opposite
+    // directions. Three columns is what stops a consumer doing that by accident.
+    //
+    // `status >= 0` is the error filter: ucs_status_t is UCS_OK = 0,
+    // UCS_INPROGRESS = 1, and every error is NEGATIVE. UCS_ERR_NO_RESOURCE (-6)
+    // in particular is UCX's "retry later" and means the operation did not
+    // happen at all — counting it would inflate a busy transport's totals in
+    // proportion to how busy it was.
+    {"_uct_sends", R"sql(
+CREATE OR REPLACE VIEW _uct_sends AS
+SELECT rank, iface, op,
+       count(*)::BIGINT AS ops,
+       sum(CASE WHEN op IN (7, 8, 9, 13) THEN 0 ELSE payload END)::HUGEINT AS out_bytes,
+       sum(CASE WHEN op IN (7, 8, 9)     THEN payload ELSE 0 END)::HUGEINT AS in_bytes,
+       sum(CASE WHEN op = 13             THEN payload ELSE 0 END)::HUGEINT AS advertised_bytes,
+       sum(header)::HUGEINT AS header_bytes
+FROM uct_send
+WHERE status >= 0
+GROUP BY rank, iface, op
+)sql"},
+
+    // Every UCT operation with its transport NAMED and CLASSIFIED.
+    //
+    // A VIEW rather than part of transport_mix, because `pcomm link` COPYs each
+    // derived table's SQL straight to Parquet and never creates it as a
+    // relation — so link_health cannot say `FROM transport_mix`, and a second
+    // copy of this CASE expression is one copy and one bug the day a transport
+    // is added to one list and not the other. Views are created first and by
+    // name, which is the only place two derived tables can share a definition.
+    //
+    // `scope` is a claim about the TRANSPORT UCX CHOSE, deliberately narrower
+    // than "did it leave the node". self/sysv/posix/cma/knem/xpmem move bytes
+    // with no network stack; cuda_ipc/cuda_copy/rocm_* move them over the local
+    // bus. `tcp` counts as 'network' even though a same-node pair can use it:
+    // it went through the kernel network stack, which is a fact, where "left
+    // the node" would be a guess.
+    //
+    // Anything else — a transport not in either list, or an iface whose name did
+    // not resolve — is 'unknown', and is NEVER folded into one of the other two.
+    // A transport added to UCX after this list was written must read as unknown
+    // rather than be guessed into 'network', because the guess is the one that
+    // makes link_health's intra-node caveat silently report zero.
+    {"_uct_scoped", R"sql(
+CREATE OR REPLACE VIEW _uct_scoped AS
+SELECT s.rank,
+       f.tl_name,
+       f.dev_name,
+       CASE
+         WHEN f.tl_name IN ('self','sysv','posix','mm','cma','knem','xpmem',
+                            'cuda_ipc','cuda_copy','rocm_ipc','rocm_copy') THEN 'intra-node'
+         WHEN f.tl_name IN ('rc_verbs','rc_mlx5','dc_mlx5','ud_verbs','ud_mlx5',
+                            'ib','srd','tcp')                             THEN 'network'
+         ELSE 'unknown'
+       END AS scope,
+       s.op, s.ops, s.out_bytes, s.in_bytes, s.advertised_bytes, s.header_bytes
+FROM _uct_sends s
+LEFT JOIN _uct_iface_named f ON f.rank = s.rank AND f.iface = s.iface
+)sql"},
+
     // (rank, qp_num) -> the remote endpoint it was connected to. Only the RTR
     // transition carries it, which is why state = 2 is the filter on the verbs
     // side; the DEVX connect record exists only for that transition, so it needs
@@ -852,8 +975,7 @@ inline constexpr Table kTables[] = {
     // providers loaded has two independent views of the same object, and being
     // able to see them apart is how you tell a provider that is missing traffic
     // from a workload that did not send any.
-    {"object_access",
-     "owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact",
+    {"object_access", "owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact",
      R"sql(
 WITH p2p AS (
     -- OWNER IS THE RANK THAT OWNS THE MEMORY, NEVER THE RANK THAT WROTE IT.
@@ -1086,8 +1208,7 @@ SELECT * FROM verbs_recv
     //
     // `device` is NULL when a rank drives more than one GPU (`devices` says how
     // many). That is a real state, not a gap to paper over.
-    {"rank_identity",
-     "rank,node_ix,node_hash,device,devices,label",
+    {"rank_identity", "rank,node_ix,node_hash,device,devices,label",
      R"sql(
 SELECT n.rank,
        (dense_rank() OVER (ORDER BY n.node) - 1)::BIGINT AS node_ix,
@@ -1101,8 +1222,7 @@ LEFT JOIN _rank_device d ON d.rank = n.rank
 ORDER BY n.rank
 )sql"},
 
-    {"endpoint",
-     "rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes",
+    {"endpoint", "rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes",
      R"sql(
 SELECT r.rank,
        r.qp_num,
@@ -1155,8 +1275,7 @@ ORDER BY r.rank, r.qp_num
     // COUNTED in link_health.timeline_unanchored, which is the same trade
     // unresolved_nvlink makes: a hole you can see beats a chart that looks
     // complete.
-    {"timeline_span",
-     "rank,stream,ep,bytes,kind,t0_ns,t1_ns",
+    {"timeline_span", "rank,stream,ep,bytes,kind,t0_ns,t1_ns",
      R"sql(
 SELECT e.rank,
        e.stream,
@@ -1203,8 +1322,7 @@ JOIN _clock c ON c.rank = e.rank AND c.domain = e.domain
     // transport IN ('verbs','devx'), projected to (src,dst,sends,bytes), are
     // still byte-identical to CsvAgg's comm_edges — which is the only check
     // the derived layer has, and is kept executable rather than described.
-    {"comm_edges",
-     "src_rank,dst_rank,transport,unit,sends,bytes",
+    {"comm_edges", "src_rank,dst_rank,transport,unit,sends,bytes",
      R"sql(
 SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM (
     SELECT s.rank               AS src_rank,
@@ -1239,6 +1357,74 @@ SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM (
 ORDER BY transport, src_rank, dst_rank
 )sql"},
 
+    // WHICH TRANSPORT CARRIED IT — the question comm_edges cannot answer.
+    //
+    // comm_edges is a rank matrix, and its `ucx` lane is built from UCP calls:
+    // it knows rank 0 sent 408 MB to rank 1 and has no idea whether that went
+    // over the NIC, over shared memory, or over a CUDA IPC handle. On MN5 all
+    // three happen in one job. UctIface's declaration names this as the fact
+    // the 800s exist for: "no other record in pcomm can answer that for a UCX
+    // application, and comm_edges has been counting shared-memory traffic as
+    // fabric traffic for want of it."
+    //
+    // **THIS IS NOT A LANE OF comm_edges, and the reason is worth stating.**
+    // Two of them:
+    //
+    //   1. There is no peer rank here. A uct_ep is a LANE, not a queue pair;
+    //      `uct_ep_get_address` would pack a QP number only through an internal
+    //      struct this project refuses to parse, and `uct_ep_query` exposes
+    //      none. A comm_edges lane would therefore have dst_rank = -1 on every
+    //      row — an entire transport whose matrix is 100% unresolved, which is
+    //      precisely the shape link_health exists to flag, not to publish.
+    //   2. It would double-count. One UCP send becomes one, two or many UCT
+    //      operations, and wireup and flow control produce UCT traffic with no
+    //      UCP call above it at all — measured on MN5 job 45113099 as 295
+    //      uct_send against 260 ucx_tag_send in one capture. Summing the two
+    //      lanes would bill the same bytes twice at two layers.
+    //
+    // So this is a per-rank PROFILE beside the matrix, not a second matrix.
+    //
+    // `scope` is a claim about the TRANSPORT UCX CHOSE, deliberately narrower
+    // than "did it leave the node". `self`/`sysv`/`posix`/`cma`/`knem`/`xpmem`
+    // move bytes without a network stack; `cuda_ipc`/`cuda_copy`/`rocm_*` move
+    // them over the local bus. `tcp` is counted as 'network' even though a
+    // same-node pair can use it: it went through the kernel network stack,
+    // which is a fact, where "left the node" would be a guess. Anything else —
+    // a transport not in either list, or an iface whose name did not resolve —
+    // is 'unknown' and is NEVER folded into one of the other two.
+    //
+    // The op name is decoded HERE rather than in the exporter, which is where
+    // export_parquet's header says such mappings belong. Grouping by it is not
+    // optional: the families measure different things (see _uct_sends), and a
+    // row that merged them would carry three incomparable quantities in one
+    // number.
+    {"transport_mix",
+     "rank,tl_name,dev_name,scope,op,ops,out_bytes,in_bytes,advertised_bytes,header_bytes",
+     R"sql(
+SELECT s.rank,
+       s.tl_name,
+       s.dev_name,
+       s.scope,
+       CASE s.op
+         WHEN 0  THEN 'am_short'        WHEN 1  THEN 'am_short_iov'
+         WHEN 2  THEN 'am_bcopy'        WHEN 3  THEN 'am_zcopy'
+         WHEN 4  THEN 'put_short'       WHEN 5  THEN 'put_bcopy'
+         WHEN 6  THEN 'put_zcopy'       WHEN 7  THEN 'get_short'
+         WHEN 8  THEN 'get_bcopy'       WHEN 9  THEN 'get_zcopy'
+         WHEN 10 THEN 'tag_eager_short' WHEN 11 THEN 'tag_eager_bcopy'
+         WHEN 12 THEN 'tag_eager_zcopy' WHEN 13 THEN 'tag_rndv_zcopy'
+         ELSE '?' || s.op
+       END AS op,
+       sum(s.ops)::BIGINT              AS ops,
+       sum(s.out_bytes)::BIGINT        AS out_bytes,
+       sum(s.in_bytes)::BIGINT         AS in_bytes,
+       sum(s.advertised_bytes)::BIGINT AS advertised_bytes,
+       sum(s.header_bytes)::BIGINT     AS header_bytes
+FROM _uct_scoped s
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY rank, scope, tl_name, dev_name, op
+)sql"},
+
     // What the graph could not account for. Empty is the expected state; every
     // row is a defect in the link, not in the workload. This table exists so
     // the UI can *show* a hole rather than render a confident matrix over one —
@@ -1254,8 +1440,7 @@ ORDER BY transport, src_rank, dst_rank
     // its own HUGEINT before subtracting and loses sub-microsecond spans, which
     // is the same float64 trap _clock's comment describes, arriving a third
     // time in a different arithmetic.
-    {"wr_flow",
-     "rank,qp_num,wr_id,bytes,opcode,status,wc_opcode,t0_ns,t1_ns,latency_ns",
+    {"wr_flow", "rank,qp_num,wr_id,bytes,opcode,status,wc_opcode,t0_ns,t1_ns,latency_ns",
      R"sql(
 SELECT f.rank,
        f.qp_num,
@@ -1273,8 +1458,7 @@ FROM _wr_flight f
 JOIN _clock c ON c.rank = f.rank AND c.domain = f.domain
 )sql"},
 
-    {"link_health",
-     "finding,n,note",
+    {"link_health", "finding,n,note",
      R"sql(
 SELECT 'colliding_endpoints' AS finding,
        count(*)              AS n,
@@ -1319,6 +1503,32 @@ SELECT 'unresolved_ucx',
 FROM _ucx_sends s
 LEFT JOIN _ucx_peer_of_ep p ON p.rank = s.rank AND p.endpoint = s.endpoint
 WHERE p.peer_rank IS NULL
+UNION ALL
+-- A UCT operation whose transport could not be named. Either no uct_iface row
+-- carries that iface pointer, or its tl_name handle is claimed by two strings
+-- in a replayed capture. Both leave the operation in transport_mix's 'unknown'
+-- scope, and an 'unknown' bucket nobody counts is an 'unknown' bucket nobody
+-- notices — the same argument unresolved_nvlink was added on.
+SELECT 'unnamed_uct_transport',
+       coalesce(sum(s.ops), 0)::BIGINT,
+       'UCT operations whose transport name did not resolve — no uct_iface row, or an ambiguous intern handle'
+FROM _uct_scoped s WHERE s.tl_name IS NULL
+UNION ALL
+-- NOT A DEFECT IN THE LINK — the one row here that is a caveat about another
+-- table rather than a hole in this one, and it is kept because a reader of
+-- comm_edges has no other way to learn it.
+--
+-- comm_edges' `ucx` lane is built from UCP calls and has no transport, so
+-- shared-memory and CUDA-IPC traffic appears in the rank matrix
+-- indistinguishable from traffic that crossed the fabric. When this count is
+-- non-zero, some part of that matrix did not touch a network. It cannot say
+-- WHICH edges: the UCP endpoint and the UCT lane have no join between them
+-- (see transport_mix). Naming the size of the caveat is what this row can
+-- honestly do.
+SELECT 'ucx_edges_include_intranode',
+       coalesce(sum(t.ops), 0)::BIGINT,
+       'UCT operations on a non-network transport — comm_edges'''' ucx lane counts this traffic as fabric'
+FROM _uct_scoped t WHERE t.scope = 'intra-node'
 UNION ALL
 -- The same failure seen from object_access rather than from comm_edges, and it
 -- needs its own row because the two branches drop on different keys:

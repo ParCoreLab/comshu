@@ -55,6 +55,54 @@ template<typename Tuple, typename F> void for_each_type(F&& f) {
                                       std::make_index_sequence<std::tuple_size_v<Tuple>>{});
 }
 
+// The intern dictionary, AS A TABLE.
+//
+// NOT `intern_string`, which is already taken — that is the raw stream of
+// `InternString` INDEX records (offset, length, handle, domain), and it is
+// useless on its own because the bytes it points into live in a separate blob.
+// This is the resolved form: the text itself. The two are one letter apart in
+// the same database on purpose, so `intern_text` is the one with the answer.
+//
+// Not a `PCOMM_RECORD` and so not in `raw::RawRecords`: the on-disk form is an
+// index stream plus a byte blob, and neither is fixed-stride. It is mounted
+// beside the raw tables anyway because the derived layer's job includes
+// decoding — `export_parquet`'s header says resolved intern handles "belong to
+// the derived-table layer, and SQL is a better place for them than a C++
+// printer" — and that layer had no dictionary to decode WITH.
+//
+// `rank` is part of the key and must stay in every join. Handles restart at 1
+// in every domain of every rank, so handle 3 on rank 0 and handle 3 on rank 1
+// are different strings; this is the same "a wire id is only unique with its
+// scope" rule link_sql.hpp opens with, arriving on a different id.
+constexpr const char* kInternTextTable = "intern_text";
+constexpr const char* kInternTextDdl =
+    "CREATE OR REPLACE TABLE \"intern_text\" ("
+    "rank INTEGER, domain UTINYINT, handle UINTEGER, text VARCHAR)";
+
+/**
+ * Mount the intern dictionary from an export, empty when it is absent.
+ *
+ * Same absent-becomes-empty policy as the raw tables, and for the same reason:
+ * a derived query that LEFT JOINs a name must run against a capture exported by
+ * an older build, resolving nothing rather than failing to parse.
+ */
+inline bool mount_intern_text(duckdb_connection con, const fs::path& dir) {
+    const auto parquet = dir / (std::string(kInternTextTable) + ".parquet");
+    const auto csv = dir / (std::string(kInternTextTable) + ".csv");
+    if (fs::exists(parquet))
+        return exec(con,
+                    "CREATE OR REPLACE VIEW \"" + std::string(kInternTextTable) +
+                        "\" AS SELECT * FROM read_parquet('" + parquet.string() + "')",
+                    kInternTextTable);
+    if (fs::exists(csv))
+        return exec(con, kInternTextDdl, kInternTextTable) &&
+               exec(con,
+                    "COPY \"" + std::string(kInternTextTable) + "\" FROM '" + csv.string() +
+                        "' (FORMAT CSV, HEADER)",
+                    kInternTextTable);
+    return exec(con, kInternTextDdl, kInternTextTable);
+}
+
 /**
  * Make every raw table reachable by name. Returns how many were actually
  * present; the rest are empty tables with the correct columns.
@@ -87,6 +135,12 @@ inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir) 
             exec(con, Raw::ddl, Raw::table);
         }
     });
+    // Mounted HERE rather than left to each caller: `pcomm link`, `pcomm sql`
+    // and `pcomm ui` all reach the derived layer through this one function, and
+    // a name resolution that worked in one of the three would be worse than one
+    // that worked in none. Not counted in `present` — it is not a raw stream,
+    // and the number is printed as "raw tables".
+    mount_intern_text(con, dir);
     return present;
 }
 

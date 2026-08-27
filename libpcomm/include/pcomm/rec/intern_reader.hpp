@@ -58,6 +58,26 @@ public:
     std::size_t string_count() const { return m_strings.size(); }
     std::size_t key_count() const { return m_keys.size(); }
 
+    // Every (domain, handle) -> text this rank resolved, for a consumer that
+    // wants the dictionary as DATA rather than as a lookup.
+    //
+    // The reason this exists: `pcomm export --parquet` deliberately does not
+    // decode ("no resolved intern handles ... those mappings are semantic, they
+    // belong to the derived-table layer"), and the derived layer then had no
+    // dictionary to do it with. Every interned column below it — mem_object's
+    // name, uct_iface's tl_name — was an opaque integer, so SQL could group by
+    // a transport but could not say WHICH transport. Handing the dictionary
+    // across as a table is what makes the stated division of labour actually
+    // work.
+    //
+    // Keys are NOT included. A key is a pc or a pointer, it already has a
+    // faithful numeric representation in the record, and joining a uint64 to a
+    // uint64 through a dictionary would add a hop without adding a fact.
+    template<typename F> void for_each_string(F&& f) const {
+        for (const auto& [k, text] : m_strings)
+            f(static_cast<InternDomain>(k >> 32), static_cast<core::Handle>(k & 0xffffffffu), text);
+    }
+
     // Loads one rank's dictionary. Diagnostics go to `diag`; the returned
     // dictionary is whatever could be resolved, so a partial failure still
     // exports the rest of the capture — but never quietly.

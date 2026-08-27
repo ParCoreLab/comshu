@@ -189,6 +189,46 @@ LoadStats load_raw_tables(duckdb_connection con, const std::vector<RankDir>& ran
     return st;
 }
 
+// Load every rank's intern dictionary into one `intern_text` table.
+//
+// The dictionaries are already loaded — `scan_ranks_into` reads one per RankDir
+// — so this only reshapes them. Returns the row count.
+//
+// COLLISIONS ARE NOT RESOLVED HERE, and that is deliberate. A REPLAYED run
+// nests one rank-* directory per pass (root/ib/rank-0, root/gpumem/rank-0) and
+// both are RankDir rank 0 with independent dictionaries, so the same
+// (rank, domain, handle) can carry two different strings in one capture. The
+// loader's job is to report what is on disk; deciding what an ambiguous handle
+// means is a semantic question, and link_sql.hpp's `_intern_name` answers it
+// the way this codebase answers every other one — by refusing to resolve and
+// counting the refusal, rather than by picking whichever sorted first.
+inline std::size_t load_intern_text(duckdb_connection con, const std::vector<RankDir>& ranks) {
+    if (!duck::exec(con, duck::kInternTextDdl, duck::kInternTextTable))
+        return 0;
+    duckdb_appender ap{};
+    if (duckdb_appender_create(con, nullptr, duck::kInternTextTable, &ap) != DuckDBSuccess) {
+        std::fprintf(stderr, "pcomm: cannot append to %s\n", duck::kInternTextTable);
+        return 0;
+    }
+    std::size_t rows = 0;
+    for (const auto& r : ranks) {
+        r.intern.for_each_string([&](rec::InternDomain d, core::Handle h, const std::string& text) {
+            duckdb_append_int32(ap, r.rank);
+            duckdb_append_uint8(ap, static_cast<std::uint8_t>(d));
+            duckdb_append_uint32(ap, h);
+            duckdb_append_varchar(ap, text.c_str());
+            duckdb_appender_end_row(ap);
+            rows++;
+        });
+    }
+    const bool flushed = duckdb_appender_flush(ap) == DuckDBSuccess;
+    if (!flushed)
+        std::fprintf(stderr, "pcomm: %s: appender flush failed: %s\n", duck::kInternTextTable,
+                     duckdb_appender_error(ap));
+    duckdb_appender_destroy(&ap);
+    return flushed ? rows : 0;
+}
+
 // Create an EMPTY table for every raw stream the capture did not contain.
 //
 // This is the point where the absent/empty distinction is deliberately
