@@ -47,6 +47,25 @@ public:
             b->drain();
     }
 
+    // The same thing for a process that is already dying, where WAITING is the
+    // one thing we must not do. In a fatal-signal handler the thread holding
+    // this lock may be the thread that just faulted, and it will never release
+    // it — so a blocking drain_all() there turns a crash into a hang, which in a
+    // batch scheduler burns the rest of the walltime allocation.
+    //
+    // Returns false when the lock was unavailable, so the caller can report that
+    // it recovered nothing rather than claim a flush it did not perform. Same
+    // family of reasoning as reset_for_fork() below: this class already has to
+    // think about its mutex being in a state ordinary code never sees.
+    bool try_drain_all() noexcept {
+        std::unique_lock lock(m_mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return false;
+        for (IDrainable* b : m_buffers)
+            b->drain();
+        return true;
+    }
+
     std::size_t size() {
         std::lock_guard lock(m_mutex);
         return m_buffers.size();

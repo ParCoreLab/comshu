@@ -5,6 +5,8 @@
 // each other. Skeleton: recorder + sink wiring and start/stop; the dlopen
 // ProviderRegistry and Calibrator land with the first real provider.
 
+#include <csignal>
+#include <signal.h>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -71,6 +73,7 @@ public:
         m_sink = std::make_unique<rec::FileSink>(dir);
         m_recorder = std::make_unique<rec::Recorder<>>(*m_sink);
         install_fork_handler();
+        install_signal_handlers();
         // Backstop: with refcounted stop(), a provider that never stops (a
         // vendor teardown path that skips our dtor) would otherwise hold the
         // count above zero and the capture would never be flushed at all.
@@ -154,6 +157,141 @@ private:
     void install_fork_handler() {
         static std::once_flag once;
         std::call_once(once, [] { pthread_atfork(nullptr, nullptr, &Tracer::atfork_child); });
+    }
+
+    // ── dying gracefully ────────────────────────────────────────────────────
+    //
+    // A capture that ends in a signal used to keep only what had already been
+    // flushed, and that failed in an INVERTED way: the high-volume streams
+    // survived because they filled their buffers and drained incrementally,
+    // while the one-row identity streams never drained at all. Quantum ESPRESSO
+    // kept 18,700,773 ib_post_send rows, 94 ib_modify_qp rows and 2 of 4
+    // node_identity rows, so 84% of its sends landed on dst_rank = -1 — and the
+    // BROKEN capture was the bigger one, which defeats every heuristic anyone
+    // would use to notice it. See tests/hpc/apps/03_quantumespresso.
+    //
+    // THIS IS DELIBERATELY NOT ASYNC-SIGNAL-SAFE, and the choice is the whole
+    // design. A correct handler may call almost nothing; flushing a capture
+    // means locks, allocation and stdio. The alternative on offer is not "a safe
+    // handler" but "no handler", i.e. guaranteed total loss of everything
+    // buffered. So this does the unsafe thing on purpose, in a process that is
+    // already dying, with four guards that bound what going wrong can cost:
+    //
+    //   1. ORDER. The cheap, safe work happens first and is flushed to disk
+    //      before the expensive, risky work begins. emit_intern_records() walks
+    //      tables another thread may be mid-mutation in and allocates while it
+    //      does — so it runs only AFTER the raw records are already durable. A
+    //      second fault there loses the dictionary and keeps the records.
+    //   2. RECURSION GUARD. A fault inside the handler goes straight to the
+    //      default disposition instead of recursing until the stack dies.
+    //   3. NO WAITING. try_drain_all() rather than drain_all(): the thread
+    //      holding the registry lock may be the one that just faulted, and
+    //      blocking on it would convert a crash into a hang — which under SLURM
+    //      costs the rest of the walltime rather than one job.
+    //   4. A DEADMAN. alarm() is armed before any of it, with SIGALRM restored
+    //      to its default terminating disposition, so a flush that wedges
+    //      anywhere kills the process instead of parking it.
+    //
+    // Then the original signal is re-raised with the default handler installed,
+    // so the process dies exactly as it would have: same exit status, same core
+    // dump, same thing reported to the scheduler. A profiler must not change how
+    // the program it is watching appears to fail.
+    static constexpr int kFatalSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTERM,
+                                            SIGINT};
+    // Seconds the whole best-effort flush is allowed before the deadman fires.
+    // Generous: a capture can be gigabytes, and the point is to bound a HANG,
+    // not to time the flush.
+    static constexpr unsigned kFlushDeadmanSeconds = 30;
+
+    static void install_signal_handlers() {
+        static std::once_flag once;
+        std::call_once(once, [] {
+            // An alternate stack, because the fault this most needs to survive
+            // is a stack overflow — where there is no room left to run a handler
+            // on the faulting thread's own stack. Best effort: if it cannot be
+            // had, the handlers still install and still work for every other
+            // fault.
+            // A fixed 64 KiB rather than SIGSTKSZ: since glibc 2.34 SIGSTKSZ
+            // expands to sysconf(_SC_SIGSTKSZ) and is no longer a constant
+            // expression, so it cannot size a static array at all. 64 KiB is
+            // comfortably above every MINSIGSTKSZ in practice and this handler's
+            // own frame needs almost none of it.
+            static char alt[65536];
+            stack_t     ss{};
+            ss.ss_sp = alt;
+            ss.ss_size = sizeof alt;
+            ss.ss_flags = 0;
+            ::sigaltstack(&ss, nullptr);
+
+            struct sigaction sa {};
+            sa.sa_handler = &Tracer::fatal_signal_handler;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = SA_ONSTACK | SA_RESTART;
+            for (int sig : kFatalSignals) {
+                struct sigaction prev {};
+                // Do NOT displace a handler the application installed itself.
+                // An application with its own SIGTERM handling (a checkpointer,
+                // an MPI runtime draining ranks) is doing something we must not
+                // silently take over; losing our flush is the lesser harm.
+                if (::sigaction(sig, nullptr, &prev) == 0 && prev.sa_handler != SIG_DFL &&
+                    prev.sa_handler != SIG_IGN)
+                    continue;
+                ::sigaction(sig, &sa, nullptr);
+            }
+        });
+    }
+
+    static void fatal_signal_handler(int sig) {
+        static volatile sig_atomic_t in_handler = 0;
+        if (in_handler) {  // guard 2: we faulted while flushing. Give up cleanly.
+            ::signal(sig, SIG_DFL);
+            ::raise(sig);
+            return;
+        }
+        in_handler = 1;
+
+        ::signal(SIGALRM, SIG_DFL);   // guard 4: default disposition terminates
+        ::alarm(kFlushDeadmanSeconds);
+
+        instance().flush_from_signal();
+
+        ::alarm(0);
+        ::signal(sig, SIG_DFL);
+        ::raise(sig);
+    }
+
+    // Best effort, in this order, for the reasons in guard 1 above.
+    void flush_from_signal() noexcept {
+        // Lock-free reads on purpose: m_lifecycle may be held by the thread that
+        // just faulted, and taking it here is the deadlock guard 3 exists to
+        // avoid. Both pointers are written once under the lock in start() and
+        // never reassigned while a capture is live.
+        if (!m_recorder || !m_sink)
+            return;
+        if (m_finalized)
+            return;  // a normal teardown already wrote everything
+
+        // (a) the safe half — move what is buffered to the sink and make it
+        //     durable. If anything below faults, this survives.
+        //
+        //     NOT COVERED BY A MUTATION, and worth saying so rather than
+        //     implying otherwise: deleting this flush leaves the test green,
+        //     because on a clean fault (b) succeeds and the flush at the end
+        //     writes everything anyway. Its value appears only when (b) itself
+        //     faults, which no mutation reaches without injecting a fault into
+        //     emit_intern_records. It stays because the ordering is the point of
+        //     guard 1 and the flush costs one fwrite on a dying process.
+        rec::ThreadBufferRegistry::instance().try_drain_all();
+        m_sink->flush();
+
+        // (b) the risky half — the dictionary that gives every Handle meaning.
+        //     Worth attempting because without it a recovered record carrying
+        //     handles says nothing; safe to attempt only because (a) is already
+        //     on disk and the recursion guard turns a fault here into an
+        //     ordinary crash rather than a loop.
+        emit_intern_records();
+        rec::ThreadBufferRegistry::instance().try_drain_all();
+        m_sink->flush();
     }
 
     // Runs in the child right after fork(). The child shares (COW) the parent's
