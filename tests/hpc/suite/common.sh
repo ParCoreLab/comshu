@@ -19,7 +19,34 @@ export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
 # overwrite was live — the runner exported the mlx5dv path, common.sh replaced
 # it with ibverbs:gpumem, and `-p mlx5dv` would have failed to find its
 # provider on a host where the provider had just been built successfully.
-export PCOMM_PROVIDER_PATH="${PCOMM_PROVIDER_PATH:+$PCOMM_PROVIDER_PATH:}$PCOMM_BUILD/providers/ibverbs:$PCOMM_BUILD/providers/gpumem:$PCOMM_BUILD/providers/mlx5dv:$PCOMM_BUILD/providers/ucx:$PCOMM_BUILD/providers/nccl"
+#
+# GLOBBED, not listed, since 2026-08-27. The hand-written list named five
+# providers and `ucx_deep` was the sixth: its library built correctly on MN5 and
+# the launcher could not find it, so `pcomm run -p ucx,ucx_deep` refused the
+# whole run (job 45112957, "ucx_deep provider library not found"). Refusing was
+# right — a capture missing a provider the caller asked for is worse than no
+# capture — but the list was the defect, and a list of provider directories kept
+# in step with the provider directories by hand is a list kept in step by
+# nobody. libpcomm/CMakeLists.txt makes the same argument about globbing the
+# record headers, and cites a build it already cost (bea74d8).
+#
+# Only directories that actually hold a provider library. `providers/*/` also
+# matches CMakeFiles and any other build artefact, and while a junk entry is
+# harmless — the launcher searches the path and reports what it cannot find —
+# putting build scaffolding in a search path is how a search path stops being
+# readable. The name is the one the launcher looks for.
+_pcomm_provider_path=""
+for _pdir in "$PCOMM_BUILD"/providers/*/; do
+  [ -d "$_pdir" ] || continue            # unmatched glob, or no providers built
+  # NOT `set --`: this file is SOURCED, and rewriting the caller's positional
+  # parameters to test a glob would break the first job script that uses "$1".
+  _pcomm_has_so=0
+  for _so in "$_pdir"lib*_trace.so; do [ -e "$_so" ] && _pcomm_has_so=1; done
+  [ "$_pcomm_has_so" -eq 1 ] || continue  # built nothing, or not a provider dir
+  _pcomm_provider_path="${_pcomm_provider_path:+$_pcomm_provider_path:}${_pdir%/}"
+done
+export PCOMM_PROVIDER_PATH="${PCOMM_PROVIDER_PATH:+$PCOMM_PROVIDER_PATH:}$_pcomm_provider_path"
+unset _pdir _so _pcomm_has_so _pcomm_provider_path
 # Providers link the shared engine (libpcomm_engine.so); they carry an $ORIGIN
 # rpath to it, but export the dir too so a provider .so copied elsewhere (as the
 # gpumem build does) still resolves it.
