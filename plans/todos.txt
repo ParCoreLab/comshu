@@ -369,8 +369,8 @@ decodes for a human and nothing in link_sql ever sees those strings — so the
 lane matched no row at all. Item 9's argument for fixtures, demonstrated.
 
 
-15. There is no flush on an abnormal exit, and the failure is inverted
-----------------------------------------------------------------------
+15. DONE (2026-08-27): the crash keeps its capture
+---------------------------------------------------
 No `sigaction`, no signal handler, no signal-path flush anywhere in the engine —
 the only SIGSEGV tokens in libpcomm/src are comments about a fault seen
 elsewhere. A process killed by a signal loses whatever is still buffered.
@@ -391,21 +391,46 @@ more than its size suggests — every heuristic a human or a check uses to notic
 a bad capture points the wrong way. Anything that aborts, or is SLURM-cancelled
 after doing its work, lands here, and nothing says so.
 
+FIXED IN TWO PARTS. start() now flushes the clock anchor and node identity
+immediately — pure numbers, no intern dictionary needed, and the anchor of every
+join in the reader. Then a fatal-signal handler recovers the rest, DELIBERATELY
+not async-signal-safe because the alternative was never "a safe handler" but "no
+handler". Four guards bound it: the safe work is flushed before the risky
+emit_intern_records begins, a recursion guard, try_drain_all() rather than a
+blocking drain (the thread holding the lock may be the one that faulted), and an
+alarm(30) deadman so a wedged flush kills rather than hangs — a hang under SLURM
+costs the rest of the walltime. It declines to displace a handler the
+application installed itself, and re-raises with the default disposition so the
+process dies exactly as it would have.
 
-16. sql_check.sh cannot run an application case
-------------------------------------------------
+tests/crash_identity_smoke.cpp runs both arms over one workload: SIGKILL
+(uncatchable) keeps identity and 0 of 8 records, SIGSEGV keeps 8 of 8 plus the
+intern blob and still dies by SIGSEGV. The contrast IS the test.
+
+
+16. DONE (2026-08-27): a case can declare its own oracle names
+---------------------------------------------------------------
 `PARAM_COLS` is hard-coded, so a `meta.json` naming `npp`, `npme`, `nsteps`,
 `natoms` — or any oracle an application actually has — is rejected wholesale
 with "unknown workload key(s)". Found independently by GROMACS and LAMMPS; both
 shipped an in-case runner instead, and GROMACS's `asserts.sh` takes the column
 list from meta.json, which is where the fix belongs.
 
-Only matters if an app study is ever promoted to a gate. It is written down
-because that decision is now live and the reason would otherwise be rediscovered.
+FIXED. A case declares its own names in meta.json's "workload_params"; the
+shared list stays closed so a typo'd `msg_byte` is still caught, and writing the
+name twice is the deliberate act. Names are validated before being spliced into
+a CREATE TABLE. The four app metas declare 31 names between them.
+
+AND THE SAME LINES HELD A REAL BUG. Both param substitutions had `2>&1` on its
+own line AFTER the heredoc terminator, where it is not a redirection on python
+at all — it parses as a separate null command inside the substitution, always
+succeeds, and so the substitution's status was always 0 and `||` could never
+fire. The comment beside it had recorded the symptom since it was written
+("its message was still lost once") without the cause ever being found.
 
 
-17. ucx_tag_send carries no memory type
-----------------------------------------
+17. DONE (2026-08-27): ucx sends carry a device
+------------------------------------------------
 On the HPC-X stack the UCX layer is often the ONLY layer that saw the traffic
 (items 14, and the door sweep). It records no memory type, so it cannot say
 whether a send came from host or device memory — which is exactly the question
@@ -414,3 +439,10 @@ its central negative by inference from registration counts rather than measure
 it. `core::device_of()` already exists and the ibverbs provider already applies
 it. Related to PLAN-20260817-0634: the same call's four meanings of
 kUnknownDevice are what make the inference awkward.
+
+FIXED, on all three records that carry a local buffer (ucx_tag_send, ucx_rma,
+ucx_am_send) so the schema hash moves once rather than three times:
+0x6A1CF6FBB0B71348 -> 0x3961E4E2C84D593A. Captures predating it are refused by
+name. The gate's limit is recorded with it: in a process with no CUDA every
+address answers kUnknownDevice, so the local test distinguishes "wired up" from
+"fabricated" and not "the buffer" from "any pointer".
