@@ -446,3 +446,44 @@ ucx_am_send) so the schema hash moves once rather than three times:
 name. The gate's limit is recorded with it: in a process with no CUDA every
 address answers kUnknownDevice, so the local test distinguishes "wired up" from
 "fabricated" and not "the buffer" from "any pointer".
+
+
+18. The UCX peer join fails on the ENDPOINT side too, and QE is the case
+-------------------------------------------------------------------------
+Raised 2026-08-27 by the re-run in tests/hpc/apps/RERUN-2026-08-27.md. Item 13
+fixed the WORKER side of the cross-rank join; this is the other end of it.
+
+    qe-npool2  27,505 ucx_tag_send   8 endpoints   8 ep_connections
+               4 ucx_worker_address  6 comm_edges, 4 of them dst_rank = -1
+               link_health: unresolved_ucx = 25,005  (91% of sends)
+
+`UcxEpConnection` is emitted only when UCP_EP_PARAM_FIELD_REMOTE_ADDRESS is
+actually set on ucp_ep_create. An endpoint created from a socket address or from
+a connection request has no peer address there, so it gets no row — deliberately,
+because a row of zeroes would read as a measured null peer. QE creates most of
+its endpoints that way, so most of its traffic has nothing to join on.
+
+LAMMPS and GROMACS both resolve 64 of 64 edges with unresolved_ucx = 0, so this
+is a property of how an application connects rather than a universal gap. That
+is what makes it worth a separate item: the fix is not "hook another door" but
+"find the second correspondence", and it may be the connection-request path
+(ucp_conn_request_query carries the remote address) or the socket address.
+
+WHAT IS ALREADY RIGHT, and is the only reason this is visible: unresolved_ucx
+exists. Without it this capture reports a clean bill of health over a 91% hole,
+which is exactly the failure unresolved_nvlink was added for. The number is the
+finding; the matrix does not lie, it declines to answer.
+
+19. check.sh in an app study cannot see derived tables
+-------------------------------------------------------
+Raised 2026-08-27, same re-run. `03_quantumespresso/check.sh` loads
+`<csv>/*.csv` into sqlite. Derived tables — comm_edges, link_health, wr_flow —
+are not CSVs: they are written by `pcomm link` into parquet. So the runner
+reported "comm_edges is EMPTY — unanswerable" for a table holding six rows, on
+three separate assertions.
+
+Not fixed in place, because it is that study's own harness and rewriting another
+agent's runner mid-flight makes its results unattributable. It belongs with
+item 16's decision: if an app study is ever promoted to a gate, it uses
+sql_check.sh, which reads the derived layer — and item 16 is what made that
+possible.
