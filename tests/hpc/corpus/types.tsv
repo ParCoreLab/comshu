@@ -46,3 +46,9 @@ type_id	kind	version	name
 700	event	1	gpu_access
 740	artifact	1	source_line
 760	edge	1	attribution
+900	entity	1	nccl_comm
+902	event	1	nccl_collective
+904	event	1	nccl_p2p
+906	event	1	nccl_group
+908	entity	1	nccl_window
+910	entity	1	nccl_dev_comm
