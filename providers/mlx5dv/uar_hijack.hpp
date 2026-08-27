@@ -100,6 +100,32 @@ inline bool enabled() {
     return on;
 }
 
+// MEASUREMENT ONLY: forward the doorbell and emit Mlx5Doorbell, but do not copy
+// the WQEs out of the send queue.
+//
+// This exists to answer one question that decides whether the on-GPU repeater
+// (PLAN-20260807-2344) is worth building: the hijack's cost is either the HOST
+// ROUND TRIP on the forward, which only moving the repeater onto the GPU can
+// remove, or the per-doorbell `cuMemcpyDtoHAsync` + `cuStreamSynchronize` in the
+// decode, which is a far cheaper thing to fix. The published +68% (forward) and
+// +86% (forward + decode) were wall-clock over a run whose startup dominated, so
+// they cannot separate the two; running the same workload with and without this
+// switch can.
+//
+// NOT a supported capture mode, and it must never become one: it produces
+// Mlx5Doorbell rows with no Mlx5DeviceSend beside them, which is exactly the
+// "the doorbell rang and we could not decode it" shape that a real decode
+// failure has. A capture taken this way is indistinguishable from a broken one,
+// which is why it is spelled PCOMM_HIJACK_NO_DECODE and gated behind the
+// hijack's own env rather than given a launcher flag.
+inline bool decode_disabled() {
+    static const bool off = [] {
+        const char* v = std::getenv("PCOMM_HIJACK_NO_DECODE");
+        return v && *v == '1';
+    }();
+    return off;
+}
+
 inline bool debug_on() {
     static const bool on = [] {
         const char* v = std::getenv("PCOMM_HIJACK_DEBUG");
@@ -360,6 +386,12 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
     }
     if (s.doorbell_sink)
         s.doorbell_sink(uar_ptr, qpn, prod_idx);
+
+    // Measurement switch, checked here so everything above it — the forward and
+    // the doorbell row — is identical between the two configurations, and the
+    // only difference is the copy-out below.
+    if (decode_disabled())
+        return;
 
     // Mlx5DeviceSend — best-effort: needs the QP's send-queue address, a CUDA
     // context on this thread, and the copy machinery. Any miss leaves the

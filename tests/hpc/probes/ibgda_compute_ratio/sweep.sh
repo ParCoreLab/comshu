@@ -21,6 +21,10 @@
 # resident; the mean is dragged by one bad sample and the minimum flatters
 # whichever configuration got the quietest slot.
 set -u
+# du04's login locale is tr_TR, where printf's %f expects a decimal COMMA while
+# awk emits a dot -- so every percentage printed 'invalid number' beside a row
+# that was otherwise correct. Numbers in a measurement harness are C numbers.
+export LC_ALL=C
 ROOT="${PCOMM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
 # shellcheck source=/dev/null
 . "$ROOT/tests/hpc/suite/common.sh"
@@ -41,6 +45,11 @@ REPS="${PCOMM_REPS:-3}"
 # The ladder. 0 reproduces 04_nvshmem/putget.cu's shape exactly, which is what
 # makes the published +68%/+86% comparable to everything to the right of it.
 STEPS="${PCOMM_STEPS:-0 200 2000 20000}"
+# The fourth column separates the two costs inside the hijack: `fwd` forwards
+# the doorbell and records it but skips the WQE copy-out. If fwd is close to
+# bare, the cost is the decode and batching fixes it; if fwd is close to
+# hijack, the cost is the host round trip and only the on-GPU repeater does.
+# That is the whole Stage-3 decision, and it is one column.
 
 mkdir -p "$OUT"
 
@@ -81,6 +90,9 @@ run_once() {   # <mode> <steps> -> ms on stdout, or empty on failure
     hijack)  line=$(timeout 300 $MPIRUN -np 2 $NV_ENV "$PCOMM" run -p mlx5dv \
                       --enable-doorbell-hijack \
                       -o "$OUT/hijack" -- "$APP" "$ELEMS" "$ITERS" "$steps" 2>>"$OUT/fail.log") ;;
+    fwd)     line=$(timeout 300 $MPIRUN -np 2 $NV_ENV -x PCOMM_HIJACK_NO_DECODE \
+                      "$PCOMM" run -p mlx5dv --enable-doorbell-hijack \
+                      -o "$OUT/fwd" -- "$APP" "$ELEMS" "$ITERS" "$steps" 2>>"$OUT/fail.log") ;;
   esac
   # VERIFY OK is a precondition for the number being meaningful at all: the
   # hijack owns the doorbell, so a run that moved the wrong bytes must not
@@ -92,24 +104,34 @@ run_once() {   # <mode> <steps> -> ms on stdout, or empty on failure
 
 median() { printf '%s\n' "$@" | sort -g | awk '{a[NR]=$1} END{if(NR)print a[int((NR+1)/2)]}'; }
 
-printf '%8s  %10s  %10s  %10s  %8s  %8s\n' steps bare_ms passive_ms hijack_ms "pass%" "hijack%"
+export PCOMM_HIJACK_NO_DECODE=1   # only ever read by the `fwd` configuration
+
+printf '%8s  %10s  %10s  %10s  %10s  %9s  %9s\n' \
+  steps bare_ms passive_ms fwd_ms hijack_ms "fwd x" "hijack x"
 for s in $STEPS; do
-  declare -a b=() p=() h=()
+  declare -a b=() p=() h=() f=()
   for _ in $(seq "$REPS"); do
     v=$(run_once bare "$s");    [ -n "$v" ] && b+=("$v")
     v=$(run_once passive "$s"); [ -n "$v" ] && p+=("$v")
+    v=$(run_once fwd "$s");     [ -n "$v" ] && f+=("$v")
     v=$(run_once hijack "$s");  [ -n "$v" ] && h+=("$v")
   done
   # An empty column is REPORTED, never silently skipped or filled with a zero:
   # "this configuration did not complete" is a result about the hijack.
-  bm=$(median "${b[@]:-}"); pm=$(median "${p[@]:-}"); hm=$(median "${h[@]:-}")
-  if [ -n "$bm" ] && [ -n "$pm" ] && [ -n "$hm" ]; then
-    printf '%8s  %10s  %10s  %10s  %7.0f%%  %7.0f%%\n' "$s" "$bm" "$pm" "$hm" \
-      "$(echo "$pm $bm" | awk '{print ($1/$2-1)*100}')" \
-      "$(echo "$hm $bm" | awk '{print ($1/$2-1)*100}')"
+  bm=$(median "${b[@]:-}"); pm=$(median "${p[@]:-}")
+  hm=$(median "${h[@]:-}"); fm=$(median "${f[@]:-}")
+  # A MULTIPLE, not a percentage. The published figures were +68%/+86% of WALL
+  # CLOCK on a run whose NVSHMEM startup was ~3.5 s of a ~3.5 s run; this timer
+  # is the application's own CUDA events around the communication loop alone, so
+  # the ratios here are large and are not comparable to those percentages. Saying
+  # "133x" rather than "13184%" is the honest way to write a number that big.
+  if [ -n "$bm" ] && [ -n "$pm" ] && [ -n "$hm" ] && [ -n "$fm" ]; then
+    printf '%8s  %10s  %10s  %10s  %10s  %8.1fx  %8.1fx\n' "$s" "$bm" "$pm" "$fm" "$hm" \
+      "$(echo "$fm $bm" | awk '{print $1/$2}')" \
+      "$(echo "$hm $bm" | awk '{print $1/$2}')"
   else
-    printf '%8s  %10s  %10s  %10s  %8s  %8s   (did not complete: %s)\n' \
-      "$s" "${bm:--}" "${pm:--}" "${hm:--}" - - \
+    printf '%8s  %10s  %10s  %10s  %10s  %9s  %9s   (did not complete: %s)\n' \
+      "$s" "${bm:--}" "${pm:--}" "${fm:--}" "${hm:--}" - - \
       "$(grep -m1 -iE 'error|cannot|abort' "$OUT/fail.log" 2>/dev/null | cut -c1-90)"
   fi
 done
