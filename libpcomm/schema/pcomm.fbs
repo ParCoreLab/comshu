@@ -604,6 +604,7 @@ struct UcxTagSend {
   status:int32;
   status_class:uint8;
   door:uint8;
+  device:uint16;
 }
 
 // type 608, Event. A tagged receive POSTED — count is the capacity offered, not
@@ -649,6 +650,7 @@ struct UcxRma {
   status_class:uint8;
   op:uint8;
   door:uint8;
+  device:uint16;
 }
 
 // type 612, Event. An active-message send; header and payload keep separate
@@ -663,6 +665,7 @@ struct UcxAmSend {
   header_length:uint64;
   status:int32;
   status_class:uint8;
+  device:uint16;
 }
 
 // type 614, Entity. A UCP memory registration. `resolved` says whether the

@@ -5,6 +5,7 @@
 #include <ucp/api/ucp.h>
 #include <ucs/type/status.h>
 
+#include "pcomm/core/mem_attr.hpp"
 #include "pcomm/core/records.hpp"
 #include "pcomm/engine_abi.h"
 #include "pcomm/provider/provider.hpp"
@@ -170,7 +171,8 @@ static void emit_tag_send(ucp_ep_h endpoint, const void* buffer, size_t count, u
                                                   tag,
                                                   s.status,
                                                   static_cast<std::uint8_t>(s.kind),
-                                                  static_cast<std::uint8_t>(door)});
+                                                  static_cast<std::uint8_t>(door),
+                                                  pcomm::core::device_of(buffer)});
 }
 
 static void emit_tag_recv(ucp_worker_h worker, void* buffer, size_t count, ucp_tag_t tag,
@@ -280,7 +282,8 @@ static void emit_rma(ucp_ep_h endpoint, const void* buffer, size_t count, std::u
                                               s.status,
                                               static_cast<std::uint8_t>(s.kind),
                                               static_cast<std::uint8_t>(op),
-                                              static_cast<std::uint8_t>(door)});
+                                              static_cast<std::uint8_t>(door),
+                                              pcomm::core::device_of(buffer)});
 }
 
 // A `_nbi` call returns a plain status and never a request: the operation is
@@ -451,7 +454,8 @@ Profiler::Profiler() {
                                                      count,
                                                      header_length,
                                                      s.status,
-                                                     static_cast<std::uint8_t>(s.kind)});
+                                                     static_cast<std::uint8_t>(s.kind),
+                                                     pcomm::core::device_of(buffer)});
     });
     // EVERY optional field is read through its field_mask bit, never assumed
     // present: ucp_mem_map_params_t is a masked struct, and a caller passing

@@ -836,13 +836,14 @@ static const char* ucx_status_class_name(std::uint8_t raw) {
 template<> struct Table<ucr::UcxTagSend> {
     static constexpr const char* name = "ucx_tag_send";
     static constexpr const char* cols =
-        "ticks,door,endpoint,buffer,request,count,tag,status,status_class";
+        "ticks,door,endpoint,buffer,request,count,tag,status,status_class,device";
     static void row(std::FILE* f, const Stamped<ucr::UcxTagSend>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,%d,%s",
+        std::fprintf(f, "%llu,%s,%u,%u,%u,%llu,0x%llx,%d,%s,%u",
                      (unsigned long long)s.temporal.a.ticks, ucx_door_name(s.payload.door),
                      s.payload.endpoint, s.payload.buffer, s.payload.request,
                      (unsigned long long)s.payload.count, (unsigned long long)s.payload.tag,
-                     s.payload.status, ucx_status_class_name(s.payload.status_class));
+                     s.payload.status, ucx_status_class_name(s.payload.status_class),
+                     (unsigned)s.payload.device);
     }
 };
 
@@ -879,27 +880,27 @@ static const char* ucx_rma_op_name(std::uint8_t raw) {
 template<> struct Table<ucr::UcxRma> {
     static constexpr const char* name = "ucx_rma";
     static constexpr const char* cols =
-        "ticks,op,door,endpoint,buffer,request,rkey,count,remote_addr,status,status_class";
+        "ticks,op,door,endpoint,buffer,request,rkey,count,remote_addr,status,status_class,device";
     static void row(std::FILE* f, const Stamped<ucr::UcxRma>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%s,%s,%u,%u,%u,%u,%llu,0x%llx,%d,%s",
+        std::fprintf(f, "%llu,%s,%s,%u,%u,%u,%u,%llu,0x%llx,%d,%s,%u",
                      (unsigned long long)s.temporal.a.ticks, ucx_rma_op_name(s.payload.op),
                      ucx_door_name(s.payload.door), s.payload.endpoint, s.payload.buffer,
                      s.payload.request, s.payload.rkey, (unsigned long long)s.payload.count,
                      (unsigned long long)s.payload.remote_addr, s.payload.status,
-                     ucx_status_class_name(s.payload.status_class));
+                     ucx_status_class_name(s.payload.status_class), (unsigned)s.payload.device);
     }
 };
 
 template<> struct Table<ucr::UcxAmSend> {
     static constexpr const char* name = "ucx_am_send";
     static constexpr const char* cols =
-        "ticks,endpoint,buffer,request,am_id,count,header_length,status,status_class";
+        "ticks,endpoint,buffer,request,am_id,count,header_length,status,status_class,device";
     static void row(std::FILE* f, const Stamped<ucr::UcxAmSend>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%u,%llu,%llu,%d,%s", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.endpoint, s.payload.buffer, s.payload.request, s.payload.am_id,
-                     (unsigned long long)s.payload.count,
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%llu,%llu,%d,%s,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.endpoint, s.payload.buffer,
+                     s.payload.request, s.payload.am_id, (unsigned long long)s.payload.count,
                      (unsigned long long)s.payload.header_length, s.payload.status,
-                     ucx_status_class_name(s.payload.status_class));
+                     ucx_status_class_name(s.payload.status_class), (unsigned)s.payload.device);
     }
 };
 

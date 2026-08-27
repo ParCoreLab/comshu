@@ -119,6 +119,34 @@ else
     expect "probe length (the one true byte count)" "48" "$probe_len"
 fi
 
+# --- where the buffer lived -------------------------------------------------
+#
+# On the HPC-X stack UCX is often the ONLY layer that saw the traffic at all, so
+# a question this record cannot answer is one the whole capture cannot answer.
+# tests/hpc/apps/01_gromacs had to reach its central negative -- that UCX
+# pipelined through host memory rather than using GPUDirect -- by INFERRING it
+# from registration counts, because ucx_tag_send carried no memory type.
+#
+# This workload has no CUDA at all, and core::device_of uses RTLD_NOLOAD
+# precisely so it never loads it into a process that declined it. So every send
+# here must read kUnknownDevice (65535). The assertion is that the column is
+# present and carries that value on every row -- a field wired up wrong shows as
+# 0 (a real GPU ordinal, and a confident lie) or as an empty column.
+#
+# WHAT THIS CANNOT CHECK, measured rather than assumed: passing device_of the
+# WRONG pointer still passes here. With no CUDA in the process every address
+# answers kUnknownDevice, so this gate distinguishes "wired up" from
+# "fabricated" and cannot distinguish "the buffer" from "any pointer". Proving
+# that needs a process holding a real device allocation, which is hardware and
+# belongs in tests/hpc. Mutating device_of(buffer) to a literal 0 turns this
+# red; mutating it to device_of(nullptr) does not.
+dev_col=$(csv ucx_tag_send | awk -F, '{print $11}' | sort -u | tr '\n' ' ')
+expect "ucx_tag_send device is kUnknownDevice with no CUDA" "65535 " "$dev_col"
+rma_dev=$(csv ucx_rma | awk -F, '{print $13}' | sort -u | tr '\n' ' ')
+if [ -n "$(csv ucx_rma)" ]; then
+    expect "ucx_rma device is kUnknownDevice with no CUDA" "65535 " "$rma_dev"
+fi
+
 # --- peer identity, which the self transport can check exactly ---------------
 # The workload dials its OWN worker, so the endpoint's remote_prefix_hash must
 # equal that worker's prefix_hash. That is the whole cross-rank join mechanism

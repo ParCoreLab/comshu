@@ -2665,7 +2665,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
   int32_t status_;
   uint8_t status_class_;
   uint8_t door_;
-  int16_t padding1__;
+  uint16_t device_;
 
  public:
   UcxTagSend()
@@ -2679,11 +2679,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
         status_(0),
         status_class_(0),
         door_(0),
-        padding1__(0) {
+        device_(0) {
     (void)padding0__;
-    (void)padding1__;
   }
-  UcxTagSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, int32_t _status, uint8_t _status_class, uint8_t _door)
+  UcxTagSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint64_t _count, uint64_t _tag, int32_t _status, uint8_t _status_class, uint8_t _door, uint16_t _device)
       : temporal_(_temporal),
         endpoint_(::flatbuffers::EndianScalar(_endpoint)),
         buffer_(::flatbuffers::EndianScalar(_buffer)),
@@ -2694,9 +2693,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
         status_(::flatbuffers::EndianScalar(_status)),
         status_class_(::flatbuffers::EndianScalar(_status_class)),
         door_(::flatbuffers::EndianScalar(_door)),
-        padding1__(0) {
+        device_(::flatbuffers::EndianScalar(_device)) {
     (void)padding0__;
-    (void)padding1__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -2724,6 +2722,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxTagSend FLATBUFFERS_FINAL_CLASS {
   }
   uint8_t door() const {
     return ::flatbuffers::EndianScalar(door_);
+  }
+  uint16_t device() const {
+    return ::flatbuffers::EndianScalar(device_);
   }
 };
 FLATBUFFERS_STRUCT_END(UcxTagSend, 88);
@@ -2905,6 +2906,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
   uint8_t op_;
   uint8_t door_;
   int8_t padding0__;
+  uint16_t device_;
+  int16_t padding1__;  int32_t padding2__;
 
  public:
   UcxRma()
@@ -2919,10 +2922,15 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
         status_class_(0),
         op_(0),
         door_(0),
-        padding0__(0) {
+        padding0__(0),
+        device_(0),
+        padding1__(0),
+        padding2__(0) {
     (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
   }
-  UcxRma(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _rkey, uint64_t _count, uint64_t _remote_addr, int32_t _status, uint8_t _status_class, uint8_t _op, uint8_t _door)
+  UcxRma(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _rkey, uint64_t _count, uint64_t _remote_addr, int32_t _status, uint8_t _status_class, uint8_t _op, uint8_t _door, uint16_t _device)
       : temporal_(_temporal),
         endpoint_(::flatbuffers::EndianScalar(_endpoint)),
         buffer_(::flatbuffers::EndianScalar(_buffer)),
@@ -2934,8 +2942,13 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
         status_class_(::flatbuffers::EndianScalar(_status_class)),
         op_(::flatbuffers::EndianScalar(_op)),
         door_(::flatbuffers::EndianScalar(_door)),
-        padding0__(0) {
+        padding0__(0),
+        device_(::flatbuffers::EndianScalar(_device)),
+        padding1__(0),
+        padding2__(0) {
     (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -2970,8 +2983,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRma FLATBUFFERS_FINAL_CLASS {
   uint8_t door() const {
     return ::flatbuffers::EndianScalar(door_);
   }
+  uint16_t device() const {
+    return ::flatbuffers::EndianScalar(device_);
+  }
 };
-FLATBUFFERS_STRUCT_END(UcxRma, 88);
+FLATBUFFERS_STRUCT_END(UcxRma, 96);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAmSend FLATBUFFERS_FINAL_CLASS {
  private:
@@ -2984,7 +3000,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAmSend FLATBUFFERS_FINAL_CLASS {
   uint64_t header_length_;
   int32_t status_;
   uint8_t status_class_;
-  int8_t padding0__;  int16_t padding1__;
+  int8_t padding0__;
+  uint16_t device_;
 
  public:
   UcxAmSend()
@@ -2998,11 +3015,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAmSend FLATBUFFERS_FINAL_CLASS {
         status_(0),
         status_class_(0),
         padding0__(0),
-        padding1__(0) {
+        device_(0) {
     (void)padding0__;
-    (void)padding1__;
   }
-  UcxAmSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _am_id, uint64_t _count, uint64_t _header_length, int32_t _status, uint8_t _status_class)
+  UcxAmSend(const pcomm::fb::Temporal &_temporal, uint32_t _endpoint, uint32_t _buffer, uint32_t _request, uint32_t _am_id, uint64_t _count, uint64_t _header_length, int32_t _status, uint8_t _status_class, uint16_t _device)
       : temporal_(_temporal),
         endpoint_(::flatbuffers::EndianScalar(_endpoint)),
         buffer_(::flatbuffers::EndianScalar(_buffer)),
@@ -3013,9 +3029,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAmSend FLATBUFFERS_FINAL_CLASS {
         status_(::flatbuffers::EndianScalar(_status)),
         status_class_(::flatbuffers::EndianScalar(_status_class)),
         padding0__(0),
-        padding1__(0) {
+        device_(::flatbuffers::EndianScalar(_device)) {
     (void)padding0__;
-    (void)padding1__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -3043,6 +3058,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAmSend FLATBUFFERS_FINAL_CLASS {
   }
   uint8_t status_class() const {
     return ::flatbuffers::EndianScalar(status_class_);
+  }
+  uint16_t device() const {
+    return ::flatbuffers::EndianScalar(device_);
   }
 };
 FLATBUFFERS_STRUCT_END(UcxAmSend, 88);

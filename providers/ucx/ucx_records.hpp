@@ -64,6 +64,18 @@ PCOMM_RECORD(UcxTagSend, RecordKind::Event, 606, "ucx_tag_send") {
     std::int32_t  status;        // UCS_OK or the decoded error status
     std::uint8_t  status_class;  // StatusClass
     std::uint8_t  door;          // UcxDoor
+    // WHERE THE BUFFER LIVES. On the HPC-X stack UCX is often the ONLY layer
+    // that saw this traffic at all — the door sweep found no exported verbs send
+    // door beneath it — so a question this record cannot answer is a question
+    // the whole capture cannot answer. "Did that send come from device memory?"
+    // is exactly the question GROMACS's direct-GPU-comm arms differ on, and
+    // tests/hpc/apps/01_gromacs had to reach its central negative by INFERRING
+    // it from registration counts instead of reading it.
+    //
+    // kUnknownDevice means host memory, or no CUDA in the process, or the query
+    // failed — four situations wearing one number, which is PLAN-20260817-0634
+    // and not this field's to fix.
+    core::DeviceId device;  // device_of(buffer)
 };
 
 // EVENT — a tagged receive was POSTED. Not a receive that completed, and the
@@ -145,6 +157,7 @@ PCOMM_RECORD(UcxRma, RecordKind::Event, 610, "ucx_rma") {
     std::uint8_t  status_class;
     std::uint8_t  op;    // RmaOp
     std::uint8_t  door;  // UcxDoor
+    core::DeviceId device;  // device_of(buffer), the LOCAL one. See UcxTagSend.
 };
 
 // EVENT — an active-message send. The header and the payload keep separate
@@ -159,6 +172,7 @@ PCOMM_RECORD(UcxAmSend, RecordKind::Event, 612, "ucx_am_send") {
     std::uint64_t header_length;  // bytes, and this one really is bytes
     std::int32_t  status;
     std::uint8_t  status_class;
+    core::DeviceId device;  // device_of(buffer), the payload's. See UcxTagSend.
 };
 
 // ENTITY — a UCP memory registration, lifetime [ucp_mem_map, ucp_mem_unmap).

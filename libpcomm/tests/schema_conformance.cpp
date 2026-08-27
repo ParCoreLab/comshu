@@ -216,10 +216,11 @@ int main() {
         c.payload.status = -17;
         c.payload.status_class = 2;
         c.payload.door = static_cast<uint8_t>(ur::UcxDoor::LegacySync);
+        c.payload.device = 3;
         fb::UcxTagSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x707),
                                       fb::TimePoint(2, 0x808), 0),
                          0x99, 0xAA, 0xBB, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, -17, 2,
-                         static_cast<uint8_t>(ur::UcxDoor::LegacySync));
+                         static_cast<uint8_t>(ur::UcxDoor::LegacySync), 3);
         expect_identical("UcxTagSend", &c, &f, sizeof(c));
     }
     {
@@ -255,10 +256,12 @@ int main() {
         c.payload.status_class = 0;
         c.payload.op = static_cast<uint8_t>(ur::RmaOp::Get);
         c.payload.door = static_cast<uint8_t>(ur::UcxDoor::Nbi);
+        c.payload.device = pcomm::core::kUnknownDevice;
         fb::UcxRma f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xB0B),
                                   fb::TimePoint(2, 0xC0C), 0),
                      0x11, 0x22, 0x33, 0x44, 0x8877665544332211ull, 0x00007F0011223344ull, 0, 0,
-                     static_cast<uint8_t>(ur::RmaOp::Get), static_cast<uint8_t>(ur::UcxDoor::Nbi));
+                     static_cast<uint8_t>(ur::RmaOp::Get), static_cast<uint8_t>(ur::UcxDoor::Nbi),
+                     pcomm::core::kUnknownDevice);
         expect_identical("UcxRma", &c, &f, sizeof(c));
     }
     {
@@ -272,9 +275,10 @@ int main() {
         c.payload.header_length = 0x40;
         c.payload.status = -9;
         c.payload.status_class = 2;
+        c.payload.device = 7;
         fb::UcxAmSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0xD0D),
                                      fb::TimePoint(2, 0xE0E), 0),
-                        0x55, 0x66, 0x77, 0x0BADC0DEu, 0x0011223344556677ull, 0x40, -9, 2);
+                        0x55, 0x66, 0x77, 0x0BADC0DEu, 0x0011223344556677ull, 0x40, -9, 2, 7);
         expect_identical("UcxAmSend", &c, &f, sizeof(c));
     }
     {

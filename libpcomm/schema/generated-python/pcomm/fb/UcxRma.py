@@ -11,7 +11,7 @@ class UcxRma(object):
 
     @classmethod
     def SizeOf(cls):
-        return 88
+        return 96
 
     # UcxRma
     def Init(self, buf, pos):
@@ -42,9 +42,13 @@ class UcxRma(object):
     def Op(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(85))
     # UcxRma
     def Door(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(86))
+    # UcxRma
+    def Device(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
 
-def CreateUcxRma(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, endpoint, buffer, request, rkey, count, remoteAddr, status, statusClass, op, door):
-    builder.Prep(8, 88)
+def CreateUcxRma(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, endpoint, buffer, request, rkey, count, remoteAddr, status, statusClass, op, door, device):
+    builder.Prep(8, 96)
+    builder.Pad(6)
+    builder.PrependUint16(device)
     builder.Pad(1)
     builder.PrependUint8(door)
     builder.PrependUint8(op)
