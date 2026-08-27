@@ -403,3 +403,61 @@ engine-level change; it is not this provider's to make.
   application with UCX linked in refuses instead of instrumenting — safe, and it
   says so.
 
+---
+
+## VALIDATED ON HARDWARE — MN5 job 45113099, 2026-08-27
+
+Everything above was reasoned from headers and measured on the `self` transport.
+This is first contact with `rc_mlx5`. Case 19's workload and topology — two
+nodes, one rank each, deliberately crossing a node boundary so UCX cannot fall
+back to shared memory — with `-p ucx,ucx_deep`.
+
+**The binding accepted itself, and says so.** `uct_binding` carries one row per
+rank:
+
+    compiled_version  runtime_version  ops_size  accepted  forced
+    1.18.0            1.18.0           400       1         0
+
+Compiled against the 1.19.0 sysroot, run against MN5's 1.18.0, `sizeof
+uct_iface_ops_t` = 400 on both — which is the number this plan predicted from
+the header sweep. Accepted without a force override.
+
+**Every transport UCX opened was instrumented**, and the slot counts track
+transport capability rather than being uniform:
+
+    tl_name    dev_name     instrumented  patched_ops
+    rc_mlx5    mlx5_2:1     yes           13
+    dc_mlx5    mlx5_2:1     yes           13
+    rc_verbs   mlx5_2:1     yes            9
+    ud_mlx5    mlx5_1:1     yes            5
+    ud_verbs   mlx5_2:1     yes            5
+    sysv       memory       yes            6
+
+**The data plane is recorded:** 295 `uct_send` rows across two ranks — 235
+`am_bcopy`, 56 `am_short`, 4 `am_zcopy`.
+
+**BOTH LAYERS IN ONE CAPTURE, which is the thing that did not exist before:**
+260 `ucx_tag_send` against 295 `uct_send`. They do not match and must not — one
+UCP call can become several UCT operations, and wireup and flow-control traffic
+has no UCP call above it at all. That difference is now measurable instead of
+invisible.
+
+### What this run did NOT establish
+
+- Zero-copy is barely exercised (4 `am_zcopy`) and rendezvous not at all: this
+  workload is small messages. `get_zcopy`/`put_zcopy` and the RNDV path are
+  still untested on hardware.
+- No hardware tag matching. `rc_mlx5` supports it; whether this workload took
+  that path is not recorded, and the `tag` column's meaning there is unverified.
+- Still no `link_sql.hpp` lane, so `comm_edges` cannot use `tl_name` — the most
+  valuable thing these records add is still not reachable from the derived
+  layer. That is the obvious next step.
+
+### One defect this run found, before it could run at all
+
+The first attempt (job 45112957) never started: `pcomm run -p ucx,ucx_deep`
+refused with "ucx_deep provider library not found" while the library sat
+correctly built beside the others. `common.sh` listed five provider directories
+by hand and this was the sixth. Fixed in a928015 by globbing, filtered to
+directories that actually hold a `lib*_trace.so`. Refusing was right; the list
+was the defect.
