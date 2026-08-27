@@ -520,3 +520,46 @@ agent's runner mid-flight makes its results unattributable. It belongs with
 item 16's decision: if an app study is ever promoted to a gate, it uses
 sql_check.sh, which reads the derived layer — and item 16 is what made that
 possible.
+
+
+20. Two of the three remaining app xfails are the tool being RIGHT
+-------------------------------------------------------------------
+Raised 2026-08-27, chasing the "visible issues still open" list. Both were
+carrying marker text that described a mechanism the data does not support, and
+both turn out to need no code change. Recorded because the wrong text would
+otherwise send the next person after a door that is not missing.
+
+entity_close_accounted (01_gromacs). The marker said "3,726 entity_close rows
+against openers that were never recorded, opener 100". Measured on job 45103152:
+unmatched closes = 0. Every mem-region close names a region that was recorded.
+What actually fires is clause 3 -- 33 of 1,588 regions still live at exit, 3-5
+per rank evenly across all 8, all origin=1, i.e. the same door as the other
+1,508. An application exiting without deregistering. The assertion file already
+prescribes the answer and forbids the tempting one: scope per case, never a
+global exemption for opener 100, because that would hide the hcoll leak in
+BUGS-FOUND.md and the 474 unmatched closes it was written for.
+
+mem_owner_unambiguous (01_gromacs). The marker said UCX re-registers one base at
+growing lengths. That IS a containment chain and the reader already resolves it
+to the innermost object -- nested_refs, not ambiguous_refs, exactly as it does
+for NCCL's co-terminal sub-ranges. The real shape is a 16-BYTE PARTIAL OVERLAP:
+
+    0x10a2a480 + 88016  ends at 0x10a3fc50, and a region starts at 0x10a3fc40
+    0x112f6830 + 86288  ends at 0x1130b940, and a region starts at 0x1130b930
+
+Sixteen bytes each time, 198 rows. Neither region contains the other, so no rule
+picks a winner without inventing one -- which is the finding this assertion
+exists to deliver. And ZERO rows have devices > 1, so the emitters do not
+disagree about any device; an earlier reading of mine that they did was a
+column-index mistake.
+
+WORTH FOLLOWING UP AS A UCX QUESTION, not a pcomm one: a registration cache
+producing regions that overlap by a constant 16 bytes looks like an alignment
+rounding rather than intent. If it is a defect it belongs in BUGS-FOUND.md, and
+the evidence above is most of what such an entry needs. Not chased here because
+it is a claim about UCX and wants UCX sources open beside it.
+
+THE GENERAL POINT, which cost me two investigations to relearn: a marker is
+prose, and prose does not get re-measured when the code under it changes. Both
+of these were written against captures from a tracer that has since had five
+fixes. Re-measure before believing a marker, including your own.
