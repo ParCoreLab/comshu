@@ -28,7 +28,10 @@
 // The one-sided half is not decoration: MPI_Put/MPI_Get over osc/ucx are the
 // only way an MPI program reaches UCT's Put*/Get* doors, and `remote_addr` —
 // the object-heatmap key the whole HPC-X class has never had — is written by
-// those doors and by no other.
+// those doors and by no other. It runs at TWO sizes, because the protocol split
+// applies here too: a megabyte is always zero-copy, so the first version of this
+// workload reached put_zcopy and get_zcopy and left the short and bcopy doors as
+// unwitnessed as they had been.
 
 #include <mpi.h>
 #include <stdio.h>
@@ -39,7 +42,19 @@
 // it: sql_check.sh materialises those values as `params`, so an assertion that
 // reads params.msg_max_bytes and finds no operation that large is reporting a
 // disagreement between this file and that one.
-enum { ITERS = 20, RMA_ITERS = 10, RMA_BYTES = 1u << 20, WIN_BYTES = 4u << 20 };
+enum {
+    ITERS = 20,
+    RMA_ITERS = 10,
+    RMA_BYTES = 1u << 20,
+    // The SMALL one-sided size, added 2026-08-28. RMA_BYTES is a megabyte and
+    // therefore always zero-copy, which left put_short/put_bcopy/get_short/
+    // get_bcopy — four of the fourteen doors — with no hardware evidence at
+    // all. UCX picks the RMA protocol by size the same way it picks the tag
+    // one, so reaching them needs a size below the thresholds, not a
+    // different call.
+    RMA_SMALL_BYTES = 8,
+    WIN_BYTES = 4u << 20
+};
 static const size_t SIZES[] = {8, 4096, 65536, 4194304};
 enum { NSIZES = (int)(sizeof SIZES / sizeof *SIZES) };
 
@@ -113,6 +128,34 @@ int main(int argc, char** argv) {
         }
     }
     MPI_Win_fence(0, win);
+
+    // --- the SMALL one-sided doors ------------------------------------------
+    //
+    // Same window, same calls, one size. Below UCX_ZCOPY_THRESH a put is built
+    // inline in the WQE (put_short) or packed into a bounce buffer (put_bcopy)
+    // rather than registered and DMA'd, and a get likewise — so this is the only
+    // traffic in the suite that can reach those four doors.
+    //
+    // A DISTINCT OFFSET REGION from the large puts above (the top of the window,
+    // counting down), so a capture can tell the small operations from the large
+    // ones by `remote_addr` alone without joining on size. Same reason the large
+    // ones walk their offset: a constant address proves nothing about whether it
+    // was recorded.
+    for (int i = 0; i < RMA_ITERS; ++i) {
+        MPI_Win_fence(0, win);
+        if (rank == 0) {
+            const MPI_Aint off = (MPI_Aint)(WIN_BYTES - (size_t)(i + 1) * RMA_SMALL_BYTES);
+            MPI_Put(buf, RMA_SMALL_BYTES, MPI_UNSIGNED_CHAR, 1, off, RMA_SMALL_BYTES,
+                    MPI_UNSIGNED_CHAR, win);
+            MPI_Win_fence(0, win);
+            MPI_Get(buf, RMA_SMALL_BYTES, MPI_UNSIGNED_CHAR, 1, off, RMA_SMALL_BYTES,
+                    MPI_UNSIGNED_CHAR, win);
+        } else {
+            MPI_Win_fence(0, win);
+        }
+    }
+    MPI_Win_fence(0, win);
+
     MPI_Win_free(&win);
     MPI_Free_mem(win_mem);
 
@@ -126,8 +169,8 @@ int main(int argc, char** argv) {
         for (int s = 0; s < NSIZES; ++s)
             total += SIZES[s] * ITERS;
         printf("uct_path_coverage: PASS ranks=2 sizes=%d iters=%d two_sided_bytes=%zu "
-               "rma_iters=%d rma_bytes=%u\n",
-               NSIZES, ITERS, total, RMA_ITERS, RMA_BYTES);
+               "rma_iters=%d rma_bytes=%u rma_small_bytes=%u\n",
+               NSIZES, ITERS, total, RMA_ITERS, RMA_BYTES, RMA_SMALL_BYTES);
     }
     free(buf);
     MPI_Finalize();
