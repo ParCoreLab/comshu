@@ -306,8 +306,8 @@ not fix them, because a study that edits the tool it is validating proves
 nothing. Ordered by value per unit of effort.
 
 
-13. ucp_worker_query is unhooked — one DEFINE_PRELOAD_HOOK, three studies
-------------------------------------------------------------------------
+13. DONE (2026-08-27): ucp_worker_query is hooked
+--------------------------------------------------
 FOUND INDEPENDENTLY BY THREE OF THE FOUR, from three different angles, which is
 the strongest signal this exercise produced. pcomm hooks `ucp_worker_create`
 (ucx_hooks.hpp:10) and `ucp_worker_get_address` (ucx_hooks.hpp:181, ucx.map:17).
@@ -329,9 +329,18 @@ GROMACS's flip from vacuous or xfail to real once it is hooked.
 Same shape as case 08's empty ib_queue_pair: an API hooked in one of its two
 spellings. Cheapest item in this file by a wide margin.
 
+FIXED, and the gate was the other half. tests/ucx_selftest.cpp called the same
+door the provider happened to hook, so ucx_records.sh was green throughout. It
+now asks through BOTH doors and asserts two rows agreeing on prefix_hash, plus a
+third query with the address field ABSENT and the attr struct poisoned with
+0xA5 — because ucp_worker_query fills only what the caller asks for, and a
+provider reading attr->address without checking the field mask would hash
+uninitialised stack into a deterministic, plausible, wrong join key. Two
+mutations red: no field-mask check (3 rows), handler disabled (1 row).
 
-14. comm_edges has no UCX lane, so the headline table is empty for MPI-over-UCX
--------------------------------------------------------------------------------
+
+14. DONE (2026-08-27): comm_edges has a UCX lane
+------------------------------------------------
 `_sends` (link_sql.hpp:532) is built from `ib_post_send` and `mlx5_device_send`
 and nothing else. On the HPC-X stack both are empty — see the door-sweep result
 now recorded in PLAN-20260815-1540 Future work 1 — so `comm_edges` has ZERO ROWS
@@ -345,6 +354,19 @@ rank correspondence, and this is the absence of a lane that would use it. Both
 are needed before any HPC-X application has a rank matrix.
 
 Note what it is NOT: the traffic is captured. The derived layer cannot see it.
+
+FIXED. Three views plus one UNION ALL, with transport = 'ucx' as its own
+dimension so the verbs/devx oracle subset is untouched by construction, and
+unit = 'datatype-units' because UcxTagSend.count is not universally bytes. An
+ambiguous prefix resolves to neither rank; a get is emitted with its endpoints
+swapped; rejected sends and AM headers are excluded. link_health gains
+unresolved_ucx. Six mutations red.
+
+THE FIRST DRAFT WAS WRONG IN A WAY ONLY THE FIXTURE COULD SHOW: the predicates
+were written as status_class <> 'error' and op = 'put'. The derived layer mounts
+the RAW streams, where an enum is the integer that went on disk — the CSV export
+decodes for a human and nothing in link_sql ever sees those strings — so the
+lane matched no row at all. Item 9's argument for fixtures, demonstrated.
 
 
 15. There is no flush on an abnormal exit, and the failure is inverted
