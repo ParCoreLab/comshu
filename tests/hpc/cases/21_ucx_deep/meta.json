@@ -5,7 +5,7 @@
     "ucx_deep"
   ],
   "topology": "2 nodes x 1 rank, MPI two-sided size sweep plus one-sided Put/Get over MN5's HPC-X UCX, captured at BOTH the public UCP doors and the uct_iface_ops_t transport table",
-  "golden": "none — assertions only; every claim is derived from the thresholds and sizes below, which the job script pins with -x UCX_* rather than inheriting",
+  "golden": "none \u2014 assertions only; every claim is derived from the thresholds and sizes below, which the job script pins with -x UCX_* rather than inheriting",
   "workload": {
     "ranks": 2,
     "nodes": 2,
@@ -34,7 +34,7 @@
     "rma_bytes",
     "win_bytes"
   ],
-  "workload_note": "`tests/hpc/probes/uct_path_coverage/size_sweep.c`. Four message sizes x 20 ping-pong iterations each, then 10 rounds of MPI_Put + MPI_Get of rma_bytes into a win_bytes window at a DIFFERENT OFFSET each round, then one MPI_Allreduce. MPI_UNSIGNED_CHAR throughout, deliberately: `UcxTagSend.count` is a UCP datatype count and equals bytes only for a contiguous 8-bit datatype, and choosing the datatype that makes the two coincide is what lets an assertion compare a recorded count against a size in this file at all.\n\nTHE THRESHOLDS ARE PINNED BY THE JOB SCRIPT, not inherited. UCX picks its protocol by message size against zcopy_thresh / rndv_thresh / tm_thresh, so a sweep against unknown thresholds proves nothing about which door was taken. Job 45113099 is what that looks like: a valid capture of 295 UCT operations, every one an active message, with three of the four op families still unwitnessed. The sizes here straddle every threshold — msg_short_bytes below all of them, msg_zcopy_bytes above zcopy_thresh and tm_thresh but below rndv_thresh, msg_rndv_bytes and msg_max_bytes above all three.\n\nONE RANK PER NODE for case 19's reason: UCX picks shared memory for a same-node pair, so a single-node run would exercise the doors without reaching the rc/dc transports whose protocol choices this case is about.\n\nNo assertion counts messages. One MPI_Send is not one uct_send — that is the entire point of the layer, and job 45113099 measured the gap directly at 295 UCT operations against 260 UCP ones in one capture, because wireup and flow control produce transport traffic with no application call above it.",
+  "workload_note": "`tests/hpc/probes/uct_path_coverage/size_sweep.c`. Four message sizes x 20 ping-pong iterations each, then 10 rounds of MPI_Put + MPI_Get of rma_bytes into a win_bytes window at a DIFFERENT OFFSET each round, then one MPI_Allreduce. MPI_UNSIGNED_CHAR throughout, deliberately: `UcxTagSend.count` is a UCP datatype count and equals bytes only for a contiguous 8-bit datatype, and choosing the datatype that makes the two coincide is what lets an assertion compare a recorded count against a size in this file at all.\n\nTHE THRESHOLDS ARE PINNED BY THE JOB SCRIPT, not inherited. UCX picks its protocol by message size against zcopy_thresh / rndv_thresh / tm_thresh, so a sweep against unknown thresholds proves nothing about which door was taken. Job 45113099 is what that looks like: a valid capture of 295 UCT operations, every one an active message, with three of the four op families still unwitnessed. The sizes here straddle every threshold \u2014 msg_short_bytes below all of them, msg_zcopy_bytes above zcopy_thresh and tm_thresh but below rndv_thresh, msg_rndv_bytes and msg_max_bytes above all three.\n\nONE RANK PER NODE for case 19's reason: UCX picks shared memory for a same-node pair, so a single-node run would exercise the doors without reaching the rc/dc transports whose protocol choices this case is about.\n\nNo assertion counts messages. One MPI_Send is not one uct_send \u2014 that is the entire point of the layer, and job 45113099 measured the gap directly at 295 UCT operations against 260 UCP ones in one capture, because wireup and flow control produce transport traffic with no application call above it.",
   "expect_tables": [
     "ucx_context",
     "ucx_worker",
@@ -42,6 +42,7 @@
     "uct_iface",
     "uct_ep",
     "uct_send",
-    "uct_binding"
+    "uct_binding",
+    "ucx_worker_address"
   ]
 }
