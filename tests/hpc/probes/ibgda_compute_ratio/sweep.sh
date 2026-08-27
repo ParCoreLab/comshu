@@ -90,7 +90,13 @@ run_once() {   # <mode> <steps> -> ms on stdout, or empty on failure
     hijack)  line=$(timeout 300 $MPIRUN -np 2 $NV_ENV "$PCOMM" run -p mlx5dv \
                       --enable-doorbell-hijack \
                       -o "$OUT/hijack" -- "$APP" "$ELEMS" "$ITERS" "$steps" 2>>"$OUT/fail.log") ;;
-    fwd)     line=$(timeout 300 $MPIRUN -np 2 $NV_ENV -x PCOMM_HIJACK_NO_DECODE \
+    # -x VAR=VALUE, set INLINE and never exported into this shell. Exporting it
+    # and passing a bare `-x PCOMM_HIJACK_NO_DECODE` put it in the environment of
+    # the `hijack` runs too, so both columns measured the same configuration and
+    # the decode looked like it cost 5%. The absent 214.pcs stream in the hijack
+    # capture is what gave it away -- a hijack run that emits no Mlx5DeviceSend
+    # has not decoded anything.
+    fwd)     line=$(timeout 300 $MPIRUN -np 2 $NV_ENV -x PCOMM_HIJACK_NO_DECODE=1 \
                       "$PCOMM" run -p mlx5dv --enable-doorbell-hijack \
                       -o "$OUT/fwd" -- "$APP" "$ELEMS" "$ITERS" "$steps" 2>>"$OUT/fail.log") ;;
   esac
@@ -103,8 +109,6 @@ run_once() {   # <mode> <steps> -> ms on stdout, or empty on failure
 }
 
 median() { printf '%s\n' "$@" | sort -g | awk '{a[NR]=$1} END{if(NR)print a[int((NR+1)/2)]}'; }
-
-export PCOMM_HIJACK_NO_DECODE=1   # only ever read by the `fwd` configuration
 
 printf '%8s  %10s  %10s  %10s  %10s  %9s  %9s\n' \
   steps bare_ms passive_ms fwd_ms hijack_ms "fwd x" "hijack x"
@@ -135,6 +139,19 @@ for s in $STEPS; do
       "$(grep -m1 -iE 'error|cannot|abort' "$OUT/fail.log" 2>/dev/null | cut -c1-90)"
   fi
 done
+
+# THE CONFIGURATIONS MUST BE DIFFERENT, and this checks it from the CAPTURE
+# rather than from the environment that was supposed to produce it. `fwd` must
+# have doorbell rows (212) and no send rows (214); `hijack` must have both. If
+# they look alike, the two columns measured one thing and the table is void.
+echo
+for m in fwd hijack; do
+  db=$("$PCOMM" read "$OUT/$m" 2>/dev/null | awk '$2==212 {n+=$5} END{print n+0}')
+  sd=$("$PCOMM" read "$OUT/$m" 2>/dev/null | awk '$2==214 {n+=$5} END{print n+0}')
+  echo "$m: $db doorbells, $sd device sends"
+done
+echo "(fwd must show 0 device sends and hijack must show many; equal columns mean"
+echo " the two configurations were the same run and the table above is void)"
 
 echo
 echo "doorbells forwarded in the last hijack run:"
