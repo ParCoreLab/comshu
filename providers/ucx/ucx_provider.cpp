@@ -354,6 +354,37 @@ Profiler::Profiler() {
                                                             fnv1a(*address, kAddressHashPrefix),
                                                             static_cast<std::uint32_t>(*length)});
     });
+    // The same record, from the door OpenMPI's point-to-point path actually
+    // uses. See the ucp_worker_query hook in ucx_hooks.hpp for why this exists
+    // and what was silently empty without it.
+    //
+    // THE FIELD MASK IS LOAD-BEARING, and is the whole difference between this
+    // handler and the one above. `ucp_worker_get_address` has one job and its
+    // out-parameters are always meaningful on UCS_OK. `ucp_worker_query` fills
+    // only what the CALLER asked for: `attr->address` and `attr->address_length`
+    // are untouched — not zeroed, untouched — unless UCP_WORKER_ATTR_FIELD_ADDRESS
+    // was set on input. Reading them regardless would hash whatever the caller's
+    // stack happened to hold and mint a plausible, deterministic, wrong join key,
+    // which is worse than no row: `remote_prefix_hash` would match nothing while
+    // looking perfectly well-formed. Most callers of this function want
+    // thread_mode or max_am_header and never ask for the address at all.
+    register_post<worker_query_tag>(
+        [](ucs_status_t status, ucp_worker_h worker, ucp_worker_attr_t* attr, auto begin, auto end) {
+            if (status != UCS_OK || !attr)
+                return;
+            if (!(attr->field_mask & UCP_WORKER_ATTR_FIELD_ADDRESS))
+                return;
+            if (!attr->address || attr->address_length < kAddressHashPrefix)
+                return;
+            rec().record(span(begin, end),
+                         rr::UcxWorkerAddress{
+                             {},
+                             {},
+                             h(worker),
+                             fnv1a(attr->address, attr->address_length),
+                             fnv1a(attr->address, kAddressHashPrefix),
+                             static_cast<std::uint32_t>(attr->address_length)});
+        });
     register_pre<worker_destroy_tag>([](ucp_worker_h worker, auto) {
         close(worker, pcomm::core::RecordTrait<rr::UcxWorker>::type_id);
     });
@@ -670,6 +701,9 @@ extern "C" ucs_status_t ucp_mem_map(ucp_context_h context, const ucp_mem_map_par
 }
 extern "C" ucs_status_t ucp_mem_unmap(ucp_context_h context, ucp_mem_h memh) {
     return ucx::Profiler::invoke_preload<ucx::mem_unmap_tag>(context, memh);
+}
+extern "C" ucs_status_t ucp_worker_query(ucp_worker_h worker, ucp_worker_attr_t* attr) {
+    return ucx::Profiler::invoke_preload<ucx::worker_query_tag>(worker, attr);
 }
 extern "C" ucs_status_t ucp_worker_get_address(ucp_worker_h worker, ucp_address_t** address,
                                                size_t* length) {

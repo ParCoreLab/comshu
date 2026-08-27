@@ -124,9 +124,29 @@ fi
 # equal that worker's prefix_hash. That is the whole cross-rank join mechanism
 # exercised in one process: on a real run the two sides live in different
 # captures and there is nothing local to compare them against.
-expect "ucx_worker_address rows" 1 "$(csv ucx_worker_address | wc -l)"
+# TWO rows, and the number is the assertion. The workload asks for its address
+# through BOTH doors — ucp_worker_query and ucp_worker_get_address — because a
+# provider hooking one of them is indistinguishable from a provider hooking both
+# until an application picks the other. That is what happened: OpenMPI's
+# point-to-point path uses only ucp_worker_query, and three of the four studies
+# in tests/hpc/apps/ independently found ucx_worker_address describing the wrong
+# worker for every MPI application. This gate could not see it, because the
+# workload called the door the provider happened to hook.
+#
+# THREE would be a different bug and is why the workload issues a third query
+# with UCP_WORKER_ATTR_FIELD_ADDRESS *absent*. ucp_worker_query fills only what
+# the caller asks for, so a provider that reads attr->address without checking
+# the field mask hashes uninitialised stack — deterministically, and into a
+# plausible-looking join key that matches nothing. The workload poisons the
+# struct with 0xA5 first, so that bug cannot hide behind a zeroed field.
+expect "ucx_worker_address rows" 2 "$(csv ucx_worker_address | wc -l)"
 expect "ucx_ep_connection rows"  1 "$(csv ucx_ep_connection | wc -l)"
-worker_prefix=$(csv ucx_worker_address | awk -F, '{print $5}')
+# The two doors describe ONE worker and one address, so they must agree. If they
+# disagree, one of them is hashing a different byte range or a different buffer,
+# and a capture would carry two irreconcilable identities for the same worker.
+distinct_prefix=$(csv ucx_worker_address | awk -F, '{print $5}' | sort -u | wc -l)
+expect "both address doors agree on prefix_hash" 1 "$distinct_prefix"
+worker_prefix=$(csv ucx_worker_address | awk -F, '{print $5}' | sort -u)
 ep_remote=$(csv ucx_ep_connection | awk -F, '{print $4}')
 if [ -z "$worker_prefix" ] || [ "$worker_prefix" != "$ep_remote" ]; then
     echo "FAIL: peer identity does not resolve — worker prefix_hash $worker_prefix,"
@@ -136,7 +156,7 @@ if [ -z "$worker_prefix" ] || [ "$worker_prefix" != "$ep_remote" ]; then
 fi
 # The two worker hashes must DIFFER: they cover different byte ranges, and equal
 # values would mean one of them is not being computed over what it claims.
-worker_full=$(csv ucx_worker_address | awk -F, '{print $4}')
+worker_full=$(csv ucx_worker_address | awk -F, '{print $4}' | sort -u)
 if [ "$worker_full" = "$worker_prefix" ]; then
     echo "FAIL: addr_hash and prefix_hash are identical ($worker_full) — one of"
     echo "  them is not hashing the range it claims, so collision detection is blind"

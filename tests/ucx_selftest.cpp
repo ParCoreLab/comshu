@@ -93,6 +93,40 @@ int main(void) {
         return 77;
     }
 
+    /* BOTH SPELLINGS OF "give me this worker's address", because a provider that
+     * hooks one of them looks identical to a provider that hooks both until an
+     * application picks the other. That is not hypothetical: pcomm hooked only
+     * ucp_worker_get_address, OpenMPI's point-to-point path (mca_pml_ucx) uses
+     * only ucp_worker_query, and three of the four studies in tests/hpc/apps/
+     * independently found that ucx_worker_address was therefore describing the
+     * wrong worker for every MPI application. This gate could not see it,
+     * because this file called the same door the provider happened to hook.
+     *
+     * The query goes first and asks for the address explicitly. UCP_WORKER_ATTR_
+     * FIELD_ADDRESS is the whole point: ucp_worker_query fills only what the
+     * caller asks for, so a provider reading attr->address without checking the
+     * mask would hash uninitialised stack. Zeroing attr here would hide that,
+     * hence the deliberate garbage fill below. */
+    ucp_worker_attr_t wattr;
+    memset(&wattr, 0xA5, sizeof wattr); /* poison: nothing may be read unasked */
+    wattr.field_mask = UCP_WORKER_ATTR_FIELD_ADDRESS;
+    if (ucp_worker_query(g_worker, &wattr) != UCS_OK) {
+        fprintf(stderr, "ucx_selftest: ucp_worker_query failed\n");
+        ucp_worker_destroy(g_worker);
+        ucp_cleanup(context);
+        return 77;
+    }
+    ucp_worker_release_address(g_worker, wattr.address);
+
+    /* A second query that does NOT ask for the address. A provider that ignores
+     * the field mask emits a row here, hashing the poison above; one that
+     * respects it emits nothing. The row count downstream is what tells them
+     * apart. */
+    ucp_worker_attr_t nattr;
+    memset(&nattr, 0xA5, sizeof nattr);
+    nattr.field_mask = UCP_WORKER_ATTR_FIELD_THREAD_MODE;
+    (void)ucp_worker_query(g_worker, &nattr);
+
     /* An endpoint to our own worker: the self transport, no network needed. */
     ucp_address_t* address;
     size_t         address_len;

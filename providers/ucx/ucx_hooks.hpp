@@ -180,3 +180,26 @@ DEFINE_PRELOAD_HOOK(ucx, atomic_op_nbx, "ucp_atomic_op_nbx", ucs_status_ptr_t, u
 // well-formed. A join key that travels between captures has to be deterministic.
 DEFINE_PRELOAD_HOOK(ucx, worker_get_address, "ucp_worker_get_address", ucs_status_t, ucp_worker_h,
                     ucp_address_t**, size_t*);
+
+// THE SAME FACT, THROUGH THE DOOR THAT IS ACTUALLY USED. `ucp_worker_get_address`
+// above is not how an MPI application obtains its worker address. OpenMPI's
+// `mca_pml_ucx` — the component beneath every MPI_Send, MPI_Alltoall and halo
+// exchange — calls `ucp_worker_query` with UCP_WORKER_ATTR_FIELD_ADDRESS and
+// never calls the older entry point; only the one-sided `mca_osc_ucx` and
+// `mca_spml_ucx` use that one.
+//
+// So before this hook existed, every OpenMPI point-to-point application produced
+// a `ucx_worker_address` row for the wrong one of its two workers — the
+// one-sided worker, which carries no traffic — and
+// `ucx_ep_connection.remote_prefix_hash` therefore pointed at nothing. That
+// field is what ucx_records.hpp calls "the only thing in the UCX records that
+// crosses a rank boundary", so the practical effect was that the provider could
+// not produce a communication matrix for MPI p2p at all.
+//
+// Found independently by three of the four application studies in
+// tests/hpc/apps/ (GROMACS, LAMMPS, Quantum ESPRESSO), from three different
+// angles, and by none of the workloads we wrote ourselves — every one of those
+// reaches UCX through a door we already knew about. This is the same shape as
+// case 08's empty ib_queue_pair: an API hooked in one of its two spellings.
+DEFINE_PRELOAD_HOOK(ucx, worker_query, "ucp_worker_query", ucs_status_t, ucp_worker_h,
+                    ucp_worker_attr_t*);
