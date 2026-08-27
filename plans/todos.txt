@@ -448,8 +448,8 @@ address answers kUnknownDevice, so the local test distinguishes "wired up" from
 "fabricated" and not "the buffer" from "any pointer".
 
 
-18. WRONG DIAGNOSIS, corrected 2026-08-27: OpenMPI overwrites our signal handler
----------------------------------------------------------------------------------
+18. DONE (2026-08-27): sigaction is interposed, and OpenMPI no longer wins
+--------------------------------------------------------------------------
 Raised the same day by the re-run in tests/hpc/apps/RERUN-2026-08-27.md, and the
 first version of this entry was wrong. It read the 91% unresolved_ucx on Quantum
 ESPRESSO as an ENDPOINT-side gap -- endpoints created from a socket address or a
@@ -493,6 +493,19 @@ WHAT THIS MEANS FOR ITEM 15. The two-part fix there was right and is measurably
 working -- node_identity went from 2 of 4 ranks to 4 of 4 on this exact
 workload. What it could not survive was another library taking the signal away
 from it, which is a third failure mode neither part addressed.
+
+VALIDATED ON HARDWARE, job 45105406, same workload that exposed it:
+
+              before (45103790)        after (45105406)
+    streams   4 / 29 / 4 / 29          29 / 29 / 29 / 29
+    blob      MISSING on 0 and 2       52 B on all four
+    waddr     4                        8
+    edges     6, four with dst = -1    11, none unresolved
+    health    unresolved_ucx = 25,005  unresolved_ucx = 0
+
+and QE's pool structure is finally legible: intra-pool ~25 GB against
+inter-pool ~100-200 MB, a 100x separation across pools {0,1} and {2,3}. Three
+assertions flipped to XPASS and their expect_fail markers are removed.
 
 19. DONE (2026-08-27): check.sh reads the derived layer
 --------------------------------------------------------

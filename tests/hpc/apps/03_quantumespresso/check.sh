@@ -72,11 +72,25 @@ materialise_derived() {   # materialise_derived <csvdir> <outdir>
   [ -d "$pq" ] || return 0
   [ -x "$PCOMM" ] || return 0
   mkdir -p "$out"
+  local got=0
   for t in $DERIVED_TABLES; do
-    "$PCOMM" sql "$pq" "SELECT * FROM $t" > "$out/$t.csv" 2>/dev/null || rm -f "$out/$t.csv"
-    # An empty result still writes a header row; a failed one leaves nothing.
-    [ -s "$out/$t.csv" ] || rm -f "$out/$t.csv"
+    if "$PCOMM" sql "$pq" "SELECT * FROM $t" > "$out/$t.csv" 2>"$out/$t.err"; then
+      # An empty result still writes a header row; a failed one leaves nothing.
+      [ -s "$out/$t.csv" ] && got=$((got + 1)) || rm -f "$out/$t.csv"
+    else
+      rm -f "$out/$t.csv"
+    fi
   done
+  # LOUD when the parquet is there and nothing came out of it. Silence here was
+  # the whole defect the first time: a GLIBCXX error from `pcomm sql` went to
+  # /dev/null, every derived table was absent, and the assertions over them
+  # reported zeros as though the capture had said so.
+  if [ "$got" -eq 0 ]; then
+    echo "!! no derived tables materialised from $pq — assertions over comm_edges," >&2
+    echo "   link_health and friends will read EMPTY and mean nothing. First error:" >&2
+    head -2 "$out"/*.err 2>/dev/null | sed "s/^/   /" >&2
+  fi
+  rm -f "$out"/*.err
 }
 
 # Load one CSV export into a fresh sqlite db. Same convention as sql_check.sh:
@@ -88,9 +102,44 @@ load() {        # load <db> <csvdir> <params-block>
   rm -f "$db"
   materialise_derived "$csv" "$der"
   { echo ".bail on"; echo ".mode csv"
-    for f in "$csv"/*.csv "$der"/*.csv; do [ -e "$f" ] || continue
+    for f in "$csv"/*.csv; do [ -e "$f" ] || continue
       echo ".import '$f' $(basename "$f" .csv)"; done
   } | sqlite3 "$db" 2>/dev/null
+  # A SEPARATE INVOCATION for the derived tables, and the separation is the
+  # point. `.bail on` stops at the first failing .import -- so when these were
+  # appended to the list above, ONE malformed raw CSV silently took every
+  # derived table with it, and the assertions over them read zeros. That is how
+  # this fix failed the first time: comm_edges held 11 edges in the parquet and
+  # 0 rows in the db, and nothing said why.
+  #
+  # Errors are shown rather than discarded, for the same reason.
+  # THE RAW EXPORT AND THE DERIVED LAYER BOTH PRODUCE A `comm_edges`, and they
+  # are not the same table. pcomm-read/main.cpp writes a four-column
+  # (src_rank, dst_rank, sends, bytes) aggregate built from ib_post_send;
+  # link_sql.hpp's is six columns, adding `transport` and `unit`, and is the one
+  # that has UCX rows at all. On this workload the raw one is header-only,
+  # because QE puts nothing on the verbs wire.
+  #
+  # Importing the six-column CSV into the four-column table does not error --
+  # sqlite maps positionally and says "extras ignored", so `transport` lands in
+  # `sends` and `unit` in `bytes`, and every count reads 0. That is precisely
+  # what happened: 11 real edges in the parquet, four ranks reporting
+  # in_pool = out_of_pool = 0, and a warning nobody was shown because the import
+  # was running with stderr to /dev/null.
+  #
+  # So the raw table is DROPPED before the derived one is imported. The derived
+  # is a superset -- link_sql.hpp's own comment records that its verbs/devx rows
+  # projected to (src,dst,sends,bytes) are byte-identical to the raw one -- so
+  # nothing is lost by preferring it.
+  if [ -d "$der" ]; then
+    local errs
+    errs="$( { echo ".mode csv"
+               for f in "$der"/*.csv; do [ -e "$f" ] || continue
+                 echo "DROP TABLE IF EXISTS $(basename "$f" .csv);"
+                 echo ".import '$f' $(basename "$f" .csv)"; done
+             } | sqlite3 "$db" 2>&1 )"
+    [ -n "$errs" ] && echo "!! derived-table import: $errs" >&2
+  fi
   mk_params "$blk" | sqlite3 "$db"
 }
 
