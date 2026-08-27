@@ -152,3 +152,88 @@ have, do not carry the GPU repeater — and say so here, with the number.*
   changes its shape from host-round-trip latency to one-SM contention. A timing
   claim under it is still a claim about an instrumented system — better, not
   clean. Say so wherever a number from it is published.
+
+---
+
+## THE MEASUREMENT THIS PLAN WAS WAITING FOR — du04, 2026-08-27
+
+The parent plan said not to build this blind: "*the honest next step is a
+Stage-2 measurement on a workload with real compute (where the doorbell rate is
+a fraction of the work) before committing to a persistent green-context
+kernel.*" Here it is, plus a second axis the parent could not separate.
+
+`tests/hpc/probes/ibgda_compute_ratio/` — the same put-ring with a FLOPs knob, so
+`steps = 0` reproduces `04_nvshmem/putget.cu` exactly and everything to the right
+walks the compute:communication ratio out. Median of 3, two PEs, 200 iterations,
+1024 elements, `NVSHMEM_REMOTE_TRANSPORT=ibgda` + `NIC_HANDLER=gpu`.
+
+Timed by the application's OWN CUDA events around the communication loop, not by
+wall clock. **This is why the numbers look nothing like the published +68%/+86%:
+those were wall clock over a run whose NVSHMEM startup was ~3.5 s of a ~3.5 s
+run, so they measured the hijack diluted by a constant.** Same effect, undiluted:
+
+| compute steps | bare ms | passive ms | forward-only ms | full hijack ms | fwd | hijack |
+|---|---|---|---|---|---|---|
+| 0 | 11.06 | 11.08 | 1224.0 | 1627.1 | **110.7x** | **147.1x** |
+| 200 | 11.22 | 11.26 | 1267.0 | 1559.0 | 112.9x | 138.9x |
+| 2000 | 12.72 | 12.73 | 1286.1 | 1597.9 | 101.1x | 125.6x |
+| 20000 | 27.53 | 27.54 | 1299.0 | 1564.0 | 47.2x | 56.8x |
+
+`passive` (`-p mlx5dv`, control plane, no hijack) is **free to three decimal
+places at every point**, which is what makes the rest attributable to the
+man-in-the-middle rather than to the hooks or the capture's I/O.
+
+### Two findings, and they point the same way
+
+**1. The cost is the FORWARD, not the decode.** Forward-only is 110.7x; adding
+the WQE copy-out and parse takes it to 147.1x. So the whole per-doorbell
+`cuMemcpyDtoHAsync` + `cuStreamSynchronize` — the obvious thing to optimise, and
+the thing batching would address — accounts for **1.33x of a 147x problem**.
+Batching the copies, or a cheaper parse, cannot recover an order of magnitude.
+Only removing the host round trip can, and that is what this plan is.
+
+That is the question this measurement existed to answer, and the answer is not
+the one the cheaper fix would have wanted. `PCOMM_HIJACK_NO_DECODE` was added to
+ask it — measurement only, deliberately not a launcher flag, since it produces
+`Mlx5Doorbell` rows with no `Mlx5DeviceSend` beside them and that is exactly the
+shape a real decode failure has.
+
+**2. Compute does not rescue it, and the shape says why.** The hijack's absolute
+cost is ~1.2-1.6 s across the whole ladder — it does not move when the
+application's own work grows 2.5x. So the ratio falls only because the
+denominator grows, and reaching a 2x overhead by this route needs the
+application to do ~1.3 s of compute per 200 exchanges. The parent plan's hope
+that "a real compute workload would dilute it" is true arithmetically and
+useless in practice: the per-doorbell cost is ~144 us against ~1.3 us unhijacked,
+and it is paid serially because the GPU stalls until the forward lands.
+
+### Verdict
+
+**Stage 3 is justified, and now on evidence rather than on the +86% from a
+microbenchmark.** The CPU repeater is a correctness tool — it captures the data
+plane faithfully (case 12: 15 assertions green, `VERIFY OK` byte-identical) and
+must stay off by default, which it is. It is not, and cannot be made into, a
+tool you leave on.
+
+Two caveats that belong with the number rather than in a footnote:
+
+- **This is still one workload.** 1024 elements of `nvshmem_int_p` is one
+  doorbell per element per iteration — a high doorbell rate by construction. An
+  application that batches its puts rings fewer doorbells and pays less. What
+  the measurement establishes is the per-doorbell cost and where it comes from,
+  not a universal slowdown factor.
+- **The absolute ~1.3 s is suspiciously flat** across a 2.5x change in
+  application work, which is consistent with a serialised per-doorbell latency
+  and worth confirming against the repeater's own wake path before it is quoted
+  as a hardware number. WAITPKG is present on du04, so it is not a PAUSE-spin
+  artefact.
+
+### One harness defect worth recording
+
+The first run of this sweep reported the decode costing 5%, which was wrong.
+`PCOMM_HIJACK_NO_DECODE` was exported into the harness's shell and passed with a
+bare `-x`, so OpenMPI put it in the `hijack` runs too and both columns measured
+the same configuration. **The capture is what caught it**: the hijack run emitted
+no `214.pcs` at all, and a hijack that records no `Mlx5DeviceSend` has not
+decoded anything. The harness now verifies the distinction from the capture after
+every sweep rather than trusting the environment that was supposed to produce it.
