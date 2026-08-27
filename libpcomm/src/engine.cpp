@@ -16,6 +16,10 @@
 
 #include <dlfcn.h>
 
+#include <csignal>
+#include <signal.h>
+#include <cerrno>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -633,6 +637,241 @@ void pcomm_close_qp(void* p) {
 }
 
 }  // namespace
+
+/* ── dying gracefully ───────────────────────────────────────────────────────
+ *
+ * A capture that ends in a signal used to keep only what had already been
+ * flushed, and it failed in an INVERTED way: the high-volume streams survived
+ * because they filled their buffers and drained incrementally, while the
+ * one-row identity streams never drained at all. Quantum ESPRESSO kept
+ * 18,700,773 ib_post_send rows and 2 of 4 node_identity rows, so 84% of its
+ * sends landed on dst_rank = -1 -- and the BROKEN capture was the bigger one,
+ * which defeats every heuristic anyone would use to notice it.
+ *
+ * THIS IS DELIBERATELY NOT ASYNC-SIGNAL-SAFE, and the choice is the design. A
+ * correct handler may call almost nothing; flushing a capture means locks,
+ * allocation and stdio. The alternative on offer is not "a safe handler" but
+ * "no handler" -- guaranteed total loss of everything buffered. So it does the
+ * unsafe thing on purpose, in a process that is already dying, with four guards
+ * bounding what going wrong can cost:
+ *
+ *   1. ORDER. The cheap safe work is flushed to disk before the expensive risky
+ *      work begins (see Tracer::flush_from_signal). A second fault in the risky
+ *      half loses the dictionary and keeps the records.
+ *   2. RECURSION GUARD. A fault inside the handler goes straight to the default
+ *      disposition instead of recursing until the stack dies.
+ *   3. NO WAITING. try_drain_all() rather than a blocking drain: the thread
+ *      holding the registry lock may be the one that just faulted, and blocking
+ *      would turn a crash into a hang, which under SLURM costs the rest of the
+ *      walltime rather than one job.
+ *   4. A DEADMAN. alarm() with SIGALRM restored to its terminating default, so
+ *      a flush that wedges anywhere kills the process instead of parking it.
+ *
+ * IT LIVES HERE, NOT IN Tracer, for the reason engine_abi.h gives for owning
+ * ibv_destroy_qp: a process-wide signal disposition belongs to no single
+ * provider, and two providers must not install two handlers.
+ *
+ * AND IT INTERPOSES sigaction RATHER THAN MERELY CALLING IT. This is the part
+ * that was learned the hard way. Installing at ELF-constructor time is not
+ * enough: pcomm loads under LD_PRELOAD, so its handlers go in before MPI_Init,
+ * and then OpenMPI installs its own over the top (libopen-pal imports
+ * sigaction). Measured on Quantum ESPRESSO, job 45103790: the job exited 139
+ * (SIGSEGV), ranks 1 and 3 finalized normally, and ranks 0 and 2 died with no
+ * intern-blob.bin and 4 streams against 29 -- our handler never ran on them.
+ * An earlier version of this code carefully declined to displace a handler the
+ * application had already installed, which is the right instinct pointed the
+ * wrong way: the displacement runs in the other direction, at a moment an
+ * install-time check cannot see.
+ *
+ * So the application's own handler is kept, ours goes in front of it, and ours
+ * chains to theirs once the flush is done. The application's semantics are
+ * preserved exactly -- it still sees its own handler when it queries, and its
+ * handler still runs with the same siginfo and context -- while ours survives
+ * being overwritten.
+ */
+namespace {
+
+constexpr int kFatalSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTERM, SIGINT};
+/* Seconds the whole best-effort flush is allowed before the deadman fires.
+ * Generous: a capture can be gigabytes, and the point is to bound a HANG. */
+constexpr unsigned kFlushDeadmanSeconds = 30;
+
+bool pcomm_is_fatal_signal(int sig) {
+    for (int s : kFatalSignals)
+        if (s == sig)
+            return true;
+    return false;
+}
+
+/* What the APPLICATION asked for, per signal — the disposition it believes is
+ * installed. Plain arrays with no constructor: this is read from a signal
+ * handler, and a std::map there is the use-after-destruction gpumem's
+ * static_assert exists to forbid. NSIG is a compile-time bound on every Linux. */
+struct AppAction {
+    struct sigaction act;
+    bool             set;
+};
+AppAction g_app_action[NSIG];
+
+typedef int (*SigactionFn)(int, const struct sigaction*, struct sigaction*);
+SigactionFn pcomm_real_sigaction() {
+    static auto fn = pcomm_next_sym<SigactionFn>("sigaction");
+    return fn;
+}
+
+/* Restore the default disposition WITHOUT going through our own interposer.
+ *
+ * Not fastidiousness -- a hang the first version of this code actually had.
+ * ::signal(sig, SIG_DFL) from inside the handler is caught by the `signal` door
+ * below, which dutifully records SIG_DFL as the application's wish and puts OUR
+ * handler back in front of it. The ::raise() that follows then re-enters the
+ * handler, hits the recursion guard, calls ::signal again, and loops until the
+ * process is killed from outside. A door you can call by accident from inside
+ * is a door that needs a bypass.
+ */
+void pcomm_restore_default(int sig) {
+    struct sigaction dfl;
+    std::memset(&dfl, 0, sizeof dfl);
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    auto real = pcomm_real_sigaction();
+    if (real)
+        real(sig, &dfl, nullptr);
+}
+
+void pcomm_fatal_signal_handler(int sig, siginfo_t* info, void* ctx) {
+    static volatile sig_atomic_t in_handler = 0;
+    if (in_handler) { /* guard 2: we faulted while flushing. Give up cleanly. */
+        pcomm_restore_default(sig);
+        ::raise(sig);
+        return;
+    }
+    in_handler = 1;
+
+    pcomm_restore_default(SIGALRM); /* guard 4: its default terminates */
+    ::alarm(kFlushDeadmanSeconds);
+    pcomm::Tracer::instance().flush_from_signal();
+    ::alarm(0);
+
+    /* Then hand the signal on exactly as the application arranged for it. */
+    const AppAction& app = g_app_action[sig];
+    if (app.set) {
+        if ((app.act.sa_flags & SA_SIGINFO) && app.act.sa_sigaction) {
+            in_handler = 0; /* theirs may legitimately fault and handle it */
+            app.act.sa_sigaction(sig, info, ctx);
+            return;
+        }
+        if (app.act.sa_handler == SIG_IGN)
+            return; /* they asked for it to be ignored; honour that */
+        if (app.act.sa_handler && app.act.sa_handler != SIG_DFL) {
+            in_handler = 0;
+            app.act.sa_handler(sig);
+            return;
+        }
+    }
+    /* No application handler: die exactly as we would have without pcomm --
+     * same signal, same status, same core dump. A profiler must not change how
+     * the program it is watching appears to fail. */
+    pcomm_restore_default(sig);
+    ::raise(sig);
+}
+
+void pcomm_install_one(int sig) {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = &pcomm_fatal_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+    auto real = pcomm_real_sigaction();
+    if (real)
+        real(sig, &sa, nullptr);
+}
+
+}  // namespace
+
+void pcomm_install_signal_handlers() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        /* An alternate stack, because the fault this most needs to survive is a
+         * stack overflow, where there is no room to run a handler on the
+         * faulting thread's own stack. A fixed 64 KiB rather than SIGSTKSZ:
+         * since glibc 2.34 that expands to sysconf(_SC_SIGSTKSZ) and cannot
+         * size a static array. Best effort -- if it cannot be had, the handlers
+         * still install and still work for every other fault. */
+        static char alt[65536];
+        stack_t     ss;
+        std::memset(&ss, 0, sizeof ss);
+        ss.ss_sp = alt;
+        ss.ss_size = sizeof alt;
+        ::sigaltstack(&ss, nullptr);
+
+        auto real = pcomm_real_sigaction();
+        for (int sig : kFatalSignals) {
+            /* Record whatever is already there, so a handler installed BEFORE
+             * us is chained to rather than lost. */
+            struct sigaction prev;
+            std::memset(&prev, 0, sizeof prev);
+            if (real && real(sig, nullptr, &prev) == 0 && prev.sa_handler != SIG_DFL) {
+                g_app_action[sig].act = prev;
+                g_app_action[sig].set = true;
+            }
+            pcomm_install_one(sig);
+        }
+    });
+}
+
+/* The interposer. Everything the application does to a signal we care about is
+ * remembered and then re-fronted; everything else passes straight through. */
+extern "C" int sigaction(int sig, const struct sigaction* act, struct sigaction* oldact) {
+    auto real = pcomm_real_sigaction();
+    if (!real) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (sig <= 0 || sig >= NSIG || !pcomm_is_fatal_signal(sig))
+        return real(sig, act, oldact);
+
+    /* A QUERY must answer with the application's own view, never with ours --
+     * otherwise a library that saves and restores a handler would save OURS and
+     * reinstall it later as if it were its own. */
+    if (oldact) {
+        if (g_app_action[sig].set) {
+            *oldact = g_app_action[sig].act;
+        } else if (real(sig, nullptr, oldact) != 0) {
+            return -1;
+        } else if (oldact->sa_sigaction == &pcomm_fatal_signal_handler) {
+            std::memset(oldact, 0, sizeof *oldact);
+            oldact->sa_handler = SIG_DFL;
+        }
+    }
+    if (!act)
+        return 0; /* pure query, already answered */
+
+    g_app_action[sig].act = *act;
+    g_app_action[sig].set = true;
+    pcomm_install_one(sig); /* ours goes back in front, whatever they asked for */
+    return 0;
+}
+
+/* glibc's signal() does not route through the public sigaction, so it needs its
+ * own door or a bare `signal(SIGSEGV, h)` would still displace us. */
+extern "C" sighandler_t signal(int sig, sighandler_t handler) {
+    if (sig <= 0 || sig >= NSIG || !pcomm_is_fatal_signal(sig)) {
+        static auto real = pcomm_next_sym<sighandler_t (*)(int, sighandler_t)>("signal");
+        return real ? real(sig, handler) : SIG_ERR;
+    }
+    sighandler_t previous =
+        g_app_action[sig].set ? g_app_action[sig].act.sa_handler : SIG_DFL;
+    struct sigaction act;
+    std::memset(&act, 0, sizeof act);
+    act.sa_handler = handler;
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = SA_RESTART;
+    g_app_action[sig].act = act;
+    g_app_action[sig].set = true;
+    pcomm_install_one(sig);
+    return previous;
+}
 
 extern "C" void* nvshmem_malloc(size_t size) {
     static auto real = pcomm_next_sym<void* (*)(size_t)>("nvshmem_malloc");

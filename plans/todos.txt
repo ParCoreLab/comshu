@@ -448,34 +448,54 @@ address answers kUnknownDevice, so the local test distinguishes "wired up" from
 "fabricated" and not "the buffer" from "any pointer".
 
 
-18. The UCX peer join fails on the ENDPOINT side too, and QE is the case
--------------------------------------------------------------------------
-Raised 2026-08-27 by the re-run in tests/hpc/apps/RERUN-2026-08-27.md. Item 13
-fixed the WORKER side of the cross-rank join; this is the other end of it.
+18. WRONG DIAGNOSIS, corrected 2026-08-27: OpenMPI overwrites our signal handler
+---------------------------------------------------------------------------------
+Raised the same day by the re-run in tests/hpc/apps/RERUN-2026-08-27.md, and the
+first version of this entry was wrong. It read the 91% unresolved_ucx on Quantum
+ESPRESSO as an ENDPOINT-side gap -- endpoints created from a socket address or a
+connection request carrying no peer address for UcxEpConnection to record. That
+is not what happened, and the capture says so plainly: 8 endpoints, 8
+ep_connections. Every endpoint HAS its peer address.
 
-    qe-npool2  27,505 ucx_tag_send   8 endpoints   8 ep_connections
-               4 ucx_worker_address  6 comm_edges, 4 of them dst_rank = -1
-               link_health: unresolved_ucx = 25,005  (91% of sends)
+WHAT IS ACTUALLY WRONG. Only two of QE's four ranks recorded a worker address at
+all, so half the ranks are unnameable and every prefix dialled at them resolves
+to nothing:
 
-`UcxEpConnection` is emitted only when UCP_EP_PARAM_FIELD_REMOTE_ADDRESS is
-actually set on ucp_ep_create. An endpoint created from a socket address or from
-a connection request has no peer address there, so it gets no row — deliberately,
-because a row of zeroes would read as a measured null peer. QE creates most of
-its endpoints that way, so most of its traffic has nothing to join on.
+    rank  node_identity  clock_anchor  ucx_worker  ucx_tag_send  intern-blob
+     0          1             1             0          8,191       MISSING
+     1          1             2             1          8,147          52 B
+     2          1             1             0          4,095       MISSING
+     3          1             2             1          7,072          52 B
 
-LAMMPS and GROMACS both resolve 64 of 64 edges with unresolved_ucx = 0, so this
-is a property of how an application connects rather than a universal gap. That
-is what makes it worth a separate item: the fix is not "hook another door" but
-"find the second correspondence", and it may be the connection-request path
-(ucp_conn_request_query carries the remote address) or the socket address.
+Two anchors means finalize() ran; one means it did not. Ranks 0 and 2 kept their
+startup facts (the flush added for item 15), kept the one stream big enough to
+drain by filling its buffers, and lost everything in between -- 4 streams
+against 29. That IS item 15's inverted failure, still happening, and item 15's
+own fix should have caught it.
 
-WHAT IS ALREADY RIGHT, and is the only reason this is visible: unresolved_ucx
-exists. Without it this capture reports a clean bill of health over a 91% hole,
-which is exactly the failure unresolved_nvlink was added for. The number is the
-finding; the matrix does not lie, it declines to answer.
+WHY IT DID NOT. There is no intern-blob.bin on those ranks, so the fatal-signal
+handler never ran there. `libopen-pal.so` imports `sigaction`. pcomm installs
+its handlers from the provider's ELF constructor under LD_PRELOAD, which is
+BEFORE MPI_Init; OpenMPI then installs its own over the top. install_signal_
+handlers() is careful not to displace a handler the application already
+installed -- and the displacement runs the other way, at a time the check cannot
+see. The job exited 139 (SIGSEGV), so the signal was one we do handle.
 
-19. check.sh in an app study cannot see derived tables
--------------------------------------------------------
+THE FIX IS INTERPOSITION, which is the thing this codebase is built out of.
+Hook `sigaction`/`signal` in the engine, keep the handler the application asks
+for, install ours in front, and chain to theirs after the flush. That preserves
+the application's semantics exactly -- it still sees its own handler on query,
+and its handler still runs -- while making ours survive being overwritten. Same
+shape as the doors engine.cpp already owns (nvshmem_free, ibv_destroy_qp): a
+door that belongs to no single provider.
+
+WHAT THIS MEANS FOR ITEM 15. The two-part fix there was right and is measurably
+working -- node_identity went from 2 of 4 ranks to 4 of 4 on this exact
+workload. What it could not survive was another library taking the signal away
+from it, which is a third failure mode neither part addressed.
+
+19. DONE (2026-08-27): check.sh reads the derived layer
+--------------------------------------------------------
 Raised 2026-08-27, same re-run. `03_quantumespresso/check.sh` loads
 `<csv>/*.csv` into sqlite. Derived tables — comm_edges, link_health, wr_flow —
 are not CSVs: they are written by `pcomm link` into parquet. So the runner

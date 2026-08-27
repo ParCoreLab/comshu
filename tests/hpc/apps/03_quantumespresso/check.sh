@@ -45,14 +45,50 @@ print("INSERT INTO params VALUES (%s);" % ", ".join(str(w[c]) for c in cols))
 PY
 }
 
+# THE DERIVED TABLES ARE NOT CSVs, and this script could not see them.
+#
+# `pcomm export --csv` writes one file per RAW record stream. comm_edges,
+# link_health, wr_flow and the rest are DERIVED — built by `pcomm link` into the
+# parquet directory beside the CSVs — so there is no comm_edges.csv to import.
+# This loader imported `<csv>/*.csv` and nothing else, so every assertion over a
+# derived table reported "comm_edges is EMPTY — unanswerable" against a table
+# that existed and had rows. Measured on job 45103790: three assertions skipped
+# that way while qe-npool2's comm_edges held six edges.
+#
+# So each derived table is materialised out of the parquet first, into the temp
+# db dir rather than into the capture — a capture is an artefact and this script
+# has no business writing into one. `pcomm sql` emits CSV on stdout, which is
+# already the format the loader below wants.
+#
+# Best effort by design: a build without DuckDB has no `sql` verb and no
+# parquet, and this must still run there. A table that cannot be materialised is
+# simply absent, which the `-- requires:` machinery already reports honestly as
+# a skip. The bug was never that the skip existed; it was that it was WRONG.
+PCOMM="${PCOMM:-$HOME/proj/pcomm/build/pcomm/pcomm}"
+DERIVED_TABLES="comm_edges link_health endpoint rank_identity wr_flow timeline_span object_access"
+
+materialise_derived() {   # materialise_derived <csvdir> <outdir>
+  local csv="$1" out="$2" pq="${1%.csv}.pq" t
+  [ -d "$pq" ] || return 0
+  [ -x "$PCOMM" ] || return 0
+  mkdir -p "$out"
+  for t in $DERIVED_TABLES; do
+    "$PCOMM" sql "$pq" "SELECT * FROM $t" > "$out/$t.csv" 2>/dev/null || rm -f "$out/$t.csv"
+    # An empty result still writes a header row; a failed one leaves nothing.
+    [ -s "$out/$t.csv" ] || rm -f "$out/$t.csv"
+  done
+}
+
 # Load one CSV export into a fresh sqlite db. Same convention as sql_check.sh:
 # one table per <name>.csv, columns from the header row, everything TEXT — so
 # every numeric comparison below CASTs, deliberately and visibly.
 load() {        # load <db> <csvdir> <params-block>
   local db="$1" csv="$2" blk="$3"
+  local der="$DB_DIR/derived-$(basename "$db" .db)"
   rm -f "$db"
+  materialise_derived "$csv" "$der"
   { echo ".bail on"; echo ".mode csv"
-    for f in "$csv"/*.csv; do [ -e "$f" ] || continue
+    for f in "$csv"/*.csv "$der"/*.csv; do [ -e "$f" ] || continue
       echo ".import '$f' $(basename "$f" .csv)"; done
   } | sqlite3 "$db" 2>/dev/null
   mk_params "$blk" | sqlite3 "$db"

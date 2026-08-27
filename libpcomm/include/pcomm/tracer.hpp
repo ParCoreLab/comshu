@@ -23,6 +23,13 @@
 #include "pcomm/rec/sink.hpp"
 #include "pcomm/rec/thread_buffer_registry.hpp"
 
+// Fatal-signal handlers, defined in src/engine.cpp. Declared here because
+// start() is where a capture begins and so is the only place that knows a
+// handler is wanted; defined THERE because a process-wide signal disposition
+// belongs to no single provider and two providers must not install two
+// handlers — engine_abi.h's argument for owning ibv_destroy_qp, applied again.
+void pcomm_install_signal_handlers();
+
 namespace pcomm {
 
 struct Config {
@@ -73,7 +80,7 @@ public:
         m_sink = std::make_unique<rec::FileSink>(dir);
         m_recorder = std::make_unique<rec::Recorder<>>(*m_sink);
         install_fork_handler();
-        install_signal_handlers();
+        ::pcomm_install_signal_handlers();
         // Backstop: with refcounted stop(), a provider that never stops (a
         // vendor teardown path that skips our dtor) would otherwise hold the
         // count above zero and the capture would never be flushed at all.
@@ -143,124 +150,11 @@ public:
         m_sink->flush();
     }
 
-    rec::Recorder<>& recorder() { return *m_recorder; }
-    // Deliberately lock-free: the arena drain path calls this, and drain can be
-    // reached from inside start() (emit_anchor) which already holds m_lifecycle.
-    bool          has_recorder() const { return m_recorder != nullptr; }
-    const Config& config() const { return m_config; }
-
-private:
-    Tracer() = default;
-
-    // Register the fork child-handler once (idempotent across start() calls,
-    // including the re-init start() the child handler itself performs).
-    void install_fork_handler() {
-        static std::once_flag once;
-        std::call_once(once, [] { pthread_atfork(nullptr, nullptr, &Tracer::atfork_child); });
-    }
-
-    // ── dying gracefully ────────────────────────────────────────────────────
-    //
-    // A capture that ends in a signal used to keep only what had already been
-    // flushed, and that failed in an INVERTED way: the high-volume streams
-    // survived because they filled their buffers and drained incrementally,
-    // while the one-row identity streams never drained at all. Quantum ESPRESSO
-    // kept 18,700,773 ib_post_send rows, 94 ib_modify_qp rows and 2 of 4
-    // node_identity rows, so 84% of its sends landed on dst_rank = -1 — and the
-    // BROKEN capture was the bigger one, which defeats every heuristic anyone
-    // would use to notice it. See tests/hpc/apps/03_quantumespresso.
-    //
-    // THIS IS DELIBERATELY NOT ASYNC-SIGNAL-SAFE, and the choice is the whole
-    // design. A correct handler may call almost nothing; flushing a capture
-    // means locks, allocation and stdio. The alternative on offer is not "a safe
-    // handler" but "no handler", i.e. guaranteed total loss of everything
-    // buffered. So this does the unsafe thing on purpose, in a process that is
-    // already dying, with four guards that bound what going wrong can cost:
-    //
-    //   1. ORDER. The cheap, safe work happens first and is flushed to disk
-    //      before the expensive, risky work begins. emit_intern_records() walks
-    //      tables another thread may be mid-mutation in and allocates while it
-    //      does — so it runs only AFTER the raw records are already durable. A
-    //      second fault there loses the dictionary and keeps the records.
-    //   2. RECURSION GUARD. A fault inside the handler goes straight to the
-    //      default disposition instead of recursing until the stack dies.
-    //   3. NO WAITING. try_drain_all() rather than drain_all(): the thread
-    //      holding the registry lock may be the one that just faulted, and
-    //      blocking on it would convert a crash into a hang — which under SLURM
-    //      costs the rest of the walltime rather than one job.
-    //   4. A DEADMAN. alarm() is armed before any of it, with SIGALRM restored
-    //      to its default terminating disposition, so a flush that wedges
-    //      anywhere kills the process instead of parking it.
-    //
-    // Then the original signal is re-raised with the default handler installed,
-    // so the process dies exactly as it would have: same exit status, same core
-    // dump, same thing reported to the scheduler. A profiler must not change how
-    // the program it is watching appears to fail.
-    static constexpr int kFatalSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTERM,
-                                            SIGINT};
-    // Seconds the whole best-effort flush is allowed before the deadman fires.
-    // Generous: a capture can be gigabytes, and the point is to bound a HANG,
-    // not to time the flush.
-    static constexpr unsigned kFlushDeadmanSeconds = 30;
-
-    static void install_signal_handlers() {
-        static std::once_flag once;
-        std::call_once(once, [] {
-            // An alternate stack, because the fault this most needs to survive
-            // is a stack overflow — where there is no room left to run a handler
-            // on the faulting thread's own stack. Best effort: if it cannot be
-            // had, the handlers still install and still work for every other
-            // fault.
-            // A fixed 64 KiB rather than SIGSTKSZ: since glibc 2.34 SIGSTKSZ
-            // expands to sysconf(_SC_SIGSTKSZ) and is no longer a constant
-            // expression, so it cannot size a static array at all. 64 KiB is
-            // comfortably above every MINSIGSTKSZ in practice and this handler's
-            // own frame needs almost none of it.
-            static char alt[65536];
-            stack_t     ss{};
-            ss.ss_sp = alt;
-            ss.ss_size = sizeof alt;
-            ss.ss_flags = 0;
-            ::sigaltstack(&ss, nullptr);
-
-            struct sigaction sa {};
-            sa.sa_handler = &Tracer::fatal_signal_handler;
-            sigemptyset(&sa.sa_mask);
-            sa.sa_flags = SA_ONSTACK | SA_RESTART;
-            for (int sig : kFatalSignals) {
-                struct sigaction prev {};
-                // Do NOT displace a handler the application installed itself.
-                // An application with its own SIGTERM handling (a checkpointer,
-                // an MPI runtime draining ranks) is doing something we must not
-                // silently take over; losing our flush is the lesser harm.
-                if (::sigaction(sig, nullptr, &prev) == 0 && prev.sa_handler != SIG_DFL &&
-                    prev.sa_handler != SIG_IGN)
-                    continue;
-                ::sigaction(sig, &sa, nullptr);
-            }
-        });
-    }
-
-    static void fatal_signal_handler(int sig) {
-        static volatile sig_atomic_t in_handler = 0;
-        if (in_handler) {  // guard 2: we faulted while flushing. Give up cleanly.
-            ::signal(sig, SIG_DFL);
-            ::raise(sig);
-            return;
-        }
-        in_handler = 1;
-
-        ::signal(SIGALRM, SIG_DFL);   // guard 4: default disposition terminates
-        ::alarm(kFlushDeadmanSeconds);
-
-        instance().flush_from_signal();
-
-        ::alarm(0);
-        ::signal(sig, SIG_DFL);
-        ::raise(sig);
-    }
-
-    // Best effort, in this order, for the reasons in guard 1 above.
+    // Best-effort flush from a fatal-signal handler, in this order and for the
+    // reasons the handler itself records (src/engine.cpp, "dying gracefully").
+    // Public because that handler lives there rather than here: a process-wide
+    // signal disposition belongs to no single provider, which is the same
+    // argument engine_abi.h makes for owning ibv_destroy_qp.
     void flush_from_signal() noexcept {
         // Lock-free reads on purpose: m_lifecycle may be held by the thread that
         // just faulted, and taking it here is the deadlock guard 3 exists to
@@ -292,6 +186,22 @@ private:
         emit_intern_records();
         rec::ThreadBufferRegistry::instance().try_drain_all();
         m_sink->flush();
+    }
+
+    rec::Recorder<>& recorder() { return *m_recorder; }
+    // Deliberately lock-free: the arena drain path calls this, and drain can be
+    // reached from inside start() (emit_anchor) which already holds m_lifecycle.
+    bool          has_recorder() const { return m_recorder != nullptr; }
+    const Config& config() const { return m_config; }
+
+private:
+    Tracer() = default;
+
+    // Register the fork child-handler once (idempotent across start() calls,
+    // including the re-init start() the child handler itself performs).
+    void install_fork_handler() {
+        static std::once_flag once;
+        std::call_once(once, [] { pthread_atfork(nullptr, nullptr, &Tracer::atfork_child); });
     }
 
     // Runs in the child right after fork(). The child shares (COW) the parent's
