@@ -376,6 +376,100 @@ FROM (
 GROUP BY lid, qp_num
 )sql"},
 
+    // --- the UCX lane: rank space without a queue pair ----------------------
+    //
+    // Everything above resolves a peer through (lid, qp_num), which exists only
+    // if the traffic went through a verbs door. On the HPC-X stack it did not:
+    // the 2026-08-27 door sweep found libucp and libuct_ib import no
+    // ibv_post_send at all (PLAN-20260815-1540 Future work 1), and a probe with
+    // -p ib,ucx,mlx5dv captured the whole DEVX control plane while
+    // mlx5_device_send stayed empty against 24,452 tagged sends. So for every
+    // MPI-over-UCX application _sends was empty, and comm_edges had ZERO ROWS
+    // over captures holding tens of GB of correctly recorded traffic
+    // (tests/hpc/apps/, three studies independently).
+    //
+    // UCX carries its own rank correspondence and it is the ONLY join in these
+    // records that crosses a rank: this rank's endpoint remembers the prefix
+    // hash of the address it dialled, and the rank that owns that address wrote
+    // the same hash for its own worker. See UcxEpConnection in ucx_records.hpp.
+    //
+    // prefix_hash -> the rank that owns it, WITH the evidence that it is
+    // unambiguous. UcxWorkerAddress records two hashes precisely so a prefix
+    // collision is visible rather than a confident wrong join; that comment says
+    // a reader can say so, and this is the reader saying so. Two workers sharing
+    // a prefix are two workers this join cannot tell apart, whether they are on
+    // one rank or several, so both counts have to be 1 for the row to resolve.
+    {"_ucx_rank_of_prefix", R"sql(
+CREATE OR REPLACE VIEW _ucx_rank_of_prefix AS
+SELECT prefix_hash,
+       min(rank)                  AS rank,
+       count(DISTINCT rank)       AS claimants,
+       count(DISTINCT addr_hash)  AS addrs
+FROM ucx_worker_address
+GROUP BY prefix_hash
+)sql"},
+
+    // (rank, endpoint) -> the peer rank, kept only where the prefix resolves to
+    // exactly one worker on exactly one rank. An ambiguous prefix produces no
+    // row here, so its traffic falls to dst_rank = -1 below and is COUNTED as
+    // unresolved rather than attributed to whichever rank sorted first.
+    {"_ucx_peer_of_ep", R"sql(
+CREATE OR REPLACE VIEW _ucx_peer_of_ep AS
+SELECT c.rank, c.endpoint, p.rank AS peer_rank
+FROM ucx_ep_connection c
+JOIN _ucx_rank_of_prefix p ON p.prefix_hash = c.remote_prefix_hash
+WHERE p.claimants = 1 AND p.addrs = 1
+)sql"},
+
+    // Outbound UCX operations per (rank, endpoint), in DATATYPE UNITS.
+    //
+    // NOT BYTES, and the column must never be summed with the verbs lane's.
+    // UcxTagSend.count is documented "raw UCP datatype count, not universally
+    // bytes" — with a contiguous 8-bit datatype, which is what an MPI stack
+    // normally builds, it is bytes; with any other it is not, and nothing in the
+    // capture says which. comm_edges carries `unit` so a consumer holding this
+    // number knows what it is holding.
+    //
+    // Three doors, and the direction of each is the reason it is here:
+    //   tag_send  two-sided send      -> out
+    //   am_send   active message      -> out (payload only; header_length is
+    //                                   control traffic and UcxAmSend keeps the
+    //                                   two separate deliberately)
+    //   rma put   local -> remote     -> out
+    //   rma get   remote -> local     -> IN, so it is emitted with the endpoints
+    //                                   swapped, not dropped and not counted as
+    //                                   outbound. A get moves bytes across the
+    //                                   same link in the other direction.
+    //
+    // status_class = 1 (Error) is excluded everywhere: the call was rejected, so
+    // no bytes moved. Immediate (0) and Request (2) both did or will.
+    //
+    // NUMERIC, not the decoded name. This layer mounts the RAW streams, where an
+    // enum is the integer that went on disk — `_nvlink_sends` above says the
+    // same thing by writing `g.op IN (1, 2)`. The CSV export decodes to
+    // 'immediate'/'put' for a human; nothing here ever sees those strings, and a
+    // predicate written against them matches no row and silently empties the
+    // lane. Values are pinned in providers/ucx/ucx_records.hpp:
+    // StatusClass{Immediate=0, Error=1, Request=2}, RmaOp{Put=0, Get=1}.
+    {"_ucx_sends", R"sql(
+CREATE OR REPLACE VIEW _ucx_sends AS
+SELECT rank, endpoint, sum(n)::BIGINT AS sends, sum(units)::BIGINT AS units, inbound
+FROM (
+    SELECT rank, endpoint, count(*) AS n, sum("count")::HUGEINT AS units, FALSE AS inbound
+    FROM ucx_tag_send WHERE status_class <> 1 GROUP BY rank, endpoint
+    UNION ALL
+    SELECT rank, endpoint, count(*), sum("count")::HUGEINT, FALSE
+    FROM ucx_am_send  WHERE status_class <> 1 GROUP BY rank, endpoint
+    UNION ALL
+    SELECT rank, endpoint, count(*), sum("count")::HUGEINT, FALSE
+    FROM ucx_rma      WHERE status_class <> 1 AND op = 0 GROUP BY rank, endpoint
+    UNION ALL
+    SELECT rank, endpoint, count(*), sum("count")::HUGEINT, TRUE
+    FROM ucx_rma      WHERE status_class <> 1 AND op = 1 GROUP BY rank, endpoint
+)
+GROUP BY rank, endpoint, inbound
+)sql"},
+
     // (rank, qp_num) -> the remote endpoint it was connected to. Only the RTR
     // transition carries it, which is why state = 2 is the filter on the verbs
     // side; the DEVX connect record exists only for that transition, so it needs
@@ -1126,6 +1220,21 @@ SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM (
   UNION ALL
     SELECT src_rank, dst_rank, 'nvlink', 'accesses', sends, bytes
     FROM _nvlink_sends
+  UNION ALL
+    -- The UCX lane. `unit` is 'datatype-units', not 'messages', because
+    -- UcxTagSend.count is a UCP datatype count and only equals bytes for a
+    -- contiguous 8-bit datatype. Its own transport value, so the verbs/devx
+    -- subset that CsvAgg's oracle checks is untouched by construction.
+    --
+    -- A get is recorded with its endpoints SWAPPED: the operation is issued by
+    -- this rank, and the bytes travel from the peer to here.
+    SELECT CASE WHEN s.inbound THEN coalesce(p.peer_rank, -1) ELSE s.rank END,
+           CASE WHEN s.inbound THEN s.rank ELSE coalesce(p.peer_rank, -1) END,
+           'ucx', 'datatype-units',
+           sum(s.sends)::BIGINT, sum(s.units)::BIGINT
+    FROM _ucx_sends s
+    LEFT JOIN _ucx_peer_of_ep p ON p.rank = s.rank AND p.endpoint = s.endpoint
+    GROUP BY 1, 2
 )
 ORDER BY transport, src_rank, dst_rank
 )sql"},
@@ -1191,6 +1300,25 @@ SELECT 'unresolved_nvlink',
        coalesce(sum(sends), 0)::BIGINT,
        'NVLink accesses whose peer rank is unknown — this capture records no node identity'
 FROM _nvlink_sends WHERE src_rank = -1 OR dst_rank = -1
+UNION ALL
+-- UCX counted separately again, and for a third distinct reason: its peer join
+-- runs on an address PREFIX HASH, not on a queue pair or a node, so it fails in
+-- ways neither row above can see. Two of them, deliberately merged into one
+-- count because both mean the same thing to a consumer — this edge has no peer:
+--   * the endpoint recorded no ucp_ep_create peer address at all (created from a
+--     socket address or a connection request, so UcxEpConnection emitted
+--     nothing);
+--   * the prefix it did record is claimed by more than one worker, so
+--     _ucx_peer_of_ep refuses to resolve it rather than guess.
+-- Without this row an MPI-over-UCX capture with a fully unresolved matrix
+-- reports a clean bill of health, which is exactly the failure the
+-- unresolved_nvlink row was added for.
+SELECT 'unresolved_ucx',
+       coalesce(sum(s.sends), 0)::BIGINT,
+       'UCX operations whose peer rank is unknown — no dialled address, or a prefix hash two workers share'
+FROM _ucx_sends s
+LEFT JOIN _ucx_peer_of_ep p ON p.rank = s.rank AND p.endpoint = s.endpoint
+WHERE p.peer_rank IS NULL
 UNION ALL
 -- The same failure seen from object_access rather than from comm_edges, and it
 -- needs its own row because the two branches drop on different keys:
