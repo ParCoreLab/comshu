@@ -1413,13 +1413,27 @@ ORDER BY transport, src_rank, dst_rank
     //                       RTS the peer then pulls with get_zcopy, while the
     //                       64 KB size below the offload ceiling is tag_matched.
     //                       So a row here is usually a PROTOCOL fact about UCX,
-    //                       not a hole in the capture.
+    //                       not a hole in the capture. Confirmed on job 45123231:
+    //                       exactly two such flows, one per rank, 20 sends and
+    //                       83,886,080 units each — which is 20 x 4,194,304, the
+    //                       whole 4 MB sweep and nothing else.
     //   wire_only           a tagged UCT operation with no UCP send above it.
-    //                       UCX's own traffic: job 45115011 shows 19 four-byte
-    //                       operations on tag 0xfffbfd0000000000 per rank, which
-    //                       no application call produced. Counting them is the
-    //                       only way a reader learns the wire carries more than
-    //                       the application asked for.
+    //                       **NO CAPTURE HAS PRODUCED ONE YET** — job 45123231
+    //                       has 85 matched flows and zero of these. An earlier
+    //                       note here claimed UCX's internal tags (0xfffbfd...)
+    //                       were wire-only; the full join says otherwise, they
+    //                       carry 19 UCP sends and 19 UCT operations apiece. The
+    //                       first reading came from a top-8 listing that had cut
+    //                       the UCP rows off, which is a good argument for
+    //                       reading a join from the join.
+    //                       The status stays because the case is real — wireup
+    //                       and flow control produce transport traffic with no
+    //                       UCP call above it, measured at 295 UCT against 260
+    //                       UCP operations on job 45113099 — but that traffic
+    //                       goes through untagged doors, so it lands in
+    //                       transport_mix rather than here. tests/
+    //                       tag_flow_rule.sh drives this branch, since no
+    //                       hardware capture does.
     //
     // **NO link_health ROW, deliberately.** That table's contract is stated at
     // its own head: "Empty is the expected state; every row is a defect in the

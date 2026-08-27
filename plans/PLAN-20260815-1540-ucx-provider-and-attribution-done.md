@@ -23,7 +23,7 @@
 | 0 — establish the oracle | **done** | jobs 44578355, 44629699/44629730, 44635003; plus a login-node ELF sweep of the whole HPC-X stack |
 | 1 — provider vertical slice | **done** | validated on MN5, job 44675611 |
 | 2 — complete the surface | **done** | 29 doors, 13 records; parity with SigmaTrace audited and exceeded |
-| 3 — cross-layer attribution | **REOPENED 2026-08-27** | the door sweep's conclusion was superseded the same day: the send door is `uct_iface_ops_t`, a table in an installed header, and `providers/ucx_deep` now uses it. The lower half of Stage 3 exists; the UCP-operation scope that joins it to the 600s does not. See `PLAN-20260827-1449` and *Future work* 1 |
+| 3 — cross-layer attribution | **DONE 2026-08-28**, job 45123231 — `tag_flow` joins the 600s to the 800s on the tag; see the close at the foot of this file. (Was REOPENED 2026-08-27) | the door sweep's conclusion was superseded the same day: the send door is `uct_iface_ops_t`, a table in an installed header, and `providers/ucx_deep` now uses it. The lower half of Stage 3 exists; the UCP-operation scope that joins it to the 600s does not. See `PLAN-20260827-1449` and *Future work* 1 |
 | 4 — parity and regression gates | **partial** | a local gate exists and runs in 0.08 s; there is no MN5 gate, and nothing on du04 |
 
 **What exists.** `providers/ucx/`, built by `PCOMM_PROVIDER_UCX=ON`: 29
@@ -754,3 +754,63 @@ assuming.
 
 du04 is also untouched. Stage 4 wants the portable subset run there, across a
 different UCX, rdma-core and NIC generation.
+
+---
+
+## Stage 3 CLOSED — 2026-08-28, MN5 job 45123231
+
+The blocker was never the join, it was the **key**. This plan concluded on
+2026-08-27 that "UCX has no exported send door at all, so Stage 3 is not a UCX
+work item"; `providers/ucx_deep` then reached the send door through
+`uct_iface_ops_t`, and case 21 measured the one fact that makes a join possible:
+**`uct_send.tag` carries the application's own tag.** Same values on both layers,
+20 sends each on both ranks, `0x65…`/`0x66…` being Open MPI's encoding of the
+workload's MPI tags 101 and 102 with the source rank below.
+
+`tag_flow` (cf884be) is the result. On job 45123231:
+
+```
+status              flows  ucp_sends  uct_ops  uct_bytes
+tag_matched            85        246      244  2,793,860
+no_tagged_wire_op       2         40        0          0
+wire_only               0          0        0          0
+```
+
+### What the three statuses turned out to mean on real hardware
+
+**`no_tagged_wire_op` is a protocol fact, and it is exactly the 4 MB sweep.**
+Two flows, one per rank, 20 sends and 83,886,080 units each — which is
+20 × 4,194,304 and nothing else. Those messages are above the offload ceiling, so
+they leave as an active-message RTS the peer pulls with `get_zcopy`; the wire
+operations exist, they simply carry no tag. Everything below the ceiling matched.
+This is yesterday's ceiling finding arriving a second time, from a different
+table, without being looked for.
+
+**`wire_only` is zero, and an earlier claim of mine was wrong.** I wrote in the
+SQL that UCX's internal tags (`0xfffbfd…`) were wire-only traffic "no application
+call produced". The full join says otherwise: 19 UCP sends against 19 UCT
+operations apiece, matched. The first reading came from a top-8 listing that had
+cut the UCP rows off — a good argument for reading a join from the join. The
+comment is corrected. The status stays, because the case is real (job 45113099
+measured 295 UCT against 260 UCP operations) — but that traffic uses untagged
+doors, so it lands in `transport_mix`, not here. Only the fixture drives this
+branch.
+
+**246 UCP sends became 244 UCT operations**, and the two missing are not lost:
+tags `0x7b…` on each rank show 2 UCP sends against 1 UCT operation. UCX coalesced
+them. The case-21 assertion scopes its count-equality claim to single-door flows
+whose bytes already agree, which excludes both this and the rendezvous door
+without naming either.
+
+### What is still not answerable
+
+The join is **per (rank, tag), not per message**, and that is a deliberate limit
+rather than a gap to close later. A tag is reused across sends, so pairing
+individual operations would need an ordering assumption between two layers that
+buffer independently — and an invented ordering produces confident wrong pairs,
+which is worse than an aggregate. A per-message pairing needs a per-message
+identifier that neither layer records.
+
+Untagged traffic remains unjoinable by construction: on a non-tag door the tag
+travels inside an AM payload this record does not parse. `transport_mix` is where
+that traffic is accounted, by transport rather than by flow.
