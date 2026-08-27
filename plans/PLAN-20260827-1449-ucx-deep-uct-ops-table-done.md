@@ -461,3 +461,130 @@ correctly built beside the others. `common.sh` listed five provider directories
 by hand and this was the sixth. Fixed in a928015 by globbing, filtered to
 directories that actually hold a `lib*_trace.so`. Refusing was right; the list
 was the defect.
+
+---
+
+## CLOSED — all three gaps, MN5 job 45115011 (case 21, suite GREEN, 10 checks)
+
+The three things the section above said this work had not established are
+established. Case `21_ucx_deep` exists to keep them established.
+
+### Why the previous run saw only active messages
+
+Not a limitation of the provider. **UCX picks its protocol by message size
+against three thresholds**, and job 45113099 ran one small size against whatever
+the stack's defaults happened to be. Case 21 pins the thresholds
+(`UCX_ZCOPY_THRESH=2048`, `UCX_RNDV_THRESH=32768`, `UCX_TM_THRESH=1024`) and
+sweeps four sizes across them. The result is that every size lands on a
+different door, and the mapping is exact:
+
+| sent | door | ops | evidence |
+|---|---|---|---|
+| 8 B | `tag_eager_short` | 52 (40 are the sweep) | below every threshold |
+| 4096 B | `tag_eager_zcopy` | **exactly 40**, 2 tags | above zcopy + tm, below rndv |
+| 65536 B | `tag_rndv_zcopy` | **exactly 40**, 2 tags | above all three |
+| 4 MB | *no tag door* — pulled as `get_zcopy` | 80 | see "the ceiling" below |
+
+40 = 20 iterations × 2 ranks. Two distinct tags per size = one per direction.
+
+### `uct_send.tag` carries the application's own tag
+
+The strongest available check that the field is read from the right argument
+slot, and it passes without ambiguity:
+
+```
+op                payload  tag              hex             ops
+tag_eager_zcopy      4096   111050674405376  0x650000000000   20
+tag_eager_zcopy      4096   111050675453952  0x650000100000   20
+tag_rndv_zcopy      65536   112150186033152  0x660000000000   20
+tag_rndv_zcopy      65536   112150187081728  0x660000100000   20
+```
+
+`0x65` is 101 and `0x66` is 102 — the workload sends with MPI tag `100 + size
+index`, so those are its tags for sizes 1 and 2, in the top byte where Open MPI
+puts them. The field below is the source rank: `0x0` and `0x1` at bit 20, 20
+operations each. Nothing about this could come from a misaligned read of a
+neighbouring slot; a one-slot error in a fourteen-entry dispatch table produces
+plausible garbage, and this is not garbage, it is the workload.
+
+### The tag-offload arm is the control, and the contrast is total
+
+Identical thresholds, `UCX_*_MLX5_TM_ENABLE` the only difference:
+
+```
+                 TM on      TM off
+tag_eager_short    164          0
+tag_eager_zcopy     40          0
+tag_rndv_zcopy      40          0
+am_short            78        324
+am_zcopy             0         40
+```
+
+Every tag door is zero with the knob off, and the traffic reappears on the
+active-message doors — the 4096-byte sweep as `am_zcopy` 40 × 4096 = 163,840 B,
+byte-identical to `tag_eager_zcopy`'s 163,840 B with the knob on. So the tag
+doors are a function of the fabric configuration and not of the tracer, which is
+the distinction `tag_offload_was_reached.sql` was written to be able to draw.
+
+### Two findings about UCX that nothing else in pcomm could have produced
+
+**1. Offloaded rendezvous has a ceiling, and 4 MB is above it.** With TM on,
+`tag_rndv_zcopy` fires exactly 40 times and every one carries 65536 bytes. The
+4 MB messages take no tag door at all: they go out as an active-message RTS and
+the peer pulls them with `get_zcopy`. Both are rendezvous; only one is
+offloaded. A capture at the UCP layer sees `ucp_tag_send_nbx` either way and
+cannot tell them apart.
+
+**2. The 4 MB pull is striped across two HCAs.**
+
+```
+dev         payload   ops
+mlx5_0:1     496       40
+mlx5_1:1     496       40
+mlx5_0:1   32768       74
+mlx5_0:1 1048576       10
+mlx5_0:1 2096656       40
+mlx5_1:1 2096656       40
+```
+
+Each 4 MB message arrives as 2 × 2096656 + 2 × 496 = 4,194,304 bytes **to the
+byte**, and the two large fragments go to *different devices*. The 1 MB RMA gets
+and the 64 KB rendezvous halves stay on `mlx5_0:1` alone. That is UCX's
+multi-rail split, visible because `uct_iface` records the device — and it is
+precisely the fan-out `UctEndpoint`'s declaration predicted ("a ucp_ep fans out
+over several uct_eps ... even a correct static endpoint -> one QP row can be
+false"). `comm_edges` reports one rank-to-rank edge for all of it.
+
+### The derived-layer lane, and why it is not a `comm_edges` lane
+
+`transport_mix` (53cf486), reachable because `intern_text` now carries the
+dictionary into DuckDB — the derived layer could group by `tl_name` before but
+not name it, since `export_parquet` deliberately does not decode. Deliberately
+not a `comm_edges` lane: there is no peer rank at this layer, so every row would
+be `dst_rank = -1`, and one UCP send becomes several UCT operations, so unioning
+the two would bill the same bytes twice. It is a per-rank profile beside the
+matrix, with `link_health.ucx_edges_include_intranode` carrying the caveat —
+which reads 2 on this capture, the `self` transport's two operations that the
+`ucx` lane counts as fabric.
+
+### One defect this run found
+
+`entity_close_accounted` reported 296 iface and 168 endpoint closes as unmatched
+while opens and closes agreed exactly. ucx_deep landed emitting `EntityClose` for
+two entity types without adding either to that assertion's `opens` CTE — the
+third time that list has been left behind by a provider, after the ib family and
+after UCX's four. Fixed in 0e0115f with the two lines, five quiet/fires cases,
+and a line in README.md's "Adding a provider", because three times is a pattern
+and the pattern is that the list is maintained by memory.
+
+### Still open
+
+- `UCX_TLS` is not pinned, so which transports UCX opens is its choice. The
+  capture records what it chose, which is why that is acceptable — but a run on
+  a fabric without `rc_mlx5` would exercise different doors and has not happened.
+- `put_short`/`put_bcopy`/`get_short`/`get_bcopy` remain unwitnessed: this
+  workload's RMA is 1 MB, which is always zero-copy. The bcopy and short RMA
+  doors need a small-message one-sided workload.
+- The 86 ns `rec().intern()` on the hot path is unchanged. ucx_deep caches around
+  it locally; every provider interning on its hot path pays the same toll, and
+  the engine is where it belongs.
