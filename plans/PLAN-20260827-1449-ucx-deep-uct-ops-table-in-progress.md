@@ -141,6 +141,24 @@ Byte-identical across six minor releases and the current development head, and
 the file MN5 ships is bit-identical to upstream. The last change to it was in
 v1.14.0, and it was a copyright line.
 
+### The layout claim, checked by the compiler and not only by an md5
+
+The md5 table above says the FILE is identical. What matters is the LAYOUT, so
+MN5's own headers were fetched to this machine and both were compiled:
+
+```
+                sizeof   ep_am_short   ep_put_short   ep_tag_rndv_zcopy   iface_is_reachable
+UCX 1.18.0 (MN5)   400            48              0                 152                  392
+UCX 1.19.0 (here)  400            48              0                 152                  392
+```
+
+`providers/ucx_deep/ucx_deep_provider.cpp` also compiles clean against the 1.18
+tree, so the version the provider will meet on the cluster and the version its
+gate runs against agree on every offset it writes to. `uct_binding.ops_size`
+carries that 400 into every capture, and `tests/ucx_deep_records.sh` pins it —
+so the one number that would move if the table changed under us is asserted
+rather than assumed.
+
 ### Option (b) — a supported profiling interface — was checked and refused
 
 `libucs.so.0` exports nine `ucs_profile*` symbols and HPC-X even ships a
@@ -355,7 +373,16 @@ engine-level change; it is not this provider's to make.
   join. That needs the engine-owned thread-local call scope PLAN-20260815-1540
   Stage 3 describes — which is now worth building, because for the first time
   the lower half of it exists.
-- **Nothing has run on real hardware.** Every measurement here is the `self`,
+- **Nothing has run on real hardware, and the MN5 job was deliberately not
+  submitted.** The bare repo at `koc296797@alogin2:kefah/git/pcomm` was two
+  commits ahead with another agent's in-flight work (`wip: loud derived-table
+  load`, `wip2`); pushing over it or `--rsync`-ing the tree would have
+  discarded that, and `acc_debug` allows one job at a time account-wide, so
+  submitting would also have taken their queue slot. `tests/hpc/run_on_mn5.sh`
+  now builds and ships `libucx_deep_trace.so` beside `libucx_trace.so`, so the
+  next board picks it up; `-p ucx,ucx_deep,ib` on case 16-18 or on
+  `tests/hpc/apps/03_quantumespresso` is the run that settles it.
+  Every measurement here is the `self`,
   `tcp`, `sysv` and `posix` transports on one laptop. `rc_mlx5`/`dc_mlx5`, HW tag
   matching (`ep_tag_*`), zcopy with a real iov, rendezvous, and multi-lane
   endpoints are all uncovered — which is to say the entire reason the provider
