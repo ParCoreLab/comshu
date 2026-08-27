@@ -77,6 +77,32 @@ public:
         std::atexit([] { instance().finalize(); });
         emit_anchor();         // start-of-run clock anchor (UNIFICATION §4)
         emit_node_identity();  // which machine this rank is on
+        // ...AND PUT THEM ON DISK NOW, rather than leaving them in a thread
+        // buffer that only finalize() will ever drain.
+        //
+        // Nothing flushes on an abnormal exit — there is no signal handler
+        // anywhere in the engine — so a process killed by a signal keeps only
+        // what happened to have been flushed already. That fails in an INVERTED
+        // way: a high-volume stream survives because it filled its buffers and
+        // drained incrementally, while a stream of one or two rows never did.
+        // Measured on Quantum ESPRESSO (tests/hpc/apps/03_quantumespresso),
+        // whose pw.x reaches JOB DONE and then faults in its own teardown:
+        // 18,700,773 ib_post_send rows survived, node_identity covered 2 of 4
+        // ranks, and 84% of sends therefore landed on dst_rank = -1. The broken
+        // capture was the BIGGER one.
+        //
+        // These two records are the cheapest possible defence and the most
+        // valuable rows to defend: they are written once per rank, they are what
+        // every rank-space and time-space join is anchored on, and both are pure
+        // numbers — NodeIdentity carries a hash and ClockAnchor carries ticks,
+        // so neither needs the intern dictionary that only finalize() emits. A
+        // record flushed early whose Handles are undefined until teardown would
+        // be no better than a lost one; these have none.
+        //
+        // This does NOT make the capture crash-safe. Everything recorded after
+        // this point is still lost on a signal, which is todos.txt item 15.
+        rec::ThreadBufferRegistry::instance().drain_all();
+        m_sink->flush();
     }
 
     // Symmetric: only the last provider to leave finalizes the capture, so one

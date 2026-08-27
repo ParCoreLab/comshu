@@ -43,6 +43,16 @@ target_link_libraries(fork_smoke PRIVATE pcomm::pcomm pcomm::engine Threads::Thr
 pcomm_add_test(fork_smoke)
 add_test(NAME fork_smoke COMMAND fork_smoke)
 
+# A killed process must still leave a capture that can be placed on a node and a
+# clock. Nothing flushes on an abnormal exit, and the failure is inverted -- the
+# high-volume streams survive and the one-row identity streams do not -- so
+# start() flushes those two immediately. This is what stops that line being read
+# as a redundant flush and deleted.
+add_executable(crash_identity_smoke crash_identity_smoke.cpp)
+target_link_libraries(crash_identity_smoke PRIVATE pcomm::pcomm pcomm::engine)
+pcomm_add_test(crash_identity_smoke)
+add_test(NAME crash_identity COMMAND crash_identity_smoke)
+
 # The intern dictionary: written through Tracer (so, the engine), read back
 # through rec::InternDictionary — the same path the reader uses.
 add_executable(intern_format intern_format.cpp)
