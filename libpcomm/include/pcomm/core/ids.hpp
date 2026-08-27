@@ -50,7 +50,16 @@ inline constexpr RecordTypeId libfabric_lo = 400, libfabric_hi = 499;
 inline constexpr RecordTypeId internal_lo = 500, internal_hi = 599;
 inline constexpr RecordTypeId ucx_lo = 600, ucx_hi = 699;
 inline constexpr RecordTypeId gpumem_lo = 700, gpumem_hi = 799;      // Snoopie engine
-inline constexpr RecordTypeId ucx_deep_lo = 800, ucx_deep_hi = 899;  // ucTrace (deferred)
+// providers/ucx_deep — UCX's TRANSPORT layer. Reserved for "ucTrace" and used
+// for something better than reimplementing UCT internals: uct/api/uct.h
+// declares every UCT data operation as an inline over
+// `ep->iface->ops.ep_am_short(...)`, and that ops table is declared in the
+// INSTALLED header uct/api/tl.h. So this range describes the operations UCX
+// actually issued, through a door that needs no opaque offset — and on the
+// HPC-X/mlx5 stack it is the only range in a capture that sees the data plane
+// at all, because UCX rings its own doorbell and neither ib_post_send (110)
+// nor mlx5_device_send (214) ever fires.
+inline constexpr RecordTypeId ucx_deep_lo = 800, ucx_deep_hi = 899;
 // NCCL is the only provider whose door is a SUPPORTED profiling interface
 // rather than an interposition: every public entry point is declared through
 // NCCL_API (src/include/core.h), which emits `pncclX` as a strong alias and

@@ -22,6 +22,7 @@
 #include "ib_records.hpp"
 #include "mlx5_records.hpp"
 #include "nccl_records.hpp"
+#include "ucx_deep_records.hpp"
 #include "ucx_records.hpp"
 
 using pcomm::rec::Stamped;
@@ -29,6 +30,7 @@ namespace cr = pcomm::core::records;
 namespace ir = pcomm::providers::ibverbs::records;
 namespace mr = pcomm::providers::mlx5dv::records;
 namespace ur = pcomm::providers::ucx::records;
+namespace udr = pcomm::providers::ucx_deep::records;
 namespace nr = pcomm::providers::nccl::records;
 namespace fb = pcomm::fb;
 
@@ -84,6 +86,12 @@ PCOMM_SCHEMA_MATCH(ur::UcxTagProbe, fb::UcxTagProbe);
 PCOMM_SCHEMA_MATCH(ur::UcxAtomic, fb::UcxAtomic);
 PCOMM_SCHEMA_MATCH(ur::UcxWorkerAddress, fb::UcxWorkerAddress);
 PCOMM_SCHEMA_MATCH(ur::UcxEpConnection, fb::UcxEpConnection);
+
+// ucx_deep / UCT, 800-899.
+PCOMM_SCHEMA_MATCH(udr::UctIface, fb::UctIface);
+PCOMM_SCHEMA_MATCH(udr::UctEndpoint, fb::UctEndpoint);
+PCOMM_SCHEMA_MATCH(udr::UctSend, fb::UctSend);
+PCOMM_SCHEMA_MATCH(udr::UctBinding, fb::UctBinding);
 
 // NCCL host API, 900-999.
 PCOMM_SCHEMA_MATCH(nr::NcclComm, fb::NcclComm);
@@ -422,6 +430,64 @@ int main() {
                         2, static_cast<uint8_t>(ur::UcxAtomicOp::CompareSwap),
                         static_cast<uint8_t>(ur::UcxDoor::LegacyPost), 1);
         expect_identical("UcxAtomic", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<udr::UctIface> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1601}, {2, 0x1602});
+        c.payload.open_mode = 0x1ull;
+        c.payload.iface = 0x11;
+        c.payload.worker = 0x12;
+        c.payload.md = 0x13;
+        c.payload.tl_name = 0x14;
+        c.payload.dev_name = 0x15;
+        c.payload.instrumented = static_cast<uint8_t>(udr::UctInstrumented::Yes);
+        c.payload.patched_ops = 14;
+        fb::UctIface f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1601),
+                                    fb::TimePoint(2, 0x1602), 0),
+                       0x1ull, 0x11, 0x12, 0x13, 0x14, 0x15,
+                       static_cast<uint8_t>(udr::UctInstrumented::Yes), 14, 0, 0);
+        expect_identical("UctIface", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<udr::UctEndpoint> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1603}, {2, 0x1604});
+        c.payload.ep = 0x21;
+        c.payload.iface = 0x22;
+        fb::UctEndpoint f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1603),
+                                       fb::TimePoint(2, 0x1604), 0),
+                          0x21, 0x22);
+        expect_identical("UctEndpoint", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<udr::UctSend> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1605}, {2, 0x1606});
+        c.payload.payload = 0x4142434445464748ull;
+        c.payload.header = 0x08;
+        c.payload.remote_addr = 0xdeadbeefcafeull;
+        c.payload.tag = 0x0102030405060708ull;
+        c.payload.ep = 0x31;
+        c.payload.iface = 0x32;
+        c.payload.status = -3;
+        c.payload.op = static_cast<uint8_t>(udr::UctOp::TagRndvZcopy);
+        c.payload.iovcnt = 7;
+        fb::UctSend f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1605),
+                                   fb::TimePoint(2, 0x1606), 0),
+                      0x4142434445464748ull, 0x08, 0xdeadbeefcafeull, 0x0102030405060708ull, 0x31,
+                      0x32, -3, static_cast<uint8_t>(udr::UctOp::TagRndvZcopy), 7, 0, 0);
+        expect_identical("UctSend", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<udr::UctBinding> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1607}, {2, 0x1608});
+        c.payload.compiled_version = 0x00011300u;
+        c.payload.runtime_version = 0x00011200u;
+        c.payload.ops_size = 0x188;
+        c.payload.accepted = 1;
+        c.payload.forced = 0;
+        fb::UctBinding f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1607),
+                                      fb::TimePoint(2, 0x1608), 0),
+                         0x00011300u, 0x00011200u, 0x188, 1, 0, 0, 0);
+        expect_identical("UctBinding", &c, &f, sizeof(c));
     }
     {
         Stamped<ur::UcxWorkerAddress> c{};

@@ -75,19 +75,32 @@ if(NOT DEFINED PCOMM_FLATBUFFERS_INCLUDE)
   set(PCOMM_FLATBUFFERS_INCLUDE ${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include)
 endif()
 
+# Every header in the tree that can declare a PCOMM_RECORD. Used by both the
+# conformance test's include path and the schema_check dependency list below,
+# so a new provider cannot be silently omitted from either.
+file(GLOB _pcomm_provider_record_hdrs CONFIGURE_DEPENDS
+     "${CMAKE_SOURCE_DIR}/providers/*/*_records.hpp")
+set(_conformance_record_dirs "")
+foreach(_hdr IN LISTS _pcomm_provider_record_hdrs)
+  get_filename_component(_dir "${_hdr}" DIRECTORY)
+  list(APPEND _conformance_record_dirs "${_dir}")
+endforeach()
+list(REMOVE_DUPLICATES _conformance_record_dirs)
+
 if(PCOMM_BUILD_TESTS AND EXISTS ${PCOMM_FLATBUFFERS_INCLUDE})
   add_executable(pcomm_schema_conformance tests/schema_conformance.cpp)
   target_include_directories(pcomm_schema_conformance PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/schema/generated
-    ${CMAKE_SOURCE_DIR}/providers/ibverbs
-    ${CMAKE_SOURCE_DIR}/providers/mlx5dv
-    ${CMAKE_SOURCE_DIR}/providers/ucx
-    # nccl_records.hpp includes no nccl.h — the records are plain POD over
-    # pcomm's own vocabulary — so the core conformance test compiles it on a
-    # host with no NCCL at all, which is the point of keeping records free of
-    # vendor headers.
-    ${CMAKE_SOURCE_DIR}/providers/nccl
+    # FOUND, not listed. Every *_records.hpp is vendor-neutral by rule
+    # (ib_records.hpp pulls in no verbs.h, ucx_deep_records.hpp no uct.h), so
+    # the core conformance test compiles all of them on a host with none of the
+    # vendor libraries installed — which is the point of the rule. Globbed for
+    # the same reason pcomm-read/CMakeLists.txt globs: a hand-written list of
+    # the provider directories and a generated one of the same directories is
+    # two lists kept in step by nobody, and that has already cost this repo a
+    # build (bea74d8).
+    ${_conformance_record_dirs}
     ${PCOMM_FLATBUFFERS_INCLUDE})
   target_compile_features(pcomm_schema_conformance PRIVATE cxx_std_20)
   # Keep assert() alive: every build type that runs tests defines
@@ -144,9 +157,9 @@ if(Python3_Interpreter_FOUND)
       ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/core/ids.hpp
       ${CMAKE_CURRENT_SOURCE_DIR}/include/pcomm/rec/stream_header.hpp
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/schema_conformance.cpp
-      ${CMAKE_SOURCE_DIR}/providers/ibverbs/ib_records.hpp
-      ${CMAKE_SOURCE_DIR}/providers/ucx/ucx_records.hpp
-      ${CMAKE_SOURCE_DIR}/providers/nccl/nccl_records.hpp
+      # Globbed, not listed: mlx5_records.hpp was missing from the hand-written
+      # version of this list, so editing it would not have re-run the check.
+      ${_pcomm_provider_record_hdrs}
       # check 6 (ibverbs name tables) reads both readers' sources
       ${CMAKE_SOURCE_DIR}/pcomm-read/main.cpp
       ${CMAKE_SOURCE_DIR}/tools/read_pcs.py

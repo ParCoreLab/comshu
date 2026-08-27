@@ -23,7 +23,7 @@
 | 0 — establish the oracle | **done** | jobs 44578355, 44629699/44629730, 44635003; plus a login-node ELF sweep of the whole HPC-X stack |
 | 1 — provider vertical slice | **done** | validated on MN5, job 44675611 |
 | 2 — complete the surface | **done** | 29 doors, 13 records; parity with SigmaTrace audited and exceeded |
-| 3 — cross-layer attribution | **RESOLVED INTO THE HIJACK** | the door sweep ran 2026-08-27: there is no exported send door at all. Becomes `PLAN-20260807-1746-ibgda-data-plane-hijack`. See *Future work* 1 |
+| 3 — cross-layer attribution | **REOPENED 2026-08-27** | the door sweep's conclusion was superseded the same day: the send door is `uct_iface_ops_t`, a table in an installed header, and `providers/ucx_deep` now uses it. The lower half of Stage 3 exists; the UCP-operation scope that joins it to the 600s does not. See `PLAN-20260827-1449` and *Future work* 1 |
 | 4 — parity and regression gates | **partial** | a local gate exists and runs in 0.08 s; there is no MN5 gate, and nothing on du04 |
 
 **What exists.** `providers/ucx/`, built by `PCOMM_PROVIDER_UCX=ON`: 29
@@ -613,6 +613,30 @@ paused here.
 Ordered by value per unit of effort, not by stage number. Every item names why
 it matters, so a later reader can drop one on its merits rather than on its
 position in a list.
+
+## 1. SUPERSEDED (2026-08-27, later the same day): the sweep was right about
+## symbols and wrong about doors
+
+**See `PLAN-20260827-1449-ucx-deep-uct-ops-table-in-progress.md`.** Everything
+below this box is correct as measured and its conclusion does not follow.
+
+UCX exports no send symbol because `uct/api/uct.h` declares every UCT data
+operation `UCT_INLINE_API` over `ep->iface->ops.ep_am_short(...)`. The table is
+`uct_iface_ops_t`, and it is declared in `uct/api/tl.h` — an **installed**
+header, present in MN5's HPC-X tree, byte-identical (md5 `bef986ac`) from UCX
+v1.14.0 through `origin/master`, and explicitly documented as existing so that
+interfaces can be created "with custom operations". So the door is a table
+rather than a symbol, no offset is guessed, and this is the shape of door
+`ObjectOpsHookManager` was written for.
+
+`providers/ucx_deep/` (ids 800-899) now records the UCT data plane, and
+`tests/ucx_deep_records.sh` proves it in one process with no cluster. The IBGDA
+hijack remains the answer for GPU-initiated traffic, where the writer really is
+a GPU thread and there is no host call to intercept — but it is **no longer the
+price of seeing host-side MPI traffic on this stack**, which was the argument
+that had just made it look mandatory.
+
+The original entry, unedited:
 
 ## 1. DONE (2026-08-27): the door sweep ran, and the answer is the middle one
 

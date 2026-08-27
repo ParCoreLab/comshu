@@ -104,6 +104,29 @@ else
   rm -rf "$probe"
 fi
 
+have_ucx=0
+UCX_SYSROOT="$ROOT/.tools/sysroot"
+# Probed the same way as ibverbs, and it needs BOTH halves: libucp.so to link
+# against and ucp/api/ucp.h + uct/api/tl.h to compile against. tl.h in
+# particular is what ucx_deep reads the ops table out of, and a distro that
+# ships libucp without ucx-devel has the library and not the header.
+_ucx_inc="" _ucx_ucp="" _ucx_ucs=""
+for _d in "$UCX_SYSROOT/usr" /usr; do
+  if [ -f "$_d/include/ucp/api/ucp.h" ] && [ -f "$_d/include/uct/api/tl.h" ]; then
+    for _l in "$_d/lib64" "$_d/lib" "$_d/lib/x86_64-linux-gnu"; do
+      if [ -f "$_l/libucp.so" ] && [ -f "$_l/libucs.so" ]; then
+        _ucx_inc="$_d/include"; _ucx_ucp="$_l/libucp.so"; _ucx_ucs="$_l/libucs.so"; break
+      fi
+    done
+  fi
+  [ -n "$_ucx_inc" ] && break
+done
+if [ -n "$_ucx_inc" ]; then
+  have_ucx=1
+else
+  skips+=("ucx + ucx_deep providers — no UCX headers (ucp/api/ucp.h, uct/api/tl.h) and libucp/libucs on this host; run tools/get_devheaders.sh")
+fi
+
 # --- the configurations -----------------------------------------------------
 # core is the one that must always work: header-only lib, engine, the pcomm binary,
 # the launcher, every test, and the schema checks.
@@ -116,6 +139,16 @@ if [ "$quick" -eq 0 ]; then
   # exists for, so build it whenever both halves are available.
   if [ "$have_ibverbs" -eq 1 ] && [ "$have_cuda" -eq 1 ]; then
     run_config both -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_GPUMEM=ON
+  fi
+  # UCX, which until now was the configuration nobody built: tests/ucx_records.sh
+  # ran only for someone who typed -DPCOMM_PROVIDER_UCX=ON by hand, and
+  # ucx_deep_records.sh would have inherited the same fate. This is the defect
+  # PLAN-20260815-1540 Future work 5 names, and it is the same one that let the
+  # DuckDB reader stop compiling for 39 commits. UCX needs no cluster — the self
+  # transport runs the whole gate in one process — so there is no excuse for it.
+  if [ "$have_ucx" -eq 1 ]; then
+    run_config ucx -DPCOMM_PROVIDER_UCX=ON \
+        "-DUCX_INCLUDE_DIR=$_ucx_inc" "-DUCX_UCP_LIB=$_ucx_ucp" "-DUCX_UCS_LIB=$_ucx_ucs"
   fi
 else
   skips+=("--quick: provider configurations not built")

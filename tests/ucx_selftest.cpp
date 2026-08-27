@@ -31,6 +31,7 @@
  */
 #include <ucp/api/ucp.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -201,6 +202,46 @@ int main(void) {
     ucp_mem_h memh;
     if (ucp_mem_map(context, &mparams, &memh) == UCS_OK)
         ucp_mem_unmap(context, memh);
+
+    /* 6. ONE-SIDED, and it is here for the UCT layer rather than for UCP.
+     *    ucx_rma already had rows on MN5; what nothing local had ever exercised
+     *    is the put/get slots of uct_iface_ops_t, which the `self` transport
+     *    fills (uct_sm_ep_put_short / uct_sm_ep_get_bcopy). It also gives
+     *    tests/ucx_deep_records.sh the one EXACT cross-layer assertion available
+     *    in a single process: a small put over a loopback endpoint must reach
+     *    uct_send.remote_addr carrying the very address ucp_put_nbx was handed.
+     *
+     *    Deliberately small (8 bytes) so UCX picks the short protocol and does
+     *    not fragment; a fragmented put would be several uct_sends at several
+     *    offsets and the address assertion would have to become a range test. */
+    static char rma_target[64];
+    memset(rma_target, 0, sizeof rma_target);
+    ucp_mem_map_params_t rparams_mm;
+    memset(&rparams_mm, 0, sizeof rparams_mm);
+    rparams_mm.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS | UCP_MEM_MAP_PARAM_FIELD_LENGTH;
+    rparams_mm.address = rma_target;
+    rparams_mm.length = sizeof rma_target;
+    ucp_mem_h rma_memh;
+    if (ucp_mem_map(context, &rparams_mm, &rma_memh) == UCS_OK) {
+        void*  rkey_buf = NULL;
+        size_t rkey_len = 0;
+        if (ucp_rkey_pack(context, rma_memh, &rkey_buf, &rkey_len) == UCS_OK) {
+            ucp_rkey_h rkey;
+            if (ucp_ep_rkey_unpack(ep, rkey_buf, &rkey) == UCS_OK) {
+                /* The address is printed so the gate can assert on it rather
+                 * than on a number it had to guess. */
+                printf("ucx_selftest: rma_target %p\n", (void*)rma_target);
+                rc |= settle(ucp_put_nbx(ep, send_buf, 8, (uint64_t)(uintptr_t)rma_target, rkey,
+                                         &rparams));
+                rc |= settle(ucp_get_nbx(ep, recv_buf, 8, (uint64_t)(uintptr_t)rma_target, rkey,
+                                         &rparams));
+                rc |= settle(ucp_ep_flush_nbx(ep, &rparams));
+                ucp_rkey_destroy(rkey);
+            }
+            ucp_rkey_buffer_release(rkey_buf);
+        }
+        ucp_mem_unmap(context, rma_memh);
+    }
 
     settle(ucp_ep_close_nb(ep, UCP_EP_CLOSE_MODE_FLUSH));
     ucp_worker_destroy(g_worker);

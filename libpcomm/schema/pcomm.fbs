@@ -725,6 +725,68 @@ struct UcxAtomic {
   fetching:uint8;
 }
 
+// --- ucx_deep / UCT provider records (800-899) ------------------------------
+// UCX's TRANSPORT layer, reached through uct_iface_ops_t — the dispatch table
+// in uct/api/tl.h. On the HPC-X/mlx5 stack this is the ONLY layer of pcomm that
+// sees the data plane at all: ib_post_send and mlx5_device_send are both empty
+// there. See providers/ucx_deep/ucx_deep_records.hpp.
+
+// type 800, Entity. One (transport, device) interface on a UCT worker.
+// tl_name/dev_name are kNullHandle when the interface was opened by socket
+// address rather than by device, where it genuinely has neither.
+struct UctIface {
+  temporal:Temporal;
+  open_mode:uint64;
+  iface:uint32;
+  worker:uint32;
+  md:uint32;
+  tl_name:uint32;
+  dev_name:uint32;
+  instrumented:uint8;
+  patched_ops:uint8;
+  pad0:uint8;
+  pad1:uint8;
+}
+
+// type 802, Entity. One UCT endpoint — a LANE of a ucp_ep, not a queue pair.
+struct UctEndpoint {
+  temporal:Temporal;
+  ep:uint32;
+  iface:uint32;
+}
+
+// type 804, Event. One UCT data operation. `payload` means something different
+// per op family — sent, requested, or advertised — so it must not be summed
+// across them; see UctOp in providers/ucx_deep/ucx_deep_records.hpp.
+struct UctSend {
+  temporal:Temporal;
+  payload:uint64;
+  header:uint64;
+  remote_addr:uint64;
+  tag:uint64;
+  ep:uint32;
+  iface:uint32;
+  status:int32;
+  op:uint8;
+  iovcnt:uint8;
+  pad0:uint8;
+  pad1:uint8;
+}
+
+// type 806, Artifact. Which UCX this provider bound to, and whether the layout
+// guard let it patch. `accepted = 0` is why uct_send is empty, and saying so is
+// the whole reason this record exists.
+struct UctBinding {
+  temporal:Temporal;
+  compiled_version:uint32;
+  runtime_version:uint32;
+  ops_size:uint32;
+  accepted:uint8;
+  forced:uint8;
+  pad0:uint8;
+  pad1:uint8;
+}
+
 // ---------------------------------------------------------------------------
 // NCCL host API, 900-999. The collective layer as the application asked for it.
 // Every temporal here is the HOST CALL, not the collective's execution — NCCL

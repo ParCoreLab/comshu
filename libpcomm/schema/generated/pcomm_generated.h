@@ -120,6 +120,14 @@ struct UcxEpConnection;
 
 struct UcxAtomic;
 
+struct UctIface;
+
+struct UctEndpoint;
+
+struct UctSend;
+
+struct UctBinding;
+
 struct NcclComm;
 
 struct NcclCollective;
@@ -3327,6 +3335,254 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAtomic FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(UcxAtomic, 96);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UctIface FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t open_mode_;
+  uint32_t iface_;
+  uint32_t worker_;
+  uint32_t md_;
+  uint32_t tl_name_;
+  uint32_t dev_name_;
+  uint8_t instrumented_;
+  uint8_t patched_ops_;
+  uint8_t pad0_;
+  uint8_t pad1_;
+
+ public:
+  UctIface()
+      : temporal_(),
+        open_mode_(0),
+        iface_(0),
+        worker_(0),
+        md_(0),
+        tl_name_(0),
+        dev_name_(0),
+        instrumented_(0),
+        patched_ops_(0),
+        pad0_(0),
+        pad1_(0) {
+  }
+  UctIface(const pcomm::fb::Temporal &_temporal, uint64_t _open_mode, uint32_t _iface, uint32_t _worker, uint32_t _md, uint32_t _tl_name, uint32_t _dev_name, uint8_t _instrumented, uint8_t _patched_ops, uint8_t _pad0, uint8_t _pad1)
+      : temporal_(_temporal),
+        open_mode_(::flatbuffers::EndianScalar(_open_mode)),
+        iface_(::flatbuffers::EndianScalar(_iface)),
+        worker_(::flatbuffers::EndianScalar(_worker)),
+        md_(::flatbuffers::EndianScalar(_md)),
+        tl_name_(::flatbuffers::EndianScalar(_tl_name)),
+        dev_name_(::flatbuffers::EndianScalar(_dev_name)),
+        instrumented_(::flatbuffers::EndianScalar(_instrumented)),
+        patched_ops_(::flatbuffers::EndianScalar(_patched_ops)),
+        pad0_(::flatbuffers::EndianScalar(_pad0)),
+        pad1_(::flatbuffers::EndianScalar(_pad1)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t open_mode() const {
+    return ::flatbuffers::EndianScalar(open_mode_);
+  }
+  uint32_t iface() const {
+    return ::flatbuffers::EndianScalar(iface_);
+  }
+  uint32_t worker() const {
+    return ::flatbuffers::EndianScalar(worker_);
+  }
+  uint32_t md() const {
+    return ::flatbuffers::EndianScalar(md_);
+  }
+  uint32_t tl_name() const {
+    return ::flatbuffers::EndianScalar(tl_name_);
+  }
+  uint32_t dev_name() const {
+    return ::flatbuffers::EndianScalar(dev_name_);
+  }
+  uint8_t instrumented() const {
+    return ::flatbuffers::EndianScalar(instrumented_);
+  }
+  uint8_t patched_ops() const {
+    return ::flatbuffers::EndianScalar(patched_ops_);
+  }
+  uint8_t pad0() const {
+    return ::flatbuffers::EndianScalar(pad0_);
+  }
+  uint8_t pad1() const {
+    return ::flatbuffers::EndianScalar(pad1_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UctIface, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UctEndpoint FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t ep_;
+  uint32_t iface_;
+
+ public:
+  UctEndpoint()
+      : temporal_(),
+        ep_(0),
+        iface_(0) {
+  }
+  UctEndpoint(const pcomm::fb::Temporal &_temporal, uint32_t _ep, uint32_t _iface)
+      : temporal_(_temporal),
+        ep_(::flatbuffers::EndianScalar(_ep)),
+        iface_(::flatbuffers::EndianScalar(_iface)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t ep() const {
+    return ::flatbuffers::EndianScalar(ep_);
+  }
+  uint32_t iface() const {
+    return ::flatbuffers::EndianScalar(iface_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UctEndpoint, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UctSend FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t payload_;
+  uint64_t header_;
+  uint64_t remote_addr_;
+  uint64_t tag_;
+  uint32_t ep_;
+  uint32_t iface_;
+  int32_t status_;
+  uint8_t op_;
+  uint8_t iovcnt_;
+  uint8_t pad0_;
+  uint8_t pad1_;
+
+ public:
+  UctSend()
+      : temporal_(),
+        payload_(0),
+        header_(0),
+        remote_addr_(0),
+        tag_(0),
+        ep_(0),
+        iface_(0),
+        status_(0),
+        op_(0),
+        iovcnt_(0),
+        pad0_(0),
+        pad1_(0) {
+  }
+  UctSend(const pcomm::fb::Temporal &_temporal, uint64_t _payload, uint64_t _header, uint64_t _remote_addr, uint64_t _tag, uint32_t _ep, uint32_t _iface, int32_t _status, uint8_t _op, uint8_t _iovcnt, uint8_t _pad0, uint8_t _pad1)
+      : temporal_(_temporal),
+        payload_(::flatbuffers::EndianScalar(_payload)),
+        header_(::flatbuffers::EndianScalar(_header)),
+        remote_addr_(::flatbuffers::EndianScalar(_remote_addr)),
+        tag_(::flatbuffers::EndianScalar(_tag)),
+        ep_(::flatbuffers::EndianScalar(_ep)),
+        iface_(::flatbuffers::EndianScalar(_iface)),
+        status_(::flatbuffers::EndianScalar(_status)),
+        op_(::flatbuffers::EndianScalar(_op)),
+        iovcnt_(::flatbuffers::EndianScalar(_iovcnt)),
+        pad0_(::flatbuffers::EndianScalar(_pad0)),
+        pad1_(::flatbuffers::EndianScalar(_pad1)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t payload() const {
+    return ::flatbuffers::EndianScalar(payload_);
+  }
+  uint64_t header() const {
+    return ::flatbuffers::EndianScalar(header_);
+  }
+  uint64_t remote_addr() const {
+    return ::flatbuffers::EndianScalar(remote_addr_);
+  }
+  uint64_t tag() const {
+    return ::flatbuffers::EndianScalar(tag_);
+  }
+  uint32_t ep() const {
+    return ::flatbuffers::EndianScalar(ep_);
+  }
+  uint32_t iface() const {
+    return ::flatbuffers::EndianScalar(iface_);
+  }
+  int32_t status() const {
+    return ::flatbuffers::EndianScalar(status_);
+  }
+  uint8_t op() const {
+    return ::flatbuffers::EndianScalar(op_);
+  }
+  uint8_t iovcnt() const {
+    return ::flatbuffers::EndianScalar(iovcnt_);
+  }
+  uint8_t pad0() const {
+    return ::flatbuffers::EndianScalar(pad0_);
+  }
+  uint8_t pad1() const {
+    return ::flatbuffers::EndianScalar(pad1_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UctSend, 96);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UctBinding FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t compiled_version_;
+  uint32_t runtime_version_;
+  uint32_t ops_size_;
+  uint8_t accepted_;
+  uint8_t forced_;
+  uint8_t pad0_;
+  uint8_t pad1_;
+
+ public:
+  UctBinding()
+      : temporal_(),
+        compiled_version_(0),
+        runtime_version_(0),
+        ops_size_(0),
+        accepted_(0),
+        forced_(0),
+        pad0_(0),
+        pad1_(0) {
+  }
+  UctBinding(const pcomm::fb::Temporal &_temporal, uint32_t _compiled_version, uint32_t _runtime_version, uint32_t _ops_size, uint8_t _accepted, uint8_t _forced, uint8_t _pad0, uint8_t _pad1)
+      : temporal_(_temporal),
+        compiled_version_(::flatbuffers::EndianScalar(_compiled_version)),
+        runtime_version_(::flatbuffers::EndianScalar(_runtime_version)),
+        ops_size_(::flatbuffers::EndianScalar(_ops_size)),
+        accepted_(::flatbuffers::EndianScalar(_accepted)),
+        forced_(::flatbuffers::EndianScalar(_forced)),
+        pad0_(::flatbuffers::EndianScalar(_pad0)),
+        pad1_(::flatbuffers::EndianScalar(_pad1)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t compiled_version() const {
+    return ::flatbuffers::EndianScalar(compiled_version_);
+  }
+  uint32_t runtime_version() const {
+    return ::flatbuffers::EndianScalar(runtime_version_);
+  }
+  uint32_t ops_size() const {
+    return ::flatbuffers::EndianScalar(ops_size_);
+  }
+  uint8_t accepted() const {
+    return ::flatbuffers::EndianScalar(accepted_);
+  }
+  uint8_t forced() const {
+    return ::flatbuffers::EndianScalar(forced_);
+  }
+  uint8_t pad0() const {
+    return ::flatbuffers::EndianScalar(pad0_);
+  }
+  uint8_t pad1() const {
+    return ::flatbuffers::EndianScalar(pad1_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UctBinding, 64);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclComm FLATBUFFERS_FINAL_CLASS {
  private:

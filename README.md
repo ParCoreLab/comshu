@@ -28,6 +28,8 @@ libpcomm/        L0–L2 core — vendor-free (no cuda*/hip*/ibv_*/Sanitizer_* t
 providers/       L3 — each builds one .so (vendor types live HERE, not in core)
   gpumem/        GPU memory-access provider (Snoopie engine)
   ibverbs/       proof-of-concept network provider (from SigmaTrace)
+  ucx/           UCX as the application asked for it (public UCP symbols)
+  ucx_deep/      UCX as it reached the wire (the uct_iface_ops_t table)
 gpu-backends/    vendor capture engines feeding the gpumem provider
   nvbit/         phase-1 default (confirmed working on du04: CUDA 13.0, driver 580)
   sanitizer/     Compute-Sanitizer (stub; phase 2)
@@ -94,6 +96,11 @@ network ones) share a single pass — no replay needed among them.
 2. gpumem provider with the **NVBit** backend first (Sanitizer stubbed).
 3. **ibverbs** as the single network proof provider; the rest of SigmaTrace's
    providers follow in phase 2. ucTrace deferred.
+   *(Superseded 2026-08-27: `ucx` and then `ucx_deep` landed in phase 1. The
+   ids 800-899 reserved for "ucTrace" are now the UCT-layer provider, which
+   reaches UCX's data plane through the `uct_iface_ops_t` dispatch table rather
+   than by reimplementing UCT internals — see
+   `plans/PLAN-20260827-1449-ucx-deep-uct-ops-table-in-progress.md`.)*
 4. Test bed: `ssh a100` (du04, 4x A100). Multinode validation deferred until
    supercomputer access.
 

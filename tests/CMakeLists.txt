@@ -128,6 +128,19 @@ add_test(NAME comm_edges_rule
 add_test(NAME object_access_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_access_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# ucx_deep's hot-path lookup tables, driven directly.
+#
+# UNCONDITIONAL, unlike everything else UCX in this file, and deliberately so:
+# ucx_deep_tables.hpp includes no UCX header and no pcomm header, so this runs
+# in the core configuration that tools/build_all.sh actually builds. The UCX
+# configuration is not in build_all.sh (PLAN-20260815-1540, Future work 5), so a
+# test that needed it would run for nobody.
+add_executable(ucx_deep_tables ucx_deep_tables.cpp)
+target_include_directories(ucx_deep_tables PRIVATE ${CMAKE_SOURCE_DIR}/providers/ucx_deep)
+target_compile_features(ucx_deep_tables PRIVATE cxx_std_20)
+target_compile_options(ucx_deep_tables PRIVATE -UNDEBUG)
+add_test(NAME ucx_deep_tables COMMAND ucx_deep_tables)
+
 # The UCX provider's record gate. Registered only when that provider is built,
 # because it needs both the .so and UCX itself — but it does NOT need a cluster:
 # the self transport runs the whole workload in one process, which is why this
@@ -155,7 +168,17 @@ if(PCOMM_PROVIDER_UCX)
   # binary finds libucp through its own runpath and then libucp fails to find
   # libuct. Naming the directory once here is clearer than over-linking the test
   # against transitive libraries it never calls.
+  # The UCT-layer gate, on the SAME workload, with both UCX providers loaded.
+  # Same tree, same switch, same one command: ucx_deep is not a configuration of
+  # its own, precisely so it cannot become a configuration no gate builds.
+  add_test(NAME ucx_deep_records
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/ucx_deep_records.sh
+                   $<TARGET_FILE:pcomm_launcher>
+                   $<TARGET_FILE:ucx_selftest>
+                   $<TARGET_FILE:pcomm_engine>
+                   $<TARGET_FILE:ucx_trace>
+                   $<TARGET_FILE:ucx_deep_trace>)
   get_filename_component(_ucx_libdir "${UCX_UCP_LIB}" DIRECTORY)
-  set_tests_properties(ucx_records PROPERTIES
+  set_tests_properties(ucx_records ucx_deep_records PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${_ucx_libdir}:$ENV{LD_LIBRARY_PATH}")
 endif()

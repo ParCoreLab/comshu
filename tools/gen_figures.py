@@ -244,8 +244,21 @@ b.append(note(10, 355, "offered, not bytes delivered.", cls="fnote"))
 b.append(note(10, 383, "ucx_worker_address and ucx_ep_connection", cls="fnote"))
 b.append(note(10, 397, "exist only to make the cross-rank join", cls="fnote"))
 b.append(note(10, 411, "possible at all.", cls="fnote"))
-FIGS["ucx"] = svg(880, 500, "".join(b),
-    "The UCX provider's thirteen record types on the context, worker, endpoint ownership spine")
+# ucx_deep, 800-899: the layer BELOW everything above. Drawn in the same figure
+# on purpose — the whole point of the family is that it sits under the UCP
+# records, and a separate page would hide the one relationship that matters.
+b.append(band(8, 500, 864, 152, "uct", "ucx_deep / UCT 800\u2013899 \u2014 what UCX did about it"))
+b.append(box(20, 524, "uct_iface", 800, "ENT", "iface \u00b7 tl_name \u00b7 dev_name", "uct"))
+b.append(box(300, 524, "uct_ep", 802, "ENT", "ep \u00b7 iface", "uct"))
+b.append(box(580, 524, "uct_send", 804, "EVT", "ep \u00b7 op \u00b7 payload \u00b7 tag", "uct"))
+b.append(box(580, 594, "uct_binding", 806, "ART", "runtime \u00b7 accepted", "uct"))
+b.append(path("M300 547 H255", "iface", 277, 516))
+b.append(path("M580 547 H535", "ep", 557, 516))
+b.append(note(20, 610, "No arrow crosses into the 600s, and that is the finding, not an omission:", cls="fnote"))
+b.append(note(20, 624, "nothing in a capture relates a ucp_tag_send to the uct_send rows beneath it.", cls="fnote"))
+b.append(note(20, 638, "uct_ep is a LANE, not a queue pair \u2014 the QP number is not publicly readable.", cls="fnote"))
+FIGS["ucx"] = svg(880, 664, "".join(b),
+    "The UCX provider's thirteen record types on the context, worker, endpoint ownership spine, and the four ucx_deep records beneath them")
 
 # ---------------------------------------------------------------- fig: nccl
 b = []
@@ -419,6 +432,7 @@ TOK = {
     "--fam-ib":  "#a06a24", "--fam-ib-wash":  "#fbf6ef",
     "--fam-mlx": "#6a5aa0", "--fam-mlx-wash": "#f5f3fa",
     "--fam-ucx": "#1f7a70", "--fam-ucx-wash": "#eff8f6",
+    "--fam-uct": "#2f6ea8", "--fam-uct-wash": "#eef4fa",
     "--fam-ncc": "#a04a58", "--fam-ncc-wash": "#fbf1f3",
 }
 
@@ -551,6 +565,12 @@ UCX = [
  ("ucx_worker_address", 622, "Artifact", "This worker's own address, as two hashes: the prefix a cross-rank join uses, and a full one that makes a prefix collision visible."),
  ("ucx_ep_connection", 624, "Artifact", "Which remote worker an endpoint was dialled at."),
 ]
+UCT = [
+ ("uct_iface", 800, "Entity", "One (transport, device) interface. tl_name/dev_name are the only place a capture says whether a UCX message left the node."),
+ ("uct_ep", 802, "Entity", "One UCT endpoint \u2014 a LANE of a ucp_ep, not a queue pair. A ucp_ep fans out over several, possibly on different transports."),
+ ("uct_send", 804, "Event", "One UCT data operation: the wire, as close as a host interposition reaches. payload means sent, requested or advertised depending on the op family, and must not be summed across them."),
+ ("uct_binding", 806, "Artifact", "Which UCX this bound to and whether the layout guard allowed patching. Read it first when uct_send is empty."),
+]
 GPU = [
  ("gpu_access", 700, "Event", "One GPU memory access \u2014 the firehose, one row per instrumented SASS load or store."),
  ("source_line", 740, "Artifact", "One pc \u2192 source location row. Needs -lineinfo; empty without it."),
@@ -570,6 +590,7 @@ FAMILIES = [
  ("ib", "ibverbs", "100\u2013199", IB),
  ("mlx", "mlx5dv / DEVX", "200\u2013299", MLX),
  ("ucx", "ucx", "600\u2013699", UCX),
+ ("uct", "ucx_deep", "800\u2013899", UCT),
  ("ncc", "nccl", "900\u2013999", NCC),
 ]
 KINDTAG = {"Entity": "ENT", "Event": "EVT", "Artifact": "ART", "Edge": "EDG"}
@@ -598,11 +619,14 @@ PAGE_FIGURES = [
   "<code>mlx5dv_devx_obj_create</code>, so nothing in the ibverbs range sees any of it.",
   "<code>mlx5_device_send</code> is deliberately the same shape as <code>ib_post_send</code> so the reader can "
   "union them and a consumer of the comm matrix never learns which plane a run used."),
- ("09-ucx-records", "ucx",
+ ("09-ucx-records", "ucx, and ucx_deep beneath it",
   "UCP transport hooks. The spine is ownership \u2014 a context owns workers, a worker owns endpoints \u2014 and every "
-  "operation attaches to whichever of the two the API itself names.",
+  "operation attaches to whichever of the two the API itself names. The band below is the UCT layer, reached "
+  "through uct_iface_ops_t: on the HPC-X stack it is the only data plane a capture has, because UCX rings its "
+  "own doorbell and neither ib_post_send nor mlx5_device_send ever fires.",
   "Which side an operation is keyed to is the API's own shape, not a convention: a tagged send names its "
-  "endpoint, while a tagged receive cannot, because it matches by tag across every peer at once."),
+  "endpoint, while a tagged receive cannot, because it matches by tag across every peer at once. Nothing joins "
+  "the two bands: a <code>ucx_tag_send</code> and the <code>uct_send</code> rows it became are separate facts."),
  ("10-nccl-records", "nccl",
   "The one provider whose door is a supported profiling interface rather than an interposition. Six record "
   "types, all hanging off the communicator.",
@@ -625,13 +649,13 @@ PAGE_CSS = """
 :root {
   --bg:#ffffff; --fg:#1c2b36; --muted:#5f7183; --rule:#e2e8ed; --panel:#f7f9fb;
   --figure-ground:#ffffff;
-  --int:#5b7c99; --gpu:#4f7d3f; --ib:#a06a24; --mlx:#6a5aa0; --ucx:#1f7a70; --ncc:#a04a58;
+  --int:#5b7c99; --gpu:#4f7d3f; --ib:#a06a24; --mlx:#6a5aa0; --ucx:#1f7a70; --uct:#2f6ea8; --ncc:#a04a58;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg:#12181e; --fg:#dde5ec; --muted:#93a3b1; --rule:#26313b; --panel:#182029;
     --figure-ground:#f3f6f8;
-    --int:#7fadd6; --gpu:#8cc172; --ib:#d79f5c; --mlx:#a795dd; --ucx:#4fb3a6; --ncc:#dd8894;
+    --int:#7fadd6; --gpu:#8cc172; --ib:#d79f5c; --mlx:#a795dd; --ucx:#4fb3a6; --uct:#7cb0e0; --ncc:#dd8894;
   }
 }
 * { box-sizing: border-box; }
@@ -828,7 +852,7 @@ if __name__ == "__main__":
         ("06-engine-records",   FIGS["engine"],   "The engine's records, and gpumem's"),
         ("07-ibverbs-records",  FIGS["ib"],       "The ibverbs record family"),
         ("08-mlx5-records",     FIGS["mlx"],      "The mlx5dv / DEVX record family"),
-        ("09-ucx-records",      FIGS["ucx"],      "The UCX record family"),
+        ("09-ucx-records",      FIGS["ucx"],      "The UCX record family, and ucx_deep beneath it"),
         ("10-nccl-records",     FIGS["nccl"],     "The NCCL record family"),
         ("11-cross-rank-keys",  FIGS["cross"],    "The five cross-rank join keys"),
         ("12-derived-tables",   FIGS["derived"],  "Records to views to the seven derived tables"),

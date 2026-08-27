@@ -122,6 +122,25 @@ const std::vector<Provider>& registry() {
          /*built*/ true,
          "UCX application intent — contexts, workers, endpoints, tagged sends",
          "inter-node"},
+        // Separate from `ucx` for the same reason `ibgda` is separate from
+        // `ib`: a different plane, not more of the same one. `ucx` records what
+        // the application ASKED UCX for, through public UCP symbols. This
+        // records what UCX then did about it, through uct_iface_ops_t — and on
+        // the HPC-X/mlx5 stack it is the only data-plane record a capture has,
+        // because ib_post_send and mlx5_device_send are both empty there. It is
+        // also the only thing that says which TRANSPORT carried a message, i.e.
+        // whether it left the node at all.
+        //
+        // Its own provider id range (800-899) because its door is UCX's
+        // transport-implementor API rather than its application API, and that
+        // is a different stability class — see providers/ucx_deep.
+        {"ucx_deep",
+         "libucx_deep_trace.so",
+         {"ucx_deep", "uct", "ucxdeep"},
+         /*exclusive*/ false,
+         /*built*/ true,
+         "UCX transport layer — interfaces, lanes, and the wire operations UCX issues",
+         "inter-node"},
         // Composes with everything, including gpumem: it hooks host API calls
         // and touches no CUDA context, so running it alongside NVBit costs
         // nothing and answers the question NVBit cannot — WHICH collective the

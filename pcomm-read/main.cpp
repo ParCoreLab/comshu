@@ -38,6 +38,7 @@
 #include "ib_records.hpp"  // provider record schemas (reader knows all types)
 #include "mlx5_records.hpp"
 #include "nccl_records.hpp"
+#include "ucx_deep_records.hpp"
 #include "ucx_records.hpp"
 #include "../pcomm/cli.hpp"
 
@@ -61,6 +62,7 @@ using namespace pcomm::core::records;
 namespace ibr = pcomm::providers::ibverbs::records;
 namespace mxr = pcomm::providers::mlx5dv::records;
 namespace ucr = pcomm::providers::ucx::records;
+namespace udr = pcomm::providers::ucx_deep::records;
 namespace ncr = pcomm::providers::nccl::records;
 using rec::Stamped;
 
@@ -1014,6 +1016,126 @@ template<> struct Table<ucr::UcxEpConnection> {
     }
 };
 
+// --- ucx_deep / UCT, 800-899 ------------------------------------------------
+// UCX's transport layer. On the HPC-X/mlx5 stack these are the ONLY data-plane
+// rows a capture has: ib_post_send and mlx5_device_send are both empty there,
+// because UCX builds its WQE and rings its own doorbell inside a function
+// nobody exports. See providers/ucx_deep/ucx_deep_records.hpp.
+
+static const char* uct_op_name(std::uint8_t raw) {
+    switch (static_cast<udr::UctOp>(raw)) {
+        case udr::UctOp::AmShort:
+            return "am_short";
+        case udr::UctOp::AmShortIov:
+            return "am_short_iov";
+        case udr::UctOp::AmBcopy:
+            return "am_bcopy";
+        case udr::UctOp::AmZcopy:
+            return "am_zcopy";
+        case udr::UctOp::PutShort:
+            return "put_short";
+        case udr::UctOp::PutBcopy:
+            return "put_bcopy";
+        case udr::UctOp::PutZcopy:
+            return "put_zcopy";
+        case udr::UctOp::GetShort:
+            return "get_short";
+        case udr::UctOp::GetBcopy:
+            return "get_bcopy";
+        case udr::UctOp::GetZcopy:
+            return "get_zcopy";
+        case udr::UctOp::TagEagerShort:
+            return "tag_eager_short";
+        case udr::UctOp::TagEagerBcopy:
+            return "tag_eager_bcopy";
+        case udr::UctOp::TagEagerZcopy:
+            return "tag_eager_zcopy";
+        case udr::UctOp::TagRndvZcopy:
+            return "tag_rndv_zcopy";
+    }
+    return "?";
+}
+
+// Whether the interface was instrumented, and if not, why. An empty uct_send
+// has three causes and this column separates them: the guard refused, the
+// transport has no data slots, or the workload sent nothing.
+static const char* uct_instrumented_name(std::uint8_t raw) {
+    switch (static_cast<udr::UctInstrumented>(raw)) {
+        case udr::UctInstrumented::No:
+            return "refused";
+        case udr::UctInstrumented::Yes:
+            return "yes";
+        case udr::UctInstrumented::NoDataSlots:
+            return "no_data_slots";
+    }
+    return "?";
+}
+
+// tl_name/dev_name are interned STRINGS, not pointers, so they resolve to
+// "rc_mlx5"/"mlx5_0:1" rather than to a handle a reader would have to join.
+// That pair is the fact this table exists for: it is the only thing in a
+// capture that says whether a UCX message left the node.
+template<> struct Table<udr::UctIface> {
+    static constexpr const char* name = "uct_iface";
+    static constexpr const char* cols =
+        "ticks,iface,worker,md,tl_name,dev_name,open_mode,instrumented,patched_ops";
+    static void row(std::FILE* f, const Stamped<udr::UctIface>& s,
+                    const rec::InternDictionary& dict) {
+        std::fprintf(f, "%llu,%u,%u,%u,%s,%s,0x%llx,%s,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.iface, s.payload.worker, s.payload.md,
+                     dict.str(s.payload.tl_name), dict.str(s.payload.dev_name),
+                     (unsigned long long)s.payload.open_mode,
+                     uct_instrumented_name(s.payload.instrumented), s.payload.patched_ops);
+    }
+};
+
+// THE LANE. A ucp_ep fans out over several of these, possibly on different
+// transports; it is not a queue pair and the record header says why it cannot
+// be one.
+template<> struct Table<udr::UctEndpoint> {
+    static constexpr const char* name = "uct_ep";
+    static constexpr const char* cols = "ticks,ep,iface";
+    static void                  row(std::FILE* f, const Stamped<udr::UctEndpoint>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.ep,
+                                      s.payload.iface);
+    }
+};
+
+// `payload` MUST NOT be summed across op families. Am*/Put*/TagEager* left the
+// node; Get* was requested and arrives later; TagRndvZcopy was advertised for
+// the peer to pull and only `header` bytes went out. The op name is emitted
+// first so a query that groups by it cannot avoid seeing the distinction.
+template<> struct Table<udr::UctSend> {
+    static constexpr const char* name = "uct_send";
+    static constexpr const char* cols =
+        "ticks,op,ep,iface,payload,header,remote_addr,tag,iovcnt,status";
+    static void row(std::FILE* f, const Stamped<udr::UctSend>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%s,%u,%u,%llu,%llu,0x%llx,0x%llx,%u,%d",
+                     (unsigned long long)s.temporal.a.ticks, uct_op_name(s.payload.op),
+                     s.payload.ep, s.payload.iface, (unsigned long long)s.payload.payload,
+                     (unsigned long long)s.payload.header,
+                     (unsigned long long)s.payload.remote_addr, (unsigned long long)s.payload.tag,
+                     s.payload.iovcnt, s.payload.status);
+    }
+};
+
+// One row per process. Read it FIRST when uct_send is empty: accepted=0 means
+// the provider refused to instrument this UCX, which is a different fact from
+// an application that sent nothing.
+template<> struct Table<udr::UctBinding> {
+    static constexpr const char* name = "uct_binding";
+    static constexpr const char* cols =
+        "ticks,compiled_version,runtime_version,ops_size,accepted,forced";
+    static void row(std::FILE* f, const Stamped<udr::UctBinding>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u.%u.%u,%u.%u.%u,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.compiled_version >> 16, (s.payload.compiled_version >> 8) & 0xff,
+                     s.payload.compiled_version & 0xff, s.payload.runtime_version >> 16,
+                     (s.payload.runtime_version >> 8) & 0xff, s.payload.runtime_version & 0xff,
+                     s.payload.ops_size, s.payload.accepted, s.payload.forced);
+    }
+};
+
 // Every record type with a Table<> above, in table-emission order. This is the
 // list everything iterates; adding a record type means specializing Table<> and
 // naming it here — the compiler refuses one without the other.
@@ -1218,7 +1340,8 @@ using TableRecords =
                mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, ucr::UcxContext, ucr::UcxWorker,
                ucr::UcxEndpoint, ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend,
                ucr::UcxMemMap, ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic,
-               ucr::UcxWorkerAddress, ucr::UcxEpConnection, ncr::NcclComm, ncr::NcclCollective,
+               ucr::UcxWorkerAddress, ucr::UcxEpConnection, udr::UctBinding, udr::UctIface,
+               udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective,
                ncr::NcclP2p, ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a

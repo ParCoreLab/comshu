@@ -563,3 +563,48 @@ THE GENERAL POINT, which cost me two investigations to relearn: a marker is
 prose, and prose does not get re-measured when the code under it changes. Both
 of these were written against captures from a tracer that has since had five
 fixes. Re-measure before believing a marker, including your own.
+
+
+21. DONE (2026-08-27): UCX's send door is a TABLE, not a symbol
+----------------------------------------------------------------
+Item 14 gave the HPC-X class a comm_edges lane and PLAN-20260815-1540 Future
+work 1 explained why it had to be built out of UCP intent: `nm -D` finds no
+send symbol in libucp or libuct, and a probe job with -p ib,ucx,mlx5dv captured
+the ENTIRE DEVX control plane while mlx5_device_send stayed empty against
+24,452 tagged sends. The conclusion drawn was that this is the IBGDA problem and
+only the doorbell hijack could see it.
+
+That conclusion was wrong, and cheaply so. uct/api/uct.h declares every UCT data
+operation as UCT_INLINE_API over `ep->iface->ops.ep_am_short(...)`. There is no
+symbol because there is no function -- there is a function POINTER, in
+uct_iface_ops_t, declared in uct/api/tl.h, which UCX INSTALLS. MN5's HPC-X ships
+it; the file is byte-identical (md5 bef986ac) from v1.14.0 through
+origin/master; and its own doc comment says it exists "to allow creating
+interface/endpoint with custom operations". So no offset is guessed, no pointer
+is walked, and this is the exact shape of door ObjectOpsHookManager exists for.
+
+Confirmed on a laptop in 0.1s before any provider was written: interpose the
+EXPORTED uct_iface_open, overwrite the data slots of the returned iface's ops,
+run tests/ucx_selftest -- six interfaces patched (self, tcp x3, sysv, posix),
+five UCT operations observed beneath four UCP sends, workload unaffected.
+
+providers/ucx_deep/ (800-899), 4 records, 20 mutations red, +39 ns per UCT
+operation. THREE of those mutations survived the record gate first, because six
+interfaces and four endpoints never collide and nothing over `self` ever fails;
+that is what moved the lookup tables and the length rules into their own header
+with tests/ucx_deep_tables.cpp over them. Details in PLAN-20260827-1449.
+
+WHAT IT DOES NOT CLOSE. Nothing has run on real hardware, so rc_mlx5, HW tag
+matching, zcopy and rendezvous are all unexercised -- the entire reason the
+provider exists is untested on the machine it exists for. link_sql.hpp still has
+no ucx_deep lane, so comm_edges still cannot say which transport carried an
+edge, which is the most valuable thing these records add. And nothing joins a
+ucx_tag_send to the uct_send rows it became: PLAN-20260815-1540's Stage 3 scope
+is now buildable for the first time, because its lower half exists.
+
+AND ONE THING WORTH SOMEONE ELSE'S ATTENTION: rec().intern() is a call across
+the engine's C ABI into a table behind a per-domain mutex, measured at 86 ns
+against a 39 ns operation -- four fifths of this provider's cost before a
+per-thread cache removed it. Every provider that interns on its hot path is
+paying the same 86 ns per record. ucx_deep fixed it locally; the engine is where
+it should be fixed.
