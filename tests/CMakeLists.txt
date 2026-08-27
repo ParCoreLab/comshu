@@ -60,6 +60,17 @@ target_link_libraries(intern_format PRIVATE pcomm::pcomm pcomm::engine)
 pcomm_add_test(intern_format)
 add_test(NAME intern_format COMMAND intern_format)
 
+# The intern hot path. Providers intern once per RECORD, not once per entity, so
+# this is one of the few places in the tree where a constant factor is the whole
+# story: ucx_deep measured 86 ns of a 138 ns operation inside rec().intern().
+# Correctness first (a wrong handle points a record at the wrong string and
+# leaves the capture well-formed), and the cost printed rather than asserted —
+# a threshold on whatever machine builds the tree would be a flaky test.
+add_executable(intern_hot_path intern_hot_path.cpp)
+target_link_libraries(intern_hot_path PRIVATE pcomm::pcomm pcomm::engine Threads::Threads)
+pcomm_add_test(intern_hot_path)
+add_test(NAME intern_hot_path COMMAND intern_hot_path)
+
 # The new-WR-API state machine. providers/ibverbs needs libibverbs to build, but
 # wr_builder.hpp deliberately holds no vendor type, so the sequencing logic is
 # testable on any machine — which is where its bugs would be.

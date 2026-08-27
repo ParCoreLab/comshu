@@ -330,6 +330,60 @@ void pcomm_engine_reset_arenas_for_fork(void) {
     }
 }
 
+// --- the intern hot path -----------------------------------------------------
+//
+// Providers intern once per RECORD, not once per entity: every send interns its
+// endpoint pointer, every GPU access its object base. The call below is a
+// per-domain mutex and an unordered_map probe, measured at 83.6 ns on this
+// workstation and independently at 86 ns inside ucx_deep — against a 39 ns
+// operation, so four fifths of that provider's cost was re-deriving a handle it
+// had already been given.
+//
+// ucx_deep fixed it with a private cache in its own header. That left every
+// other provider paying the toll and the next provider free to pay it again, so
+// the cache lives here now and ucx_deep's is gone.
+//
+// **WHY A CACHE IS EXACT HERE, and not an approximation.** A (domain, key) ->
+// handle mapping is stable for the life of the PROCESS. InternTable lives in a
+// function-local static inside a Recorder member function, so every Recorder
+// shares one set of tables; nothing anywhere clears them; and `atfork_child`
+// RELEASES the parent's recorder rather than destroying it, so the child
+// continues the same numbering rather than restarting it. The only way this can
+// be wrong is by answering for the WRONG key, which the key comparison prevents
+// and which tests/intern_hot_path.cpp drives with 4096 colliding keys.
+//
+// KEYS ONLY, NOT STRINGS. A string cache would have to be keyed on the bytes,
+// which means hashing them — and hashing a string is most of what the table
+// already does, so the cache would buy the mutex and little else. Interning a
+// string is also rare by comparison: names are interned when an entity is
+// created, keys on every event.
+//
+// PER THREAD, so there is no lock and no sharing. 128 slots x 5 domains x 16 B
+// is 10 KB of .tbss per thread, which is the number to revisit if a stack ever
+// runs hundreds of threads per rank. Direct-mapped rather than associative: a
+// miss costs one comparison and falls through to the real call, so the cheapest
+// possible probe is the right one.
+namespace pcomm {
+namespace {
+constexpr std::size_t kInternCacheSlots = 128;  // power of two, see intern_bucket
+
+struct InternCacheSlot {
+    std::uint64_t key{0};
+    std::uint32_t handle{0};
+};
+
+// Fibonacci hashing, then take the HIGH bits. Keys here are pointers (16-byte
+// aligned, so the low bits carry nothing) and program counters (byte-addressed,
+// so the low bits carry everything) — a plain shift is wrong for one or the
+// other, and the multiply mixes both into the top.
+inline std::size_t intern_bucket(std::uint64_t key) noexcept {
+    return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ull) >> 57) & (kInternCacheSlots - 1);
+}
+
+thread_local InternCacheSlot t_intern_cache[pcomm::rec::kInternDomainCount][kInternCacheSlots];
+}  // namespace
+}  // namespace pcomm
+
 std::uint32_t pcomm_engine_intern_str(std::uint8_t domain, const char* s, std::size_t n) {
     auto& tracer = pcomm::Tracer::instance();
     if (!tracer.has_recorder())
@@ -344,10 +398,31 @@ std::uint32_t pcomm_engine_intern_key(std::uint8_t domain, std::uint64_t key) {
     auto& tracer = pcomm::Tracer::instance();
     if (!tracer.has_recorder())
         return 0;
-    auto            d = static_cast<pcomm::rec::InternDomain>(domain);
+    auto d = static_cast<pcomm::rec::InternDomain>(domain);
+
+    // A domain out of range would index both the cache and the table out of
+    // bounds. The table has always been indexed unchecked; adding a second
+    // unchecked index is how one latent hazard becomes two, so it is checked
+    // here for both. `domain` crosses a C ABI, which is exactly where a caller
+    // built against a different header would send a value this build has no
+    // slot for.
+    if (domain >= pcomm::rec::kInternDomainCount)
+        return 0;
+
+    // The cache, and it is EXACT rather than approximate. See the note above it
+    // for why that is a property of this codebase and not an assumption.
+    pcomm::InternCacheSlot& slot = pcomm::t_intern_cache[domain][pcomm::intern_bucket(key)];
+    if (slot.key == key && slot.handle != 0)
+        return slot.handle;
+
     auto&           rec = tracer.recorder();
     std::lock_guard lock(rec.mutex(d));
-    return rec.table(d).intern(key);
+    const auto      h = rec.table(d).intern(key);
+    // Never cache the null handle: it is the "no recorder" answer, and storing
+    // it would turn a transient state into a permanent wrong one.
+    if (h != 0)
+        slot = {key, h};
+    return h;
 }
 
 }  // extern "C"
@@ -860,8 +935,7 @@ extern "C" sighandler_t signal(int sig, sighandler_t handler) {
         static auto real = pcomm_next_sym<sighandler_t (*)(int, sighandler_t)>("signal");
         return real ? real(sig, handler) : SIG_ERR;
     }
-    sighandler_t previous =
-        g_app_action[sig].set ? g_app_action[sig].act.sa_handler : SIG_DFL;
+    sighandler_t     previous = g_app_action[sig].set ? g_app_action[sig].act.sa_handler : SIG_DFL;
     struct sigaction act;
     std::memset(&act, 0, sizeof act);
     act.sa_handler = handler;

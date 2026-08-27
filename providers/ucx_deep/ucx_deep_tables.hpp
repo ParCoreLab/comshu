@@ -36,7 +36,15 @@ template<std::size_t Slots> constexpr std::size_t bucket_of(const void* p) noexc
 //
 // It exists because interning is not a hash lookup: it is a call across the
 // engine's C ABI into a table behind a per-domain mutex, measured at 86 ns
-// against a 39 ns operation. Caching is exact rather than approximate — the
+// against a 39 ns operation.
+//
+// THE ENGINE CACHES TOO, since 2026-08-27 — that measurement was the reason,
+// and libpcomm/src/engine.cpp now carries the same idea for every provider
+// (83.6 -> 15.3 ns on a repeated key, tests/intern_hot_path.cpp). This one
+// STAYS anyway, and the remaining 15 ns is what it buys: the engine's cache is
+// reached through a cross-.so call, past Tracer::instance()'s static guard and
+// a recorder check, while this one is an array probe in the calling object.
+// On a 39 ns operation that difference is not a rounding error. Caching is exact rather than approximate — the
 // engine's key table returns the same handle for an address forever — so the
 // only way this can be wrong is by answering for the WRONG address, which is
 // what the key comparison prevents and what the test drives.
