@@ -215,6 +215,14 @@ One entry per layer; the build refuses a missing one:
 `providers/<name>/` building one `.so`: implement `provider::IProvider`,
 `PCOMM_EXPORT_PROVIDER`, claim a record-id range in `core/ids.hpp`, declare it
 at startup via `pcomm_engine_declare_provider` (the engine refuses overlapping
-ranges), and add a registry row in `pcomm/main.cpp`. Hook definitions follow
+ranges), and add a registry row in `pcomm/main.cpp`.
+
+**If it emits `EntityClose` for anything, add that entity to the `opens` CTE in
+`tests/hpc/suite/asserts/entity_close_accounted.sql` in the same change**, and a
+quiet/fires pair to `asserts_fire.sh`. This has been forgotten three times — the
+ib family, UCX's four entities, then ucx_deep's two — and the cost is not a
+missing check: every close the new provider emits is reported as "names an
+entity no open record created", so the assertion becomes noise for every *other*
+provider in the same capture, on exactly the runs where it is most needed. Hook definitions follow
 `providers/ibverbs/ib_hooks.hpp`; the manager contract is documented in
 `pcomm/hook/CompositeHookManager.hpp`.

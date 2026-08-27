@@ -30,7 +30,7 @@
 -- 104 ib_completion_queue, 108 ib_shared_recv_queue, 118 ib_address_handle,
 -- 120 ib_device, 200 mlx5_umem, 202 mlx5_uar, 520 mem_object,
 -- 600 ucx_context, 602 ucx_worker, 604 ucx_endpoint, 614 ucx_mem_map,
--- 900 nccl_comm, 908 nccl_window.
+-- 800 uct_iface, 802 uct_ep, 900 nccl_comm, 908 nccl_window.
 --
 -- 104 ib_completion_queue, 108 ib_shared_recv_queue, 118 ib_address_handle and
 -- 120 ib_device joined this list when the receive path landed. Every one of them
@@ -89,6 +89,22 @@ WITH opens AS (
   -- assertion becomes noise on exactly the capture that needed it.
   UNION ALL SELECT rank, comm,   900 FROM nccl_comm
   UNION ALL SELECT rank, window, 908 FROM nccl_window
+  -- ucx_deep's two entities, and this is the THIRD time the omission described
+  -- above has actually happened — after the ib family and after UCX's four.
+  -- ucx_deep landed on 2026-08-27 emitting EntityClose for both and adding
+  -- neither line here, so case 21's first run reported 296 iface closes and 168
+  -- endpoint closes as "names an entity no open record created" while opens and
+  -- closes matched EXACTLY: 148 ifaces and 84 endpoints opened and closed on
+  -- each of two ranks, zero unmatched on all three clauses once these two lines
+  -- exist (job 45114566).
+  --
+  -- Three times is a pattern, not an accident, and the pattern is that this list
+  -- is maintained by memory. It belongs beside the provider checklist in
+  -- README.md's "Adding a provider" — a provider that closes an entity and does
+  -- not appear here does not merely go unchecked, it turns this assertion into
+  -- noise for every other provider in the same capture.
+  UNION ALL SELECT rank, iface,  800 FROM uct_iface
+  UNION ALL SELECT rank, ep,     802 FROM uct_ep
 ),
 closes AS (SELECT rank, subject, opener, count(*) AS n
            FROM entity_close GROUP BY rank, subject, opener),

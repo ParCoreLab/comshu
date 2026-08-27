@@ -50,6 +50,8 @@ CREATE TABLE ucx_endpoint (rank INT, endpoint INT);
 CREATE TABLE ucx_mem_map (rank INT, memh INT);
 CREATE TABLE nccl_comm (rank INT, comm INT);
 CREATE TABLE nccl_window (rank INT, window INT);
+CREATE TABLE uct_iface (rank INT, iface INT);
+CREATE TABLE uct_ep (rank INT, ep INT);
 SQL
 }
 
@@ -187,6 +189,40 @@ INSERT INTO entity_close VALUES (0, 10, 1, 900), (0, 11, 1, 900);"
 # ncclCommInitAll — must still be reported.
 run "NCCL comm closed through a door we do not hook still fires" fires "
 INSERT INTO entity_close VALUES (0, 10, 77, 900);"
+
+# ucx_deep's two, pinned the same way — and these are not hypothetical. The
+# provider landed emitting EntityClose for both entity types and adding neither
+# to the CTE, so case 21's first run (job 45114566) reported 296 iface closes and
+# 168 endpoint closes as unmatched while opens and closes agreed exactly on both
+# ranks. That is the third time this list has been left behind by a provider, and
+# these four rows are what turn the fourth time into a local red instead of a
+# cluster job's worth of noise.
+run "UCT interface opened and closed is quiet" quiet "
+INSERT INTO uct_iface VALUES (0, 3);
+INSERT INTO entity_close VALUES (0, 10, 3, 800);"
+
+run "UCT endpoint opened and closed is quiet" quiet "
+INSERT INTO uct_ep VALUES (0, 7);
+INSERT INTO entity_close VALUES (0, 10, 7, 802);"
+
+# An iface pointer IS reusable — UCX closes one and opens another at the same
+# address — so two opens and two closes of one handle is the legitimate shape,
+# and only an excess of closes is a defect. This is the pair that says the
+# running count may reach zero and must not go below it.
+run "UCT interface reopened at the same address is quiet" quiet "
+INSERT INTO uct_iface VALUES (0, 3), (0, 3);
+INSERT INTO entity_close VALUES (0, 10, 3, 800), (0, 11, 3, 800);"
+
+run "UCT interface closed more often than opened fires" fires "
+INSERT INTO uct_iface VALUES (0, 3);
+INSERT INTO entity_close VALUES (0, 10, 3, 800), (0, 11, 3, 800);"
+
+# The signal the assertion exists for, on the layer where it is most likely:
+# ucx_deep learns of an interface by patching the ops table at iface_open, so an
+# interface UCX creates through any other path is exactly the missing creation
+# door this row is here to name.
+run "UCT interface closed through a door we do not hook still fires" fires "
+INSERT INTO entity_close VALUES (0, 10, 88, 800);"
 
 [ $fail -eq 0 ] && echo "=== asserts_fire : PASS ===" || echo "=== asserts_fire : FAIL ==="
 exit $fail
