@@ -588,3 +588,53 @@ and the pattern is that the list is maintained by memory.
 - The 86 ns `rec().intern()` on the hot path is unchanged. ucx_deep caches around
   it locally; every provider interning on its hot path pays the same toll, and
   the engine is where it belongs.
+
+## Door coverage — MN5 job 45125053, and where it stops
+
+The small one-sided round (`rma_small_bytes = 8`, below `zcopy_thresh`) reached
+the doors a megabyte never could. UCX's choice per direction is not symmetric,
+which is itself the finding:
+
+```
+op                ops   payload   distinct remote_addr
+put_short          10         8                    10
+get_bcopy          10         8                    10
+put_zcopy          10   1048576                    10
+get_zcopy         248   (mixed)                     -
+```
+
+An 8-byte **put** goes `put_short` — the payload is built inline in the WQE. An
+8-byte **get** goes `get_bcopy`, not `get_short`: there is no payload to inline
+in a request, so the "short" form of a get buys nothing and UCX does not use it.
+Ten distinct `remote_addr` values on each, which is `RMA_ITERS` and confirms the
+address is recorded rather than defaulted.
+
+**Ten of the fourteen doors are now witnessed on hardware**: `am_short`,
+`am_bcopy`, `am_zcopy` (the `tm_off` arm), `put_short`, `put_zcopy`,
+`get_bcopy`, `get_zcopy`, `tag_eager_short`, `tag_eager_zcopy`,
+`tag_rndv_zcopy`.
+
+### The four that are not, and why each is a different kind of gap
+
+- **`put_bcopy`** — reachable in principle, and the only one a workload change
+  would fix: it needs a size above the transport's inline maximum and below
+  `zcopy_thresh`. 8 bytes went short and 1 MB went zcopy; nothing in this case
+  sits between them. A third RMA size would find it.
+- **`get_short`** — probably not reachable at all, for the reason above: a get
+  carries no outbound payload, so the short form has nothing to inline. If
+  `rc_mlx5` leaves the slot NULL then no workload reaches it and the honest
+  answer is that the door does not exist here, not that we failed to find it.
+- **`am_short_iov`** — a scatter-gather active message. Nothing in the MPI
+  layer's use of UCP appears to take it.
+- **`tag_eager_bcopy`** — the eager tag path went short at 8 B and zcopy at
+  4096 B; the bcopy band between them is the same gap as `put_bcopy`.
+
+**Not chased further, deliberately.** Two of the four may be unreachable on this
+transport, and `uct_iface.patched_ops` records a COUNT rather than a bitmap, so
+the capture cannot currently say whether a slot was NULL or merely unused. That
+distinction — "this transport has no such door" versus "this workload did not
+take it" — is worth more than a third RMA size, and it is a record change
+(a patched-slot bitmap on `UctIface`) rather than a workload one. Filed here
+rather than done, because the four missing doors are not blocking anything and
+the bitmap would be a schema change for a question nobody has yet asked of a
+capture.
