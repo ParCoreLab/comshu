@@ -593,6 +593,47 @@ FROM _uct_sends s
 LEFT JOIN _uct_iface_named f ON f.rank = s.rank AND f.iface = s.iface
 )sql"},
 
+    // --- the two layers, joined on the tag -----------------------------------
+    //
+    // THE ONLY JOIN BETWEEN THE 600s AND THE 800s, and it exists because of one
+    // measurement: `uct_send.tag` carries the APPLICATION's tag. MN5 job
+    // 45115011 recorded `ucx_tag_send.tag` and `uct_send.tag` as the same
+    // values, 20 sends each, on both ranks — 0x650000000000 and 0x660000000000
+    // being Open MPI's encoding of the workload's own MPI tags 101 and 102 with
+    // the source rank below. Until that was measured there was no defensible
+    // way to say which wire operations a UCP send became, and PLAN-20260815-1540
+    // Stage 3 was blocked on exactly this.
+    //
+    // PER (rank, tag), NOT PER MESSAGE. An application reuses a tag across many
+    // sends, so this pairs FLOWS and not individual operations; pairing
+    // individual ones would need an ordering assumption between two layers that
+    // buffer independently, and inventing one would produce confident wrong
+    // pairs. A flow is what the capture can honestly support.
+    //
+    // THE UCT SIDE IS SELECTED BY DOOR, NOT BY `tag <> 0`. UctSend's declaration
+    // says `tag` is 0 on every non-tag door because those doors carry no tag at
+    // all — so a `tag <> 0` filter would also throw away a genuine tag-0
+    // message, and silently. ops 10-13 are TagEagerShort/Bcopy/Zcopy and
+    // TagRndvZcopy: on those, and only those, the field means something.
+    {"_ucp_tag_flow", R"sql(
+CREATE OR REPLACE VIEW _ucp_tag_flow AS
+SELECT rank, tag,
+       count(*)::BIGINT              AS ucp_sends,
+       sum("count")::HUGEINT         AS ucp_units
+FROM ucx_tag_send WHERE status_class <> 1
+GROUP BY rank, tag
+)sql"},
+
+    {"_uct_tag_flow", R"sql(
+CREATE OR REPLACE VIEW _uct_tag_flow AS
+SELECT rank, tag,
+       count(*)::BIGINT      AS uct_ops,
+       sum(payload)::HUGEINT AS uct_payload,
+       count(DISTINCT op)    AS doors
+FROM uct_send WHERE status >= 0 AND op IN (10, 11, 12, 13)
+GROUP BY rank, tag
+)sql"},
+
     // (rank, qp_num) -> the remote endpoint it was connected to. Only the RTR
     // transition carries it, which is why state = 2 is the filter on the verbs
     // side; the DEVX connect record exists only for that transition, so it needs
@@ -1355,6 +1396,61 @@ SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM (
     GROUP BY 1, 2
 )
 ORDER BY transport, src_rank, dst_rank
+)sql"},
+
+    // WHAT A UCP SEND BECAME ON THE WIRE — the two layers in one relation.
+    //
+    // A FULL OUTER JOIN, because both sides have rows the other does not and
+    // each absence is a different fact worth naming:
+    //
+    //   tag_matched         both sides. This flow went out through hardware tag
+    //                       matching, and `doors` says which of the four.
+    //   no_tagged_wire_op   a UCP send with no tagged UCT operation. It is NOT
+    //                       "we lost the traffic": the wire operations exist,
+    //                       they simply carry no tag, because the message took a
+    //                       door that has none. Measured on job 45115011: the
+    //                       4 MB size sits here, going out as an active-message
+    //                       RTS the peer then pulls with get_zcopy, while the
+    //                       64 KB size below the offload ceiling is tag_matched.
+    //                       So a row here is usually a PROTOCOL fact about UCX,
+    //                       not a hole in the capture.
+    //   wire_only           a tagged UCT operation with no UCP send above it.
+    //                       UCX's own traffic: job 45115011 shows 19 four-byte
+    //                       operations on tag 0xfffbfd0000000000 per rank, which
+    //                       no application call produced. Counting them is the
+    //                       only way a reader learns the wire carries more than
+    //                       the application asked for.
+    //
+    // **NO link_health ROW, deliberately.** That table's contract is stated at
+    // its own head: "Empty is the expected state; every row is a defect in the
+    // link, not in the workload." Neither absence here is a defect. A
+    // `no_tagged_wire_op` row is UCX choosing a protocol without a tag, and a
+    // `wire_only` row is UCX doing its own housekeeping — both are facts about
+    // the transport, and putting them in link_health would train a reader to
+    // ignore the table that exists to be empty. They are reported HERE, as a
+    // status column on the flow they describe.
+    //
+    // `ucp_units` and `uct_payload` are NOT the same quantity and must not be
+    // differenced. The first is a UCP datatype count (bytes only for a
+    // contiguous 8-bit datatype — the reason comm_edges says 'datatype-units');
+    // the second is bytes on the wire, and on TagRndvZcopy it is bytes
+    // ADVERTISED rather than sent. They are carried side by side so a reader can
+    // see both, and named so nobody subtracts them by accident.
+    {"tag_flow", "rank,tag,status,ucp_sends,ucp_units,uct_ops,uct_payload,doors",
+     R"sql(
+SELECT coalesce(u.rank, t.rank)   AS rank,
+       coalesce(u.tag, t.tag)     AS tag,
+       CASE WHEN u.rank IS NULL THEN 'wire_only'
+            WHEN t.rank IS NULL THEN 'no_tagged_wire_op'
+            ELSE 'tag_matched' END AS status,
+       coalesce(u.ucp_sends, 0)::BIGINT   AS ucp_sends,
+       coalesce(u.ucp_units, 0)::BIGINT   AS ucp_units,
+       coalesce(t.uct_ops, 0)::BIGINT     AS uct_ops,
+       coalesce(t.uct_payload, 0)::BIGINT AS uct_payload,
+       coalesce(t.doors, 0)::BIGINT       AS doors
+FROM _ucp_tag_flow u
+FULL OUTER JOIN _uct_tag_flow t ON t.rank = u.rank AND t.tag = u.tag
+ORDER BY rank, status, tag
 )sql"},
 
     // WHICH TRANSPORT CARRIED IT — the question comm_edges cannot answer.

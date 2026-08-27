@@ -323,10 +323,10 @@ for i, (n, t, f) in enumerate(srcs):
     sy.append((216, y + 23))
 views = ["_sends", "_rtr  ·  _owner", "_peer_of_qp", "_wr_pairable  ·  _wr_flight",
          "_nvlink_sends", "_node  ·  _device_owner", "_ucx_sends  ·  _ucx_peer_of_ep",
-         "_intern_name  ·  _uct_scoped", "_recv_attr", "_tl_raw", "_clock"]
+         "_intern_name  ·  _uct_scoped", "_ucp_tag_flow  ·  _uct_tag_flow", "_recv_attr", "_tl_raw", "_clock"]
 vy = []
 for i, n in enumerate(views):
-    y = 44 + i * 48
+    y = 42 + i * 45
     b.append(f'<rect x="330" y="{y}" width="222" height="38" rx="3" fill="var(--surface)" '
              f'stroke="var(--rule-strong)" stroke-width="1.2" stroke-dasharray="4 3"/>'
              f'<text x="{342}" y="{y+24}" class="rname">{esc(n)}</text>')
@@ -335,10 +335,11 @@ tables = [("comm_edges", "src → dst, per transport"), ("endpoint", "one row pe
           ("object_access", "every touch, as an offset in an object"), ("wr_flow", "posted → retired, with latency"),
           ("timeline_span", "every event on one wall clock"), ("rank_identity", "rank → node, device"),
           ("transport_mix", "which transport actually carried it"),
+          ("tag_flow", "what a UCP send became on the wire"),
           ("link_health", "what the graph could NOT account for")]
 ty = []
 for i, (n, d) in enumerate(tables):
-    y = 56 + i * 66
+    y = 52 + i * 60
     b.append(f'<rect x="660" y="{y}" width="252" height="46" rx="3" fill="var(--surface)" '
              f'stroke="var(--fam-int)" stroke-width="1.4"/>'
              f'<rect x="660" y="{y}" width="3.5" height="46" rx="1.5" fill="var(--fam-int)"/>'
@@ -351,7 +352,7 @@ b.append(note(20, 596, "records, as written", cls="collabel"))
 b.append(note(330, 596, "views — created in order", cls="collabel"))
 b.append(note(660, 596, "what the panels and the suite read", cls="collabel"))
 FIGS["derived"] = svg(930, 610, "".join(b),
-    "How the reader turns raw per-rank records into the eight derived tables that the UI, the agent and the test suite query")
+    "How the reader turns raw per-rank records into the nine derived tables that the UI, the agent and the test suite query")
 
 # --------------------------------------------------- fig: the capture container
 
@@ -857,7 +858,7 @@ if __name__ == "__main__":
         ("09-ucx-records",      FIGS["ucx"],      "The UCX record family, and ucx_deep beneath it"),
         ("10-nccl-records",     FIGS["nccl"],     "The NCCL record family"),
         ("11-cross-rank-keys",  FIGS["cross"],    "The five cross-rank join keys"),
-        ("12-derived-tables",   FIGS["derived"],  "Records to views to the eight derived tables"),
+        ("12-derived-tables",   FIGS["derived"],  "Records to views to the nine derived tables"),
     ]
     for name, body, title in items:
         out = convert(body, title)

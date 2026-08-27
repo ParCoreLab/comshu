@@ -147,6 +147,14 @@ add_test(NAME object_access_rule
 add_test(NAME transport_mix_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/transport_mix_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# The only join between what the application asked UCX for and what UCX put on
+# the wire. It rests on one measured fact — uct_send.tag carries the
+# application's own tag, MN5 job 45115011 — so the rule is worth pinning: a FULL
+# OUTER join whose two absences are different facts, and a UCT side selected by
+# DOOR rather than by `tag <> 0`, since tag zero is a real tag.
+add_test(NAME tag_flow_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_flow_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # ucx_deep's hot-path lookup tables, driven directly.
 #
 # UNCONDITIONAL, unlike everything else UCX in this file, and deliberately so:
