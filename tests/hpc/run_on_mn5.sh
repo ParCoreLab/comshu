@@ -255,15 +255,21 @@ if [ "$do_build" -eq 1 ]; then
   # never appear in a capture: before this step, every ucx_* table in the whole
   # corpus was 0 rows, in every capture, while 13 record types and 29 interposed
   # doors sat in the tree fully tested and never exercised on a cluster.
-  say "build ucx provider (public UCP doors, gcc-13.2)"
+  # BOTH UCX providers. ucx_deep is the UCT layer, and this is the machine it
+  # exists for: on HPC-X/mlx5 it is the only provider that sees the data plane
+  # at all, because ib_post_send and mlx5_device_send are both empty there. Its
+  # local gate runs on the self transport and proves the record layer; rc_mlx5,
+  # HW tag matching and rendezvous are only reachable here.
+  say "build ucx + ucx_deep providers (UCP doors and the UCT ops table, gcc-13.2)"
   rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        UCX=\$(pcomm_find_ucx) &&
        echo \"  ucx: \$UCX\" &&
        cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
-       cmake --build build-ucx --target ucx_trace -j 2>&1 | tail -2 &&
-       mkdir -p build/providers/ucx &&
+       cmake --build build-ucx --target ucx_trace ucx_deep_trace -j 2>&1 | tail -2 &&
+       mkdir -p build/providers/ucx build/providers/ucx_deep &&
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
+       cp build-ucx/providers/ucx_deep/libucx_deep_trace.so build/providers/ucx_deep/ &&
        ls -la build/providers/*/*.so" \
     || { echo 'ucx build FAILED' >&2; exit 1; }
 
