@@ -1,0 +1,37 @@
+{
+  "case": "04_llmc (round 2)",
+  "app": "llm.c (karpathy/llm.c), train_gpt2.cu, upstream commit f1e2ace + the CUDA-13 cudaMemAdvise patch in this directory",
+  "providers": [
+    "nccl",
+    "kernel"
+  ],
+  "topology": "du04: 1 node x 4 A100-SXM4-40GB, 4 ranks, NCCL over NVLink. No InfiniBand, no UCX, no NVBit.",
+  "golden": "none — a third-party application is not a regression gate (see apps/README.md)",
+  "why": "Round 1 judged this workload against the raw NCCL tables only. Round 2 adds the `kernel` provider — which no case in tests/hpc/cases/ asserts anything about — and the derived layer that `pcomm link` builds, so that the capture can be asked what the GPU actually ran and not only what the application asked for.",
+  "workload": {
+    "ranks": 4,
+    "nodes": 1,
+    "gpus": 4,
+    "iters": 4,
+    "elems": 30357504,
+    "elem_bytes": 2,
+    "colls_per_iter": 76,
+    "groups_per_iter": 7,
+    "p2p_per_iter": 0
+  },
+  "workload_note": "Identical parameter names and values to meta.json's block, with ranks=4/nodes=1 for du04. Command line: `-e d6 -b 2 -t 1024 -x 4 -v 1000 -m 1 -s 0 -h 0 -d 8192` plus `-z 0` or `-z 1`. Every number is read out of llm.c's source; see PREDICTION-r2.md for the derivation, which was committed before the first r2 capture existed.\n\nThe round-2 assertions need two quantities that PARAM_COLS has no column for — the NCCL device-kernel launch count and the number of ncclGroupStart/End pairs per step at ZeRO-1 (23, being groups_per_iter + NUM_PARAMETER_TENSORS). Both are therefore derived inside the SQL from quantities the capture already holds (nccl_group row count, float32 collective count) rather than added as parameters. That the closed parameter list forced this is recorded in QUESTIONS.md, not worked around silently.",
+  "expect_tables": [
+    "nccl_comm",
+    "nccl_collective",
+    "nccl_group",
+    "gpu_kernel",
+    "rank_identity",
+    "link_health",
+    "timeline_span"
+  ],
+  "expect_fail_asserts": {
+    "rank_identity_names_the_device_r2": "rank_identity.device is NULL and label reads 'n0 · GPU ?' on every capture in this study, while nccl_comm.cuda_dev and gpu_kernel.device both name 0..3 in the same export. link_health reports nothing about it. See REPORT-r2.md §3."
+  },
+  "not_covered": "comm_edges, transport_mix, endpoint, object_access, tag_flow and tag_recv_resolved are all empty, and for this workload that is correct rather than a gap in the run: llm.c makes no point-to-point call, so nothing names a peer; there is no UCX and no ibverbs to mix transports over; and no gpumem pass was taken, so there are no GPU accesses to place in objects. asserts/collective_only_means_no_invented_edges_r2.sql states the comm_edges half as a claim rather than leaving it an absence.",
+  "cost_note": "Seconds. Four captures plus a bare run is under two minutes on du04. The kernel provider is CUPTI activity: 1251 kernels per rank at -z 0, dropped=0, and it costs ~2% of step time (8.72 ms bare -> 8.91 ms captured). Nothing here uses NVBit."
+}
