@@ -226,11 +226,19 @@ b.append(box(620, 215, "ucx_tag_send", 606, "EVT", "endpoint · tag · buffer", 
 b.append(box(620, 285, "ucx_rma", 610, "EVT", "endpoint · op · remote_addr", "ucx"))
 b.append(box(620, 355, "ucx_atomic", 620, "EVT", "endpoint · op · remote_addr", "ucx"))
 b.append(box(620, 425, "ucx_am_send", 612, "EVT", "endpoint · am_id · header_len", "ucx"))
+b.append(box(300, 495, "ucx_rkey_pack", 628, "ART", "memh · buffer_hash · len", "ucx"))
+b.append(box(620, 495, "ucx_rkey", 626, "ENT", "rkey · endpoint", "ucx"))
 b.append(path("M300 63 H245", "context", 272, 32))
 b.append(path("M620 63 H555", "worker", 587, 32))
 b.append(path("M125 145 V90", "context", 133, 122, anchor="start"))
 b.append(stack_up([(300, 168), (300, 238), (300, 308), (300, 378)], 268, 415, 86, "worker"))
-b.append(stack_up([(620, 168), (620, 238), (620, 308), (620, 378), (620, 448)], 588, 735, 86, "endpoint"))
+b.append(stack_up([(620, 168), (620, 238), (620, 308), (620, 378), (620, 448), (620, 518)],
+                  588, 735, 86, "endpoint"))
+# The gap between the two rkey boxes is the finding, so it is drawn as a gap:
+# a dashed line with no arrowhead. The exporting side and the consuming side
+# hold the same bytes and cannot be joined, because ucp_ep_rkey_unpack takes no
+# length and a packed rkey may be 9 bytes. See UcxRkey in ucx_records.hpp.
+b.append(path("M530 518 H620", "no join", 575, 510, dashed=True, head=False))
 b.append(path("M415 285 V261", "message", 423, 276, anchor="start"))
 b.append(note(10, 215, "The spine is ownership: a context owns", cls="fnote"))
 b.append(note(10, 229, "workers, a worker owns endpoints.", cls="fnote"))
@@ -247,18 +255,18 @@ b.append(note(10, 411, "possible at all.", cls="fnote"))
 # ucx_deep, 800-899: the layer BELOW everything above. Drawn in the same figure
 # on purpose — the whole point of the family is that it sits under the UCP
 # records, and a separate page would hide the one relationship that matters.
-b.append(band(8, 500, 864, 152, "uct", "ucx_deep / UCT 800\u2013899 \u2014 what UCX did about it"))
-b.append(box(20, 524, "uct_iface", 800, "ENT", "iface \u00b7 tl_name \u00b7 dev_name", "uct"))
-b.append(box(300, 524, "uct_ep", 802, "ENT", "ep \u00b7 iface", "uct"))
-b.append(box(580, 524, "uct_send", 804, "EVT", "ep \u00b7 op \u00b7 payload \u00b7 tag", "uct"))
-b.append(box(580, 594, "uct_binding", 806, "ART", "runtime \u00b7 accepted", "uct"))
-b.append(path("M300 547 H255", "iface", 277, 516))
-b.append(path("M580 547 H535", "ep", 557, 516))
-b.append(note(20, 610, "No arrow crosses into the 600s, and that is the finding, not an omission:", cls="fnote"))
-b.append(note(20, 624, "nothing in a capture relates a ucp_tag_send to the uct_send rows beneath it.", cls="fnote"))
-b.append(note(20, 638, "uct_ep is a LANE, not a queue pair \u2014 the QP number is not publicly readable.", cls="fnote"))
-FIGS["ucx"] = svg(880, 664, "".join(b),
-    "The UCX provider's thirteen record types on the context, worker, endpoint ownership spine, and the four ucx_deep records beneath them")
+b.append(band(8, 570, 864, 152, "uct", "ucx_deep / UCT 800\u2013899 \u2014 what UCX did about it"))
+b.append(box(20, 594, "uct_iface", 800, "ENT", "iface \u00b7 tl_name \u00b7 dev_name", "uct"))
+b.append(box(300, 594, "uct_ep", 802, "ENT", "ep \u00b7 iface", "uct"))
+b.append(box(580, 594, "uct_send", 804, "EVT", "ep \u00b7 op \u00b7 payload \u00b7 tag", "uct"))
+b.append(box(580, 664, "uct_binding", 806, "ART", "runtime \u00b7 accepted", "uct"))
+b.append(path("M300 617 H255", "iface", 277, 586))
+b.append(path("M580 617 H535", "ep", 557, 586))
+b.append(note(20, 680, "The 600s and the 800s are joined on the TAG, by the reader's tag_flow, not by", cls="fnote"))
+b.append(note(20, 694, "a field \u2014 the join is per (rank, tag), never per message. Untagged doors carry", cls="fnote"))
+b.append(note(20, 708, "the tag inside an AM payload and stay unjoinable; uct_ep is a LANE, not a QP.", cls="fnote"))
+FIGS["ucx"] = svg(880, 734, "".join(b),
+    "The UCX provider's fifteen record types on the context, worker, endpoint ownership spine, and the four ucx_deep records beneath them")
 
 # ---------------------------------------------------------------- fig: nccl
 b = []
@@ -323,7 +331,8 @@ for i, (n, t, f) in enumerate(srcs):
     sy.append((216, y + 23))
 views = ["_sends", "_rtr  ·  _owner", "_peer_of_qp", "_wr_pairable  ·  _wr_flight",
          "_nvlink_sends", "_node  ·  _device_owner", "_ucx_sends  ·  _ucx_peer_of_ep",
-         "_intern_name  ·  _uct_scoped", "_ucp_tag_flow  ·  _uct_tag_flow", "_recv_attr", "_tl_raw", "_clock"]
+         "_intern_name  ·  _uct_scoped", "_ucp_tag_flow  ·  _uct_tag_flow",
+         "_ucx_msg_recv  ·  _ucx_probe_of_recv", "_recv_attr", "_tl_raw", "_clock"]
 vy = []
 for i, n in enumerate(views):
     y = 42 + i * 45
@@ -336,6 +345,7 @@ tables = [("comm_edges", "src → dst, per transport"), ("endpoint", "one row pe
           ("timeline_span", "every event on one wall clock"), ("rank_identity", "rank → node, device"),
           ("transport_mix", "which transport actually carried it"),
           ("tag_flow", "what a UCP send became on the wire"),
+          ("tag_recv_resolved", "the tag a msg_recv did not carry"),
           ("link_health", "what the graph could NOT account for")]
 ty = []
 for i, (n, d) in enumerate(tables):
@@ -348,11 +358,11 @@ for i, (n, d) in enumerate(tables):
     ty.append((656, y + 23))
 b.append(bus(sy, 272, [(326, v) for v in vy]))
 b.append(bus([(552, v) for v in vy], 606, ty))
-b.append(note(20, 596, "records, as written", cls="collabel"))
-b.append(note(330, 596, "views — created in order", cls="collabel"))
-b.append(note(660, 596, "what the panels and the suite read", cls="collabel"))
-FIGS["derived"] = svg(930, 610, "".join(b),
-    "How the reader turns raw per-rank records into the nine derived tables that the UI, the agent and the test suite query")
+b.append(note(20, 676, "records, as written", cls="collabel"))
+b.append(note(330, 676, "views — created in order", cls="collabel"))
+b.append(note(660, 676, "what the panels and the suite read", cls="collabel"))
+FIGS["derived"] = svg(930, 690, "".join(b),
+    "How the reader turns raw per-rank records into the ten derived tables that the UI, the agent and the test suite query")
 
 # --------------------------------------------------- fig: the capture container
 
@@ -567,6 +577,8 @@ UCX = [
  ("ucx_atomic", 620, "Event", "A remote atomic, with op NORMALISED across the three UCX opcode spaces that number the same operations differently."),
  ("ucx_worker_address", 622, "Artifact", "This worker's own address, as two hashes: the prefix a cross-rank join uses, and a full one that makes a prefix collision visible."),
  ("ucx_ep_connection", 624, "Artifact", "Which remote worker an endpoint was dialled at."),
+ ("ucx_rkey", 626, "Entity", "A remote key, lifetime [ucp_ep_rkey_unpack, ucp_rkey_destroy). What ucx_rma.rkey and ucx_atomic.rkey join to; before it, they named a handle nothing created."),
+ ("ucx_rkey_pack", 628, "Artifact", "A registration packed for export. Carries the whole buffer's hash, which the consuming side cannot compute — ucp_ep_rkey_unpack takes no length."),
 ]
 UCT = [
  ("uct_iface", 800, "Entity", "One (transport, device) interface. tl_name/dev_name are the only place a capture says whether a UCX message left the node."),

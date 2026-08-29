@@ -118,6 +118,10 @@ struct UcxWorkerAddress;
 
 struct UcxEpConnection;
 
+struct UcxRkey;
+
+struct UcxRkeyPack;
+
 struct UcxAtomic;
 
 struct UctIface;
@@ -3246,6 +3250,81 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxEpConnection FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(UcxEpConnection, 64);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRkey FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t rkey_;
+  uint32_t endpoint_;
+
+ public:
+  UcxRkey()
+      : temporal_(),
+        rkey_(0),
+        endpoint_(0) {
+  }
+  UcxRkey(const pcomm::fb::Temporal &_temporal, uint32_t _rkey, uint32_t _endpoint)
+      : temporal_(_temporal),
+        rkey_(::flatbuffers::EndianScalar(_rkey)),
+        endpoint_(::flatbuffers::EndianScalar(_endpoint)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t rkey() const {
+    return ::flatbuffers::EndianScalar(rkey_);
+  }
+  uint32_t endpoint() const {
+    return ::flatbuffers::EndianScalar(endpoint_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxRkey, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxRkeyPack FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t memh_;
+  uint32_t context_;
+  uint64_t buffer_hash_;
+  uint32_t buffer_len_;
+  int32_t padding0__;
+
+ public:
+  UcxRkeyPack()
+      : temporal_(),
+        memh_(0),
+        context_(0),
+        buffer_hash_(0),
+        buffer_len_(0),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  UcxRkeyPack(const pcomm::fb::Temporal &_temporal, uint32_t _memh, uint32_t _context, uint64_t _buffer_hash, uint32_t _buffer_len)
+      : temporal_(_temporal),
+        memh_(::flatbuffers::EndianScalar(_memh)),
+        context_(::flatbuffers::EndianScalar(_context)),
+        buffer_hash_(::flatbuffers::EndianScalar(_buffer_hash)),
+        buffer_len_(::flatbuffers::EndianScalar(_buffer_len)),
+        padding0__(0) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t memh() const {
+    return ::flatbuffers::EndianScalar(memh_);
+  }
+  uint32_t context() const {
+    return ::flatbuffers::EndianScalar(context_);
+  }
+  uint64_t buffer_hash() const {
+    return ::flatbuffers::EndianScalar(buffer_hash_);
+  }
+  uint32_t buffer_len() const {
+    return ::flatbuffers::EndianScalar(buffer_len_);
+  }
+};
+FLATBUFFERS_STRUCT_END(UcxRkeyPack, 72);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxAtomic FLATBUFFERS_FINAL_CLASS {
  private:

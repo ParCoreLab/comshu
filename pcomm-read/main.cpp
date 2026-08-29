@@ -1016,6 +1016,37 @@ template<> struct Table<ucr::UcxEpConnection> {
     }
 };
 
+// The remote key an RMA or atomic row names. Before this record existed,
+// ucx_rma.rkey and ucx_atomic.rkey interned a handle nothing ever created, so
+// they joined to nothing at all. `endpoint` is what identifies the peer the key
+// targets — join it on through ucx_ep_connection.
+template<> struct Table<ucr::UcxRkey> {
+    static constexpr const char* name = "ucx_rkey";
+    static constexpr const char* cols = "ticks,rkey,endpoint";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxRkey>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.rkey,
+                     s.payload.endpoint);
+    }
+};
+
+// The EXPORTING side: a registration packed for remote access. `buffer_hash`
+// covers the whole packed buffer, which is possible here only because
+// ucp_rkey_pack returns its size — ucp_ep_rkey_unpack does not, which is why
+// ucx_rkey carries no counterpart to join this against. `buffer_len` is printed
+// because a legitimate dummy key is 9 bytes and a reader seeing that number
+// should not take it for a truncation.
+template<> struct Table<ucr::UcxRkeyPack> {
+    static constexpr const char* name = "ucx_rkey_pack";
+    static constexpr const char* cols = "ticks,memh,context,buffer_hash,buffer_len";
+    static void                  row(std::FILE* f, const Stamped<ucr::UcxRkeyPack>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%u,0x%016llx,%u", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.memh, s.payload.context,
+                     (unsigned long long)s.payload.buffer_hash, s.payload.buffer_len);
+    }
+};
+
 // --- ucx_deep / UCT, 800-899 ------------------------------------------------
 // UCX's transport layer. On the HPC-X/mlx5 stack these are the ONLY data-plane
 // rows a capture has: ib_post_send and mlx5_device_send are both empty there,
@@ -1339,7 +1370,8 @@ using TableRecords =
                mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, ucr::UcxContext, ucr::UcxWorker,
                ucr::UcxEndpoint, ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend,
                ucr::UcxMemMap, ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic,
-               ucr::UcxWorkerAddress, ucr::UcxEpConnection, udr::UctBinding, udr::UctIface,
+               ucr::UcxWorkerAddress, ucr::UcxEpConnection, ucr::UcxRkey, ucr::UcxRkeyPack,
+               udr::UctBinding, udr::UctIface,
                udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective, ncr::NcclP2p,
                ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm>;
 

@@ -706,6 +706,29 @@ struct UcxEpConnection {
   remote_prefix_hash:uint64;
 }
 
+// type 626, Entity. A remote key, lifetime [ucp_ep_rkey_unpack,
+// ucp_rkey_destroy). This is what ucx_rma.rkey and ucx_atomic.rkey join to;
+// before it existed they named a handle nothing created. Carries no hash of the
+// packed buffer on purpose — the unpack door takes no length and a packed rkey
+// can be 9 bytes, so a fixed prefix would be an over-read that never matches.
+// See the record for the full argument.
+struct UcxRkey {
+  temporal:Temporal;
+  rkey:uint32;
+  endpoint:uint32;
+}
+
+// type 628, Artifact. A registration was packed for export, i.e. made remotely
+// accessible. `buffer_hash` covers the WHOLE buffer, which this side can do
+// because ucp_rkey_pack returns the size.
+struct UcxRkeyPack {
+  temporal:Temporal;
+  memh:uint32;
+  context:uint32;
+  buffer_hash:uint64;
+  buffer_len:uint32;
+}
+
 // type 620, Event. A remote atomic. `op` is NORMALISED across the three UCX
 // opcode spaces, which number the same operations differently — see
 // UcxAtomicOp in providers/ucx/ucx_records.hpp.

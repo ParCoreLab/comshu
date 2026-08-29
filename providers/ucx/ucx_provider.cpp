@@ -493,6 +493,31 @@ Profiler::Profiler() {
     register_pre<mem_unmap_tag>([](ucp_context_h, ucp_mem_h memh, auto) {
         close(memh, pcomm::core::RecordTrait<rr::UcxMemMap>::type_id);
     });
+    // The remote keys. See UcxRkey for why this record exists and for the one
+    // thing it deliberately does not carry.
+    register_post<ep_rkey_unpack_tag>([](ucs_status_t status, ucp_ep_h endpoint, const void*,
+                                         ucp_rkey_h* out, auto begin, auto end) {
+        if (status != UCS_OK || !out || !*out)
+            return;
+        rec().record(span(begin, end), rr::UcxRkey{{}, {}, h(*out), h(endpoint)});
+    });
+    register_pre<rkey_destroy_tag>(
+        [](ucp_rkey_h rkey, auto) { close(rkey, pcomm::core::RecordTrait<rr::UcxRkey>::type_id); });
+    // THE SIZE IS READ BEFORE IT IS TRUSTED. `ucp_rkey_pack` sets both
+    // out-parameters only on UCS_OK, and a dummy key is a legitimate 9-byte
+    // buffer, so the hash covers exactly `*size` bytes and never a fixed prefix
+    // — the whole reason the consuming side gets no hash at all.
+    register_post<rkey_pack_tag>([](ucs_status_t status, ucp_context_h context, ucp_mem_h memh,
+                                    void** buffer, size_t* size, auto begin, auto end) {
+        if (status != UCS_OK || !buffer || !*buffer || !size || *size == 0)
+            return;
+        rec().record(span(begin, end), rr::UcxRkeyPack{{},
+                                                       {},
+                                                       h(memh),
+                                                       h(context),
+                                                       fnv1a(*buffer, *size),
+                                                       static_cast<std::uint32_t>(*size)});
+    });
     // Empty polls are already dropped by the hook's predicate; this drops the
     // rest outside Full mode. Both filters are needed — the predicate cuts the
     // firehose, the mode decides whether the survivors are wanted at all.
@@ -708,6 +733,17 @@ extern "C" ucs_status_t ucp_mem_unmap(ucp_context_h context, ucp_mem_h memh) {
 }
 extern "C" ucs_status_t ucp_worker_query(ucp_worker_h worker, ucp_worker_attr_t* attr) {
     return ucx::Profiler::invoke_preload<ucx::worker_query_tag>(worker, attr);
+}
+extern "C" ucs_status_t ucp_ep_rkey_unpack(ucp_ep_h endpoint, const void* rkey_buffer,
+                                           ucp_rkey_h* rkey_p) {
+    return ucx::Profiler::invoke_preload<ucx::ep_rkey_unpack_tag>(endpoint, rkey_buffer, rkey_p);
+}
+extern "C" ucs_status_t ucp_rkey_pack(ucp_context_h context, ucp_mem_h memh, void** rkey_buffer_p,
+                                      size_t* size_p) {
+    return ucx::Profiler::invoke_preload<ucx::rkey_pack_tag>(context, memh, rkey_buffer_p, size_p);
+}
+extern "C" void ucp_rkey_destroy(ucp_rkey_h rkey) {
+    ucx::Profiler::invoke_preload<ucx::rkey_destroy_tag>(rkey);
 }
 extern "C" ucs_status_t ucp_worker_get_address(ucp_worker_h worker, ucp_address_t** address,
                                                size_t* length) {

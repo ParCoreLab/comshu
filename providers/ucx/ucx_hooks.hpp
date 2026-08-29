@@ -203,3 +203,39 @@ DEFINE_PRELOAD_HOOK(ucx, worker_get_address, "ucp_worker_get_address", ucs_statu
 // case 08's empty ib_queue_pair: an API hooked in one of its two spellings.
 DEFINE_PRELOAD_HOOK(ucx, worker_query, "ucp_worker_query", ucs_status_t, ucp_worker_h,
                     ucp_worker_attr_t*);
+
+// THE REMOTE KEYS, which every one-sided row already named and nothing created.
+//
+// `ucx_rma.rkey` and `ucx_atomic.rkey` intern a `ucp_rkey_h` that no record
+// opened, so the handle joined to nothing — an entity referenced by events that
+// nothing creates, which is the defect the verbs provider spent a week on.
+// UcxRkey closes it and gives the handle a lifetime, without which a reallocated
+// rkey pointer reads as the one before it.
+//
+// Hooked on OBSERVED consumers rather than on a static reference this time. On
+// MN5's HPC-X 2.22.1 the undefined-symbol survey gives:
+//
+//   mca_osc_ucx    MPI one-sided   ucp_ep_rkey_unpack, ucp_rkey_pack,
+//                                  ucp_rkey_destroy, ucp_rkey_buffer_release
+//   mca_spml_ucx   OpenSHMEM       the same four, plus ucp_rkey_compare
+//   libnccl-net    NCCL plugin     the same four
+//   mca_pml_ucx    MPI p2p         none — point-to-point unpacks no keys
+//
+// and `mca_osc_ucx` additionally needs `ucp_put_nbi`, `ucp_get_nbi`,
+// `ucp_atomic_post` and `ucp_atomic_fetch_nb`, all already hooked. So an MPI RMA
+// workload writes `ucx_rma` rows through doors we watch, naming keys we did not
+// record — which is exactly the hole these three close.
+//
+// `ucp_rkey_buffer_release` is NOT hooked, and that is a correction to this
+// plan's own earlier sketch rather than an omission. It frees the packed BUFFER
+// produced by `ucp_rkey_pack`; it does not destroy a key. UcxRkeyPack is an
+// Artifact with no lifetime, so there is nothing for it to close, and emitting a
+// close for it would put a close in front of a reader for an object that never
+// opened. `ucp_memh_pack` / `ucp_memh_buffer_release` — the modern replacements
+// — are exported by libucp and called by nothing on this stack, so they are a
+// deliberate omission, recorded here so the next survey does not re-derive it.
+DEFINE_PRELOAD_HOOK(ucx, ep_rkey_unpack, "ucp_ep_rkey_unpack", ucs_status_t, ucp_ep_h, const void*,
+                    ucp_rkey_h*);
+DEFINE_PRELOAD_HOOK(ucx, rkey_pack, "ucp_rkey_pack", ucs_status_t, ucp_context_h, ucp_mem_h, void**,
+                    size_t*);
+DEFINE_PRELOAD_HOOK(ucx, rkey_destroy, "ucp_rkey_destroy", void, ucp_rkey_h);

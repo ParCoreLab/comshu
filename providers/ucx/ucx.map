@@ -30,6 +30,9 @@
     ucp_atomic_post;
     ucp_atomic_fetch_nb;
     ucp_atomic_op_nbx;
+    ucp_ep_rkey_unpack;
+    ucp_rkey_pack;
+    ucp_rkey_destroy;
     pcomm_create_provider;
     pcomm_abi_version;
   local:
