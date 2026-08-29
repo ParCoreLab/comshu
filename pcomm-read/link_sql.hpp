@@ -634,6 +634,56 @@ FROM uct_send WHERE status >= 0 AND op IN (10, 11, 12, 13)
 GROUP BY rank, tag
 )sql"},
 
+    // The receives that arrive WITHOUT a tag, and the probes that hold it.
+    //
+    // `ucp_tag_msg_recv_nb` takes a `ucp_tag_message_h` and no tag at all, so
+    // UcxTagRecv writes `tag` and `tag_mask` as 0 on that door and carries the
+    // message handle instead. The tag was not lost — the probe that produced the
+    // handle was handed it in `ucp_tag_recv_info_t`, which is why ucx_hooks.hpp
+    // hooks the two TOGETHER. Until now nothing joined them, so the record's own
+    // instruction ("join it to ucx_tag_probe.message to recover the tag AND the
+    // true delivered length") described a join that existed nowhere: a
+    // msg_recv row had a tag in principle and not in practice.
+    //
+    // `seq` exists because a receive has no unique key. Two receives on one rank
+    // can share every recorded field, so the row identity a QUALIFY needs is
+    // manufactured here rather than assumed of `message` or of the ticks.
+    {"_ucx_msg_recv", R"sql(
+CREATE OR REPLACE VIEW _ucx_msg_recv AS
+SELECT rank, worker, message, "count" AS offered, status_class,
+       temporal_a_ticks AS a,
+       row_number() OVER (PARTITION BY rank ORDER BY temporal_a_ticks) AS seq
+FROM ucx_tag_recv
+WHERE door = 4 AND message <> 0 AND status_class <> 1
+)sql"},
+
+    // THE JOIN IS TEMPORAL, AND THAT IS NOT A REFINEMENT. `ucp_tag_message_h` is
+    // a pointer into UCX's request mpool and is RECYCLED — observed directly
+    // while the records were being designed, with UCX printing its own
+    // mpool-reuse warning in the same run. Matching on the handle value alone
+    // pairs a receive with a long-dead probe the moment the pool wraps, and the
+    // result looks exactly like a correct pairing. "The most recent probe with
+    // this handle at or before this receive" is the rule UcxTagRecv states, and
+    // this is where it is implemented.
+    //
+    // `removed = 1` is NOT required. A probe with remove=0 leaves the message
+    // queued and cannot be the one `ucp_tag_msg_recv_nb` consumes, but a caller
+    // may probe repeatedly before removing, and taking the LATEST at or before
+    // the receive already selects the removing probe when one exists. Filtering
+    // on it would instead drop the row entirely whenever the removing probe was
+    // not captured, turning a recoverable tag into silence.
+    {"_ucx_probe_of_recv", R"sql(
+CREATE OR REPLACE VIEW _ucx_probe_of_recv AS
+SELECT r.seq, r.rank, r.worker, r.message, r.offered, r.a,
+       p.sender_tag, p.length AS delivered, p.temporal_a_ticks AS probe_a
+FROM _ucx_msg_recv r
+JOIN ucx_tag_probe p
+  ON p.rank = r.rank AND p.worker = r.worker AND p.message = r.message
+ AND p.temporal_a_ticks <= r.a
+QUALIFY row_number() OVER (PARTITION BY r.rank, r.seq
+                           ORDER BY p.temporal_a_ticks DESC) = 1
+)sql"},
+
     // (rank, qp_num) -> the remote endpoint it was connected to. Only the RTR
     // transition carries it, which is why state = 2 is the filter on the verbs
     // side; the DEVX connect record exists only for that transition, so it needs
@@ -1465,6 +1515,45 @@ SELECT coalesce(u.rank, t.rank)   AS rank,
 FROM _ucp_tag_flow u
 FULL OUTER JOIN _uct_tag_flow t ON t.rank = u.rank AND t.tag = u.tag
 ORDER BY rank, status, tag
+)sql"},
+
+    // THE TAG A msg_recv DID NOT CARRY — recovered from the probe that produced
+    // its message handle. See `_ucx_probe_of_recv` for why the join is temporal.
+    //
+    // ONE ROW PER RECEIVE, not per flow, and that is the difference from
+    // tag_flow above. tag_flow answers "what did this stream of sends become on
+    // the wire", which is a question about an aggregate. This answers "what tag
+    // did THIS receive actually match, and how many bytes really arrived" — a
+    // field resolution, and aggregating it would destroy the thing being
+    // recovered.
+    //
+    // `offered` AND `delivered` ARE DIFFERENT QUANTITIES AND MUST NOT BE
+    // DIFFERENCED CASUALLY. `offered` is UcxTagRecv.count, the capacity the
+    // application supplied, in raw UCP datatype units; the record's own comment
+    // forbids adding it to a bytes total. `delivered` is UcxTagProbe.length,
+    // which ucx_records.hpp calls "the one TRUE byte count anywhere in the UCX
+    // record family". They are carried side by side, and named apart, for the
+    // same reason ucp_units and uct_payload are.
+    //
+    // `no_probe` IS A REAL SIGNAL AND NOT AN ERROR. It means a receive consumed
+    // a message handle this capture never saw probed: a probe through a door we
+    // do not hook, or — the common case — a capture that started after the probe
+    // had already run. It gets a row with a NULL tag rather than being dropped,
+    // because a silently absent row would read as "this rank posted no
+    // handle-keyed receives", which is the opposite of what happened.
+    {"tag_recv_resolved", "rank,worker,message,status,sender_tag,offered,delivered",
+     R"sql(
+SELECT r.rank                              AS rank,
+       r.worker                            AS worker,
+       r.message                           AS message,
+       CASE WHEN p.seq IS NULL THEN 'no_probe'
+            ELSE 'probe_matched' END       AS status,
+       p.sender_tag                        AS sender_tag,
+       r.offered::BIGINT                   AS offered,
+       p.delivered::BIGINT                 AS delivered
+FROM _ucx_msg_recv r
+LEFT JOIN _ucx_probe_of_recv p ON p.rank = r.rank AND p.seq = r.seq
+ORDER BY r.rank, r.a
 )sql"},
 
     // WHICH TRANSPORT CARRIED IT — the question comm_edges cannot answer.

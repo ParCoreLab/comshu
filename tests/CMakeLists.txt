@@ -155,6 +155,14 @@ add_test(NAME transport_mix_rule
 add_test(NAME tag_flow_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_flow_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# The probe -> msg_recv join, whose rule is TEMPORAL because UCX recycles the
+# message handle out of its request mpool. A fixture rather than a capture for
+# exactly that reason: handle reuse is what breaks the join, no hardware run
+# reproduces it on demand, and an equality join returns confident wrong pairs
+# rather than an error.
+add_test(NAME tag_recv_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_recv_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # ucx_deep's hot-path lookup tables, driven directly.
 #
 # UNCONDITIONAL, unlike everything else UCX in this file, and deliberately so:
