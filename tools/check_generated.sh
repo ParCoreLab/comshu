@@ -17,16 +17,31 @@ set -uo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 schema="$root/libpcomm/schema/pcomm.fbs"
 
+# PRESENT AND EXECUTABLE IS NOT THE SAME AS RUNNABLE, which cost a real
+# investigation. `.tools/flatc` is gitignored and ARCH-SPECIFIC: the copy sitting
+# in a tree rsynced from another machine is a perfectly good `-x` file that
+# cannot exec here — the one on MN5 and on du04 both want GLIBC 2.38 and neither
+# host has it. The old test was `-x`, so the exec failure fell through to the
+# "flatc rejected the schema" branch below and reported a SCHEMA defect on two
+# machines whose schema was fine. Probe by running it, the same reasoning
+# build_all.sh gives for probing a toolchain rather than assuming one.
 flatc="${PCOMM_FLATC:-}"
+runnable() { [[ -n "$1" ]] && "$1" --version >/dev/null 2>&1; }
 if [[ -z "$flatc" ]]; then
-    if [[ -x "$root/.tools/flatc" ]]; then flatc="$root/.tools/flatc"
-    elif command -v flatc >/dev/null 2>&1; then flatc="$(command -v flatc)"
+    if runnable "$root/.tools/flatc"; then flatc="$root/.tools/flatc"
+    elif command -v flatc >/dev/null 2>&1 && runnable "$(command -v flatc)"; then
+        flatc="$(command -v flatc)"
     fi
 fi
 
-if [[ -z "$flatc" ]]; then
-    echo "generated-header check: SKIPPED — no flatc"
+if ! runnable "$flatc"; then
+    echo "generated-header check: SKIPPED — no flatc that runs on this host"
     echo "  looked at: \$PCOMM_FLATC, $root/.tools/flatc, PATH"
+    if [[ -e "$root/.tools/flatc" ]] && ! runnable "$root/.tools/flatc"; then
+        echo "  NOTE: $root/.tools/flatc exists but does not execute here —"
+        echo "        it is arch-specific and was almost certainly synced from"
+        echo "        another machine. Re-run tools/get_flatc.sh to rebuild it."
+    fi
     echo "  expected on airgapped nodes (MN5); run tools/get_flatc.sh on a dev box."
     exit 0
 fi
