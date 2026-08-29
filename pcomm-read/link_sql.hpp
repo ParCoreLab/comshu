@@ -1485,9 +1485,10 @@ ORDER BY transport, src_rank, dst_rank
     //                       tag_flow_rule.sh drives this branch, since no
     //                       hardware capture does.
     //
-    // **NO link_health ROW, deliberately.** That table's contract is stated at
-    // its own head: "Empty is the expected state; every row is a defect in the
-    // link, not in the workload." Neither absence here is a defect. A
+    // **NO link_health FINDING, deliberately.** That table reports a defect by
+    // counting one above zero (it is a fixed rubric — see its own head, and
+    // note that this comment previously mis-stated it as "empty is the expected
+    // state"). Neither absence here is a defect. A
     // `no_tagged_wire_op` row is UCX choosing a protocol without a tag, and a
     // `wire_only` row is UCX doing its own housekeeping — both are facts about
     // the transport, and putting them in link_health would train a reader to
@@ -1624,10 +1625,23 @@ GROUP BY 1, 2, 3, 4, 5
 ORDER BY rank, scope, tl_name, dev_name, op
 )sql"},
 
-    // What the graph could not account for. Empty is the expected state; every
-    // row is a defect in the link, not in the workload. This table exists so
-    // the UI can *show* a hole rather than render a confident matrix over one —
-    // "a wrong matrix that looks confident is worse than no matrix".
+    // What the graph could not account for. This table exists so the UI can
+    // *show* a hole rather than render a confident matrix over one — "a wrong
+    // matrix that looks confident is worse than no matrix".
+    //
+    // IT IS A FIXED RUBRIC, NOT AN EMPTY TABLE, and this comment used to say
+    // the opposite. Every branch below is `SELECT '<finding>', count(*)`, so a
+    // perfectly healthy capture returns EVERY row with `n = 0`. The healthy
+    // state is `WHERE n > 0` returning nothing, which is what
+    // tests/hpc/cases/21_ucx_deep/job.sbatch has always queried.
+    //
+    // The old wording ("Empty is the expected state; every row is a defect")
+    // was wrong about this table's own behaviour, and it did not stay put: the
+    // tag_flow comment above quotes it as settled contract, and it was copied a
+    // third time into tests/hpc/apps/BRIEF-BLACKBOX.md, where it told a cohort
+    // of agents that a clean capture had a dozen defects. Found 2026-08-29 by
+    // the 04_llmc study, which read the table instead of its documentation —
+    // which is the entire argument for that round being black-box.
     // One row per work request that was posted and retired, with the time it
     // spent in flight. The Timeline draws this as a lane; this is the same
     // relation with the clock applied and the latency named, for anyone asking

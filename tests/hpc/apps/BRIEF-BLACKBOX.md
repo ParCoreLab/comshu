@@ -71,8 +71,16 @@ tag_recv_resolved  rank,worker,message,status,sender_tag,offered,delivered
 link_health        finding,n,note
 ```
 
-`link_health` is **expected to be empty**. Every row in it is a defect in the
-link, not in your workload — if it has rows, that is a finding.
+`link_health` is a **fixed rubric, not an empty table** — CORRECTED 2026-08-29
+after the 04_llmc agent measured it. It emits one row per finding KIND with a
+count, so a healthy capture has every row present with `n = 0`. Query it as
+`SELECT finding, n FROM link_health WHERE n > 0`, which is what
+`tests/hpc/cases/21_ucx_deep/job.sbatch` does. An earlier version of this brief
+said the table was expected to be empty; that would have made a clean capture
+look like it had a dozen defects, and it came from the table's own head comment
+in the pcomm source, which contradicts the SQL beneath it. The comment is wrong,
+the rubric is right, and the fact that a documented contract disagrees with its
+implementation is itself one of this round's findings.
 
 ## What is new since round 1, and therefore untested
 
