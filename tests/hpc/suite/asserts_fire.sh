@@ -48,6 +48,7 @@ CREATE TABLE ucx_context (rank INT, context INT);
 CREATE TABLE ucx_worker (rank INT, worker INT);
 CREATE TABLE ucx_endpoint (rank INT, endpoint INT);
 CREATE TABLE ucx_mem_map (rank INT, memh INT);
+CREATE TABLE ucx_rkey (rank INT, rkey INT);
 CREATE TABLE nccl_comm (rank INT, comm INT);
 CREATE TABLE nccl_window (rank INT, window INT);
 CREATE TABLE uct_iface (rank INT, iface INT);
@@ -164,6 +165,32 @@ INSERT INTO entity_close VALUES (0, 10, 4, 604), (0, 11, 4, 604), (0, 12, 4, 604
 
 run "UCX endpoint closed through a door we do not hook still fires" fires "
 INSERT INTO entity_close VALUES (0, 10, 99, 604);"
+
+# The remote key, 626, added with the record rather than after it — which is the
+# whole lesson of the four paragraphs above, learned again on job 45177565. That
+# run recorded eight rkeys, closed all eight correctly, and reported all eight as
+# orphans because the CTE had no ucx_rkey line. Delete that line again and the
+# first TWO of these turn red at once — measured, not assumed.
+#
+# The reuse case is the one that matters for THIS entity specifically. A
+# ucp_rkey_h is a heap pointer UCX frees and reallocates, so an rkey address
+# genuinely recurs within a run — and unlike the endpoint doors, that recurrence
+# is legitimate. It must stay quiet when opens and closes are balanced, and fire
+# only on a genuine imbalance.
+run "UCX rkey unpacked and destroyed is quiet" quiet "
+INSERT INTO ucx_rkey VALUES (0, 7);
+INSERT INTO entity_close VALUES (0, 10, 7, 626);"
+
+run "UCX rkey address reused across two lifetimes is quiet" quiet "
+INSERT INTO ucx_rkey VALUES (0, 7), (0, 7);
+INSERT INTO entity_close VALUES (0, 10, 7, 626), (0, 20, 7, 626);"
+
+run "UCX rkey destroyed twice in one lifetime fires" fires "
+INSERT INTO ucx_rkey VALUES (0, 7);
+INSERT INTO entity_close VALUES (0, 10, 7, 626), (0, 20, 7, 626);"
+
+run "UCX rkey destroyed through a door we do not hook still fires" fires "
+INSERT INTO entity_close VALUES (0, 10, 99, 626);"
 
 # NCCL, pinned the same way and for the same reason. These four exist so that
 # the openers added to the CTE with the provider stay added: delete the

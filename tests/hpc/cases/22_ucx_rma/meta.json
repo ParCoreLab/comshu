@@ -1,0 +1,38 @@
+{
+  "case": "22_ucx_rma",
+  "providers": [
+    "ucx",
+    "ibverbs"
+  ],
+  "topology": "2 nodes x 1 rank, MPI one-sided Put/Get/Accumulate/Fetch_and_op over an MPI_Win_allocate window plus MPI_Ssend, captured with the UCX and ibverbs providers CO-RUNNING in one shared pass",
+  "golden": "none — assertions only. Nothing here pins a row COUNT: how many keys MPI unpacks for one window, and whether an accumulate becomes a device atomic or an active message, are the MPI and UCX implementations' decisions and not facts this project should freeze.",
+  "workload": {
+    "ranks": 2,
+    "nodes": 2,
+    "gpus": 0,
+    "rma_iters": 10,
+    "rma_bytes": 4096,
+    "win_bytes": 65536,
+    "ssend_iters": 10,
+    "ssend_bytes": 64
+  },
+  "workload_params": [
+    "rma_iters",
+    "rma_bytes",
+    "win_bytes",
+    "ssend_iters",
+    "ssend_bytes"
+  ],
+  "workload_note": "`tests/hpc/probes/ucx_rma_doors/rma_doors.c`. Ten MPI_Put then ten MPI_Get of rma_bytes at a rotating offset into a win_bytes window, then ten MPI_Accumulate and ten MPI_Fetch_and_op on the LAST BYTE of that window, then ten MPI_Ssend/MPI_Recv exchanges. MPI_UNSIGNED_CHAR throughout, for 21_ucx_deep's reason: UcxTagSend.count is a UCP datatype count and equals bytes only for a contiguous 8-bit datatype.\n\nWHY IT IS NOT 21_ucx_deep. That case varies SIZE to make UCX pick different transport protocols, and pins UCX_ZCOPY_THRESH / RNDV_THRESH / TM_THRESH to do it. This one varies the MPI CALL to make MPI reach different UCP doors, and deliberately leaves the thresholds alone — the sizes sit well inside the defaults because protocol selection is the other case's question. Two axes, two cases, neither subsuming the other.\n\nTHE DOORS IT IS HERE TO WITNESS. PLAN-20260815-1540 Future work 2 records that the _nbi RMA doors, the three atomic doors and ucp_tag_send_sync_nb were hooked on a STATIC ELF SURVEY of MN5's HPC-X and never observed firing on hardware. MPI_Put/MPI_Get reach ucp_put_nbi/ucp_get_nbi (the survey found MPI one-sided makes no _nbx RMA call at all on this machine), MPI_Accumulate and MPI_Fetch_and_op reach the atomic doors, and MPI_Ssend reaches the legacy synchronous tagged door — which is NOT a duplicate of an ordinary send, since it completes only once the receiver has matched.\n\nAND THE KEYS THOSE DOORS NAME. Every ucx_rma and ucx_atomic row interns a ucp_rkey_h. Until ucx_rkey (626) existed nothing recorded one being created, so that handle joined to nothing at all — the same shape of defect as an entity referenced by events that nothing opens. mca_osc_ucx calls ucp_ep_rkey_unpack, ucp_rkey_pack and ucp_rkey_destroy on this machine, measured by an undefined-symbol survey of its own libraries, so MPI RMA is precisely the workload that fills the record.\n\n--mca osc ucx IS LOAD-BEARING and 21_ucx_deep learned it the expensive way: with osc/rdma or osc/pt2pt an MPI_Put becomes an active message, no rkey is ever unpacked, and this case's central table is empty for a reason that has nothing to do with the provider.\n\n-p ucx,ib IS THE POINT OF THE PROVIDER LIST. Both are hook-based and non-exclusive, so they share one pass and one engine rather than forcing a replay. The UCX plan's definition of done requires this and it had never been run; the smoke job that ran used -p ucx with the verbs provider compiled out. ib_post_send is EXPECTED to stay empty — UCX registers through ibverbs and posts through nothing exported — so ib_mem_region is the verbs witness the assertion uses.",
+  "expect_tables": [
+    "ucx_context",
+    "ucx_worker",
+    "ucx_endpoint",
+    "ucx_rma",
+    "ucx_rkey",
+    "ucx_rkey_pack",
+    "ucx_mem_map",
+    "ucx_tag_send",
+    "ib_mem_region"
+  ]
+}

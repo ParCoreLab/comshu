@@ -30,7 +30,7 @@
 -- 104 ib_completion_queue, 108 ib_shared_recv_queue, 118 ib_address_handle,
 -- 120 ib_device, 200 mlx5_umem, 202 mlx5_uar, 520 mem_object,
 -- 600 ucx_context, 602 ucx_worker, 604 ucx_endpoint, 614 ucx_mem_map,
--- 800 uct_iface, 802 uct_ep, 900 nccl_comm, 908 nccl_window.
+-- 626 ucx_rkey, 800 uct_iface, 802 uct_ep, 900 nccl_comm, 908 nccl_window.
 --
 -- 104 ib_completion_queue, 108 ib_shared_recv_queue, 118 ib_address_handle and
 -- 120 ib_device joined this list when the receive path landed. Every one of them
@@ -80,6 +80,15 @@ WITH opens AS (
   UNION ALL SELECT rank, worker,   602 FROM ucx_worker
   UNION ALL SELECT rank, endpoint, 604 FROM ucx_endpoint
   UNION ALL SELECT rank, memh,     614 FROM ucx_mem_map
+  -- 626 ucx_rkey, and this list has now been left behind FOUR times: by the
+  -- receive-path entities, by NCCL, by ucx_deep, and by this. Job 45177565 is
+  -- the fourth — eight rkey closes, every one reported as naming an entity no
+  -- open record created, because the record existed and this CTE did not know
+  -- it. The failure is loud and harmless, which is exactly why it keeps
+  -- recurring: nothing forces the two to be edited together. Any provider
+  -- adding an Entity that emits EntityClose must add its line HERE, in the same
+  -- change, or every close it writes reports as an orphan.
+  UNION ALL SELECT rank, rkey,     626 FROM ucx_rkey
   -- The two NCCL entities that emit a close (nccl_provider.cpp closes 900 at
   -- ncclCommDestroy/ncclCommAbort and 908 at ncclCommWindowDeregister). Added
   -- WITH the provider, in the same change, because the paragraph above says
