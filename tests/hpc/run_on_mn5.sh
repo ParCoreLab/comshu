@@ -219,6 +219,23 @@ if [ "$do_build" -eq 1 ]; then
   # want of ui/dist — turning a missing optional into a broken build.
   DUCK_ON=$($SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so -a -e $PROOT/ui/dist/index.html && echo ON || echo OFF")
 
+  # EVERY `cmake --build` BELOW IS CHECKED TOO, and that is a separate bug from
+  # the module one. Each was written `cmake --build ... 2>&1 | tail -2`, and a
+  # pipeline's status is its LAST stage — `tail` — which always succeeds. The
+  # remote side is `bash -lc`, which does not inherit this script's `pipefail`,
+  # so a failed build returned 0, the `&&` chain continued, and `cp` copied a
+  # STALE .so into build/ with a fresh mtime. Caught on 2026-08-30: the nccl
+  # step printed `gmake: *** No rule to make target 'nccl_trace'` and the run
+  # went on to submit, exactly the "green suite reporting on a day-old binary"
+  # hazard the gpumem step's own comment warns about, in a step that had no
+  # guard for it.
+  #
+  # `pipefail` would have been the small fix and is the wrong one here: it would
+  # also apply to `. tests/hpc/suite/common.sh` in the ucx and nccl steps, whose
+  # probe pipelines are allowed to fail. Capturing to a variable scopes the
+  # check to the build alone, and gives the failure 25 lines of context instead
+  # of the 2 that `tail -2` leaves when it is the error you actually need.
+  #
   # EVERY `module load` BELOW IS CHECKED, and it did not used to be. They were
   # all written `module load a b c >/dev/null 2>&1`, which throws away an exit
   # code Lmod sets correctly (rc=1 when any name is unknown) — and Lmod aborts
@@ -230,7 +247,7 @@ if [ "$do_build" -eq 1 ]; then
   say "build tools + ibverbs provider (gcc-13.2, DuckDB=$DUCK_ON)"
   rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
        cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
-       cmake --build build -j 2>&1 | tail -2" \
+       bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2; exit 1; }
 
   say "build gpumem provider (NVBit, gcc-11.4 host, CUDA C++20, sm_90)"
@@ -261,7 +278,7 @@ if [ "$do_build" -eq 1 ]; then
        SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
        cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
        touch gpu-backends/nvbit/nvbit_backend.cu gpu-backends/nvbit/inject_funcs.cu providers/gpumem/gpumem_provider.cpp &&
-       cmake --build build-gpumem --target gpumem_trace -j 2>&1 | tail -2 &&
+       bout=\$(cmake --build build-gpumem --target gpumem_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/gpumem &&
        cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/ &&
        ls -la build/providers/*/*.so" \
@@ -296,7 +313,7 @@ if [ "$do_build" -eq 1 ]; then
        UCX=\$(pcomm_find_ucx) &&
        echo \"  ucx: \$UCX\" &&
        cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
-       cmake --build build-ucx --target ucx_trace ucx_deep_trace -j 2>&1 | tail -2 &&
+       bout=\$(cmake --build build-ucx --target ucx_trace ucx_deep_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/ucx build/providers/ucx_deep &&
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
        cp build-ucx/providers/ucx_deep/libucx_deep_trace.so build/providers/ucx_deep/ &&
@@ -315,7 +332,7 @@ if [ "$do_build" -eq 1 ]; then
        . tests/hpc/suite/common.sh &&
        echo \"  nccl: \$NCCL_HOME\" &&
        cmake -B build-nccl -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&
-       cmake --build build-nccl --target nccl_trace -j 2>&1 | tail -2 &&
+       bout=\$(cmake --build build-nccl --target nccl_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/nccl &&
        cp build-nccl/providers/nccl/libnccl_trace.so build/providers/nccl/ &&
        ls -la build/providers/*/*.so" \
