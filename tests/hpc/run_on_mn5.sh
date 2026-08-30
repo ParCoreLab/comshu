@@ -17,7 +17,7 @@
 # commit. A dirty working tree is refused; --rsync copies it as-is instead.
 #
 # Config via env (defaults are the ParCore MN5 account):
-#   PCOMM_REMOTE=koc296797@alogin1.bsc.es     ssh target (key auth assumed)
+#   PCOMM_REMOTE=koc296797@glogin1.bsc.es     ssh target (key auth assumed)
 #   PCOMM_REMOTE_DIR=proj/pcomm               clone on the remote (rel. to $HOME)
 #   PCOMM_BARE=kefah/git/pcomm                bare repo it clones from
 #   PCOMM_OUT_ROOT=$HOME/pcomm-suite          where captures land (remote)
@@ -36,18 +36,26 @@
 # --check-only re-reads that manifest, and so re-checks that same run.
 set -uo pipefail
 
-REMOTE="${PCOMM_REMOTE:-koc296797@alogin1.bsc.es}"
+REMOTE="${PCOMM_REMOTE:-koc296797@glogin1.bsc.es}"
 RDIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
 # The bare repo the remote tree clones from, and the URL this machine pushes to.
 # Both name the same repository, from the two sides of the ssh hop.
 PCOMM_BARE="${PCOMM_BARE:-kefah/git/pcomm}"
 PCOMM_REMOTE_GIT="${PCOMM_REMOTE_GIT:-$REMOTE:$PCOMM_BARE}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# ConnectTimeout because alogin1 refuses connections often enough that this has
-# cost two runs: without it the very first ssh (step 0, resolving $HOME) blocks
-# forever on a dead login node, which looks exactly like a slow sync rather than
-# an unreachable host. Fail in 20s and say so; PCOMM_REMOTE=...@alogin2.bsc.es
-# is the fallback (same home directory).
+# ConnectTimeout because the login nodes refuse connections often enough that
+# this has cost two runs: without it the very first ssh (step 0, resolving
+# $HOME) blocks forever on a dead login node, which looks exactly like a slow
+# sync rather than an unreachable host. Fail in 20s and say so.
+#
+# The default moved alogin1 -> glogin1 on 2026-08-30. Both ACC login nodes went
+# silent on 22/443/80 on 2026-08-29 and stayed that way, so the documented
+# alogin1 -> alogin2 fallback was two names for the same outage. The GPP login
+# nodes share the GPFS home, the Slurm controller and the `acc` partition, so
+# they submit ACC jobs perfectly well — the only visible difference is that
+# `sinfo` and `scontrol show node` answer "Access/permission denied" there,
+# which looks like a wall and is not one: sbatch, squeue and sacct all work.
+# glogin2 is the like-for-like fallback.
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=20"
 
 do_build=1 do_clean=0 check_only=0 combined=1 quick=0 use_rsync=0
@@ -75,7 +83,10 @@ rsh() { $SSH "$REMOTE" "bash -lc '$*'"; }   # login shell → `module` is availa
 # them exported through sbatch, and `check` needs to look in the same place.
 RHOME=$($SSH "$REMOTE" 'echo $HOME' | tr -d '\r') \
   || { echo "cannot reach $REMOTE" >&2
-       echo "  if that is alogin1, try: PCOMM_REMOTE=${REMOTE%%@*}@alogin2.bsc.es $0 $*" >&2
+       echo "  try the other GPP login node: PCOMM_REMOTE=${REMOTE%%@*}@glogin2.bsc.es $0 $*" >&2
+       echo "  (alogin1/alogin2 have been refusing ssh since 2026-08-29; the GPP" >&2
+       echo "   login nodes submit acc_debug jobs just as well — same home, same" >&2
+       echo "   controller, same partition.)" >&2
        exit 1; }
 case "$RDIR" in /*) PROOT="$RDIR" ;; *) PROOT="$RHOME/$RDIR" ;; esac
 OUT_ROOT="${PCOMM_OUT_ROOT:-$RHOME/pcomm-suite}"

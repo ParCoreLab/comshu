@@ -129,21 +129,34 @@ captured" is not a finding — N rows of *what*, and how do you know N is right?
 
 ## Machines, and the state of them right now
 
-| | MN5 (`koc296797@alogin2.bsc.es`) | du04 (ssh alias `a100`) |
+| | MN5 (`koc296797@glogin1.bsc.es`) | du04 (ssh alias `a100`) |
 |---|---|---|
 | GPUs | 4x H100/node, multi-node NDR IB | 4x A100, single node |
 | queue | SLURM `acc_debug`, **ONE JOB AT A TIME, ACCOUNT-WIDE** | none, run directly |
 | apps | GROMACS/LAMMPS/QE as modules | nothing preinstalled |
 | repo | `~/proj/pcomm` | `/DATA/missa18/pcomm` (NOT `$HOME`, it is at 98%) |
 
+**Reach MN5 through `glogin1`, not `alogin`** — CORRECTED 2026-08-30. The ACC
+login nodes (`alogin1`, `alogin2`) have been refusing connections on 22/443/80
+since 2026-08-29 ~17:00; `glogin1`/`glogin2` answer normally and see the same
+GPFS home, the same Slurm controller and the same `acc` partition. There is no
+separate ACC cluster to be locked out of.
+
+And `acc_debug` is a **QoS, not a partition**. Submit with
+`--account=etur02 --qos=acc_debug` and no `-p` at all; the controller places the
+job in partition `acc` itself. `sinfo`/`scontrol show node` return
+`Access/permission denied` from the GPP login nodes, which looks like a
+permissions wall and is not one — `sbatch --test-only` and `squeue` both work.
+Every `tests/hpc/cases/*/job.sbatch` already uses this exact form.
+
 Confirmed module names from round 1: `gromacs/2025.2-gcc-nvhpcx`,
 `lammps/10Sep2025`, `quantumespresso/7.5-nvidia-nvhpcx`, plus
 `nvidia-hpc-sdk/25.7` and `gcc/13.2.0` for the runtime.
 
-**MN5 was unreachable at 2026-08-29 ~17:00** (ssh timeout on alogin2, after
-having worked minutes earlier). Assume it is transient; do not treat one timeout
-as a dead cluster, and do not spin retrying. Do every piece of offline work
-first — that is most of the study — and check the cluster between pieces.
+**MN5 is reachable again as of 2026-08-30 via `glogin1`**, with an empty
+`acc_debug` queue and immediate start for 1 and 4 nodes. The earlier outage was
+`alogin` only. Still do every piece of offline work first — that is most of the
+study, and the single slot is handed out by the coordinator, not taken.
 
 The local machine you are running on is **FreeBSD and cannot build or run
 pcomm at all**. Do not try. Builds and runs happen on du04 or MN5.
