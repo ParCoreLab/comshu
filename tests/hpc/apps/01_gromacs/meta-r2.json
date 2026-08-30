@@ -1,0 +1,77 @@
+{
+  "case": "01_gromacs-r2",
+  "providers": [
+    "ucx",
+    "ucx_deep"
+  ],
+  "topology": "2 nodes x 4 H100, 8 MPI ranks = 7 PP + 1 PME, benchRIB (2,136,412 atoms), Open MPI 4.1.5 over UCX 1.15 (HPC-X 2.16) over NDR InfiniBand. Captured at BOTH the public UCP doors and the uct_iface_ops_t transport table, so that the shared-memory half of a real domain decomposition is visible for the first time.",
+  "golden": "none - assertions only. Every claim is derived from GROMACS's decomposition (npp, npme, dd_x, ranks_per_node), from GROMACS's own MPI tag enum, or from Open MPI's UCP tag encoding. Nothing is derived from a capture.",
+
+  "workload": {
+    "ranks": 8,
+    "nodes": 2,
+    "gpus": 8,
+    "ranks_per_node": 4,
+
+    "npp": 7,
+    "npme": 1,
+    "dd_x": 7,
+    "dd_y": 1,
+    "dd_z": 1,
+    "pulses_x": 1,
+
+    "natoms": 2136412,
+    "nsteps": 200,
+    "nstlist": 100,
+    "rvec_bytes": 12,
+
+    "ompi_rank_shift": 20,
+    "ompi_rank_mask": 1048575,
+    "ompi_tag_shift": 40,
+
+    "gmx_tag_halo_x": 0,
+    "gmx_tag_halo_f": 1,
+    "gmx_tag_coord": 7,
+    "gmx_tag_coord_gpu": 8,
+
+    "fabric_pct_lo": 25,
+    "fabric_pct_hi": 60,
+    "interior_fabric_max_pct": 1,
+    "exterior_fabric_min_pct": 8,
+    "unclassified_max_pct": 1,
+
+    "gpudirect": 1,
+    "tm_enable": 0
+  },
+
+  "workload_params": [
+    "ranks", "nodes", "gpus", "ranks_per_node",
+    "npp", "npme", "dd_x", "dd_y", "dd_z", "pulses_x",
+    "natoms", "nsteps", "nstlist", "rvec_bytes",
+    "ompi_rank_shift", "ompi_rank_mask", "ompi_tag_shift",
+    "gmx_tag_halo_x", "gmx_tag_halo_f", "gmx_tag_coord", "gmx_tag_coord_gpu",
+    "fabric_pct_lo", "fabric_pct_hi",
+    "interior_fabric_max_pct", "exterior_fabric_min_pct", "unclassified_max_pct",
+    "gpudirect", "tm_enable"
+  ],
+
+  "variants": {
+    "direct_on": { "gpudirect": 1, "tm_enable": 0 },
+    "direct_off": { "gpudirect": 0, "tm_enable": 0 },
+    "tm": { "gpudirect": 1, "tm_enable": 1 }
+  },
+
+  "workload_note": "ROUND 2. Round 1 (REPORT.md) judged this application against comm_edges and the raw UCX tables and found comm_edges structurally empty on the HPC-X stack. Round 2 aims at the layer that replaces it: ucx_deep, and the derived transport_mix / tag_flow / tag_recv_resolved built on top of it. The oracle is stated in full in PREDICTION.md, committed before this run existed.\n\nWHERE EVERY PARAMETER COMES FROM.\n\n* npp/npme: `-npme 1` of 8 ranks. domdec/domdec.cpp:552 dd_interleaved_pme_ranks over :540 ddindex2pmeindex places the single PME rank at world rank 7 and makes DD cell index equal MPI rank, under BOTH -ddorder interleave (the default) and pp_pme.\n* dd_x: `-dd 7 1 1`. 7 is prime so nx*ny*nz=7 admits only a permutation of 7x1x1 anyway.\n* pulses_x: predicted 1, from domdec/domdec.cpp:2326, printed as `The initial number of communication pulses is: X 1` because -dlb no takes the non-DLB branch. A cell is ~3.9 nm against a pair-list radius under 1.5 nm. IF THE LOG SAYS 2, the halo partner set becomes (x+-1),(x+-2) and every edge count below is void; the job script prints the line.\n* ranks_per_node: `mpirun --map-by ppr:4:node`, so ranks 0-3 on node A and 4-7 on node B.\n* natoms: byte offset 72 of benchRIB.tpr, big-endian uint32 (round 1's NOTES.md). Read from the input file, never from a capture.\n* rvec_bytes: sizeof(rvec) = 3 x float.\n* ompi_*: ompi/mca/pml/ucx/pml_ucx_request.h:34-44 in Open MPI v4.1.x. PML_UCX_TAG_BITS 24 / RANK_BITS 20 / CONTEXT_BITS 20, so a UCP tag is (mpi_tag << 40) | (my_rank << 20) | context_id. PML_UCX_TAG_GET_SOURCE(:65) is exactly ((tag >> 20) & 0xFFFFF). An MPI_ANY_SOURCE receive decodes to 0xFFFFF = 1048575, which is not a valid rank and is therefore self-excluding - no mask test is needed.\n* gmx_tag_*: ewald/pme_pp_communication.h:54 (eCommType_COORD = 7, eCommType_COORD_GPU = 8) and domdec/haloexchange.h:74 (HaloMpiTag::X = 0, ::F = 1).\n* fabric_pct_lo/hi: the DD's own bound. Of the 7 PME spokes 4 cross the node boundary and of the 7 halo edges 2 do, so the fabric's share of application bytes lies strictly between 2/7 = 28.6% and 4/7 = 57.1% for ANY relative weight of halo and PME. Widened to [25,60] for wireup and collectives. NO MEASUREMENT ENTERS THIS BOUND.\n* interior_fabric_max_pct / exterior_fabric_min_pct: rank 5's partners are 4, 6 and the PME rank 7, all on node B, so it has no cross-node partner at all and its fabric share should be collective residue only. The assertions DERIVE that rank from npp and ranks_per_node rather than naming it, so no rank number the run produced appears in any query.\n\nnsteps IS 200, NOT ROUND 1's 1000, and deliberately. ucx_deep records one row per WIRE operation, and an intra-node rendezvous that fragments in the shared-memory transport could produce two orders of magnitude more rows than ucx_tag_send did at 1000 steps. Every oracle in this case is a ratio or a set, never an absolute count, so the step count enters none of them.\n\nTHE tm VARIANT IS A SEPARATE EXPERIMENT AND A SHORT ONE. uct_send.tag is written only by the hardware-tag-matching doors, and MN5's HPC-X does not enable ConnectX tag offload by default, so tag_flow is predicted to hold no matched flow in the two main arms. The tm arm sets UCX_RC_MLX5_TM_ENABLE=y and UCX_TM_THRESH below GROMACS's message sizes so that the doors CAN fire; it is what tells 'the join is wrong' apart from 'the fabric was not asked'.\n\nNO ASSERTION COUNTS MESSAGES. One MPI_Isend is not one ucp_tag_send and one ucp_tag_send is emphatically not one uct_send - that is the entire point of having both layers. Round 1 already placed the byte volume to four parts per million with ucx_tag_send alone and there is no reason to repeat it.",
+
+  "expect_tables": [
+    "ucx_context",
+    "ucx_worker",
+    "ucx_endpoint",
+    "ucx_tag_send",
+    "ucx_tag_recv",
+    "uct_binding",
+    "uct_iface",
+    "uct_ep",
+    "uct_send"
+  ]
+}

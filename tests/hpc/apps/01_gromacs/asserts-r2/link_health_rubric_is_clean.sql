@@ -1,0 +1,34 @@
+-- requires: link_health
+-- Every finding kind in the link's own rubric must count zero.
+--
+-- SEMANTICS PER THE CORRECTED BRIEF (2026-08-29). link_health is a fixed
+-- rubric, not a table that is expected to be empty: it emits one row per finding
+-- KIND with a count, so a healthy capture has every row PRESENT with n = 0. The
+-- earlier reading -- "the table should have no rows" -- would have made a clean
+-- capture look like it had a dozen defects. So the predicate is `n > 0`, not
+-- `count(*) > 0`.
+--
+-- THE ROW THIS RUN PUTS AT RISK is `unnamed_uct_transport`, and it is the reason
+-- this file is here rather than being left to the suite's cross-cutting checks.
+-- Case 21's every_uct_operation_has_a_transport.sql explains what it counts: a
+-- UCT operation whose iface pointer resolves to no uct_iface row, or resolves to
+-- two, or whose tl_name intern handle is claimed by two strings. All three mean
+-- an operation that has its timing and its byte count and not the one fact it
+-- was captured for.
+--
+-- This run is the first thing to stress that at application scale, and it
+-- stresses it in the specific way most likely to break it: EIGHT ranks, FOUR PER
+-- NODE, so each rank opens interfaces on several transports at once -- an
+-- InfiniBand one for the ranks across the node boundary and shared-memory ones
+-- for the three beside it -- and creates and destroys them over a run long
+-- enough for UCX to recycle an iface pointer. Every case in the suite that
+-- touches this layer runs ONE RANK PER NODE and therefore opens the minimum
+-- number of interfaces it possibly could. Pointer reuse across two transports is
+-- a defect that only appears when there is more than one transport to reuse it
+-- between, and this is the first workload that has one.
+--
+-- Names no finding: it asserts the whole rubric, so a finding kind added later
+-- is covered without this file being edited.
+SELECT finding, n, note
+FROM link_health
+WHERE CAST(n AS INTEGER) > 0;

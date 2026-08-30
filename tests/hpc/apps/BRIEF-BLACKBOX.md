@@ -65,11 +65,27 @@ comm_edges         src_rank,dst_rank,transport,unit,sends,bytes
 endpoint           rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes
 object_access      owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact
 rank_identity      rank,node_ix,node_hash,device,devices,label
-transport_mix      (which transport actually carried it)
+transport_mix      rank,tl_name,dev_name,scope,op,ops,out_bytes,in_bytes,advertised_bytes,header_bytes
 tag_flow           rank,tag,status,ucp_sends,ucp_units,uct_ops,uct_payload,doors
 tag_recv_resolved  rank,worker,message,status,sender_tag,offered,delivered
 link_health        finding,n,note
 ```
+
+`transport_mix.scope` — ADDED 2026-08-30, and it was my omission rather than the
+tool's. The first version of this brief gave `transport_mix` a prose description
+where every other table got its columns, because I extracted the contracts with a
+line-based search and this one wraps onto a second line. The 03_quantumespresso
+agent consequently reverse-engineered 8 of its 10 columns out of case 21's tests
+and then, needing "did this leave the node", fell back on matching `tl_name`
+against `'%mlx5%'` — binding its headline claim to UCX's transport namespace when
+the table already answers the question directly.
+
+`scope` takes exactly three values: **`intra-node`**, **`network`**, `unknown`.
+They are assigned from `tl_name`: `self`, `sysv`, `posix`, `mm`, `cma`, `knem`,
+`xpmem`, `cuda_ipc`, `cuda_copy`, `rocm_ipc`, `rocm_copy` are intra-node;
+`rc_verbs`, `rc_mlx5`, `dc_mlx5`, `ud_verbs`, `ud_mlx5`, `ib`, `srd`, `tcp` are
+network; anything else is `unknown`. If you are asking whether traffic left the
+node, group by `scope` — do not pattern-match transport names.
 
 `link_health` is a **fixed rubric, not an empty table** — CORRECTED 2026-08-29
 after the 04_llmc agent measured it. It emits one row per finding KIND with a

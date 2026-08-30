@@ -276,9 +276,20 @@ PML_UCX_TAG_BITS 24   PML_UCX_RANK_BITS 20   PML_UCX_CONTEXT_BITS 20
 
 > **Predicted: `ucx_tag_send.tag >> 40 = 8` occurs in the direct-ON arm and
 > never in the OFF arm.** If it occurs in neither, the GPU PME<->PP path did not
-> engage at all and the knob's effect in round 1 was halo-only — which would
-> retrospectively explain why round 1 measured rank 7's outbound bytes as
-> *identical to the byte* across the knob.
+> engage at all and the knob's effect in round 1 was halo-only.
+
+Only the *coordinate* send changes tag. The force return is tag 0 on both paths
+(`pme_pp.cpp:566`, `pme_pp_comm_gpu_impl_gpu.cpp:186`), which is why the
+assertion looks for tag 8 specifically and not for a change in the reverse
+direction.
+
+**And note what this does *not* imply.** Round 1 measured the PME rank's
+outbound bytes as identical to the byte across the knob and read that as the
+GPU path perhaps not engaging. P3.3 below supersedes that reading: the two paths
+differ in MPI datatype (`MPI_BYTE` vs `MPI_FLOAT`) and Open MPI pre-multiplies
+the count by the datatype size for both, so `count` is bytes either way and
+byte-identity is exactly what a *working* GPU path also produces. The tag is the
+only discriminator; the byte total never was one.
 
 ### P3.3 A prediction about `UcxTagSend.count` that follows from the same place
 
