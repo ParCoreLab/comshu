@@ -640,8 +640,12 @@ PAGE_FIGURES = [
   "through uct_iface_ops_t: on the HPC-X stack it is the only data plane a capture has, because UCX rings its "
   "own doorbell and neither ib_post_send nor mlx5_device_send ever fires.",
   "Which side an operation is keyed to is the API's own shape, not a convention: a tagged send names its "
-  "endpoint, while a tagged receive cannot, because it matches by tag across every peer at once. Nothing joins "
-  "the two bands: a <code>ucx_tag_send</code> and the <code>uct_send</code> rows it became are separate facts."),
+  "endpoint, while a tagged receive cannot, because it matches by tag across every peer at once. The two bands "
+  "are joined by the reader, not by a field: <code>tag_flow</code> pairs a <code>ucx_tag_send</code> with the "
+  "<code>uct_send</code> rows it became, on the tag, per (rank, tag) rather than per message — a tag is reused, "
+  "and pairing individual operations would need an ordering assumption between two layers that buffer "
+  "independently. Traffic through untagged doors carries its tag inside an AM payload and stays unjoinable; "
+  "<code>transport_mix</code> accounts for that by transport instead."),
  ("10-nccl-records", "nccl",
   "The one provider whose door is a supported profiling interface rather than an interposition. Six record "
   "types, all hanging off the communicator.",

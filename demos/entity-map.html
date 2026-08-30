@@ -153,7 +153,7 @@ footer { margin-top:76px; padding-top:20px; border-top:1px solid var(--rule);
   <p class="sub">UCP transport hooks. The spine is ownership — a context owns workers, a worker owns endpoints — and every operation attaches to whichever of the two the API itself names. The band below is the UCT layer, reached through uct_iface_ops_t: on the HPC-X stack it is the only data plane a capture has, because UCX rings its own doorbell and neither ib_post_send nor mlx5_device_send ever fires.</p>
   <figure>
     <img src="figures/09-ucx-records.svg" alt="ucx, and ucx_deep beneath it">
-    <figcaption>Which side an operation is keyed to is the API's own shape, not a convention: a tagged send names its endpoint, while a tagged receive cannot, because it matches by tag across every peer at once. Nothing joins the two bands: a <code>ucx_tag_send</code> and the <code>uct_send</code> rows it became are separate facts.</figcaption>
+    <figcaption>Which side an operation is keyed to is the API's own shape, not a convention: a tagged send names its endpoint, while a tagged receive cannot, because it matches by tag across every peer at once. The two bands are joined by the reader, not by a field: <code>tag_flow</code> pairs a <code>ucx_tag_send</code> with the <code>uct_send</code> rows it became, on the tag, per (rank, tag) rather than per message — a tag is reused, and pairing individual operations would need an ordering assumption between two layers that buffer independently. Traffic through untagged doors carries its tag inside an AM payload and stays unjoinable; <code>transport_mix</code> accounts for that by transport instead.</figcaption>
   </figure>
 </section><section id="10-nccl-records">
   <h2>nccl</h2>
