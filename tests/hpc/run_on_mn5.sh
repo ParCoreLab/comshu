@@ -248,7 +248,12 @@ if [ "$do_build" -eq 1 ]; then
   rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
        cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
        bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
-    || { echo 'tools/ibverbs build FAILED' >&2; exit 1; }
+    || { echo 'tools/ibverbs build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 
   say "build gpumem provider (NVBit, gcc-11.4 host, CUDA C++20, sm_90)"
   # CMAKE_CUDA_COMPILER is pinned to the *versioned* 12.9 tree on purpose. The
@@ -282,7 +287,12 @@ if [ "$do_build" -eq 1 ]; then
        mkdir -p build/providers/gpumem &&
        cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/ &&
        ls -la build/providers/*/*.so" \
-    || { echo 'gpumem build FAILED' >&2; exit 1; }
+    || { echo 'gpumem build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 
   # UCX, third and separate for the same reason gpumem is: it needs a toolchain
   # the other two do not. libucp lives in the *versioned* HPC-X tree, not under
@@ -318,7 +328,12 @@ if [ "$do_build" -eq 1 ]; then
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
        cp build-ucx/providers/ucx_deep/libucx_deep_trace.so build/providers/ucx_deep/ &&
        ls -la build/providers/*/*.so" \
-    || { echo 'ucx build FAILED' >&2; exit 1; }
+    || { echo 'ucx build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 
   # NCCL, fourth. Headers only — this one links against no libnccl, because it
   # reaches NCCL through the pnccl* profiling symbols the application has
@@ -336,7 +351,12 @@ if [ "$do_build" -eq 1 ]; then
        mkdir -p build/providers/nccl &&
        cp build-nccl/providers/nccl/libnccl_trace.so build/providers/nccl/ &&
        ls -la build/providers/*/*.so" \
-    || { echo 'nccl build FAILED' >&2; exit 1; }
+    || { echo 'nccl build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 fi
 
 # --- 3. run the cases --------------------------------------------------------
