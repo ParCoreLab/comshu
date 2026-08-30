@@ -210,18 +210,34 @@ decomposition. A capture that reproduces it is saying something no other table
 in pcomm can say on this stack; a capture that returns a flat profile is saying
 the transport classification is not working, however plausible its totals look.
 
-### P2.4 Which transport names, in UCX's vocabulary
+### P2.4 Expressed in `transport_mix.scope`, which is the column for the job
 
-The assertions are written against **UCX's** transport names, not pcomm's
-`scope` column, so that they test pcomm rather than agreeing with it:
+The brief published `transport_mix`'s column list and `scope`'s vocabulary on
+2026-08-30, after this prediction's first draft. `scope` takes exactly
+`intra-node`, `network` or `unknown`, assigned from `tl_name`: `self`, `sysv`,
+`posix`, `mm`, `cma`, `knem`, `xpmem`, `cuda_ipc`, `cuda_copy`, `rocm_ipc`,
+`rocm_copy` are intra-node; `rc_verbs`, `rc_mlx5`, `dc_mlx5`, `ud_verbs`,
+`ud_mlx5`, `ib`, `srd`, `tcp` are network.
 
-* fabric — `rc_mlx5`, `rc_verbs`, `dc_mlx5`, `ud_mlx5`, `ud_verbs`
-  (`uct_iface.dev_name` like `mlx5_%`)
-* intra-node — `self`, `sysv`, `posix`, `cma`, `knem`, `xpmem`,
-  `cuda_ipc`, `cuda_copy`, `gdr_copy`
+So every claim above is stated as a `GROUP BY scope`, not as a pattern over
+transport names. That is not merely following the contract — a `tl_name` pattern
+binds the claim to UCX's namespace and to this fabric, and would silently miss
+`srd`, `tcp` and `ud_verbs` on a machine that is not MN5, while the column
+already answers the question.
 
-`scope` is then checked *separately* against those names. If `scope` were used to
-define the split and also to verify it, the assertion would be a tautology.
+**Predicted transports, as a separate and weaker claim.** GROMACS here should
+produce `rc_mlx5` (or `dc_mlx5`) in `network` scope, and `sysv`/`posix`/`cma`
+plus — in the direct-GPU-comm arm — `cuda_ipc` in `intra-node` scope. Nothing
+should land in `unknown`.
+
+The mapping itself is checked *separately*, in
+`scope_matches_the_documented_mapping.sql`, against the published table. That
+keeps the headline assertions from inheriting an unverified mapping without
+making them circular: one file asks whether pcomm's answer matches GROMACS's
+decomposition, the other asks whether pcomm's answer matches pcomm's contract.
+`cuda_ipc` is the row at risk — its `dev_name` is neither an HCA nor a memory
+device, so a scope derived from the device name rather than the transport name
+gets `sysv` right and `cuda_ipc` wrong.
 
 ---
 

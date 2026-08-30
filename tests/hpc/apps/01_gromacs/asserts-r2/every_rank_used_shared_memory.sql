@@ -33,11 +33,9 @@ WITH RECURSIVE r(rk) AS (
 ),
 obs AS (
   SELECT CAST(rank AS INTEGER) AS rk,
-         sum(CASE WHEN tl_name IN ('self','sysv','posix','cma','knem','xpmem',
-                                   'cuda_ipc','cuda_copy','gdr_copy')
+         sum(CASE WHEN scope = 'intra-node'
                   THEN CAST(ops AS BIGINT) ELSE 0 END) AS shm_ops,
-         sum(CASE WHEN tl_name IN ('self','sysv','posix','cma','knem','xpmem',
-                                   'cuda_ipc','cuda_copy','gdr_copy')
+         sum(CASE WHEN scope = 'intra-node'
                   THEN CAST(out_bytes AS BIGINT) + CAST(in_bytes AS BIGINT) ELSE 0 END) AS shm_bytes
   FROM transport_mix
   GROUP BY CAST(rank AS INTEGER)
@@ -59,6 +57,5 @@ SELECT 'no shared-memory transport appears anywhere in transport_mix',
        (SELECT count(DISTINCT tl_name) FROM transport_mix)
 WHERE NOT EXISTS (
   SELECT 1 FROM transport_mix
-  WHERE tl_name IN ('self','sysv','posix','cma','knem','xpmem',
-                    'cuda_ipc','cuda_copy','gdr_copy')
+  WHERE scope = 'intra-node'
 );
