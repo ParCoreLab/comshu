@@ -88,6 +88,21 @@ WITH opens AS (
   -- recurring: nothing forces the two to be edited together. Any provider
   -- adding an Entity that emits EntityClose must add its line HERE, in the same
   -- change, or every close it writes reports as an orphan.
+  --
+  -- AND THEN IT FIRED FOR REAL, which is what this file is for. With 626 in
+  -- this CTE, case 21 (job 45198862) still reports 39 and 38 unmatched closes
+  -- per rank against 4 matched ones — and the door is
+  -- `ucp_ep_rkey_unpack_internal`, which UCX's rendezvous protocol calls to
+  -- create a key and then destroys through the PUBLIC ucp_rkey_destroy that we
+  -- do interpose. Unmatched destroys come to ~2 per rendezvous on both ranks;
+  -- case 22, which does MPI one-sided and no large rendezvous, has zero.
+  --
+  -- The symbol is exported, so it is hookable — but its signature gained a
+  -- parameter BEFORE the out-parameter after v1.18.0, which is the version MN5
+  -- runs, so a hook written against upstream would read the wrong register and
+  -- intern a fabricated handle. It needs a runtime version gate. Left unhooked
+  -- and left RED deliberately, per the paragraph above:
+  -- plans/PLAN-20260830-1130-rendezvous-rkeys-have-no-creation-door-todo.md
   UNION ALL SELECT rank, rkey,     626 FROM ucx_rkey
   -- The two NCCL entities that emit a close (nccl_provider.cpp closes 900 at
   -- ncclCommDestroy/ncclCommAbort and 908 at ncclCommWindowDeregister). Added
