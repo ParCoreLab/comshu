@@ -1,0 +1,33 @@
+-- requires: link_health
+-- Every row here is a defect in the link, not in the workload.
+--
+-- BRIEF-BLACKBOX.md states that link_health "is expected to be empty. Every row
+-- in it is a defect in the link, not in your workload -- if it has rows, that is
+-- a finding." The suite's own query is narrower than that sentence:
+-- 21_ucx_deep/asserts/every_uct_operation_has_a_transport.sql filters
+-- `WHERE finding = '...' AND n > 0`, and case 21's job script prints
+-- `WHERE n > 0`, both of which imply a row with n = 0 is a normal, expected
+-- entry rather than a defect. The prose and the queries disagree; this file
+-- follows the queries and QUESTIONS.md records the discrepancy.
+--
+-- WHAT IT WOULD CATCH ON THIS WORKLOAD, specifically:
+--
+--  * `unnamed_uct_transport` > 0 -- a UCT operation whose interface cannot be
+--    named. That is the one fact the 800-range exists to carry: whether a
+--    message left the node. An operation with a byte count and no transport has
+--    everything except the reason it was captured, and it would silently
+--    corrupt transport_mix_follows_the_pool_boundary-r2.sql, which is this
+--    study's headline. Three causes collapse into this count -- no uct_iface row
+--    holds the pointer, the pointer was reused for a second transport, or its
+--    tl_name intern handle is claimed by two strings -- and they mean the same
+--    thing to a consumer.
+--
+--  * unresolved sends -- round 1's teardown truncation, counted rather than
+--    hidden. pcomm keeps dst_rank = -1 deliberately so the matrix cannot lie
+--    about its totals, and this is where that honesty becomes visible.
+--
+-- Names no finding and no threshold, so it stays correct as the reader grows
+-- new checks -- which is the point of asserting the table rather than a row.
+SELECT finding, n, note
+FROM link_health
+WHERE CAST(n AS INTEGER) > 0;
