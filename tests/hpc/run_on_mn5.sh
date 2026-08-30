@@ -461,9 +461,17 @@ if [ "$check_only" -eq 0 ] && [ -n "${JID:-}" ]; then
   wall=$(( $(date +%s) - wall_t0 ))
   t=$(rsh "sacct -j $JID -X -n -P -o Submit,Start,End,Elapsed 2>/dev/null" | head -1 | tr -d '\r')
   IFS='|' read -r t_sub t_start t_end t_elapsed <<< "$t"
+  # The epoch conversion runs on the CLUSTER, not here. `date -d` is a GNU
+  # extension and this script is driven from a FreeBSD workstation, where it
+  # exits 1 with a usage block and left the whole timing section printing two
+  # usage dumps and `arithmetic syntax error: operand expected` on every run.
+  # Remote is also the more correct side: these are Slurm's own timestamps in
+  # the cluster's timezone, and converting them anywhere else invites an offset.
+  # Slurm formats them as 2026-08-30T11:07:12 — no spaces, so no quoting needed
+  # inside the rsh wrapper, which cannot carry a single quote.
   if [ -n "${t_start:-}" ] && [ "$t_start" != "Unknown" ]; then
-    qs=$(( $(date -d "$t_start" +%s) - $(date -d "$t_sub" +%s) ))
-    printf '  queue wait : %s s\n  job time   : %s (%s → %s)\n' "$qs" "$t_elapsed" "$t_start" "$t_end"
+    qs=$(rsh "echo \$(( \$(date -d $t_start +%s) - \$(date -d $t_sub +%s) ))" | tr -d '\r')
+    printf '  queue wait : %s s\n  job time   : %s (%s → %s)\n' "${qs:-?}" "$t_elapsed" "$t_start" "$t_end"
   fi
   printf '  wall clock : %s s (sync + build + queue + run)\n' "$wall"
   echo "  per-case breakdown: $OUT_ROOT/timings-$JID.txt"
