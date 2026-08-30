@@ -1625,23 +1625,6 @@ GROUP BY 1, 2, 3, 4, 5
 ORDER BY rank, scope, tl_name, dev_name, op
 )sql"},
 
-    // What the graph could not account for. This table exists so the UI can
-    // *show* a hole rather than render a confident matrix over one — "a wrong
-    // matrix that looks confident is worse than no matrix".
-    //
-    // IT IS A FIXED RUBRIC, NOT AN EMPTY TABLE, and this comment used to say
-    // the opposite. Every branch below is `SELECT '<finding>', count(*)`, so a
-    // perfectly healthy capture returns EVERY row with `n = 0`. The healthy
-    // state is `WHERE n > 0` returning nothing, which is what
-    // tests/hpc/cases/21_ucx_deep/job.sbatch has always queried.
-    //
-    // The old wording ("Empty is the expected state; every row is a defect")
-    // was wrong about this table's own behaviour, and it did not stay put: the
-    // tag_flow comment above quotes it as settled contract, and it was copied a
-    // third time into tests/hpc/apps/BRIEF-BLACKBOX.md, where it told a cohort
-    // of agents that a clean capture had a dozen defects. Found 2026-08-29 by
-    // the 04_llmc study, which read the table instead of its documentation —
-    // which is the entire argument for that round being black-box.
     // One row per work request that was posted and retired, with the time it
     // spent in flight. The Timeline draws this as a lane; this is the same
     // relation with the clock applied and the latency named, for anyone asking
@@ -1671,6 +1654,32 @@ FROM _wr_flight f
 JOIN _clock c ON c.rank = f.rank AND c.domain = f.domain
 )sql"},
 
+    // What the graph could not account for. This table exists so the UI can
+    // *show* a hole rather than render a confident matrix over one — "a wrong
+    // matrix that looks confident is worse than no matrix".
+    //
+    // IT IS A FIXED RUBRIC, NOT AN EMPTY TABLE, and this comment used to say
+    // the opposite. Every branch below is `SELECT '<finding>', count(*)`, so a
+    // perfectly healthy capture returns EVERY row with `n = 0`. The healthy
+    // state is `WHERE n > 0` returning nothing, which is what
+    // tests/hpc/cases/21_ucx_deep/job.sbatch has always queried.
+    //
+    // The old wording ("Empty is the expected state; every row is a defect")
+    // was wrong about this table's own behaviour, and it did not stay put: the
+    // tag_flow comment above quotes it as settled contract, and it was copied a
+    // third time into tests/hpc/apps/BRIEF-BLACKBOX.md, where it told a cohort
+    // of agents that a clean capture had a dozen defects. Found 2026-08-29 by
+    // the 04_llmc study, which read the table instead of its documentation —
+    // which is the entire argument for that round being black-box.
+    //
+    // AND IT WAS ATTACHED TO THE WRONG TABLE. This comment sat above `wr_flow`,
+    // two entries up, for long enough that correcting its contents on
+    // 2026-08-29 did not move it — I rewrote the paragraph in place and never
+    // checked what it was documenting. A reader scrolling to `link_health`
+    // found it undocumented; a reader scrolling to `wr_flow` found it described
+    // as a health rubric. Both of yesterday's documentation defects were of
+    // this kind: prose that stopped matching the code beneath it and was then
+    // maintained anyway, without re-reading what it sat on.
     {"link_health", "finding,n,note",
      R"sql(
 SELECT 'colliding_endpoints' AS finding,

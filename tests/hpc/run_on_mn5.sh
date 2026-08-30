@@ -219,8 +219,16 @@ if [ "$do_build" -eq 1 ]; then
   # want of ui/dist — turning a missing optional into a broken build.
   DUCK_ON=$($SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so -a -e $PROOT/ui/dist/index.html && echo ON || echo OFF")
 
+  # EVERY `module load` BELOW IS CHECKED, and it did not used to be. They were
+  # all written `module load a b c >/dev/null 2>&1`, which throws away an exit
+  # code Lmod sets correctly (rc=1 when any name is unknown) — and Lmod aborts
+  # the WHOLE line on the first unknown name, so `cmake` silently never loaded.
+  # The failure then surfaced three lines later as `cmake: command not found`,
+  # which reads as a broken login node rather than as one bad module name. That
+  # cost a cycle on 2026-08-30 when the run moved to the GPP login nodes, where
+  # gcc/11.4.0 does not exist. Swallow the chatter, never the status.
   say "build tools + ibverbs provider (gcc-13.2, DuckDB=$DUCK_ON)"
-  rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1; cd $RDIR &&
+  rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo 'module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here' >&2; exit 1; }; cd $RDIR &&
        cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
        cmake --build build -j 2>&1 | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2; exit 1; }
@@ -238,7 +246,18 @@ if [ "$do_build" -eq 1 ]; then
   # libpcomm/include headers, so editing one leaves gpumem_trace stale while
   # make reports success, and the stale .so then gets copied into build/ with a
   # fresh mtime. A green suite was reporting on a day-old binary.
-  rsh "module load gcc/11.4.0 nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1; cd $RDIR &&
+  #
+  # The gcc is chosen from a list rather than pinned, because gcc/11.4.0 exists
+  # only in the ACC module tree and this script now defaults to a GPP login
+  # node. The SDK path is left as the ACC one deliberately: /apps is shared
+  # GPFS, the ACC tree is readable from GPP, and `module load nvidia-hpc-sdk`
+  # sets NVHPC_ROOT to that same ACC path from either side — there is no GPP
+  # copy to point at. If the fallback gcc is used the step says so, because
+  # NVBit is a prebuilt object and the host compiler is not a free choice.
+  rsh "for g in gcc/11.4.0 gcc/12.3.0; do module load \$g >/dev/null 2>&1 && { GCCMOD=\$g; break; }; done;
+       [ -n \"\${GCCMOD:-}\" ] || { echo 'no usable gcc module for the NVBit host compiler' >&2; exit 1; };
+       [ \"\$GCCMOD\" = gcc/11.4.0 ] || echo \"  (gcc/11.4.0 not in this login node's module tree; using \$GCCMOD)\" >&2;
+       module load nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1 || { echo 'module load nvidia-hpc-sdk/25.7 cmake FAILED' >&2; exit 1; }; cd $RDIR &&
        SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
        cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
        touch gpu-backends/nvbit/nvbit_backend.cu gpu-backends/nvbit/inject_funcs.cu providers/gpumem/gpumem_provider.cpp &&
@@ -272,7 +291,7 @@ if [ "$do_build" -eq 1 ]; then
   # local gate runs on the self transport and proves the record layer; rc_mlx5,
   # HW tag matching and rendezvous are only reachable here.
   say "build ucx + ucx_deep providers (UCP doors and the UCT ops table, gcc-13.2)"
-  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
+  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo 'module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED' >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        UCX=\$(pcomm_find_ucx) &&
        echo \"  ucx: \$UCX\" &&
@@ -292,7 +311,7 @@ if [ "$do_build" -eq 1 ]; then
   #
   # gcc-13.2 like ucx and for the same reason: the engine's libstdc++.
   say "build nccl provider (PROFAPI doors, gcc-13.2)"
-  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
+  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo 'module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED' >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        echo \"  nccl: \$NCCL_HOME\" &&
        cmake -B build-nccl -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&

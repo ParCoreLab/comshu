@@ -87,6 +87,29 @@ They are assigned from `tl_name`: `self`, `sysv`, `posix`, `mm`, `cma`, `knem`,
 network; anything else is `unknown`. If you are asking whether traffic left the
 node, group by `scope` — do not pattern-match transport names.
 
+`transport_mix`'s **four byte columns are four different quantities and you must
+not add them** — ADDED 2026-08-30, after the 02_gromacs agent ranked "`in_bytes`
+has no published meaning" as the gap most worth closing, on the grounds that its
+headline fraction was arithmetic over a column whose direction it had to guess.
+It guessed right, and should not have had to:
+
+| column | which UCT ops | what it means |
+|---|---|---|
+| `out_bytes` | `Am*`, `Put*`, `TagEager*` | payload that **left this node** during the call |
+| `in_bytes` | `GetShort/Bcopy/Zcopy` | payload this rank **requested**; it arrives later |
+| `advertised_bytes` | `TagRndvZcopy` | payload **offered** for the peer to pull — only `header_bytes` actually went out |
+| `header_bytes` | all | protocol header, every op |
+
+The three payload columns partition the ops between them, so no byte is counted
+in two of them. Crucially **`in_bytes` is recorded once, at the rank that issued
+the Get** — it is not the far end's copy of the same transfer, so a
+one-directional fraction like `out/(out+in)` has an honest denominator.
+
+What you must not do is fold `advertised_bytes` in: a rendezvous advertisement
+would count as a transfer, and then the peer's `Get*` counts the same buffer
+again in the opposite direction. That is the whole reason these are four columns
+and not one.
+
 `link_health` is a **fixed rubric, not an empty table** — CORRECTED 2026-08-29
 after the 04_llmc agent measured it. It emits one row per finding KIND with a
 count, so a healthy capture has every row present with `n = 0`. Query it as
