@@ -2,6 +2,8 @@
 
 #include <ucp/api/ucp.h>
 
+#include <cstdint>
+
 #include "pcomm/hook/HookTrait.hpp"
 
 DEFINE_PRELOAD_HOOK(ucx, init_version, "ucp_init_version", ucs_status_t, unsigned, unsigned,
@@ -239,3 +241,46 @@ DEFINE_PRELOAD_HOOK(ucx, ep_rkey_unpack, "ucp_ep_rkey_unpack", ucs_status_t, ucp
 DEFINE_PRELOAD_HOOK(ucx, rkey_pack, "ucp_rkey_pack", ucs_status_t, ucp_context_h, ucp_mem_h, void**,
                     size_t*);
 DEFINE_PRELOAD_HOOK(ucx, rkey_destroy, "ucp_rkey_destroy", void, ucp_rkey_h);
+
+// THE RENDEZVOUS DOOR, and the first NON-PUBLIC symbol this project interposes.
+//
+// The three hooks above left a hole that case 21 measured: job 45198862 recorded
+// 4 rkeys per rank and 43 closes, because `ucp_rkey_destroy` is public and fires
+// for keys created somewhere we were not watching. That somewhere is
+// `ucp_ep_rkey_unpack_internal`, which UCX's rendezvous protocol calls directly
+// (src/ucp/rndv/proto_rndv.c) — about two per rendezvous, on both ranks, and
+// zero in case 22 which does one-sided RMA and no large rendezvous.
+//
+// INTERPOSABLE, verified on the shipped library rather than assumed. libucp.so
+// carries no DT_SYMBOLIC and no BIND_NOW, the symbol is GLOBAL DEFAULT, and both
+// of its intra-library call sites go through the PLT:
+//   objdump: 2 × `call ucp_ep_rkey_unpack_internal@plt`, 0 direct calls
+// A library built -Bsymbolic-functions would bind those internally and this hook
+// would silently never fire, so that check is the precondition, not a detail.
+//
+// SEVEN PARAMETERS DECLARED FOR A FUNCTION THAT HAS SIX ON THIS MACHINE, and
+// that is the whole trick. The signature gained `ucs_sys_device_t sys_device`
+// immediately before the out-parameter between two releases — pinned by reading
+// both tags, not inferred:
+//
+//   v1.18.0  (ep, buffer, length, unpack_md_map, skip_md_map,             rkey_p)
+//   v1.19.0  (ep, buffer, length, unpack_md_map, skip_md_map, sys_device, rkey_p)
+//
+// so `rkey_p` is argument 6 on the HPC-X 2.22.1 build MN5 runs and argument 7
+// from 1.19 on — %r9 versus the first stack slot. Declaring the superset and
+// choosing at RUNTIME is the only correct option here, because this .so is built
+// once and dlopened against whatever libucp the application already loaded; a
+// build-time #if would bake in the wrong answer for every other cluster.
+//
+// Under the SysV AMD64 ABI both directions of the mismatch are safe. Forwarding
+// seven integer/pointer arguments to a six-parameter callee is fine — the callee
+// ignores the extra one and the caller cleans up. Reading the seventh when only
+// six were passed yields an undefined stack slot, which is why the provider
+// reads it ONLY when the version says it is real.
+//
+// The trailing slots are typed as plain uint64_t rather than with UCX typedefs
+// on purpose: `ucs_sys_device_t` is an enum whose width is not part of any
+// contract, and this hook must not stop compiling when it changes.
+DEFINE_PRELOAD_HOOK(ucx, ep_rkey_unpack_internal, "ucp_ep_rkey_unpack_internal", ucs_status_t,
+                    ucp_ep_h, const void*, size_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                    std::uint64_t);

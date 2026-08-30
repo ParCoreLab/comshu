@@ -33,6 +33,7 @@
     ucp_ep_rkey_unpack;
     ucp_rkey_pack;
     ucp_rkey_destroy;
+    ucp_ep_rkey_unpack_internal;
     pcomm_create_provider;
     pcomm_abi_version;
   local:
