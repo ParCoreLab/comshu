@@ -30,7 +30,24 @@ if [ -n "${SLURM_JOB_ID:-}" ] && [ -d /apps/ACC/modulefiles ]; then
     case "${MODULEPATH:-}" in
         */apps/GPP/modulefiles*)
             export MODULEPATH="${MODULEPATH//\/apps\/GPP\/modulefiles//apps/ACC/modulefiles}"
-            echo "common.sh: MODULEPATH pointed at the GPP tree inside an ACC job — swapped to /apps/ACC/modulefiles" >&2
+            # AND PURGE, because the path was only half of it. glogin's login
+            # profile auto-loads impi/2021.10.0, mkl, UCX/1.15.0 and bsc, and
+            # those ride into the job too. The ACC GROMACS modulefile declares
+            # `conflict("impi")`, so with the tree corrected it still refused:
+            #   Cannot load module "gromacs/2025.2-gcc-nvhpcx" because these
+            #   module(s) are loaded: impi
+            # An inherited GPP module is never something an ACC job wanted, so
+            # dropping all of them is the honest state rather than unloading the
+            # one name that happened to collide today.
+            #
+            # Safe before pcomm_load_runtime, which every job calls next and
+            # which loads gcc/13.2.0 and nvidia-hpc-sdk/25.7 from the corrected
+            # tree — and those are exactly the prereqs the application modules
+            # declare (`prereq("nvidia-hpc-sdk")` in gromacs, `prereq_any` in
+            # fftw). Verified end to end on glogin1: purge, gcc, hpc-sdk, fftw,
+            # gromacs leaves gmx_mpi at /apps/ACC/GROMACS/2025.2/GCC/NVHPCX/bin.
+            module purge >/dev/null 2>&1 || true
+            echo "common.sh: GPP module environment inherited by an ACC job — MODULEPATH swapped to /apps/ACC/modulefiles and modules purged" >&2
             ;;
     esac
 fi
