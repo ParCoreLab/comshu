@@ -9,6 +9,32 @@
 : "${PCOMM_ROOT:=$HOME/proj/pcomm}"
 : "${PCOMM_BUILD:=$PCOMM_ROOT/build}"
 
+# A JOB SUBMITTED FROM A GPP LOGIN NODE INHERITS THE GPP MODULE TREE, and runs
+# on an ACC node regardless. sbatch defaults to --export=ALL, so MODULEPATH
+# arrives on the compute node still pointing at /apps/GPP/modulefiles — where
+# `gromacs/2025.2-gcc-nvhpcx`, `fftw/3.3.10-gcc-nvhpcx` and the rest of the
+# accelerated stack do not exist. Lmod then says only "module(s) are unknown",
+# the module load is not fatal, and the failure surfaces further down as
+# `mpirun was unable to find the specified executable: gmx_mpi` — which reads
+# as a broken MPI launch rather than as a job looking in the wrong tree.
+#
+# Cost the first GROMACS round-2 submission (job 45235223, FAILED in 15 s). It
+# only started mattering on 2026-08-30, when both ACC login nodes went down and
+# submissions moved to glogin1; the suite's own cases never noticed because
+# they resolve the SDK by globbing /apps/ACC/... directly rather than by module.
+#
+# Scoped to inside a job on purpose. On a login node MODULEPATH is correct for
+# the hardware you are on, and swapping it there would change which compilers
+# run_on_mn5.sh builds with — a working path this has no business touching.
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -d /apps/ACC/modulefiles ]; then
+    case "${MODULEPATH:-}" in
+        */apps/GPP/modulefiles*)
+            export MODULEPATH="${MODULEPATH//\/apps\/GPP\/modulefiles//apps/ACC/modulefiles}"
+            echo "common.sh: MODULEPATH pointed at the GPP tree inside an ACC job — swapped to /apps/ACC/modulefiles" >&2
+            ;;
+    esac
+fi
+
 # Tools + providers (the launcher finds .so via PCOMM_PROVIDER_PATH, colon-list).
 # One binary, verbs for everything: `$PCOMM run`, `$PCOMM read`, `$PCOMM export`.
 # There is no PCOMM_READ any more — there is no second executable to point it at.
