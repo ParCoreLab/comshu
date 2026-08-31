@@ -786,6 +786,36 @@ WHERE coalesce(ni.node_hash, l.node) IS NOT NULL
     // answer. A rank can own several GPUs (the 4-GPU ring is one process), and
     // naming one of them would be a guess that reads exactly like a fact. The
     // ibverbs cases put one GPU on each node precisely so this resolves.
+    // FOUR SOURCES, AND IT USED TO READ TWO. `rank_identity.device` came back
+    // NULL on the llm.c and Quantum ESPRESSO captures while the answer was
+    // sitting in the same file: those runs recorded `nccl_comm.cuda_dev` and
+    // `gpu_kernel.device` and this view looked at neither. Ten fields across
+    // nine tables carry a device ordinal; the question is which of them state
+    // THIS RANK'S OWN GPU rather than where some buffer happened to live.
+    //
+    // The two added here are the two that say it outright:
+    //   nccl_comm.cuda_dev   the device the communicator is bound to, from
+    //                        NCCL itself. The strongest statement available.
+    //   gpu_kernel.device    the device a kernel of ours executed on. Emitted
+    //                        by the ENGINE (libpcomm/src/engine.cpp), so it
+    //                        needs no GPU backend at all — this is the reason
+    //                        the old pair was wrong to be a pair: gpu_access is
+    //                        NVBit-only, so device resolution silently depended
+    //                        on an instrument most captures do not run.
+    //
+    // DELIBERATELY NOT ADDED: ucx_tag_send.device, ucx_rma.device,
+    // ucx_am_send.device, mlx5_umem.device, mlx5_devx_qp.device. Every one of
+    // those is the residency of a BUFFER, which is usually this rank's GPU and
+    // is not the same claim — a host buffer reports 65535, and under peer
+    // access a buffer can legitimately live on another rank's device. Folding
+    // them in would turn "which GPU does this rank drive" into "which GPUs has
+    // this rank touched", and the `devices > 1` guard below would then read as
+    // ambiguity where there is none. mem_object is the same class and is kept
+    // only because it predates this note and case 07 depends on it.
+    //
+    // cuda_dev is int32 and negative when NCCL has not bound one yet; the rest
+    // are uint16 with 65535 for unknown. Both are filtered, and the cast makes
+    // the UNION agree on a type rather than letting DuckDB widen it silently.
     {"_rank_device", R"sql(
 CREATE OR REPLACE VIEW _rank_device AS
 SELECT rank,
@@ -795,10 +825,18 @@ FROM (
     SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, run_device AS device FROM gpu_access
+    UNION
+    SELECT DISTINCT rank, device     AS device FROM gpu_kernel WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
 )
 GROUP BY rank
 )sql"},
 
+    // The same four sources, for the same reason. These two views must agree on
+    // what counts as evidence of a rank's device, or a rank can resolve here and
+    // not there — which is how a peer lookup returns a rank the identity table
+    // says owns nothing.
     {"_device_owner", R"sql(
 CREATE OR REPLACE VIEW _device_owner AS
 SELECT n.node, d.device, min(d.rank) AS rank, count(DISTINCT d.rank) AS claimants
@@ -806,6 +844,10 @@ FROM (
     SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, run_device AS device FROM gpu_access
+    UNION
+    SELECT DISTINCT rank, device     AS device FROM gpu_kernel WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
 ) d
 JOIN _node n ON n.rank = d.rank
 GROUP BY n.node, d.device
