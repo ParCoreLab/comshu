@@ -49,6 +49,15 @@ fi
 "$root/tools/check_cli_callsites.sh" >/dev/null || {
   echo "pre-commit: REFUSED — fix the call sites above" >&2; exit 1; }
 
+# ── exported interposers ───────────────────────────────────────────────────
+# A hook missing from its provider's .map compiles, links and exports nothing,
+# with no diagnostic anywhere — the capture is just quietly missing rows. This
+# is the only check in this file whose failure is otherwise invisible until
+# someone runs `nm -D` on the built .so, which is not a thing anyone does on
+# purpose. ~20 ms.
+"$root/tools/check_exported_hooks.sh" >/dev/null || {
+  echo "pre-commit: REFUSED — add the symbols above to their .map" >&2; exit 1; }
+
 echo "pre-commit: building core config + tests (tools/build_all.sh --quick)"
 if "$root/tools/build_all.sh" --quick > "$root/build-all/pre-commit.log" 2>&1; then
   echo "pre-commit: ok"

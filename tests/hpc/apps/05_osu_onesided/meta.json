@@ -1,0 +1,50 @@
+{
+  "case": "05_osu_onesided",
+  "kind": "study",
+  "providers": [
+    "ucx",
+    "ucx_deep"
+  ],
+  "topology": "2 nodes x 1 rank, OSU Micro-Benchmarks 7.5 osu_put_bw and osu_get_bw over an MPI_Win_allocate window, --mca osc ucx, captured at BOTH the public UCP doors and the uct_iface_ops_t transport table",
+  "golden": "none — assertions only. Every number here is a command-line argument of the benchmark or follows from twenty lines of its source; nothing is taken from a capture.",
+  "workload": {
+    "ranks": 2,
+    "nodes": 2,
+    "gpus": 0,
+    "msg_min_bytes": 512,
+    "msg_max_bytes": 8192,
+    "n_sizes": 5,
+    "n_windows": 5,
+    "iters": 20,
+    "warmup": 5,
+    "win_ops": 8,
+    "ops_per_size": 200,
+    "total_ops": 1000,
+    "total_bytes": 3174400
+  },
+  "workload_params": [
+    "msg_min_bytes",
+    "msg_max_bytes",
+    "n_sizes",
+    "n_windows",
+    "iters",
+    "warmup",
+    "win_ops",
+    "ops_per_size",
+    "total_ops",
+    "total_bytes"
+  ],
+  "workload_note": "OSU Micro-Benchmarks 7.5, `c/mpi/one-sided/osu_put_bw.c` and `osu_get_bw.c`, upstream tarball sha256 1cf84ac5419456202757a757c5f9a4f5c6ecd05c65783c7976421cfd6020b3b3. Run as `-m 512:8192 -W 8 -i 20 -x 5`, leaving `-w allocate -s flush` at their defaults (osu_put_bw.c:36-37).\n\nWHY THE NUMBERS ARE EXACT, which is the whole reason this application was chosen over a science code. run_put_with_flush (osu_put_bw.c:269) is a size loop that doubles from min to max; for each size it allocates ONE window of size*window_size bytes, and rank 0 alone issues (skip + iterations) x window_size MPI_Puts of `size` bytes inside a single lock/unlock. `-i` sets iterations AND iterations_large (osu_util.c:360), `-x` sets skip AND skip_large (osu_util.c:326), so the `size > LARGE_MESSAGE_SIZE` re-set at :296 cannot change the counts mid-sweep. Hence ops_per_size = (5 + 20) * 8 = 200, five sizes, total_ops = 1000, total_bytes = 200 * (512+1024+2048+4096+8192) = 3174400. MPI_CHAR throughout (the benchmark supports nothing else and says so at :72), so an MPI element count and a byte count coincide — which is what makes a recorded `count` comparable to a number in this file at all, whichever of the two UcxRma.count turns out to mean.\n\nWHY THE SWEEP STARTS AT 512 AND NOT AT 1. MPI's own window synchronisation moves 8- and 64-bit words. Starting the sweep above that means no control operation can share a size with the workload, so `rows whose count is one of my sizes` is an exact filter rather than an estimate, and the per-size multiplicity is assertable.\n\nONE meta.json SERVES BOTH BW ARMS. osu_get_bw takes identical arguments and has an identical loop with MPI_Get in place of MPI_Put, so the oracle is the same numbers; no assertion here names the direction, which is deliberate — the op vocabulary is not published in any file a black-box user may read and the CSV and Parquet exports decode it differently. See QUESTIONS.md #1.\n\nONE RANK PER NODE, for case 19's reason: UCX answers a same-node pair with shared memory, and a shm endpoint may not unpack a remote key at all — which would leave the record this study exists for empty and look like a tracer defect.\n\n--mca osc ucx IS LOAD-BEARING. With osc/rdma or osc/pt2pt the same MPI_Put becomes an active message, no rkey is ever unpacked, and every table below is empty for a reason that has nothing to do with pcomm.\n\nTHE ATOMIC ARMS HAVE THEIR OWN ORACLE in arms/atomic/meta.json: osu_acc_latency and osu_fop_latency issue one 4-byte operation per iteration and no size sweep at all, so none of the parameters above apply to them.",
+  "expect_tables": [
+    "ucx_context",
+    "ucx_worker",
+    "ucx_endpoint",
+    "ucx_rma",
+    "ucx_rkey",
+    "ucx_rkey_pack",
+    "ucx_mem_map",
+    "uct_iface",
+    "uct_send",
+    "uct_binding"
+  ]
+}

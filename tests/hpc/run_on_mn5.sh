@@ -17,7 +17,7 @@
 # commit. A dirty working tree is refused; --rsync copies it as-is instead.
 #
 # Config via env (defaults are the ParCore MN5 account):
-#   PCOMM_REMOTE=koc296797@alogin1.bsc.es     ssh target (key auth assumed)
+#   PCOMM_REMOTE=koc296797@glogin1.bsc.es     ssh target (key auth assumed)
 #   PCOMM_REMOTE_DIR=proj/pcomm               clone on the remote (rel. to $HOME)
 #   PCOMM_BARE=kefah/git/pcomm                bare repo it clones from
 #   PCOMM_OUT_ROOT=$HOME/pcomm-suite          where captures land (remote)
@@ -36,18 +36,26 @@
 # --check-only re-reads that manifest, and so re-checks that same run.
 set -uo pipefail
 
-REMOTE="${PCOMM_REMOTE:-koc296797@alogin1.bsc.es}"
+REMOTE="${PCOMM_REMOTE:-koc296797@glogin1.bsc.es}"
 RDIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
 # The bare repo the remote tree clones from, and the URL this machine pushes to.
 # Both name the same repository, from the two sides of the ssh hop.
 PCOMM_BARE="${PCOMM_BARE:-kefah/git/pcomm}"
 PCOMM_REMOTE_GIT="${PCOMM_REMOTE_GIT:-$REMOTE:$PCOMM_BARE}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# ConnectTimeout because alogin1 refuses connections often enough that this has
-# cost two runs: without it the very first ssh (step 0, resolving $HOME) blocks
-# forever on a dead login node, which looks exactly like a slow sync rather than
-# an unreachable host. Fail in 20s and say so; PCOMM_REMOTE=...@alogin2.bsc.es
-# is the fallback (same home directory).
+# ConnectTimeout because the login nodes refuse connections often enough that
+# this has cost two runs: without it the very first ssh (step 0, resolving
+# $HOME) blocks forever on a dead login node, which looks exactly like a slow
+# sync rather than an unreachable host. Fail in 20s and say so.
+#
+# The default moved alogin1 -> glogin1 on 2026-08-30. Both ACC login nodes went
+# silent on 22/443/80 on 2026-08-29 and stayed that way, so the documented
+# alogin1 -> alogin2 fallback was two names for the same outage. The GPP login
+# nodes share the GPFS home, the Slurm controller and the `acc` partition, so
+# they submit ACC jobs perfectly well — the only visible difference is that
+# `sinfo` and `scontrol show node` answer "Access/permission denied" there,
+# which looks like a wall and is not one: sbatch, squeue and sacct all work.
+# glogin2 is the like-for-like fallback.
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=20"
 
 do_build=1 do_clean=0 check_only=0 combined=1 quick=0 use_rsync=0
@@ -75,7 +83,10 @@ rsh() { $SSH "$REMOTE" "bash -lc '$*'"; }   # login shell → `module` is availa
 # them exported through sbatch, and `check` needs to look in the same place.
 RHOME=$($SSH "$REMOTE" 'echo $HOME' | tr -d '\r') \
   || { echo "cannot reach $REMOTE" >&2
-       echo "  if that is alogin1, try: PCOMM_REMOTE=${REMOTE%%@*}@alogin2.bsc.es $0 $*" >&2
+       echo "  try the other GPP login node: PCOMM_REMOTE=${REMOTE%%@*}@glogin2.bsc.es $0 $*" >&2
+       echo "  (alogin1/alogin2 have been refusing ssh since 2026-08-29; the GPP" >&2
+       echo "   login nodes submit acc_debug jobs just as well — same home, same" >&2
+       echo "   controller, same partition.)" >&2
        exit 1; }
 case "$RDIR" in /*) PROOT="$RDIR" ;; *) PROOT="$RHOME/$RDIR" ;; esac
 OUT_ROOT="${PCOMM_OUT_ROOT:-$RHOME/pcomm-suite}"
@@ -208,11 +219,41 @@ if [ "$do_build" -eq 1 ]; then
   # want of ui/dist — turning a missing optional into a broken build.
   DUCK_ON=$($SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so -a -e $PROOT/ui/dist/index.html && echo ON || echo OFF")
 
+  # EVERY `cmake --build` BELOW IS CHECKED TOO, and that is a separate bug from
+  # the module one. Each was written `cmake --build ... 2>&1 | tail -2`, and a
+  # pipeline's status is its LAST stage — `tail` — which always succeeds. The
+  # remote side is `bash -lc`, which does not inherit this script's `pipefail`,
+  # so a failed build returned 0, the `&&` chain continued, and `cp` copied a
+  # STALE .so into build/ with a fresh mtime. Caught on 2026-08-30: the nccl
+  # step printed `gmake: *** No rule to make target 'nccl_trace'` and the run
+  # went on to submit, exactly the "green suite reporting on a day-old binary"
+  # hazard the gpumem step's own comment warns about, in a step that had no
+  # guard for it.
+  #
+  # `pipefail` would have been the small fix and is the wrong one here: it would
+  # also apply to `. tests/hpc/suite/common.sh` in the ucx and nccl steps, whose
+  # probe pipelines are allowed to fail. Capturing to a variable scopes the
+  # check to the build alone, and gives the failure 25 lines of context instead
+  # of the 2 that `tail -2` leaves when it is the error you actually need.
+  #
+  # EVERY `module load` BELOW IS CHECKED, and it did not used to be. They were
+  # all written `module load a b c >/dev/null 2>&1`, which throws away an exit
+  # code Lmod sets correctly (rc=1 when any name is unknown) — and Lmod aborts
+  # the WHOLE line on the first unknown name, so `cmake` silently never loaded.
+  # The failure then surfaced three lines later as `cmake: command not found`,
+  # which reads as a broken login node rather than as one bad module name. That
+  # cost a cycle on 2026-08-30 when the run moved to the GPP login nodes, where
+  # gcc/11.4.0 does not exist. Swallow the chatter, never the status.
   say "build tools + ibverbs provider (gcc-13.2, DuckDB=$DUCK_ON)"
-  rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1; cd $RDIR &&
+  rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
        cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
-       cmake --build build -j 2>&1 | tail -2" \
-    || { echo 'tools/ibverbs build FAILED' >&2; exit 1; }
+       bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
+    || { echo 'tools/ibverbs build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 
   say "build gpumem provider (NVBit, gcc-11.4 host, CUDA C++20, sm_90)"
   # CMAKE_CUDA_COMPILER is pinned to the *versioned* 12.9 tree on purpose. The
@@ -227,15 +268,31 @@ if [ "$do_build" -eq 1 ]; then
   # libpcomm/include headers, so editing one leaves gpumem_trace stale while
   # make reports success, and the stale .so then gets copied into build/ with a
   # fresh mtime. A green suite was reporting on a day-old binary.
-  rsh "module load gcc/11.4.0 nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1; cd $RDIR &&
+  #
+  # The gcc is chosen from a list rather than pinned, because gcc/11.4.0 exists
+  # only in the ACC module tree and this script now defaults to a GPP login
+  # node. The SDK path is left as the ACC one deliberately: /apps is shared
+  # GPFS, the ACC tree is readable from GPP, and `module load nvidia-hpc-sdk`
+  # sets NVHPC_ROOT to that same ACC path from either side — there is no GPP
+  # copy to point at. If the fallback gcc is used the step says so, because
+  # NVBit is a prebuilt object and the host compiler is not a free choice.
+  rsh "for g in gcc/11.4.0 gcc/12.3.0; do module load \$g >/dev/null 2>&1 && { GCCMOD=\$g; break; }; done;
+       [ -n \"\${GCCMOD:-}\" ] || { echo \"no usable gcc module for the NVBit host compiler\" >&2; exit 1; };
+       [ \"\$GCCMOD\" = gcc/11.4.0 ] || echo \"  (gcc/11.4.0 not in this module tree; using \$GCCMOD)\" >&2;
+       module load nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1 || { echo \"module load nvidia-hpc-sdk/25.7 cmake FAILED\" >&2; exit 1; }; cd $RDIR &&
        SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
        cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
        touch gpu-backends/nvbit/nvbit_backend.cu gpu-backends/nvbit/inject_funcs.cu providers/gpumem/gpumem_provider.cpp &&
-       cmake --build build-gpumem --target gpumem_trace -j 2>&1 | tail -2 &&
+       bout=\$(cmake --build build-gpumem --target gpumem_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/gpumem &&
        cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/ &&
        ls -la build/providers/*/*.so" \
-    || { echo 'gpumem build FAILED' >&2; exit 1; }
+    || { echo 'gpumem build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 
   # UCX, third and separate for the same reason gpumem is: it needs a toolchain
   # the other two do not. libucp lives in the *versioned* HPC-X tree, not under
@@ -261,17 +318,22 @@ if [ "$do_build" -eq 1 ]; then
   # local gate runs on the self transport and proves the record layer; rc_mlx5,
   # HW tag matching and rendezvous are only reachable here.
   say "build ucx + ucx_deep providers (UCP doors and the UCT ops table, gcc-13.2)"
-  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
+  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        UCX=\$(pcomm_find_ucx) &&
        echo \"  ucx: \$UCX\" &&
        cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
-       cmake --build build-ucx --target ucx_trace ucx_deep_trace -j 2>&1 | tail -2 &&
+       bout=\$(cmake --build build-ucx --target ucx_trace ucx_deep_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/ucx build/providers/ucx_deep &&
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
        cp build-ucx/providers/ucx_deep/libucx_deep_trace.so build/providers/ucx_deep/ &&
        ls -la build/providers/*/*.so" \
-    || { echo 'ucx build FAILED' >&2; exit 1; }
+    || { echo 'ucx build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 
   # NCCL, fourth. Headers only — this one links against no libnccl, because it
   # reaches NCCL through the pnccl* profiling symbols the application has
@@ -281,15 +343,20 @@ if [ "$do_build" -eq 1 ]; then
   #
   # gcc-13.2 like ucx and for the same reason: the engine's libstdc++.
   say "build nccl provider (PROFAPI doors, gcc-13.2)"
-  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1; cd $RDIR &&
+  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        echo \"  nccl: \$NCCL_HOME\" &&
        cmake -B build-nccl -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&
-       cmake --build build-nccl --target nccl_trace -j 2>&1 | tail -2 &&
+       bout=\$(cmake --build build-nccl --target nccl_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/nccl &&
        cp build-nccl/providers/nccl/libnccl_trace.so build/providers/nccl/ &&
        ls -la build/providers/*/*.so" \
-    || { echo 'nccl build FAILED' >&2; exit 1; }
+    || { echo 'nccl build FAILED' >&2
+         echo "  if the output above mentions variables that require the cache to be" >&2
+         echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
+         echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
+         echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
 fi
 
 # --- 3. run the cases --------------------------------------------------------
@@ -394,9 +461,17 @@ if [ "$check_only" -eq 0 ] && [ -n "${JID:-}" ]; then
   wall=$(( $(date +%s) - wall_t0 ))
   t=$(rsh "sacct -j $JID -X -n -P -o Submit,Start,End,Elapsed 2>/dev/null" | head -1 | tr -d '\r')
   IFS='|' read -r t_sub t_start t_end t_elapsed <<< "$t"
+  # The epoch conversion runs on the CLUSTER, not here. `date -d` is a GNU
+  # extension and this script is driven from a FreeBSD workstation, where it
+  # exits 1 with a usage block and left the whole timing section printing two
+  # usage dumps and `arithmetic syntax error: operand expected` on every run.
+  # Remote is also the more correct side: these are Slurm's own timestamps in
+  # the cluster's timezone, and converting them anywhere else invites an offset.
+  # Slurm formats them as 2026-08-30T11:07:12 — no spaces, so no quoting needed
+  # inside the rsh wrapper, which cannot carry a single quote.
   if [ -n "${t_start:-}" ] && [ "$t_start" != "Unknown" ]; then
-    qs=$(( $(date -d "$t_start" +%s) - $(date -d "$t_sub" +%s) ))
-    printf '  queue wait : %s s\n  job time   : %s (%s → %s)\n' "$qs" "$t_elapsed" "$t_start" "$t_end"
+    qs=$(rsh "echo \$(( \$(date -d $t_start +%s) - \$(date -d $t_sub +%s) ))" | tr -d '\r')
+    printf '  queue wait : %s s\n  job time   : %s (%s → %s)\n' "${qs:-?}" "$t_elapsed" "$t_start" "$t_end"
   fi
   printf '  wall clock : %s s (sync + build + queue + run)\n' "$wall"
   echo "  per-case breakdown: $OUT_ROOT/timings-$JID.txt"

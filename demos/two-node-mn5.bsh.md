@@ -19,8 +19,11 @@ committed goldens, scaled to this demo's sizes) — re-run to make them yours.
 
 ## 0. The allocation this session assumes
 
-Run once from a login node (alogin2 if alogin1 refuses ssh), then open this
-file inside it. Two accelerated nodes, 4× H100 each, NDR InfiniBand between:
+Run once from a login node, then open this file inside it. The prompts below
+say `alogin2` because that is where the session was recorded; since 2026-08-29
+both ACC login nodes refuse ssh and you want **`glogin1`**, which shares the
+home directory, the Slurm controller and the `acc` partition. Two accelerated
+nodes, 4× H100 each, NDR InfiniBand between:
 
 koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=2 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:30:00
 

@@ -1,0 +1,70 @@
+{
+  "case": "03_quantumespresso (round 2)",
+  "app": "Quantum ESPRESSO 7.5 (pw.x), module quantumespresso/7.5-nvidia-nvhpcx",
+  "providers": [
+    "ucx",
+    "ucx_deep",
+    "ib"
+  ],
+  "topology": "2 nodes x 4 ranks x 4 H100, OpenMPI/HPC-X 2.16 over UCX 1.15 over NDR InfiniBand, block placement (--map-by ppr:4:node)",
+  "golden": "none — assertions only. A third-party application's counts are not ours to freeze.",
+  "why": "Round 1 ran 4 nodes x 1 rank, so every QE pool boundary was also a node boundary and -npool could only move the RANK matrix. Round 2 keeps the knob and changes the TOPOLOGY: with 4 ranks per node and QE's contiguous pool split (Modules/mp_pools.f90:73-92), -npool 2 makes each pool node-local and the FFT transpose stops crossing the fabric altogether. The observable moves from comm_edges to transport_mix — which BRIEF-BLACKBOX.md names as the thing never asked of a real application: 'does transport_mix correctly distinguish shared-memory traffic from fabric traffic on a real decomposition'.",
+  "workload": {
+    "ranks": 8,
+    "nodes": 2,
+    "gpus": 4,
+    "npool": 1,
+    "nband": 1,
+    "ntg": 1,
+    "ndiag": 1,
+    "nproc_bgrp": 8,
+    "iters": 2,
+    "kpoints": 2,
+    "fft_dense_nr3": 288,
+    "fft_dense_sticks_total": 11837,
+    "fft_nr3px": 36,
+    "fft_ncpx": 1480
+  },
+  "workload_b": {
+    "ranks": 8,
+    "nodes": 2,
+    "gpus": 4,
+    "npool": 2,
+    "nband": 1,
+    "ntg": 1,
+    "ndiag": 1,
+    "nproc_bgrp": 4,
+    "iters": 2,
+    "kpoints": 2,
+    "fft_dense_nr3": 288,
+    "fft_dense_sticks_total": 11837,
+    "fft_nr3px": 72,
+    "fft_ncpx": 2960
+  },
+  "workload_params": [
+    "npool",
+    "nband",
+    "ntg",
+    "ndiag",
+    "nproc_bgrp",
+    "kpoints",
+    "fft_dense_nr3",
+    "fft_dense_sticks_total",
+    "fft_nr3px",
+    "fft_ncpx"
+  ],
+  "workload_note": "AUSURF112 from github.com/QEF/benchmarks, unmodified — 112 Au atoms, nbnd=800, ecutwfc=25 Ry, ecutrho=200 Ry, K_POINTS automatic 2 2 1 1 1 0 (=> 2 irreducible k-points, which is what makes -npool 2 legal), electron_maxstep=2 as the benchmark ships it. `npool` is the ONLY difference between the two arms.\n\nWHY gpus IS 4 AND NOT 1, and it is load-bearing for one assertion rather than for the science: gpus is the count PER NODE. Round 1 ran --gres=gpu:1, so CUDA_VISIBLE_DEVICES made every rank device 0 and a `device` column that always said 0 was indistinguishable from one that said nothing. With four visible GPUs and four ranks per node the ordinals must differ across a node's ranks, which is what makes rank_identity_names_a_device-r2.sql able to fail.\n\nnproc_bgrp, fft_nr3px and fft_ncpx are DERIVED FROM THE OTHER PARAMS AND FROM QE'S SOURCE, and are declared here rather than divided in SQL because integer division means different things on sqlite3 and DuckDB and an oracle that changes value with the SQL engine is not an oracle:\n  nproc_bgrp = ranks / (npool * nband)         [mp_pools.f90:73, mp_bands.f90:90]\n  fft_nr3px  = fft_dense_nr3 / nproc_bgrp      [fft_scatter.f90:662, MAXVAL(desc%nr3p)]\n  fft_ncpx   = ceil(fft_dense_sticks_total / nproc_bgrp)  [fft_scatter.f90:663, MAXVAL(ncp_)]\n  transpose_bytes = fft_nr3px * fft_ncpx * 16  [fft_scatter.f90:664, MPI_DOUBLE_COMPLEX]\nAt nproc_bgrp=4 that is 3 409 920 B, which round 1 MEASURED at four ranks with npool=1 — a different rank count and a different flag — because the formula depends on nproc_bgrp and on nothing else. The `ceil` is verified at nproc_bgrp = 4 and 2 by round 1's capture; pw.x's own 'sticks: dense Max' line is MAXVAL(ncp_) and the bare run prints it, so a failure says which of the formula and the capture was wrong.\n\nfft_dense_nr3 and fft_dense_sticks_total are pw.x's own printed numbers and are INDEPENDENT of the rank division: they are fixed by the cell and by ecutrho, and round 1 verified they print identically at two divisions.\n\nndiag IS PINNED TO 1 IN BOTH ARMS and that is a change from round 1. -ndiag partitions the ScaLAPACK ortho grid, a DIFFERENT communicator, and its default is a function of nproc_bgrp — which is exactly the quantity the knob changes. At nproc_bgrp 8 and 4 the default grid happens to be the same 2x2, but 'the same by arithmetic today' is not an attribution, and the point of this study is that the diff is attributable to -npool alone.\n\nNO ASSERTION COUNTS MESSAGES. QE's message volume depends on how many Davidson steps the diagonaliser takes, which is data-dependent; and UctSend.payload means sent, requested or advertised depending on the op family (pcomm.fbs type 804) so it must not be summed across them. Every claim is about the SHAPE of the traffic — a share of operations, a fan-out, a size that appears at all — and never about its volume.\n\n-ntg IS NOT AVAILABLE AS A KNOB and that is a source fact, not a choice: Modules/mp_global.f90:83-84 calls errore('mp_startup','No task groups for GPUs') whenever ntg_ > 1 under __CUDA, and install/m4/x_ac_qe_cuda.m4:91 defines -D__CUDA unconditionally for any GPU build. On a GPU build of QE 7.5 the advertised four-level parallelism is really two levels.",
+  "expect_tables": [
+    "ucx_context",
+    "ucx_worker",
+    "ucx_endpoint",
+    "ucx_tag_send",
+    "uct_binding",
+    "ib_device",
+    "mem_object"
+  ],
+  "expect_tables_note": "uct_iface, uct_send, transport_mix and tag_flow are deliberately NOT in expect_tables. Whether ucx_deep's layout guard accepts UCX 1.15 — older than anything this provider has been run against — is the open question of this round, and uct_binding is the record that says so. Listing uct_send here would turn a first-class negative result (claim type 4: the transport layer is blind on the stack the science applications load) into a harness error.",
+  "not_covered": "No gpumem/p2p pass: ~8 minutes of NVBit module lift against a 52 MB binary linking cuFFT/cuBLAS/cuSOLVER, and it could not answer the managed-memory question anyway because mem_object carries no door discriminator. No forced UCX_TLS and no forced tag matching: round 1 established that rc_verbs cannot carry this CUDA-aware application's payload at all, and forcing UCX_RC_MLX5_TM_ENABLE=y to make tag_flow non-empty would be tuning the fabric until the tracer looks good. No rank-space comm matrix: ucx_worker_address is never written for an OpenMPI point-to-point application (round 1, finding 3), so the only cross-rank UCX key is empty and every claim here is stated over endpoints and transports.",
+  "managed_memory_note": "QE 7.5 does NOT allocate managed memory, and round 2 adds a line of evidence round 1 did not cite — QE's own build systems. install/m4/x_ac_qe_cuda.m4:97,119,120,123-125 gives the COMPLETE GPU flag set as `-cuda -gpu=cc<CC>,cuda<VER>` plus `-acc`; there is no -gpu=managed and no -gpu=unified anywhere in the file, and those two flags are the only ones that link libnvhpcman.so (round 1 established that ground truth by compiling an OpenACC program three ways). CMakeLists.txt:61-68 offers QE_ENABLE_CUDA and QE_ENABLE_OPENACC and no managed option exists to set. So apps/README.md's item-2 candidate is exhausted: QE was the last application the plan was counting on, LAMMPS was already checked and does not, and the honest outcome is that the latent defect stays latent for want of a workload rather than for want of a capture.",
+  "expect_fail_asserts": {}
+}

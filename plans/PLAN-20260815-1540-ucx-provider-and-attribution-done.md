@@ -814,3 +814,97 @@ identifier that neither layer records.
 Untagged traffic remains unjoinable by construction: on a non-tag door the tag
 travels inside an AM payload this record does not parse. `transport_mix` is where
 that traffic is accounted, by transport rather than by flow.
+
+---
+
+## Future work 2, 3 and 4 — closed 2026-08-29, MN5 job 45177678
+
+`22_ucx_rma` PASS, 9 checks, on `acc_debug` across two nodes. Three items of
+*Future work* close together because one workload reaches all of them.
+
+### The doors that were hooked on a static ELF survey are now witnessed
+
+*Future work 2* said the `_nbi` RMA doors, the atomics and the legacy tagged
+doors were "hooked on a **static ELF reference**. That is good evidence that the
+code path exists and no evidence at all that it is taken." They are taken:
+
+```
+ucx_rma      40 put,nbi   40 get,nbi          <- MPI_Put / MPI_Get
+ucx_atomic   20 add       (8 B, fetching)     <- MPI_Accumulate / MPI_Fetch_and_op
+             40 cswap  40 swap  (8 B)         <- mca_osc_ucx's OWN window sync
+ucx_tag_send 20 sync_nb                       <- MPI_Ssend
+```
+
+80 of 80 RMA rows are `nbi` and none is `nbx`, which confirms the survey's
+sharpest claim: **MPI one-sided makes no `_nbx` RMA call at all on this stack.**
+A workload built on `ucp_put_nbx` would have produced an empty `ucx_rma` and
+looked like a transport that did no one-sided traffic.
+
+### `pcomm run -p ucx,ib` in one shared pass, finally executed
+
+The definition of done required it and nothing had ever run it — the smoke job
+used `-p ucx` with the verbs provider compiled out. Both families land in one
+capture: `ib_mem_region` 434 and `ib_queue_pair` 248 beside `ucx_rma` 80.
+`ib_post_send` stays 0, which is correct and is the whole UCX finding — UCX
+registers through ibverbs and posts through nothing exported.
+
+### Future work 3's first item: rkeys have an entity
+
+`ucx_rkey` (626) and `ucx_rkey_pack` (628). 8 keys and 4 packs on this job, and
+every `ucx_rma.rkey` resolves. The record comment carries the dead end so it is
+not re-derived: **the cross-rank pack->unpack hash join is unreachable**, because
+`ucp_ep_rkey_unpack` is the only unpack door and takes no length while a packed
+rkey may legitimately be `sizeof(ucp_md_map_t)+1` bytes (UCX's own static
+`ucp_memh_rkey_dummy_buffer`). A fixed prefix there is an over-read that also
+never matches. `ucp_rkey_buffer_release` is deliberately NOT hooked: it frees the
+packed buffer, not a key.
+
+### Future work 4's first item: the probe join exists
+
+`tag_recv_resolved` recovers the tag and the true delivered length that
+`ucp_tag_msg_recv_nb` does not carry. The rule is temporal — most recent probe
+at or before the receive — because UCX recycles the handle out of its request
+mpool. `tests/tag_recv_rule.sh` pins it against a fixture; dropping the temporal
+predicate, flipping the comparison, or dropping the worker key each turns it red.
+A fixture rather than a capture because handle reuse is what breaks the join and
+no hardware run reproduces it on demand.
+
+### Three runs, and what the two failures were worth
+
+**45177421** — capture complete and correct, board said `---- no result`. The job
+never called `sql_check.sh`, which every case is responsible for doing itself.
+Same class as the naming mistake 21_ucx_deep records losing a slot to.
+
+That run also caught a real workload defect that a weaker assertion would have
+hidden. `MPI_Accumulate` on `MPI_UNSIGNED_CHAR` is a ONE-BYTE atomic;
+`UcxAtomic.op_size` says "4 or 8" and means it, so all 20 came back
+`status=-5 status_class=error` with UCX printing "invalid atomic operation
+datatype". **`ucx_atomic` was not empty even so** — it held 80 successful 8-byte
+`cswap`/`swap` from `mca_osc_ucx`'s own window synchronisation. An assertion
+requiring only a non-empty table would have gone green over a workload whose
+every atomic was refused. It now requires a *succeeding* `add` (MPI's locking
+uses cswap and swap, never add) and fails on any refused atomic.
+
+**45177565** — `entity_close_accounted` violated, 8 rkey closes reported as
+orphans on a capture whose opens and closes matched exactly. The `opens` CTE is
+hand-maintained and had no `ucx_rkey` line. **This is the FOURTH time that list
+has been left behind** — receive-path entities, NCCL, ucx_deep (`0e0115f`, "for
+the third time"), and now this. Nothing forces the record and the CTE to be
+edited together and the failure is loud but harmless, which is exactly why it
+recurs. Four scenarios added to `asserts_fire.sh`, including the one specific to
+this entity: an rkey ADDRESS legitimately recurs within a run, so reuse with
+balanced opens and closes must stay quiet and only a real imbalance may fire.
+
+The case-level `rkey_lifetimes_balance` passed on that same capture while the
+cross-cutting one failed, and the disagreement is what localised it in one read.
+
+### Still open in Future work 3 and 4
+
+- `ucp_am_send_nb` (legacy AM) is still unhooked; `libnccl-net` needs it and NCCL
+  over the UCX plugin still loses its active-message traffic.
+- Request completion is still unresolved. `status_class = request` is now the
+  majority state on this job's atomics (100 of 100), which sharpens the point:
+  the doors are `ucp_request_check_status` / `ucp_request_free`, and the design
+  question is whether a completion can be tied to its issuing call without a map
+  that grows without bound.
+- `ucx_stream_*` and `ucp_am_recv_data_nbx` remain a deliberate omission.

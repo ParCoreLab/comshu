@@ -240,6 +240,49 @@ Check yourself against the one rule: an assertion that names a rank, a device
 ordinal or a QP number, and does not reference `params`, is a golden in
 disguise. Delete it and write the claim you actually meant.
 
+### The vacuous pass, and why it deserves its own heading
+
+**An assertion whose convention is "empty result means pass" passes trivially
+when its input is empty.** That is the single most common defect in this
+suite's assertions, and it is invisible in a green board — a check that never
+ran and a check that ran clean look identical.
+
+It is not a hypothetical. On 2026-08-29 three independent authors each shipped
+one, and each found it only by mutation-testing — not by review:
+
+| where | the shape |
+|---|---|
+| `03_quantumespresso` | the `npool=2` arm filtered to rows a `npool=1` capture never contains |
+| OSU study | `sum()` over no rows returns `NULL`, and `NULL > threshold` is not true |
+| `02_gromacs` | hex-decode canaries over a table that was empty for an unrelated reason |
+
+Its sibling is **passing for the wrong reason**, where the input is non-empty
+but the rows satisfying the check are not the rows the case is about.
+`22_ucx_rma` shipped one: "`ucx_atomic` is non-empty" went green on job
+45177421 over 80 rows that were all `mca_osc_ucx`'s own window synchronisation,
+while all 20 of the workload's own atomics failed with status -5. The fix was to
+name a row only the workload could have produced — a *succeeding* `add`, since
+MPI's internal locking uses `cswap` and `swap` and never `add`.
+
+Note which way that case's assertions run: `NOT EXISTS ... WHERE (SELECT
+rma_iters FROM params) > 0`. An empty table makes them **fail**, which is the
+shape to copy — the `params` guard states when the claim applies, and the
+`NOT EXISTS` states what must be there when it does. So:
+
+1. **Mutation-test every assertion.** Break the exact thing it names — edit the
+   fixture, flip a value, drop a row — and confirm it turns red. An assertion
+   never observed failing is an assertion with no evidence behind it.
+2. **Then delete its input and run it again.** If it still passes, it is
+   vacuous. Add a companion that asserts the input is non-empty, e.g.
+   `SELECT 'no atomics captured' WHERE (SELECT count(*) FROM ucx_atomic) = 0`.
+3. **Watch the aggregates.** `sum`/`avg`/`max` over zero rows are `NULL`, and
+   every comparison against `NULL` is false — so a threshold check on an empty
+   table is a guaranteed pass. `coalesce(...)` first, or count separately.
+
+The rule in one line: **a passing assertion must be able to name the rows it
+looked at.** Empty-means-pass is a fine convention only when something else
+guarantees the input was not empty.
+
 ## Running
 
 **One command, from a checkout** (syncs to MN5, builds tools + both providers,

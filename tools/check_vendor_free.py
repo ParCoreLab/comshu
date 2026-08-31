@@ -241,6 +241,10 @@ def strip_comments_and_strings(text: str) -> list[str]:
     return "".join(buf).split("\n")
 
 
+def _keep(rel: str) -> bool:
+    return Path(rel).suffix in SOURCE_SUFFIXES and not rel.startswith(EXCLUDE_DIRS)
+
+
 def tracked_sources(repo: Path) -> list[str]:
     listed = subprocess.run(
         ["git", "ls-files", f"{ROOT_DIR}/"],
@@ -249,24 +253,46 @@ def tracked_sources(repo: Path) -> list[str]:
         text=True,
         check=True,
     ).stdout.split()
-    return [
-        p
-        for p in listed
-        if Path(p).suffix in SOURCE_SUFFIXES and not p.startswith(EXCLUDE_DIRS)
-    ]
+    return [p for p in listed if _keep(p)]
+
+
+def walked_sources(repo: Path) -> list[str]:
+    """Every source under ROOT_DIR, for a tree with no git metadata.
+
+    `git ls-files` is preferred because "tracked" is the honest definition of
+    what this check owns -- a stray scratch file is not ours to police. But the
+    remote build hosts are fed by `rsync --exclude .git` (tests/hpc/
+    run_on_a100.sh and run_on_mn5.sh --rsync both do this), so on du04 and MN5
+    there is no repository at all and the check CRASHED rather than running:
+    `git rev-parse` exited 128 and the traceback read as a broken tool. A
+    vendor leak reaching exactly the machines that build the vendor providers,
+    unchecked, is the outcome that matters here.
+    """
+    return sorted(
+        str(p.relative_to(repo))
+        for p in (repo / ROOT_DIR).rglob("*")
+        if p.is_file() and _keep(str(p.relative_to(repo)))
+    )
 
 
 def main() -> int:
-    repo = Path(
-        subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+    toplevel = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
     )
+    have_git = toplevel.returncode == 0
+    # This file lives in <repo>/tools/, so its grandparent is the tree root --
+    # which is what a syncd checkout has instead of git metadata.
+    repo = Path(toplevel.stdout.strip()) if have_git else Path(__file__).resolve().parent.parent
 
-    files = tracked_sources(repo)
+    if have_git:
+        files = tracked_sources(repo)
+    else:
+        files = walked_sources(repo)
+        print(
+            f"vendor-free: no git metadata at {repo} -- walking {ROOT_DIR}/ instead of "
+            "listing tracked files (expected on an rsync'd build host)",
+            file=sys.stderr,
+        )
     if not files:
         print(f"vendor-free: no sources found under {ROOT_DIR}/ -- check is not running", file=sys.stderr)
         return 1

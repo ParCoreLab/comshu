@@ -86,6 +86,8 @@ PCOMM_SCHEMA_MATCH(ur::UcxTagProbe, fb::UcxTagProbe);
 PCOMM_SCHEMA_MATCH(ur::UcxAtomic, fb::UcxAtomic);
 PCOMM_SCHEMA_MATCH(ur::UcxWorkerAddress, fb::UcxWorkerAddress);
 PCOMM_SCHEMA_MATCH(ur::UcxEpConnection, fb::UcxEpConnection);
+PCOMM_SCHEMA_MATCH(ur::UcxRkey, fb::UcxRkey);
+PCOMM_SCHEMA_MATCH(ur::UcxRkeyPack, fb::UcxRkeyPack);
 
 // ucx_deep / UCT, 800-899.
 PCOMM_SCHEMA_MATCH(udr::UctIface, fb::UctIface);
@@ -510,6 +512,31 @@ int main() {
                                            fb::TimePoint(2, 0x1A1A), 0),
                               0x51, 0xFEDCBA9876543210ull);
         expect_identical("UcxEpConnection", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ur::UcxRkey> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1B1B}, {2, 0x1C1C});
+        c.payload.rkey = 0x61;
+        c.payload.endpoint = 0x62;
+        fb::UcxRkey f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1B1B),
+                                   fb::TimePoint(2, 0x1C1C), 0),
+                      0x61, 0x62);
+        expect_identical("UcxRkey", &c, &f, sizeof(c));
+    }
+    {
+        // buffer_len 9 is not an arbitrary number: it is the size of UCX's own
+        // static dummy rkey (ucp_memh_rkey_dummy_buffer), the smallest packed
+        // key that can legitimately reach this record.
+        Stamped<ur::UcxRkeyPack> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x1D1D}, {2, 0x1E1E});
+        c.payload.memh = 0x71;
+        c.payload.context = 0x72;
+        c.payload.buffer_hash = 0x0123456789ABCDEFull;
+        c.payload.buffer_len = 9;
+        fb::UcxRkeyPack f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x1D1D),
+                                       fb::TimePoint(2, 0x1E1E), 0),
+                          0x71, 0x72, 0x0123456789ABCDEFull, 9);
+        expect_identical("UcxRkeyPack", &c, &f, sizeof(c));
     }
 
     {  // GpuAccess: the firehose, and the one with the most padding holes

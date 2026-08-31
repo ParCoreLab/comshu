@@ -19,6 +19,11 @@
 #     so its row is meaningless unless ucx_tag_probe can supply one. Asserted as
 #     a real join, not as two independent row counts.
 #  3. Balanced entity lifetimes, which is what the extra close doors were for.
+#  4. THE REMOTE KEY. ucx_rma and ucx_atomic each intern a ucp_rkey_h, and until
+#     ucx_rkey existed nothing recorded one being created — so the handle on
+#     every one-sided row joined to nothing. Asserted as a join for the same
+#     reason as the probe, and with its close, because the lifetime is what
+#     keeps a reallocated rkey pointer from reading as the one before it.
 #
 # Skips loudly (exit 0) when the pieces are absent, the same bargain
 # asserts_fire.sh makes with sqlite3.
@@ -145,6 +150,71 @@ expect "ucx_tag_send device is kUnknownDevice with no CUDA" "65535 " "$dev_col"
 rma_dev=$(csv ucx_rma | awk -F, '{print $13}' | sort -u | tr '\n' ' ')
 if [ -n "$(csv ucx_rma)" ]; then
     expect "ucx_rma device is kUnknownDevice with no CUDA" "65535 " "$rma_dev"
+fi
+
+# --- the remote key, which every RMA row named and nothing created -----------
+#
+# ucx_rma.rkey and ucx_atomic.rkey interned a ucp_rkey_h that no record opened,
+# so the handle joined to nothing — the same defect ib_hooks.hpp spent a week on
+# in the verbs provider. THE ASSERTION IS THE JOIN, not the row counts: two
+# independent counts pass happily while the handles disagree, which is the only
+# thing that makes an RMA row's target readable.
+#
+# Guarded on ucx_rma rather than asserted unconditionally, because the workload
+# reaches the rkey doors only inside its RMA arm and that arm is itself
+# conditional on the transport supporting registration. The invariant asserted
+# is the implication: if an RMA row exists, its key must resolve.
+if [ -z "$(csv ucx_rma)" ]; then
+    echo "note: the self transport did not take the RMA arm — rkey rows not asserted"
+else
+    expect "ucx_rkey rows"      1 "$(csv ucx_rkey | wc -l)"
+    expect "ucx_rkey_pack rows" 1 "$(csv ucx_rkey_pack | wc -l)"
+
+    rkey_handle=$(csv ucx_rkey | awk -F, '{print $3}')
+    rma_rkeys=$(csv ucx_rma | awk -F, '{print $8}' | sort -u)
+    if [ -z "$rkey_handle" ]; then
+        echo "FAIL: an RMA row names an rkey and no ucx_rkey row created one"
+        fail=1
+    elif [ "$rma_rkeys" != "$rkey_handle" ]; then
+        echo "FAIL: rkey handles disagree — ucx_rma names [$rma_rkeys], ucx_rkey created $rkey_handle"
+        echo "  that join is the only way an RMA row says which peer region it targeted"
+        fail=1
+    fi
+
+    # The key must resolve to the endpoint it was unpacked for. That endpoint is
+    # what carries the peer, via ucx_ep_connection — the chain that replaces the
+    # cross-rank rkey-buffer join the public API cannot support.
+    rkey_ep=$(csv ucx_rkey | awk -F, '{print $4}')
+    the_ep=$(csv ucx_endpoint | awk -F, '{print $3}')
+    if [ "$rkey_ep" != "$the_ep" ]; then
+        echo "FAIL: ucx_rkey names endpoint $rkey_ep, but the only endpoint is $the_ep"
+        fail=1
+    fi
+
+    # The lifetime, which is the whole reason this is an Entity: without a close,
+    # a reallocated rkey pointer reads as the one before it.
+    rkey_closes=$(csv entity_close | awk -F, '$4=="626" {print $3}')
+    if [ "$rkey_closes" != "$rkey_handle" ]; then
+        echo "FAIL: ucp_rkey_destroy left no close for $rkey_handle (opener 626 closes: [$rkey_closes])"
+        fail=1
+    fi
+
+    # The exporting side joins the registration it exported. A pack row whose
+    # memh matches no ucx_mem_map row would be naming a handle from nowhere.
+    pack_memh=$(csv ucx_rkey_pack | awk -F, '{print $3}')
+    if [ -z "$pack_memh" ] || ! csv ucx_mem_map | awk -F, '{print $3}' | grep -qx "$pack_memh"; then
+        echo "FAIL: ucx_rkey_pack.memh $pack_memh matches no ucx_mem_map row"
+        fail=1
+    fi
+
+    # A packed rkey is at least UCX's own dummy key (md_map + mem_type). Zero
+    # would mean the size out-parameter was read before it was set, and the hash
+    # beside it would then cover nothing.
+    pack_len=$(csv ucx_rkey_pack | awk -F, '{print $5}')
+    if [ -z "$pack_len" ] || [ "$pack_len" -lt 9 ]; then
+        echo "FAIL: ucx_rkey_pack.buffer_len is $pack_len — smaller than UCX's own dummy key"
+        fail=1
+    fi
 fi
 
 # --- peer identity, which the self transport can check exactly ---------------

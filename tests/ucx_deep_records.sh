@@ -36,7 +36,20 @@ done
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-uct-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
-PCOMM_OUTPUT_DIR="$WORK/cap" PCOMM_TRACE_MODE=full \
+# UCX_TLS IS PINNED, and for case 21's reason: pinning is not tuning. This test
+# asserts further down that the transport set is exactly `self`, and it did not
+# pin it — so it was green only on a machine with no fabric, and the assertion
+# was really measuring "does this host have a NIC". On MN5's login node, which
+# has six active mlx5 HCAs, UCX also picks rc_mlx5 and ud_mlx5 and the workload
+# reports three in-progress sends: two failures that say nothing about the
+# provider. It went unseen because run_on_mn5.sh builds the UCX configuration
+# with -DPCOMM_BUILD_TESTS=OFF, so this gate had never once run on the cluster.
+#
+# Pinning makes the test measure what it already claims to. The rc_mlx5 and
+# rendezvous paths are NOT lost by doing so — they are case 21's job, on
+# hardware, in an allocation, where the thresholds are pinned for the same
+# reason.
+PCOMM_OUTPUT_DIR="$WORK/cap" PCOMM_TRACE_MODE=full UCX_TLS=self \
     LD_PRELOAD="$ENGINE $UCX_SO $DEEP_SO" "$SELFTEST" > "$WORK/run.out" 2>&1
 rc=$?
 if [ "$rc" -eq 77 ]; then

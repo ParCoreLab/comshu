@@ -261,6 +261,73 @@ PCOMM_RECORD(UcxAtomic, RecordKind::Event, 620, "ucx_atomic") {
     std::uint8_t  fetching;  // 1 = returns the previous value
 };
 
+// ENTITY — a remote key, lifetime [ucp_ep_rkey_unpack, ucp_rkey_destroy).
+//
+// WHY IT EXISTS. `ucx_rma` and `ucx_atomic` both intern a `ucp_rkey_h` and
+// nothing recorded one being created, so that handle joined to NOTHING — the
+// exact defect `ib_hooks.hpp` documents chasing for a week in the verbs
+// provider, an entity referenced by events that nothing opens. Confirmed on
+// MN5's HPC-X 2.22.1: `mca_osc_ucx` (MPI one-sided), `mca_spml_ucx`
+// (OpenSHMEM) and `libnccl-net` all call `ucp_ep_rkey_unpack` and
+// `ucp_rkey_destroy`, and `mca_osc_ucx` reaches the wire through `ucp_put_nbi`
+// / `ucp_get_nbi` / `ucp_atomic_post` — every one of which writes a row whose
+// `rkey` was unresolvable.
+//
+// THE LIFETIME IS THE POINT, not decoration. A `ucp_rkey_h` is a heap pointer
+// and UCX frees and reallocates them, so without an open and a close the same
+// address unpacked for a different peer region is indistinguishable from the
+// first — the same reasoning `ibv_dereg_mr` exists for, which cost case 02 two
+// of its eight ranks.
+//
+// WHAT THIS RECORD DELIBERATELY DOES NOT CARRY, so it is not re-derived: a hash
+// of the packed rkey buffer, which would join an unpacked key back to the
+// `ucp_rkey_pack` on the rank that exported it. It is unreachable through the
+// public API and the reason is sharper than the worker-address case.
+// `ucp_ep_rkey_unpack(ep, buffer, &rkey)` is the ONLY unpack door and takes no
+// length, and unlike a worker address — always hundreds of bytes, so a fixed
+// prefix is safe in practice — a packed rkey may legitimately be
+// `sizeof(ucp_md_map_t) + 1` bytes: UCX ships a static `ucp_memh_rkey_dummy_buffer`
+// of exactly that shape (`src/ucp/core/ucp_rkey.c`). So a fixed 32-byte prefix
+// hash here is an out-of-bounds read AND would hash 23 bytes of unrelated
+// adjacent memory on each side, producing keys that never match while looking
+// perfectly well-formed. Only a length on the consuming side would fix it, and
+// the public API does not offer one.
+//
+// The peer is still reachable, by a route that was already there: `endpoint`
+// joins to `ucx_ep_connection.remote_prefix_hash` and thence to another rank's
+// `ucx_worker_address`, and `ucx_rma.remote_addr` can then be range-matched
+// against that rank's `ucx_mem_map`. That chain is measured, not invented.
+PCOMM_RECORD(UcxRkey, RecordKind::Entity, 626, "ucx_rkey") {
+    Handle rkey;      // interned ucp_rkey_h — the key ucx_rma/ucx_atomic name
+    Handle endpoint;  // the endpoint it was unpacked for = which peer it targets
+};
+
+// ARTIFACT — a memory registration was PACKED for export, i.e. made remotely
+// accessible. Emitted at `ucp_rkey_pack`, which is the door MN5's stack really
+// uses: `mca_osc_ucx`, `mca_spml_ucx` and `libnccl-net` all call it, and none
+// of them calls the modern `ucp_memh_pack` that replaces it. `ucp_memh_pack` is
+// exported by libucp and is left unhooked for that reason rather than by
+// oversight — the same treatment `ucp_stream_*` gets.
+//
+// Artifact and not Entity for `UcxWorkerAddress`'s reason: this is computed once
+// and never closes. The thing with the lifetime is the `ucp_mem_h`, which
+// `ucx_mem_map` already owns. `ucp_rkey_buffer_release` frees the packed BUFFER
+// and not the registration, so it closes nothing here and is not hooked —
+// conflating the two would put a close in front of a reader for an object that
+// never opened.
+//
+// `buffer_hash` covers the WHOLE buffer, which this side can do because
+// `ucp_rkey_pack` returns the size. Its counterpart on the consuming side does
+// not exist; see UcxRkey for why. It is recorded anyway because it is free here
+// and because two packs of the same registration should agree — a cheap
+// consistency check on a format nothing else in the capture inspects.
+PCOMM_RECORD(UcxRkeyPack, RecordKind::Artifact, 628, "ucx_rkey_pack") {
+    Handle        memh;  // interned ucp_mem_h — joins to ucx_mem_map
+    Handle        context;
+    std::uint64_t buffer_hash;  // FNV-1a over the whole packed buffer
+    std::uint32_t buffer_len;   // packed bytes; 9 is a legitimate dummy key
+};
+
 // ENTITY — this worker's own address, reduced to hashes. The address BYTES are
 // deliberately not recorded: they are tens to hundreds of bytes of transport
 // detail per worker, and nothing downstream wants to read them. What is wanted
