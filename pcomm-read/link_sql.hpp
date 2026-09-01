@@ -1880,7 +1880,6 @@ SELECT 'unnamed_uct_transport',
        coalesce(sum(s.ops), 0)::BIGINT,
        'UCT operations whose transport name did not resolve — no uct_iface row, or an ambiguous intern handle'
 FROM _uct_scoped s WHERE s.tl_name IS NULL
-UNION ALL
 -- `ucx_edges_include_intranode` WAS HERE AND IS DELETED, because the thing it
 -- warned about is fixed rather than merely tolerated. Its own text said it was
 -- "a caveat about another table ... kept because a reader of comm_edges has no
