@@ -66,6 +66,41 @@ echo "cases    : $CASES"
 echo "out root : $OUT_ROOT"
 echo "started  : $(date -Is)"
 
+# --- GPU identity survey, one line per GPU per node -------------------------
+#
+# NOT part of any case and asserted on by nothing. It exists to answer the
+# question plans/PLAN-20260831-0100 cannot answer from a login node: what do
+# these GPUs actually report as an identity, on THIS hardware, before a record
+# is designed around it.
+#
+# The plan's whole argument is that a device ORDINAL is not an identity —
+# node-local, and remap-local under CUDA_VISIBLE_DEVICES — so the replacement
+# has to key on something stable. Which of `uuid`, `pci.bus_id` and `serial` is
+# actually usable is a property of the driver and the deployment, not of the
+# CUDA API, and du04's A100s answering well is no evidence about MN5's H100s:
+# UUIDs come back zero-filled or as small incrementing integers under vGPU,
+# some container runtimes and older drivers, and a degenerate UUID is WORSE
+# than none — "GPU-0" on two nodes looks identical and silently merges them.
+#
+# mig.mode.current is here for the other half: a MIG instance reports
+# MIG-GPU-<uuid>/<gi>/<ci> and shares its parent UUID with every sibling, so a
+# key built on the parent merges devices that are genuinely separate.
+#
+# CUDA_VISIBLE_DEVICES is echoed beside it because nvidia-smi reports the
+# PHYSICAL device list while every ordinal in a capture is post-remap. Seeing
+# both in one place is what lets a reader line them up later.
+#
+# Costs about a second, runs once per allocation, and every suite board carries
+# it from now on — so the data is already there whenever the record is written,
+# rather than needing a slot of its own to go and get.
+echo
+echo "=== GPU identity survey (guides PLAN-20260831-0100; nothing asserts on it) ==="
+srun --ntasks-per-node=1 --ntasks="${SLURM_JOB_NUM_NODES:-1}" --gres=gpu:4 --overlap bash -c '
+  echo "--- $(hostname)  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+  nvidia-smi --query-gpu=index,uuid,pci.bus_id,serial,mig.mode.current,name \
+             --format=csv,noheader 2>&1 | sed "s/^/    /"
+' 2>&1 | sed 's/^/  /' || echo "  (nvidia-smi survey failed — not fatal, nothing depends on it)"
+
 TIMINGS="$OUT_ROOT/timings-${SLURM_JOB_ID:-local}.txt"
 : > "$TIMINGS"
 suite_t0=$SECONDS
