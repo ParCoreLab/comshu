@@ -210,11 +210,26 @@ expect "a retried operation is not counted" \
 expect "operations with no nameable transport are counted" \
     "SELECT n FROM link_health WHERE finding = 'unnamed_uct_transport'" "3"
 
-# cuda_ipc x1 + sysv x2. This is the caveat comm_edges cannot state about
-# itself: three of this capture's operations never touched a network, and the
-# ucx lane of the rank matrix counts that traffic as fabric.
-expect "intra-node traffic inside the ucx matrix is counted" \
-    "SELECT n FROM link_health WHERE finding = 'ucx_edges_include_intranode'" "3"
+# cuda_ipc x1 + sysv x2 — three operations that never touched a network.
+#
+# This used to assert link_health.ucx_edges_include_intranode = 3, a global
+# count standing in for a caveat comm_edges could not state about itself. That
+# row is gone: comm_edges carries `scope` per edge now, so the caveat is a
+# column rather than a footnote, and a rubric row that fired on every healthy
+# multi-rank-per-node capture was reporting the normal case as a defect.
+#
+# What replaces it is a stronger claim, not a weaker one. The old row could only
+# say HOW MUCH intra-node traffic existed somewhere in the matrix; this says the
+# matrix distinguishes it, which is the property a reader actually needs.
+expect "the rank matrix distinguishes intra-node from fabric" \
+    "SELECT string_agg(DISTINCT scope, ',' ORDER BY scope) FROM comm_edges" \
+    "intra-node,network"
+
+# And the deleted row must stay deleted. A rubric that quietly regrows a finding
+# firing on every healthy capture is how link_health becomes noise.
+expect "the obsolete intra-node caveat is not in the rubric" \
+    "SELECT count(*) FROM link_health WHERE finding = 'ucx_edges_include_intranode'" \
+    "0"
 
 # 'unknown' is never folded into either real bucket. A transport this build does
 # not know the name of must stay visible as unknown rather than be guessed into

@@ -61,7 +61,7 @@ single pass, and `pcomm list` says which are which):
 The derived tables `pcomm link` builds, with their column contracts:
 
 ```
-comm_edges         src_rank,dst_rank,transport,unit,sends,bytes
+comm_edges         src_rank,dst_rank,transport,unit,scope,sends,bytes
 endpoint           rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes
 object_access      owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact
 rank_identity      rank,node_ix,node_hash,device,devices,label
@@ -93,6 +93,24 @@ operations into `unknown` — the first time this list was caught missing a name
 on real hardware. **Treat `unknown` as a finding worth reporting, not as
 noise**: it means the tool met a transport nobody has classified, and the row
 count tells you how much of your traffic is unaccounted for.
+
+`comm_edges.scope` — ADDED 2026-09-01, and it is why the round-2 studies were
+worth running. `comm_edges` looks like the fabric matrix and was not one: three
+unrelated applications put intra-node UCX traffic into it indistinguishable
+from traffic that crossed the wire (OSU 2 operations, GROMACS 83,892, Quantum
+ESPRESSO 1,435,037). On OSU the whole table was four rows and two of them —
+`0->0` and `1->1`, the MPI self endpoint — never touched a network.
+
+It takes the same three values as `transport_mix.scope` and is derived
+differently, which is the point. `transport_mix.scope` is a claim about the
+TRANSPORT UCX chose; `comm_edges.scope` is a claim about the two RANKS — same
+node or not, from `node_identity`. So it is available on every lane (verbs,
+nvlink, ucx) and needs no join between the UCP and UCT layers, which is the
+join that does not exist. `unknown` means the peer rank or a node identity
+could not be resolved, and is never folded into `network`.
+
+If you previously wrote `WHERE transport = 'ucx'` and read the result as fabric
+traffic, that is the query this column fixes.
 
 `transport_mix`'s **four byte columns are four different quantities and you must
 not add them** — ADDED 2026-08-30, after the 02_gromacs agent ranked "`in_bytes`

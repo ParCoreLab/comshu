@@ -1521,9 +1521,44 @@ JOIN _clock c ON c.rank = e.rank AND c.domain = e.domain
     // transport IN ('verbs','devx'), projected to (src,dst,sends,bytes), are
     // still byte-identical to CsvAgg's comm_edges — which is the only check
     // the derived layer has, and is kept executable rather than described.
-    {"comm_edges", "src_rank,dst_rank,transport,unit,sends,bytes",
+    // `scope` ADDED 2026-09-01, and it is the answer to the most corroborated
+    // finding of the round-2 application studies. Three unrelated programs put
+    // intra-node UCX traffic into this table where it read as fabric: OSU 2
+    // operations, GROMACS 83,892, Quantum ESPRESSO 1,435,037. On OSU it was
+    // exact and small enough to see whole — four edges, of which two (0->0 and
+    // 1->1, the MPI self endpoint) never touched a wire. A reader taking this
+    // table as the fabric matrix, which is what it looks like, was wrong by two
+    // rows there and by a million on QE.
+    //
+    // DERIVED FROM TOPOLOGY, NOT FROM TRANSPORT, and that is what makes it
+    // possible at all. link_health carried a caveat about this for months whose
+    // own text explained why it could not be fixed: "it cannot say WHICH edges:
+    // the UCP endpoint and the UCT lane have no join between them". True, and
+    // beside the point — "did this leave the node" is a question about the two
+    // ranks, and both of them are already resolved right here. `_node` answers
+    // it without the UCP/UCT join ever being needed.
+    //
+    // Uniform across all three lanes rather than bolted onto the ucx one. A
+    // verbs edge between two ranks on one node is the same fact and was equally
+    // unsayable; nvlink is intra-node by construction and now says so instead of
+    // relying on the reader to know it.
+    //
+    // 'unknown' is its own value and is NEVER folded into 'network'. dst_rank
+    // = -1 means the peer was not resolved, and a rank whose node identity is
+    // missing (gethostname failed, no LID) cannot be placed either. Guessing
+    // 'network' there would inflate exactly the number this column exists to
+    // deflate — the same argument transport_mix.scope makes for its own third
+    // value.
+    {"comm_edges", "src_rank,dst_rank,transport,unit,scope,sends,bytes",
      R"sql(
-SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM (
+SELECT e.src_rank, e.dst_rank, e.transport, e.unit,
+       CASE WHEN e.dst_rank < 0                        THEN 'unknown'
+            WHEN ns.node IS NULL OR nd.node IS NULL    THEN 'unknown'
+            WHEN ns.node = nd.node                     THEN 'intra-node'
+            ELSE 'network'
+       END AS scope,
+       e.sends, e.bytes
+FROM (
     SELECT s.rank               AS src_rank,
            coalesce(o.rank, -1) AS dst_rank,
            s.transport          AS transport,
@@ -1552,8 +1587,10 @@ SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM (
     FROM _ucx_sends s
     LEFT JOIN _ucx_peer_of_ep p ON p.rank = s.rank AND p.endpoint = s.endpoint
     GROUP BY 1, 2
-)
-ORDER BY transport, src_rank, dst_rank
+) e
+LEFT JOIN _node ns ON ns.rank = e.src_rank
+LEFT JOIN _node nd ON nd.rank = e.dst_rank
+ORDER BY e.transport, e.src_rank, e.dst_rank
 )sql"},
 
     // WHAT A UCP SEND BECAME ON THE WIRE — the two layers in one relation.
@@ -1844,21 +1881,22 @@ SELECT 'unnamed_uct_transport',
        'UCT operations whose transport name did not resolve — no uct_iface row, or an ambiguous intern handle'
 FROM _uct_scoped s WHERE s.tl_name IS NULL
 UNION ALL
--- NOT A DEFECT IN THE LINK — the one row here that is a caveat about another
--- table rather than a hole in this one, and it is kept because a reader of
--- comm_edges has no other way to learn it.
+-- `ucx_edges_include_intranode` WAS HERE AND IS DELETED, because the thing it
+-- warned about is fixed rather than merely tolerated. Its own text said it was
+-- "a caveat about another table ... kept because a reader of comm_edges has no
+-- other way to learn it", and that sentence stopped being true on 2026-09-01:
+-- comm_edges now carries `scope`, so a reader learns it from the table itself,
+-- per edge, instead of from a global count that could not say which rows it
+-- meant.
 --
--- comm_edges' `ucx` lane is built from UCP calls and has no transport, so
--- shared-memory and CUDA-IPC traffic appears in the rank matrix
--- indistinguishable from traffic that crossed the fabric. When this count is
--- non-zero, some part of that matrix did not touch a network. It cannot say
--- WHICH edges: the UCP endpoint and the UCT lane have no join between them
--- (see transport_mix). Naming the size of the caveat is what this row can
--- honestly do.
-SELECT 'ucx_edges_include_intranode',
-       coalesce(sum(t.ops), 0)::BIGINT,
-       'UCT operations on a non-network transport — comm_edges'''' ucx lane counts this traffic as fabric'
-FROM _uct_scoped t WHERE t.scope = 'intra-node'
+-- Keeping it would have been worse than useless. It fired on every healthy
+-- capture with more than one rank per node — 2 on OSU, 83,892 on GROMACS,
+-- 1,435,037 on Quantum ESPRESSO — so a rubric whose contract is "n > 0 is a
+-- finding" reported a defect for the normal case. That is how a rubric becomes
+-- noise, and noise is what gets a whole table ignored on the day it is right.
+--
+-- The volume itself is not lost: transport_mix answers it by transport, and
+-- comm_edges.scope now answers it by edge.
 UNION ALL
 -- The same failure seen from object_access rather than from comm_edges, and it
 -- needs its own row because the two branches drop on different keys:
