@@ -576,6 +576,22 @@ GROUP BY rank, iface, op
     // A transport added to UCX after this list was written must read as unknown
     // rather than be guessed into 'network', because the guess is the one that
     // makes link_health's intra-node caveat silently report zero.
+    //
+    // `gdr_copy` JOINED THE INTRA-NODE LIST on 2026-08-31, and it was the first
+    // name this list has been caught missing on real hardware: the GROMACS
+    // round-2 run (job 45235734) put 9,348 operations into 'unknown', which is
+    // the list working — it refused to guess — and also a hole, since nothing
+    // downstream can use an unknown. It is not a guess to place: gdr_copy is
+    // GDRCopy mapping the GPU's BAR1 into the host address space so the CPU can
+    // read and write device memory directly. No network stack, no fabric, one
+    // machine by construction. `rocm_gdr` is its AMD counterpart and is added by
+    // the same symmetry that already puts rocm_ipc and rocm_copy here without
+    // this project ever having owned an AMD GPU.
+    //
+    // What this does NOT license is sweeping the rest of UCX's transport
+    // namespace in from a manual. ugni and the other names absent here stay
+    // unknown until something in a capture makes them concrete, because a list
+    // extended by reading documentation is a list nobody has tested.
     {"_uct_scoped", R"sql(
 CREATE OR REPLACE VIEW _uct_scoped AS
 SELECT s.rank,
@@ -583,7 +599,8 @@ SELECT s.rank,
        f.dev_name,
        CASE
          WHEN f.tl_name IN ('self','sysv','posix','mm','cma','knem','xpmem',
-                            'cuda_ipc','cuda_copy','rocm_ipc','rocm_copy') THEN 'intra-node'
+                            'cuda_ipc','cuda_copy','gdr_copy',
+                            'rocm_ipc','rocm_copy','rocm_gdr')            THEN 'intra-node'
          WHEN f.tl_name IN ('rc_verbs','rc_mlx5','dc_mlx5','ud_verbs','ud_mlx5',
                             'ib','srd','tcp')                             THEN 'network'
          ELSE 'unknown'

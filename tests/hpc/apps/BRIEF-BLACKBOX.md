@@ -82,10 +82,17 @@ the table already answers the question directly.
 
 `scope` takes exactly three values: **`intra-node`**, **`network`**, `unknown`.
 They are assigned from `tl_name`: `self`, `sysv`, `posix`, `mm`, `cma`, `knem`,
-`xpmem`, `cuda_ipc`, `cuda_copy`, `rocm_ipc`, `rocm_copy` are intra-node;
-`rc_verbs`, `rc_mlx5`, `dc_mlx5`, `ud_verbs`, `ud_mlx5`, `ib`, `srd`, `tcp` are
-network; anything else is `unknown`. If you are asking whether traffic left the
-node, group by `scope` — do not pattern-match transport names.
+`xpmem`, `cuda_ipc`, `cuda_copy`, `gdr_copy`, `rocm_ipc`, `rocm_copy`,
+`rocm_gdr` are intra-node; `rc_verbs`, `rc_mlx5`, `dc_mlx5`, `ud_verbs`,
+`ud_mlx5`, `ib`, `srd`, `tcp` are network; anything else is `unknown`. If you
+are asking whether traffic left the node, group by `scope` — do not
+pattern-match transport names.
+
+`gdr_copy` was added 2026-08-31 after the 01_gromacs round-2 run put 9,348
+operations into `unknown` — the first time this list was caught missing a name
+on real hardware. **Treat `unknown` as a finding worth reporting, not as
+noise**: it means the tool met a transport nobody has classified, and the row
+count tells you how much of your traffic is unaccounted for.
 
 `transport_mix`'s **four byte columns are four different quantities and you must
 not add them** — ADDED 2026-08-30, after the 02_gromacs agent ranked "`in_bytes`
