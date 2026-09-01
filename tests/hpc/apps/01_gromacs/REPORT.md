@@ -309,11 +309,32 @@ NOTES.md), plus thirteen cross-cutting ones that skip for want of tables.
 | `registration_has_object` | ok | ok | every MR has a resolvable object |
 | `gpudirect_registration` | **XX** | ok | the discriminator, and 1.5 explains it |
 | `pme_coord_volume` | xfail | xfail | needs the broken cross-rank join |
-| `halo_partners` | xfail | xfail | needs the broken cross-rank join |
+| `halo_partners` | xfail | xfail | needs the broken cross-rank join — **RETIRED 2026-09-02, see below** |
 | `entity_close_accounted` | xfail | xfail | pre-existing, not this case |
 | `mem_owner_unambiguous` | xfail | xfail | UCX rcache re-registers one base at growing lengths |
 | `verbs_is_internode_only` | skip | skip | `comm_edges` is empty — see F1 |
 | `expect_tables` | **`ib_post_send` empty** | same | F1 |
+
+> **Two corrections to the table above, 2026-09-02.** `halo_partners` and
+> `pme_coord_volume` are listed as `xfail`, and neither was ever in
+> `meta.json`'s `expect_fail_asserts` — so both reported as ordinary failures to
+> anyone who ran them, and this table said otherwise. The row is the claim that
+> was wrong, not the run.
+>
+> `halo_partners` has been retired. Its oracle was correct; its query resolved a
+> send's peer through `ucx_ep_connection -> ucx_worker_address.prefix_hash`, the
+> join this very report measured as resolving the wrong worker on Open MPI
+> 4.1.x. It was therefore an assertion that could only pass by accident.
+> `asserts-r2/halo_and_pme_peers_match_the_decomposition.sql` makes the same
+> claim from the MPI tag with no cross-rank join, and passes: on the round-2
+> capture rank 0's top senders are 7 (PME), 1 and 6 — exactly `(0±1) mod 7` plus
+> the PME rank — while rank 4, this report's anomaly, contributes 5.7 kB against
+> their 70–183 MB. Rank 4 is `0^4`, an Open MPI recursive-doubling collective
+> partner, and always was.
+>
+> `pme_coord_volume` was fixed separately in `71e2e05`: it failed because
+> `job-r2.sbatch` fed it round 1's `meta.json` (`nsteps: 1000`) while the run did
+> 200 steps. See `NOTES.md`.
 
 **`pme_fanin` and `pme_returns_forces` pass for a weak reason and I do not want
 them read as strong.** They ask only whether an edge exists, and the broken join
