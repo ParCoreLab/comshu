@@ -218,15 +218,24 @@ expect "operations with no nameable transport are counted" \
 # column rather than a footnote, and a rubric row that fired on every healthy
 # multi-rank-per-node capture was reporting the normal case as a defect.
 #
-# What replaces it is a stronger claim, not a weaker one. The old row could only
-# say HOW MUCH intra-node traffic existed somewhere in the matrix; this says the
-# matrix distinguishes it, which is the property a reader actually needs.
-expect "the rank matrix distinguishes intra-node from fabric" \
-    "SELECT string_agg(DISTINCT scope, ',' ORDER BY scope) FROM comm_edges" \
-    "intra-node,network"
-
-# And the deleted row must stay deleted. A rubric that quietly regrows a finding
-# firing on every healthy capture is how link_health becomes noise.
+# comm_edges.scope is NOT asserted here, and the reason is worth stating so the
+# next reader does not "fix" it back. This fixture holds two raw tables —
+# uct_iface and uct_send — because it exists to test the UCT layer. comm_edges'
+# ucx lane is built from the UCP tables, which are absent, so comm_edges is
+# EMPTY here and any claim about its scope column would pass vacuously. That is
+# the exact defect tests/hpc/suite/README.md warns about, and it was live for
+# about ten minutes: the first version of this hunk asserted
+# string_agg(DISTINCT scope) over an empty table and failed with <no result>,
+# which at least failed loudly rather than passing.
+#
+# The real check lives where the data does:
+# tests/hpc/suite/asserts/comm_edges_scope_agrees_with_topology.sql, which runs
+# against every case in the suite.
+#
+# The deleted row must stay deleted, and THAT is testable here, because
+# link_health is derived from _uct_scoped and this fixture does populate it. A
+# rubric that quietly regrows a finding firing on every healthy capture is how
+# link_health becomes noise.
 expect "the obsolete intra-node caveat is not in the rubric" \
     "SELECT count(*) FROM link_health WHERE finding = 'ucx_edges_include_intranode'" \
     "0"

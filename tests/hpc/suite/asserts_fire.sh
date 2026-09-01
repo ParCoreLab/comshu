@@ -251,5 +251,76 @@ INSERT INTO entity_close VALUES (0, 10, 3, 800), (0, 11, 3, 800);"
 run "UCT interface closed through a door we do not hook still fires" fires "
 INSERT INTO entity_close VALUES (0, 10, 88, 800);"
 
+# ---------------------------------------------------------------------------
+# comm_edges_scope_agrees_with_topology
+#
+# Its own schema and its own runner, because the harness above is written around
+# entity_close_accounted's tables and this assertion shares none of them. Two
+# relations is all it needs: the matrix, and the per-rank node ordinal it must
+# agree with.
+scope_schema() {
+  cat <<'SQL'
+CREATE TABLE comm_edges (src_rank INT, dst_rank INT, transport TEXT, unit TEXT,
+                         scope TEXT, sends INT, bytes INT);
+CREATE TABLE rank_identity (rank INT, node_ix INT, node_hash INT, device INT,
+                            devices INT, label TEXT);
+SQL
+}
+
+# run_scope <name> <expect: quiet|fires> <rows-sql>
+run_scope() {
+  name="$1"; expect="$2"; rows="$3"
+  db="$(mktemp)"
+  { scope_schema; printf '%s\n' "$rows"; } | "$SQL_ENGINE" "$db"
+  out="$("$SQL_ENGINE" -csv "$db" < "$SUITE_DIR/asserts/comm_edges_scope_agrees_with_topology.sql" 2>&1)"
+  rm -f "$db"
+  if [ "$expect" = quiet ] && [ -n "$out" ]; then
+    echo "  [XX ] $name — expected no rows, got:"; printf '%s\n' "$out" | sed 's/^/        /'; fail=1
+  elif [ "$expect" = fires ] && [ -z "$out" ]; then
+    echo "  [XX ] $name — the assertion did NOT fire on a real defect"; fail=1
+  else
+    echo "  [ok ] $name ($expect)"
+  fi
+}
+
+echo
+echo "-- comm_edges_scope_agrees_with_topology"
+
+# Two ranks on one node, called intra-node. The shape OSU produced on its self
+# edges and GROMACS produced 83,892 times.
+run_scope "same node, called intra-node, is quiet" quiet "
+INSERT INTO rank_identity VALUES (0,0,11,0,1,'n0'),(1,0,11,1,1,'n0');
+INSERT INTO comm_edges VALUES (0,1,'ucx','datatype-units','intra-node',5,500);"
+
+# Two ranks on different nodes, called network.
+run_scope "different nodes, called network, is quiet" quiet "
+INSERT INTO rank_identity VALUES (0,0,11,0,1,'n0'),(1,1,22,0,1,'n1');
+INSERT INTO comm_edges VALUES (0,1,'ucx','datatype-units','network',5,500);"
+
+# CLAUSE 1 — the defect the column was added for. Before `scope` existed every
+# such edge read as fabric and there was no way to say otherwise.
+run_scope "same node but called network fires" fires "
+INSERT INTO rank_identity VALUES (0,0,11,0,1,'n0'),(1,0,11,1,1,'n0');
+INSERT INTO comm_edges VALUES (0,1,'ucx','datatype-units','network',5,500);"
+
+# CLAUSE 2 — the mirror. Bytes between two nodes left one of them, whatever
+# transport carried them.
+run_scope "different nodes but called intra-node fires" fires "
+INSERT INTO rank_identity VALUES (0,0,11,0,1,'n0'),(1,1,22,0,1,'n1');
+INSERT INTO comm_edges VALUES (0,1,'ucx','datatype-units','intra-node',5,500);"
+
+# CLAUSE 3 —'unknown' with nothing unknown about it. This is the CASE falling
+# through, which is how a third value becomes a dumping ground.
+run_scope "unknown scope with both ranks placed and a resolved peer fires" fires "
+INSERT INTO rank_identity VALUES (0,0,11,0,1,'n0'),(1,0,11,1,1,'n0');
+INSERT INTO comm_edges VALUES (0,1,'ucx','datatype-units','unknown',5,500);"
+
+# ...and the deliberate NON-assertion. An unresolved peer is exactly what
+# 'unknown' is for, and a capture with no node identity at all is mostly this.
+# Firing here would make the assertion useless on the nccl_p2p shape.
+run_scope "unknown scope on an unresolved peer is quiet" quiet "
+INSERT INTO rank_identity VALUES (0,0,11,0,1,'n0');
+INSERT INTO comm_edges VALUES (0,-1,'nvlink','accesses','unknown',5,500);"
+
 [ $fail -eq 0 ] && echo "=== asserts_fire : PASS ===" || echo "=== asserts_fire : FAIL ==="
 exit $fail
