@@ -8,6 +8,8 @@
 #include <csignal>
 #include <signal.h>
 #include <cstdio>
+#include <dlfcn.h>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <pthread.h>
@@ -143,6 +145,9 @@ public:
         // flush): multi-threaded targets (e.g. a CQ-poll thread) record on
         // threads that never call stop().
         rec::ThreadBufferRegistry::instance().drain_all();
+        // NOT emit_gpu_devices() here: by this point the CUDA driver has
+        // returned CUDA_ERROR_DEINITIALIZED and the enumeration yields nothing.
+        // It runs from the arena-flush path instead — see maybe_emit_gpu_devices.
         // Emitted after the application's records, then drained themselves: the
         // dictionary describes handles that by now all exist.
         emit_intern_records();
@@ -193,6 +198,51 @@ public:
     // reached from inside start() (emit_anchor) which already holds m_lifecycle.
     bool          has_recorder() const { return m_recorder != nullptr; }
     const Config& config() const { return m_config; }
+
+    // Public for engine.cpp's arena-flush path to call, exactly as
+    // flush_from_signal is public for its signal handler: the call site is a
+    // C ABI function that cannot be a member, and the alternative is a friend
+    // declaration naming a free function with C linkage.
+    // DURING THE RUN, and neither at start nor at stop — both were tried and
+    // both are structurally wrong.
+    //
+    // Start is too early: the Tracer is constructed from the LD_PRELOAD ctor,
+    // before main, and an application that loads CUDA later has no driver to
+    // ask yet. Stop is too late, and it fails in the most misleading way
+    // available. Measured on job 45302619, from the traced process:
+    //
+    //   [after cuda use]  cuInit=0  cuDeviceGetCount=0  n=1
+    //                     attr(bus)=27 (0x1B, matching nvidia-smi)  "NVIDIA H100"
+    //   [static dtor]     cuInit=4  cuDeviceGetCount=4  n=-1
+    //
+    // 4 is CUDA_ERROR_DEINITIALIZED. libcuda stays MAPPED through teardown — so
+    // dlopen(RTLD_NOLOAD) keeps returning a good handle and every symbol keeps
+    // resolving — while the driver has already refused to answer. Two earlier
+    // attempts died on exactly that: the handle looked healthy and the table
+    // was empty.
+    //
+    // So it is called from the arena-flush path, which happens whenever a
+    // record buffer fills, i.e. repeatedly and while the application is alive.
+    // One relaxed atomic load on a path that is already doing I/O.
+    //
+    // KNOWN BOUNDARY, stated rather than discovered later: a capture too short
+    // to fill a single buffer never flushes in-run and will carry no
+    // gpu_device rows. Every workload this project traces produces millions of
+    // records; a capture that produces fewer than one buffer's worth has
+    // nothing to attribute to a GPU anyway.
+    //
+    // Retried until it succeeds rather than attempted once, because "CUDA is
+    // not loaded yet" and "there is no CUDA here" are indistinguishable at any
+    // single moment and only the first of them changes.
+    void maybe_emit_gpu_devices() {
+        if (m_gpu_devices_done.load(std::memory_order_relaxed))
+            return;
+        if (!m_recorder)
+            return;
+        emit_gpu_devices();
+    }
+
+
 
 private:
     Tracer() = default;
@@ -277,6 +327,131 @@ private:
         m_recorder->record(core::Temporal::none(), core::records::NodeIdentity{{}, {}, h});
     }
 
+    // What each device ordinal in this capture actually refers to. See
+    // core/records.hpp GpuDevice for why an ordinal is not an identity and why
+    // the key is (node_hash, pci_bus) rather than either half alone.
+    //
+    // dlopen(RTLD_NOLOAD), which is the one spelling that is both correct and
+    // honest here. This must describe GPUs the process can ALREADY see and must
+    // never load the driver to ask — loading it would change what the traced
+    // program links against, the one thing a tracer may not do. RTLD_NOLOAD
+    // returns a handle only if libcuda is already mapped and null otherwise, so
+    // it buys visibility without that risk. A capture with no gpu_device rows
+    // therefore means "this process had no CUDA", which is itself readable.
+    //
+    // RTLD_DEFAULT WAS TRIED FIRST AND SILENTLY FOUND NOTHING, which is worth
+    // recording because it looks right. libcudart dlopens libcuda.so.1 with
+    // RTLD_LOCAL, so the driver's symbols never enter the global namespace and
+    // dlsym(RTLD_DEFAULT, "cuInit") is null in a process that is demonstrably
+    // using CUDA. Measured on job 45296412: a program calling cudaGetDeviceCount
+    // and cudaFree on an H100 produced a capture holding only 524 and 590 — no
+    // 528 at all — while nvidia-smi on the same node named the GPU. The failure
+    // mode was an empty table, not an error, which is exactly the shape this
+    // record exists to stop other tables having.
+    //
+    // The driver API and not the runtime: libcuda is present whenever CUDA is
+    // used at all, including through libcudart, so this sees GPU-enabled runs
+    // that never link the runtime themselves.
+    //
+    // Attributes rather than cuDeviceGetPCIBusId, because that returns
+    // "0000:1B:00.0" and parsing a string to rebuild three integers the driver
+    // already has is a decoder to get wrong. 33/34/50 are BUS_ID, DEVICE_ID and
+    // DOMAIN_ID; they are stable CUDA ABI and are spelled numerically here for
+    // the same reason nothing else in this file includes a vendor header.
+    //
+    // Sets m_gpu_devices_done only on success — see maybe_emit_gpu_devices.
+    void emit_gpu_devices() {
+        using CuInit = int (*)(unsigned);
+        using CuCount = int (*)(int*);
+        using CuDevGet = int (*)(int*, int);
+        using CuAttr = int (*)(int*, int, int);
+        using CuUuid = int (*)(void*, int);
+        using CuName = int (*)(char*, int, int);
+
+        void* cuda = ::dlopen("libcuda.so.1", RTLD_NOLOAD | RTLD_LAZY);
+        if (!cuda)
+            return;  // the driver is not in this process — nothing to describe
+        struct Closer {
+            void* h;
+            ~Closer() { ::dlclose(h); }  // NOLOAD still took a reference
+        } closer{cuda};
+
+        auto sym = [cuda](const char* n) { return ::dlsym(cuda, n); };
+        auto cu_init = reinterpret_cast<CuInit>(sym("cuInit"));
+        auto cu_count = reinterpret_cast<CuCount>(sym("cuDeviceGetCount"));
+        auto cu_dev = reinterpret_cast<CuDevGet>(sym("cuDeviceGet"));
+        auto cu_attr = reinterpret_cast<CuAttr>(sym("cuDeviceGetAttribute"));
+        if (!cu_init || !cu_count || !cu_dev || !cu_attr)
+            return;  // a libcuda without these is not one we can read
+        // Optional: a driver too old for either still yields a usable row.
+        auto cu_uuid = reinterpret_cast<CuUuid>(sym("cuDeviceGetUuid"));
+        auto cu_name = reinterpret_cast<CuName>(sym("cuDeviceGetName"));
+
+        // Idempotent by contract, and required before the rest answer. If the
+        // application already initialised the driver this is a no-op; if it
+        // somehow loaded libcuda without using it, this is what makes the
+        // enumeration legal rather than undefined.
+        if (cu_init(0) != 0)
+            return;
+        int n = 0;
+        if (cu_count(&n) != 0 || n <= 0)
+            return;
+
+        for (int i = 0; i < n; ++i) {
+            int dev = 0;
+            if (cu_dev(&dev, i) != 0)
+                continue;
+
+            int bus = 0, slot = 0, domain = 0;
+            // A device whose PCI address will not answer is skipped, not
+            // written with zeros: (node_hash, 0) would collide with every other
+            // such device on the node, which is the exact merge this record
+            // exists to prevent.
+            if (cu_attr(&bus, 33, dev) != 0 || cu_attr(&slot, 34, dev) != 0)
+                continue;
+            if (cu_attr(&domain, 50, dev) != 0)
+                domain = 0;  // pre-domain drivers: single domain, so 0 is true
+
+            // 0,0 means "unavailable", which the reader must not mistake for a
+            // real all-zero UUID — the degenerate case this field exists to
+            // survive. Left zero on failure and cross-checked, never keyed on.
+            std::uint64_t hi = 0, lo = 0;
+            if (cu_uuid) {
+                unsigned char raw[16] = {};
+                if (cu_uuid(raw, dev) == 0) {
+                    for (int b = 0; b < 8; ++b) {
+                        hi = (hi << 8) | raw[b];
+                        lo = (lo << 8) | raw[b + 8];
+                    }
+                }
+            }
+
+            core::Handle name = core::kNullHandle;
+            if (cu_name) {
+                char buf[128] = {};
+                if (cu_name(buf, sizeof buf - 1, dev) == 0 && buf[0])
+                    name = m_recorder->intern(rec::InternDomain::KernelName, buf);
+            }
+
+            m_recorder->record(
+                core::Temporal::none(),
+                core::records::GpuDevice{
+                    {},
+                    {},
+                    hi,
+                    lo,
+                    static_cast<std::uint32_t>((static_cast<std::uint32_t>(domain) << 16) |
+                                               (static_cast<std::uint32_t>(bus & 0xFF) << 8) |
+                                               static_cast<std::uint32_t>(slot & 0xFF)),
+                    name,
+                    static_cast<core::DeviceId>(i)});
+        }
+        // Only now: a run that reached here with n > 0 has written every row it
+        // is going to, and a failure above leaves the flag clear so the next
+        // flush tries again.
+        m_gpu_devices_done.store(true, std::memory_order_relaxed);
+    }
+
     // Intern dictionaries, as records plus one byte heap.
     //
     // These were `intern-<domain>.tsv`: bare text with no magic, no version and
@@ -346,6 +521,12 @@ private:
     int        m_active{0};
     bool       m_finalized{false};
     std::mutex m_lifecycle;
+    // One-shot, and atomic because the arena-flush path that tests it runs on
+    // any recording thread. Relaxed throughout: the only cost of two threads
+    // both passing the gate is a duplicate enumeration, and the only cost of a
+    // stale read is one extra attempt on the next flush. Neither is worth an
+    // acquire/release pair on a path this hot.
+    std::atomic<bool> m_gpu_devices_done{false};
 };
 
 inline Config Config::from_env() {

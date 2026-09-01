@@ -313,6 +313,13 @@ pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind, std::u
 void pcomm_engine_arena_flush(pcomm_arena* arena) {
     if (arena && arena->_owner)
         static_cast<pcomm::Arena*>(arena->_owner)->drain();
+    // The one in-run moment the engine reliably gets on any capture that
+    // records anything. GpuDevice cannot be written at start (the application
+    // may not have loaded CUDA yet) nor at finalize (the driver answers
+    // CUDA_ERROR_DEINITIALIZED by then — job 45302619), so it is written the
+    // first time a record buffer fills while the process is still alive.
+    // A relaxed load on a path that has just done I/O.
+    pcomm::Tracer::instance().maybe_emit_gpu_devices();
 }
 
 void pcomm_engine_drain_thread(void) {
