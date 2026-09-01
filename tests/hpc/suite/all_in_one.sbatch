@@ -95,11 +95,18 @@ echo "started  : $(date -Is)"
 # rather than needing a slot of its own to go and get.
 echo
 echo "=== GPU identity survey (guides PLAN-20260831-0100; nothing asserts on it) ==="
+# Every line carries its own hostname, and that is not cosmetic: srun
+# interleaves the ranks' stdout, so the first run printed four `--- <host>`
+# headers and then sixteen unattributed GPU lines. The bus IDs repeat across
+# nodes — which is the whole finding — so a block of four that cannot be tied to
+# a node is exactly the ambiguity this survey exists to remove.
 srun --ntasks-per-node=1 --ntasks="${SLURM_JOB_NUM_NODES:-1}" --gres=gpu:4 --overlap bash -c '
-  echo "--- $(hostname)  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+  h=$(hostname)
   nvidia-smi --query-gpu=index,uuid,pci.bus_id,serial,mig.mode.current,name \
-             --format=csv,noheader 2>&1 | sed "s/^/    /"
-' 2>&1 | sed 's/^/  /' || echo "  (nvidia-smi survey failed — not fatal, nothing depends on it)"
+             --format=csv,noheader 2>&1 |
+    sed "s/^/$h, /;s/^/    /"
+  echo "    $h, CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+' 2>&1 | sort | sed 's/^/  /' || echo "  (nvidia-smi survey failed — not fatal, nothing depends on it)"
 
 TIMINGS="$OUT_ROOT/timings-${SLURM_JOB_ID:-local}.txt"
 : > "$TIMINGS"

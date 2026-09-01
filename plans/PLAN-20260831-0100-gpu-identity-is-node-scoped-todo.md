@@ -33,9 +33,47 @@ GpuDevice  (Entity, shared 5xx range)
     name          Handle   interned, e.g. "NVIDIA A100-SXM4-40GB"
 ```
 
+## MEASURED ON MN5, 2026-09-01 — and the node-scoping argument is now empirical
+
+Job 45280114, four accelerated nodes, the survey now built into
+`tests/hpc/suite/all_in_one.sbatch`. Sixteen H100s:
+
+```
+0, GPU-36161b04-0710-3722-208a-49848d90c07e, 00000000:1B:00.0, 1655122014553, Disabled
+1, GPU-c72bb801-c83d-3e30-6373-d292ae7c8975, 00000000:2C:00.0, 1655122015125, Disabled
+2, GPU-968ec6c8-88d6-89b4-ceb7-7fb8655be40f, 00000000:9D:00.0, 1655122014539, Disabled
+3, GPU-8bf5b876-daea-c64a-f2cf-e68758611aa9, 00000000:AD:00.0, 1655122014698, Disabled
+  ... and three more nodes with DIFFERENT uuids and THE SAME FOUR BUS IDS
+```
+
+Four findings, and the second is the one that decides the design:
+
+1. **UUIDs are healthy.** Sixteen distinct random values, no zeros, nothing
+   sequential. The degenerate-UUID hazard is real in general and is NOT
+   happening on this machine, so the design can use the UUID as a real
+   cross-check here rather than as a hopeful one.
+2. **`pci.bus_id` REPEATS EXACTLY ACROSS NODES** — `1B`, `2C`, `9D`, `AD` on
+   every one of the four. This is no longer an argument from first principles:
+   keying on `pci_bus` alone would merge all four nodes' GPU 0 into one device,
+   and all four GPU 1s, and so on. **`(node_hash, pci_bus)` is mandatory, and
+   `pci_bus` alone is actively wrong.**
+3. **MIG is Disabled everywhere**, so the `MIG-GPU-<uuid>/<gi>/<ci>` shape is
+   not exercised here. The design must still tolerate it — it just cannot be
+   validated on this cluster, which is a reason to keep the UUID a cross-check
+   rather than a key.
+4. **`CUDA_VISIBLE_DEVICES=0,1,2,3` on every node**, confirming what the suite's
+   job scripts implied: nothing here pins one GPU per rank, so the remap hazard
+   is latent for us and immediate for anyone using the usual
+   `CUDA_VISIBLE_DEVICES=$LOCAL_RANK` idiom.
+
+One caution the survey also produced: the SERIALS are near-sequential
+(`1655122013173` … `1655122016330`, one manufacturing batch). They are distinct,
+and they are exactly the kind of identifier that looks unique on one cluster and
+collides on the next. Not used.
+
 ## Three identifiers, because none of them is trustworthy alone
 
-Measured on du04 (bare-metal A100, 2026-08-31) — all three healthy there:
+Measured on du04 (bare-metal A100, 2026-08-31) — all three healthy there too:
 
 ```
 0, GPU-52dfa0f6-007f-ca52-b80c-7aa6a073a712, 00000000:01:00.0, 1564720026413
