@@ -816,12 +816,34 @@ WHERE coalesce(ni.node_hash, l.node) IS NOT NULL
     // cuda_dev is int32 and negative when NCCL has not bound one yet; the rest
     // are uint16 with 65535 for unknown. Both are filtered, and the cast makes
     // the UNION agree on a type rather than letting DuckDB widen it silently.
+    // TWO TIERS, and the weak one is consulted only for a rank the strong one
+    // cannot answer. The first version of this fix excluded buffer-residency
+    // fields on principle — where a buffer LIVES is not the same claim as which
+    // GPU a rank DRIVES — and the principle is right while the exclusion was
+    // wrong, which the Quantum ESPRESSO round-2 run settled (job 45237045):
+    //
+    //   ucx_tag_send.device   rank 0..3 -> dev 0,1,2,3 ; rank 4..7 -> dev 0,1,2,3
+    //                         ~14k sends each, one device per rank, no ambiguity
+    //   mem_object.device     65535 (unknown) on all 1386 rows
+    //   gpu_kernel/nccl_comm  absent — those providers were not in the run
+    //
+    // So on a `-p ucx,ucx_deep` capture the buffer fields are the ONLY evidence
+    // there is, and they are exactly right. Excluding them bought the principle
+    // and paid for it with a NULL, which is the worse answer: it says "unknown"
+    // where the capture plainly knows.
+    //
+    // The tiers keep the principle where it bites. Weak evidence can never
+    // OVERRIDE or DILUTE strong evidence — a rank with any strong row ignores
+    // its weak rows entirely, so a buffer that legitimately lives on a peer's
+    // GPU under peer access cannot turn a known device into `devices = 2`. It
+    // only fills a hole that would otherwise stay empty.
+    //
+    // And the `devices = 1` guard still does its job inside each tier: a rank
+    // whose sends really did come off two GPUs reports devices = 2 and a NULL
+    // device, which is the honest answer rather than a coin flip.
     {"_rank_device", R"sql(
 CREATE OR REPLACE VIEW _rank_device AS
-SELECT rank,
-       CASE WHEN count(DISTINCT device) = 1 THEN min(device) END AS device,
-       count(DISTINCT device)                                    AS devices
-FROM (
+WITH strong AS (
     SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, run_device AS device FROM gpu_access
@@ -829,7 +851,24 @@ FROM (
     SELECT DISTINCT rank, device     AS device FROM gpu_kernel WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
+),
+weak AS (
+    SELECT DISTINCT rank, device FROM ucx_tag_send WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, device FROM ucx_rma      WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, device FROM ucx_am_send  WHERE device <> 65535
+),
+evidence AS (
+    SELECT rank, device FROM strong
+    UNION ALL
+    SELECT w.rank, w.device FROM weak w
+    WHERE NOT EXISTS (SELECT 1 FROM strong s WHERE s.rank = w.rank)
 )
+SELECT rank,
+       CASE WHEN count(DISTINCT device) = 1 THEN min(device) END AS device,
+       count(DISTINCT device)                                    AS devices
+FROM evidence
 GROUP BY rank
 )sql"},
 
@@ -837,6 +876,16 @@ GROUP BY rank
     // what counts as evidence of a rank's device, or a rank can resolve here and
     // not there — which is how a peer lookup returns a rank the identity table
     // says owns nothing.
+    // Strong evidence ONLY, and this is where the two views deliberately differ.
+    // _rank_device answers "which GPU does this rank drive" and may fall back to
+    // buffer residency to answer it at all. This one answers "who owns (node,
+    // device)" and is the map a peer lookup resolves THROUGH — so a wrong entry
+    // here does not leave a hole, it attributes another rank's NVLink traffic to
+    // the wrong owner. Buffer residency is exactly the evidence that can name a
+    // GPU a rank does not own (peer access), so it is not admitted here.
+    //
+    // The asymmetry is the point: a missing owner is recoverable, a confidently
+    // wrong one is not.
     {"_device_owner", R"sql(
 CREATE OR REPLACE VIEW _device_owner AS
 SELECT n.node, d.device, min(d.rank) AS rank, count(DISTINCT d.rank) AS claimants
