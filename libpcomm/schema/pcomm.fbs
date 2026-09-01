@@ -207,6 +207,35 @@ struct NodeIdentity {
   node_hash:uint64;
 }
 
+// type 528, Artifact. What a device ORDINAL actually refers to, on this rank.
+//
+// An ordinal is node-local (see NodeIdentity above) and ALSO remap-local:
+// CUDA_VISIBLE_DEVICES renumbers per process, so ranks each pinned to their own
+// GPU can all report device 0. `pci_bus` fixes the remap half and not the node
+// half — measured on MN5 job 45280114, four nodes of identical hardware, where
+// bus ids 1B/2C/9D/AD repeat exactly across every node. So the identity is
+// (NodeIdentity.node_hash, pci_bus), and pci_bus alone is actively wrong.
+//
+// uuid_hi/uuid_lo are the 16 raw bytes of cuDeviceGetUuid and are a CROSS-CHECK,
+// never the key: they come back zero-filled or near-sequential under vGPU, some
+// container runtimes and older drivers, and a degenerate UUID is worse than an
+// absent one because it merges nodes while looking authoritative. 0,0 means
+// unavailable. Not MIG-aware by decision — a MIG instance shares its parent's
+// UUID with every sibling, and MIG is Disabled on every GPU measured, so that
+// path would ship untested.
+//
+// One row per VISIBLE device, not per used device. It is a catalogue, and is
+// deliberately not what rank_identity.device reads — that answers which GPU a
+// rank drove, from evidence of use.
+struct GpuDevice {
+  temporal:Temporal;
+  uuid_hi:uint64;
+  uuid_lo:uint64;
+  pci_bus:uint32;
+  name:uint32;
+  ordinal:uint16;
+}
+
 // type 526, Entity. One process's mapping of a shared allocation, keyed by an
 // identity both sides agree on.
 //

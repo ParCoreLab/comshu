@@ -42,6 +42,8 @@ struct EntityClose;
 
 struct NodeIdentity;
 
+struct GpuDevice;
+
 struct PeerMapping;
 
 struct GpuKernel;
@@ -905,6 +907,62 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NodeIdentity FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(NodeIdentity, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuDevice FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t uuid_hi_;
+  uint64_t uuid_lo_;
+  uint32_t pci_bus_;
+  uint32_t name_;
+  uint16_t ordinal_;
+  int16_t padding0__;  int32_t padding1__;
+
+ public:
+  GpuDevice()
+      : temporal_(),
+        uuid_hi_(0),
+        uuid_lo_(0),
+        pci_bus_(0),
+        name_(0),
+        ordinal_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  GpuDevice(const pcomm::fb::Temporal &_temporal, uint64_t _uuid_hi, uint64_t _uuid_lo, uint32_t _pci_bus, uint32_t _name, uint16_t _ordinal)
+      : temporal_(_temporal),
+        uuid_hi_(::flatbuffers::EndianScalar(_uuid_hi)),
+        uuid_lo_(::flatbuffers::EndianScalar(_uuid_lo)),
+        pci_bus_(::flatbuffers::EndianScalar(_pci_bus)),
+        name_(::flatbuffers::EndianScalar(_name)),
+        ordinal_(::flatbuffers::EndianScalar(_ordinal)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t uuid_hi() const {
+    return ::flatbuffers::EndianScalar(uuid_hi_);
+  }
+  uint64_t uuid_lo() const {
+    return ::flatbuffers::EndianScalar(uuid_lo_);
+  }
+  uint32_t pci_bus() const {
+    return ::flatbuffers::EndianScalar(pci_bus_);
+  }
+  uint32_t name() const {
+    return ::flatbuffers::EndianScalar(name_);
+  }
+  uint16_t ordinal() const {
+    return ::flatbuffers::EndianScalar(ordinal_);
+  }
+};
+FLATBUFFERS_STRUCT_END(GpuDevice, 80);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) PeerMapping FLATBUFFERS_FINAL_CLASS {
  private:

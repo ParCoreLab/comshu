@@ -45,6 +45,7 @@ PCOMM_SCHEMA_MATCH(cr::EntityClose, fb::EntityClose);
 PCOMM_SCHEMA_MATCH(cr::SourceLine, fb::SourceLine);
 PCOMM_SCHEMA_MATCH(cr::Attribution, fb::Attribution);
 PCOMM_SCHEMA_MATCH(cr::NodeIdentity, fb::NodeIdentity);
+PCOMM_SCHEMA_MATCH(cr::GpuDevice, fb::GpuDevice);
 PCOMM_SCHEMA_MATCH(cr::PeerMapping, fb::PeerMapping);
 PCOMM_SCHEMA_MATCH(cr::GpuKernel, fb::GpuKernel);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
@@ -646,6 +647,23 @@ int main() {
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
             0x0123456789ABCDEFull);
         expect_identical("NodeIdentity", &c, &f, sizeof(c));
+    }
+    {
+        // Every field distinct and non-zero, for GpuKernel's reason: `ordinal`
+        // is uint16 at the tail, so the padding after it is where a layout
+        // disagreement would hide and a mostly-zero struct would compare equal
+        // across one.
+        Stamped<cr::GpuDevice> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.uuid_hi = 0x0011223344556677ull;
+        c.payload.uuid_lo = 0x8899AABBCCDDEEFFull;
+        c.payload.pci_bus = 0x00001B00u;
+        c.payload.name = 0x12345678u;
+        c.payload.ordinal = 0xABCD;
+        fb::GpuDevice f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0x0011223344556677ull, 0x8899AABBCCDDEEFFull, 0x00001B00u, 0x12345678u, 0xABCD);
+        expect_identical("GpuDevice", &c, &f, sizeof(c));
     }
     {
         // Every field distinct and non-zero: the tail hole after `source` is

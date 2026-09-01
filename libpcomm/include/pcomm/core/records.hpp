@@ -214,6 +214,59 @@ PCOMM_RECORD(NodeIdentity, RecordKind::Artifact, 524, "node_identity") {
     std::uint64_t node_hash;  // FNV-1a of the hostname; 0 if it could not be read
 };
 
+// ARTIFACT — what a device ORDINAL actually refers to, on this rank.
+//
+// THE PROBLEM. Every other record in this project names a GPU by its runtime
+// ordinal, and an ordinal is not an identity in two independent ways. It is
+// node-local, which pcomm.fbs has always said. It is also REMAP-local, which
+// nothing said until now: CUDA_VISIBLE_DEVICES renumbers per process, so four
+// ranks each pinned with CUDA_VISIBLE_DEVICES=$LOCAL_RANK all report device 0
+// and _device_owner hands every NVLink peer on that node to min(rank).
+//
+// MEASURED, NOT ARGUED — job 45280114, four MN5 nodes, sixteen H100s:
+//
+//   node A   0 -> 00000000:1B:00.0    node B   0 -> 00000000:1B:00.0
+//            1 -> 00000000:2C:00.0             1 -> 00000000:2C:00.0
+//            2 -> 00000000:9D:00.0             2 -> 00000000:9D:00.0
+//            3 -> 00000000:AD:00.0             3 -> 00000000:AD:00.0
+//
+// Identical hardware, so `pci_bus` REPEATS EXACTLY across nodes and is not a
+// global identity either. `(node_hash, pci_bus)` is, and pci_bus alone is
+// actively wrong — that is why NodeIdentity is a hard dependency of this record
+// rather than a nicety.
+//
+// `uuid_hi`/`uuid_lo` are the 16 raw bytes of cuDeviceGetUuid, and they are a
+// CROSS-CHECK, not the key. On the two machines measured they are healthy
+// (sixteen distinct random values, no zeros, nothing sequential), but a UUID
+// comes back zero-filled or as small incrementing integers under vGPU, some
+// container runtimes and older drivers — and a degenerate UUID is WORSE than
+// none, because "GPU-0" on two nodes looks identical and merges them while
+// looking authoritative. Keeping it off the key means a bad one cannot corrupt
+// ownership; it can only fail to confirm it.
+//
+// NOT MIG-AWARE, deliberately and on the record. A MIG instance reports
+// MIG-GPU-<uuid>/<gi>/<ci> and shares its parent UUID with every sibling, so a
+// key built on the parent would merge devices that are genuinely separate. MIG
+// is Disabled on all sixteen GPUs measured, so that path could be written but
+// not tested, and an untested path in an identity record is how a confidently
+// wrong owner gets shipped. Scoped out 2026-09-01 by decision, not oversight.
+//
+// One row per VISIBLE device, not per used device. This is a catalogue —
+// "what is device 2 on this node, really" — and is deliberately NOT what
+// rank_identity.device reads: that answers "which GPU did this rank drive",
+// derives from evidence of USE, and would report devices = 4 for every rank on
+// a node if it read visibility instead.
+//
+// Emitted by the engine rather than a provider, for NodeIdentity's reason: every
+// provider needs it and none owns it.
+PCOMM_RECORD(GpuDevice, RecordKind::Artifact, 528, "gpu_device") {
+    std::uint64_t uuid_hi;   // cuDeviceGetUuid bytes 0..7   — cross-check only
+    std::uint64_t uuid_lo;   // cuDeviceGetUuid bytes 8..15  — 0,0 if unavailable
+    std::uint32_t pci_bus;   // domain<<16 | bus<<8 | device; function is always 0
+    Handle        name;      // interned, e.g. "NVIDIA H100"
+    DeviceId      ordinal;   // the runtime ordinal every other record uses
+};
+
 // ENTITY — one process's mapping of a shared allocation, keyed by an identity
 // both sides of the share agree on.
 //
