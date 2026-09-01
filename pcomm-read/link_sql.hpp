@@ -893,6 +893,43 @@ GROUP BY rank
     // what counts as evidence of a rank's device, or a rank can resolve here and
     // not there — which is how a peer lookup returns a rank the identity table
     // says owns nothing.
+    // (rank, ordinal) -> a device key that survives CUDA_VISIBLE_DEVICES.
+    //
+    // An ordinal is what every record carries and it is only meaningful inside
+    // the process that emitted it: CUDA_VISIBLE_DEVICES renumbers per rank, so
+    // rank 4's "device 0" and rank 5's "device 0" can be different cards on one
+    // node. gpu_device (528) is the translation, and this view is where it is
+    // applied — once, so every consumer keys the same way.
+    //
+    // PREFIXED, because the two key spaces must never meet. 'P' keys are PCI
+    // addresses and 'O' keys are bare ordinals from a capture with no
+    // gpu_device rows; without the prefix, pci_bus 3 and ordinal 3 would join to
+    // each other and produce an owner that is confidently wrong. A string key
+    // costs a hash join and buys a namespace that cannot collide.
+    //
+    // The 'O' fallback is not a legacy concession — it is what a capture of a
+    // non-CUDA rank, or one whose buffers never flushed in-run (see GpuDevice's
+    // own comment), legitimately looks like. Those degrade to exactly the
+    // behaviour this file had before 528 existed, which was correct whenever
+    // nothing was remapped.
+    {"_device_key", R"sql(
+CREATE OR REPLACE VIEW _device_key AS
+SELECT r.rank,
+       r.device,
+       CASE WHEN g.pci_bus IS NOT NULL THEN 'P' || CAST(g.pci_bus AS VARCHAR)
+            ELSE 'O' || CAST(r.device AS VARCHAR)
+       END AS dev_key
+FROM (
+    SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
+    UNION SELECT DISTINCT rank, run_device     FROM gpu_access
+    UNION SELECT DISTINCT rank, mem_device     FROM gpu_access
+    UNION SELECT DISTINCT rank, device         FROM gpu_kernel WHERE device <> 65535
+    UNION SELECT DISTINCT rank, cuda_dev::USMALLINT FROM nccl_comm WHERE cuda_dev >= 0
+    UNION SELECT DISTINCT rank, ordinal        FROM gpu_device
+) r
+LEFT JOIN gpu_device g ON g.rank = r.rank AND g.ordinal = r.device
+)sql"},
+
     // Strong evidence ONLY, and this is where the two views deliberately differ.
     // _rank_device answers "which GPU does this rank drive" and may fall back to
     // buffer residency to answer it at all. This one answers "who owns (node,
@@ -903,9 +940,24 @@ GROUP BY rank
     //
     // The asymmetry is the point: a missing owner is recoverable, a confidently
     // wrong one is not.
+    // KEYED ON dev_key, not on the ordinal, since 2026-09-01. The survey that
+    // motivated GpuDevice measured the failure this fixes: four MN5 nodes of
+    // identical hardware report bus ids 1B/2C/9D/AD, so `(node, ordinal)` is
+    // only an identity while nothing remaps. Under the ordinary
+    // CUDA_VISIBLE_DEVICES=$LOCAL_RANK idiom every rank on a node reports
+    // ordinal 0 and this view collapsed them into one owner — min(rank) — while
+    // reporting claimants > 1 to nobody who reads it.
+    //
+    // `device` is kept alongside as the human-readable ordinal of whichever
+    // rank won, because rank_identity and the UI still speak ordinals. It is NOT
+    // the key and must not be joined on.
     {"_device_owner", R"sql(
 CREATE OR REPLACE VIEW _device_owner AS
-SELECT n.node, d.device, min(d.rank) AS rank, count(DISTINCT d.rank) AS claimants
+SELECT n.node,
+       k.dev_key,
+       min(d.device)          AS device,
+       min(d.rank)            AS rank,
+       count(DISTINCT d.rank) AS claimants
 FROM (
     SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
     UNION
@@ -916,7 +968,8 @@ FROM (
     SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
 ) d
 JOIN _node n ON n.rank = d.rank
-GROUP BY n.node, d.device
+JOIN _device_key k ON k.rank = d.rank AND k.device = d.device
+GROUP BY n.node, k.dev_key
 )sql"},
 
     // NVLink traffic as rank-space edges.
@@ -937,7 +990,8 @@ SELECT
     sum(g.size)::BIGINT   AS bytes
 FROM gpu_access g
 LEFT JOIN _node n         ON n.rank = g.rank
-LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
+LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
+LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
 WHERE g.run_device <> g.mem_device
 GROUP BY 1, 2
 )sql"},
@@ -1259,7 +1313,8 @@ WITH p2p AS (
                CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
         FROM gpu_access g
         LEFT JOIN _node n         ON n.rank = g.rank
-        LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
+        LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
+LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
     ) po
     -- The actor's own record of the buffer it touched: this is what gives the
     -- extent, and it is the only thing that crosses ranks meaningfully.
@@ -1897,6 +1952,33 @@ FROM _uct_scoped s WHERE s.tl_name IS NULL
 -- The volume itself is not lost: transport_mix answers it by transport, and
 -- comm_edges.scope now answers it by edge.
 UNION ALL
+-- Two ranks on one node whose gpu_device rows disagree about physical identity.
+--
+-- FIRES ON A COLLISION, never on degeneracy in general, and the distinction is
+-- the lesson from ucx_edges_include_intranode: a rubric row that goes off on
+-- every healthy capture reports the normal case as a defect and gets the whole
+-- table ignored. UUIDs are healthy on both machines measured (sixteen distinct
+-- random values on MN5, four on du04), so a row here means something genuinely
+-- went wrong rather than "this deployment is one where UUIDs are dull".
+--
+-- What it catches is the shape a bad identity actually takes: two DIFFERENT PCI
+-- addresses on one node reporting the SAME non-zero UUID. That is the vGPU and
+-- container-runtime failure — "GPU-0" on every card — and under it the UUID
+-- cross-check would silently confirm a merge instead of catching one. Zero
+-- UUIDs are excluded because 0,0 is the documented "unavailable" value, not a
+-- claim of identity.
+SELECT 'colliding_gpu_uuids',
+       coalesce(count(*), 0)::BIGINT,
+       'two GPUs on one node report the same UUID — the identity cross-check cannot confirm ownership here'
+FROM (
+    SELECT n.node, g.uuid_hi, g.uuid_lo
+    FROM gpu_device g
+    JOIN _node n ON n.rank = g.rank
+    WHERE NOT (g.uuid_hi = 0 AND g.uuid_lo = 0)
+    GROUP BY n.node, g.uuid_hi, g.uuid_lo
+    HAVING count(DISTINCT g.pci_bus) > 1
+)
+UNION ALL
 -- The same failure seen from object_access rather than from comm_edges, and it
 -- needs its own row because the two branches drop on different keys:
 -- _nvlink_sends only looks at remote accesses (run_device <> mem_device), while
@@ -1911,7 +1993,8 @@ FROM (
            CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
     FROM gpu_access g
     LEFT JOIN _node n         ON n.rank = g.rank
-    LEFT JOIN _device_owner o ON o.node = n.node AND o.device = g.mem_device
+    LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
+LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
 ) po
 LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) am
        ON am.rank = po.rank AND am.id = po.object
