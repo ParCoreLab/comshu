@@ -453,6 +453,33 @@ which is presumably why 24 distinct remote hashes exist for 8 ranks — a hook o
 This is a one-hook fix that turns two xfail assertions green and makes rank-level
 topology available for every Open MPI 4.1.x application.
 
+> **F2 IS CLOSED — verified 2026-09-02 on the round-2 capture (job 45235734).**
+> The hook was added (`providers/ucx/ucx_hooks.hpp` declares `ucp_worker_query`
+> and `ucx_provider.cpp` emits `UcxWorkerAddress` from it), but nobody had gone
+> back and measured whether the join actually resolves. It does, completely:
+>
+> | | round 1 | now |
+> |---|---|---|
+> | `ucx_ep_connection` rows that resolve | 64 of 117 | **117 of 117** |
+> | distinct remote hashes seen / recorded | 24 / 8 | **24 / 24** |
+> | `comm_edges` ucx lane | empty — 196 B, header only | real rank-space topology |
+>
+> Every remote hash a connection names is now a hash some worker recorded, which
+> is what the "24 versus 8" line above predicted would happen once the address
+> the peer actually dials was captured.
+>
+> And the topology it yields is right. The heaviest `comm_edges` ucx edges are
+> ranks 2, 3 and 4 against rank **7** at ~750 MB each — rank 7 is the PME rank
+> and the hub every PP rank exchanges with, which is the decomposition. The
+> `scope` column added the same week splits them correctly too: 4↔7 intra-node,
+> 2↔7 and 3↔7 network.
+>
+> So the sentence above — "the derived traffic layer has nothing to work with,
+> so every topology-in-rank-space question is unanswerable for an HPC-X
+> application" — is no longer true, and it is the most consequential thing in
+> this report to have gone stale. The verbs-plane half of F1 stands: this is the
+> UCX provider answering, not `ib_post_send`.
+
 ### F3 — `mem_object.device = 65535` cannot say whether attribution was attempted
 
 The most important negative result here — "the NIC never saw device memory" —
