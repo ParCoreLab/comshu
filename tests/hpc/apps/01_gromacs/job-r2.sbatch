@@ -93,8 +93,27 @@ CASE="$PCOMM_ROOT/tests/hpc/apps/01_gromacs"
 COMMON_ARGS=(-s "$TPR" -npme 1 -dd 7 1 1 -ddorder pp_pme
              -nb gpu -pme gpu -notunepme -dlb no -nstlist 100
              -ntomp "${SLURM_CPUS_PER_TASK:-20}" -pin on -noconfout)
-NSTEPS=200
-NSTEPS_TM=50
+
+# THE STEP COUNTS COME OUT OF meta-r2.json AND ARE NOT WRITTEN HERE. They used
+# to be `NSTEPS=200` and `NSTEPS_TM=50` literals beside a meta file that said the
+# same thing, which is two copies of one number, and on job 45235734 the copies
+# disagreed with a THIRD one: the round-1 assertions at the bottom of this script
+# were evaluated against meta.json's nsteps=1000 and reported the capture at
+# exactly 20 % of expected. The capture was correct; the oracle was a step count
+# from a different run. Read the number once, from the file the assertions read.
+meta_param() {  # $1 = key, $2 = variant ("" for the base workload)
+  python3 - "$CASE/meta-r2.json" "$1" "${2:-}" <<'PY'
+import json, sys
+w = dict(json.load(open(sys.argv[1]))["workload"])
+if sys.argv[3]:
+    w.update(json.load(open(sys.argv[1]))["variants"][sys.argv[3]])
+print(w[sys.argv[2]])
+PY
+}
+NSTEPS="$(meta_param nsteps)"       || { echo "!! cannot read nsteps from meta-r2.json"; exit 1; }
+NSTEPS_TM="$(meta_param nsteps tm)" || { echo "!! cannot read variants.tm.nsteps from meta-r2.json"; exit 1; }
+case "$NSTEPS$NSTEPS_TM" in *[!0-9]*|"") echo "!! bad nsteps from meta-r2.json: '$NSTEPS' '$NSTEPS_TM'"; exit 1;; esac
+echo "nsteps=$NSTEPS  nsteps_tm=$NSTEPS_TM  (from meta-r2.json, the same file the assertions read)"
 
 mpi_run() {
   local xs=(-x PATH -x LD_LIBRARY_PATH -x OPAL_PREFIX -x PCOMM_PROVIDER_PATH)
@@ -209,8 +228,17 @@ done
 # Round 1's assertions, unchanged, over the CSV export of the primary arm. They
 # are the raw-record checks and they still hold; running them is how a round-2
 # capture is shown not to have regressed round 1's result.
-echo "=== asserts (round 1, CSV/sqlite) on the direct_on arm ==="
-bash "$CASE/asserts.sh" "$WORK/gmx-r2-direct_on-$SLURM_JOB_ID.csv" "$CASE" "direct_on" || true
+#
+# ASSERT_META=meta-r2.json, and it is not optional. The QUERIES are round 1's;
+# the RUN is round 2's, and pme_coord_volume / pme_rank_force_volume are absolute
+# volumes in nsteps. Judged against meta.json they are judged at 1000 steps
+# against a 200-step run and report the capture at 20 % of expected — which is
+# what happened on job 45235734. It also stops round 2 being judged against round
+# 1's expect_tables, which lists the ib_* tables that `-p ucx,ucx_deep` cannot
+# populate because the ib provider is not loaded.
+echo "=== asserts (round 1's queries, round 2's params, CSV/sqlite) on the direct_on arm ==="
+ASSERT_META=meta-r2.json \
+  bash "$CASE/asserts.sh" "$WORK/gmx-r2-direct_on-$SLURM_JOB_ID.csv" "$CASE" "direct_on" || true
 
 # ------------------------------------------------- the report's raw numbers ---
 # Printed so the report can quote them without a second job. Every one of these

@@ -30,13 +30,33 @@
 # overlays it on "workload". It exists so ONE assertion file can be the
 # specification for BOTH arms of the direct-GPU-comm comparison: the arm is a
 # parameter (`gpudirect`), not a different query.
+#
+# ASSERT_META NAMES WHICH meta FILE THE PARAMS COME FROM, and it exists because
+# of a real failure. Round 2 (job-r2.sbatch) re-runs these round-1 raw-record
+# assertions over its own capture — which is the point, it is how a round-2
+# capture is shown not to have regressed round 1's result — but it ran them
+# against `meta.json`, whose workload says `nsteps: 1000` because that is what
+# round 1's job.sbatch ran. Round 2 runs 200 steps deliberately. So on job
+# 45235734 pme_coord_volume and pme_rank_force_volume both reported the capture
+# at 20 % of expected, 1000/200 = 5 exactly, and the number that was wrong was
+# the oracle's, not the capture's. Both queries derive their expectation from
+# `params` and always did; the stale literal was the step count in the meta file
+# of a DIFFERENT run. A meta file describes ONE run, so a runner pointed at a
+# capture must be pointed at that capture's meta:
+#
+#   ASSERT_META=meta-r2.json asserts.sh <csv-dir> <case-dir> [variant]
+#
+# expect_tables and expect_fail_asserts come from the same file, which is also
+# correct — round 2 loads `-p ucx,ucx_deep` and must not be judged against
+# round 1's `ib_*` table list.
 set -u
 CSV_DIR="${1:?usage: asserts.sh <csv-dir> <case-dir> [variant]}"
 CASE_DIR="${2:?usage: asserts.sh <csv-dir> <case-dir> [variant]}"
 VARIANT="${3:-}"
 SQL_ENGINE="${SQL_ENGINE:-sqlite3}"
 SUITE_DIR="$(cd "$CASE_DIR/../../suite" && pwd)"
-meta="$CASE_DIR/meta.json"
+meta="$CASE_DIR/${ASSERT_META:-meta.json}"
+[ -f "$meta" ] || { echo "asserts.sh: no such meta file: $meta" >&2; exit 2; }
 
 [ -d "$CSV_DIR" ] || { echo "asserts.sh: no such export dir: $CSV_DIR" >&2; exit 2; }
 

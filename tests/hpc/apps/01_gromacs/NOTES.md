@@ -108,6 +108,46 @@ assertion file be the specification for both arms of a config-knob comparison:
 the arm is a parameter (`gpudirect`), not a second query nobody can diff against
 the first.
 
+**A meta file describes one run, and pointing a runner at the wrong one looks
+exactly like a broken tracer.** Round 2's job script re-runs these round-1
+assertions over its own capture — deliberately, it is how a round-2 capture is
+shown not to have regressed round 1's result — but it ran them against
+`meta.json`, whose `workload` says `nsteps: 1000` because that is what round 1
+ran. Round 2 runs 200. On job 45235734 the result was:
+
+```
+pme_coord_volume       observed 5,187,239,771  expected 25,756,583,072  (20 %)
+pme_rank_force_volume  observed 5,153,056,388  expected 25,662,580,944  (20 %)
+```
+
+Two independent assertions at *exactly* 1/5, and `1000 / 200 = 5`. That shape —
+several assertions agreeing on a clean integer ratio — is the signature of a
+stale oracle, not of a tracer dropping traffic; a tracer that loses 80 % of the
+bytes does not lose the same 80 % twice via two different query paths (one
+through the `ucx_ep_connection` → `ucx_worker_address` join, one through `rank`
+alone). It was resolved by arithmetic, not by a re-run:
+
+* `12 × 2,136,412 × 201 = 5,153,025,744` against the observed `5,153,056,388` —
+  **6 parts per million**, the remainder being the energy/virial structs the
+  assertion's own comment says it does not derive.
+* `5,153,056,388 / (12 × 2,136,412) = 201.0012` force evaluations, and GROMACS's
+  log says `Statistics over 201 steps` (steps 0..200 inclusive). Per *step*, not
+  per `nstlist` — a per-`nstlist` reading would have given 3.
+* `Precision: mixed` in the log header, so `rvec` is 12 B. A double build would
+  have shown a factor of 2, not 5.
+* `direct_on` and `direct_off` report the PME rank's outbound volume as the same
+  number **to the byte**, which is the discriminator `pme_coord_volume.sql`'s
+  comment names: if the tracer were losing traffic the two arms would not agree.
+
+Fixed so it cannot recur: `asserts.sh` takes `ASSERT_META` (default `meta.json`),
+`job-r2.sbatch` passes `ASSERT_META=meta-r2.json`, and the job script now reads
+`NSTEPS`/`NSTEPS_TM` **out of `meta-r2.json`** instead of carrying its own
+literals — one step count per run, in the file the assertions read. The step
+count for the short `tm` arm is `variants.tm.nsteps`, so the arm stays a
+parameter. Pointing round 2 at its own meta also stops it being judged against
+round 1's `expect_tables`, which lists `ib_*` tables that `-p ucx,ucx_deep`
+structurally cannot populate.
+
 ## Things worth doing before spending a slot
 
 - Dry-run the assertions against a **synthetic** CSV export locally. Six

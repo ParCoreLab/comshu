@@ -36,6 +36,16 @@ fragments in the shared-memory transport could produce two orders of magnitude
 more rows than `ucx_tag_send` did. Every oracle below is a **ratio or a set**,
 not an absolute count, so the step count does not enter any of them.
 
+> *Method note added after the run, changing no prediction above or below.* That
+> sentence is true of **this document's** oracles and was misread as true of the
+> job. `job-r2.sbatch` also re-runs round 1's `asserts/*.sql` over this capture,
+> and two of those — `pme_coord_volume`, `pme_rank_force_volume` — are absolute
+> volumes of the form `rvec_bytes · natoms · (nsteps+1)`. They were evaluated
+> against `meta.json`'s `nsteps: 1000` and reported the capture at 20 % of
+> expected; `1000/200 = 5` and the capture was correct to 6 ppm. The step count
+> now comes from `meta-r2.json` for the job script and the assertions alike. See
+> `NOTES.md`.
+
 Providers: `-p ucx,ucx_deep`. Not `ib`: round 1 established (F1) that UCX on this
 stack reaches the NIC through `mlx5dv_devx_*` and never calls `ibv_post_send`, so
 the verbs data plane contributed nothing and `comm_edges` was a 196-byte header.
