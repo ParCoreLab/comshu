@@ -576,6 +576,22 @@ GROUP BY rank, iface, op
     // A transport added to UCX after this list was written must read as unknown
     // rather than be guessed into 'network', because the guess is the one that
     // makes link_health's intra-node caveat silently report zero.
+    //
+    // `gdr_copy` JOINED THE INTRA-NODE LIST on 2026-08-31, and it was the first
+    // name this list has been caught missing on real hardware: the GROMACS
+    // round-2 run (job 45235734) put 9,348 operations into 'unknown', which is
+    // the list working — it refused to guess — and also a hole, since nothing
+    // downstream can use an unknown. It is not a guess to place: gdr_copy is
+    // GDRCopy mapping the GPU's BAR1 into the host address space so the CPU can
+    // read and write device memory directly. No network stack, no fabric, one
+    // machine by construction. `rocm_gdr` is its AMD counterpart and is added by
+    // the same symmetry that already puts rocm_ipc and rocm_copy here without
+    // this project ever having owned an AMD GPU.
+    //
+    // What this does NOT license is sweeping the rest of UCX's transport
+    // namespace in from a manual. ugni and the other names absent here stay
+    // unknown until something in a capture makes them concrete, because a list
+    // extended by reading documentation is a list nobody has tested.
     {"_uct_scoped", R"sql(
 CREATE OR REPLACE VIEW _uct_scoped AS
 SELECT s.rank,
@@ -583,7 +599,8 @@ SELECT s.rank,
        f.dev_name,
        CASE
          WHEN f.tl_name IN ('self','sysv','posix','mm','cma','knem','xpmem',
-                            'cuda_ipc','cuda_copy','rocm_ipc','rocm_copy') THEN 'intra-node'
+                            'cuda_ipc','cuda_copy','gdr_copy',
+                            'rocm_ipc','rocm_copy','rocm_gdr')            THEN 'intra-node'
          WHEN f.tl_name IN ('rc_verbs','rc_mlx5','dc_mlx5','ud_verbs','ud_mlx5',
                             'ib','srd','tcp')                             THEN 'network'
          ELSE 'unknown'
@@ -786,19 +803,106 @@ WHERE coalesce(ni.node_hash, l.node) IS NOT NULL
     // answer. A rank can own several GPUs (the 4-GPU ring is one process), and
     // naming one of them would be a guess that reads exactly like a fact. The
     // ibverbs cases put one GPU on each node precisely so this resolves.
+    // FOUR SOURCES, AND IT USED TO READ TWO. `rank_identity.device` came back
+    // NULL on the llm.c and Quantum ESPRESSO captures while the answer was
+    // sitting in the same file: those runs recorded `nccl_comm.cuda_dev` and
+    // `gpu_kernel.device` and this view looked at neither. Ten fields across
+    // nine tables carry a device ordinal; the question is which of them state
+    // THIS RANK'S OWN GPU rather than where some buffer happened to live.
+    //
+    // The two added here are the two that say it outright:
+    //   nccl_comm.cuda_dev   the device the communicator is bound to, from
+    //                        NCCL itself. The strongest statement available.
+    //   gpu_kernel.device    the device a kernel of ours executed on. Emitted
+    //                        by the ENGINE (libpcomm/src/engine.cpp), so it
+    //                        needs no GPU backend at all — this is the reason
+    //                        the old pair was wrong to be a pair: gpu_access is
+    //                        NVBit-only, so device resolution silently depended
+    //                        on an instrument most captures do not run.
+    //
+    // DELIBERATELY NOT ADDED: ucx_tag_send.device, ucx_rma.device,
+    // ucx_am_send.device, mlx5_umem.device, mlx5_devx_qp.device. Every one of
+    // those is the residency of a BUFFER, which is usually this rank's GPU and
+    // is not the same claim — a host buffer reports 65535, and under peer
+    // access a buffer can legitimately live on another rank's device. Folding
+    // them in would turn "which GPU does this rank drive" into "which GPUs has
+    // this rank touched", and the `devices > 1` guard below would then read as
+    // ambiguity where there is none. mem_object is the same class and is kept
+    // only because it predates this note and case 07 depends on it.
+    //
+    // cuda_dev is int32 and negative when NCCL has not bound one yet; the rest
+    // are uint16 with 65535 for unknown. Both are filtered, and the cast makes
+    // the UNION agree on a type rather than letting DuckDB widen it silently.
+    // TWO TIERS, and the weak one is consulted only for a rank the strong one
+    // cannot answer. The first version of this fix excluded buffer-residency
+    // fields on principle — where a buffer LIVES is not the same claim as which
+    // GPU a rank DRIVES — and the principle is right while the exclusion was
+    // wrong, which the Quantum ESPRESSO round-2 run settled (job 45237045):
+    //
+    //   ucx_tag_send.device   rank 0..3 -> dev 0,1,2,3 ; rank 4..7 -> dev 0,1,2,3
+    //                         ~14k sends each, one device per rank, no ambiguity
+    //   mem_object.device     65535 (unknown) on all 1386 rows
+    //   gpu_kernel/nccl_comm  absent — those providers were not in the run
+    //
+    // So on a `-p ucx,ucx_deep` capture the buffer fields are the ONLY evidence
+    // there is, and they are exactly right. Excluding them bought the principle
+    // and paid for it with a NULL, which is the worse answer: it says "unknown"
+    // where the capture plainly knows.
+    //
+    // The tiers keep the principle where it bites. Weak evidence can never
+    // OVERRIDE or DILUTE strong evidence — a rank with any strong row ignores
+    // its weak rows entirely, so a buffer that legitimately lives on a peer's
+    // GPU under peer access cannot turn a known device into `devices = 2`. It
+    // only fills a hole that would otherwise stay empty.
+    //
+    // And the `devices = 1` guard still does its job inside each tier: a rank
+    // whose sends really did come off two GPUs reports devices = 2 and a NULL
+    // device, which is the honest answer rather than a coin flip.
     {"_rank_device", R"sql(
 CREATE OR REPLACE VIEW _rank_device AS
-SELECT rank,
-       CASE WHEN count(DISTINCT device) = 1 THEN min(device) END AS device,
-       count(DISTINCT device)                                    AS devices
-FROM (
+WITH strong AS (
     SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, run_device AS device FROM gpu_access
+    UNION
+    SELECT DISTINCT rank, device     AS device FROM gpu_kernel WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
+),
+weak AS (
+    SELECT DISTINCT rank, device FROM ucx_tag_send WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, device FROM ucx_rma      WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, device FROM ucx_am_send  WHERE device <> 65535
+),
+evidence AS (
+    SELECT rank, device FROM strong
+    UNION ALL
+    SELECT w.rank, w.device FROM weak w
+    WHERE NOT EXISTS (SELECT 1 FROM strong s WHERE s.rank = w.rank)
 )
+SELECT rank,
+       CASE WHEN count(DISTINCT device) = 1 THEN min(device) END AS device,
+       count(DISTINCT device)                                    AS devices
+FROM evidence
 GROUP BY rank
 )sql"},
 
+    // The same four sources, for the same reason. These two views must agree on
+    // what counts as evidence of a rank's device, or a rank can resolve here and
+    // not there — which is how a peer lookup returns a rank the identity table
+    // says owns nothing.
+    // Strong evidence ONLY, and this is where the two views deliberately differ.
+    // _rank_device answers "which GPU does this rank drive" and may fall back to
+    // buffer residency to answer it at all. This one answers "who owns (node,
+    // device)" and is the map a peer lookup resolves THROUGH — so a wrong entry
+    // here does not leave a hole, it attributes another rank's NVLink traffic to
+    // the wrong owner. Buffer residency is exactly the evidence that can name a
+    // GPU a rank does not own (peer access), so it is not admitted here.
+    //
+    // The asymmetry is the point: a missing owner is recoverable, a confidently
+    // wrong one is not.
     {"_device_owner", R"sql(
 CREATE OR REPLACE VIEW _device_owner AS
 SELECT n.node, d.device, min(d.rank) AS rank, count(DISTINCT d.rank) AS claimants
@@ -806,6 +910,10 @@ FROM (
     SELECT DISTINCT rank, device     AS device FROM mem_object WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, run_device AS device FROM gpu_access
+    UNION
+    SELECT DISTINCT rank, device     AS device FROM gpu_kernel WHERE device <> 65535
+    UNION
+    SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
 ) d
 JOIN _node n ON n.rank = d.rank
 GROUP BY n.node, d.device

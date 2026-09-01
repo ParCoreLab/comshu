@@ -225,7 +225,29 @@ EXTRA_PY
 case "$case_cols" in
   *[!a-z0-9_\ ]*) echo "$case_name: bad workload_params in meta.json: $case_cols" >&2; exit 2 ;;
 esac
-PARAM_COLS="$PARAM_COLS $case_cols"
+# DEDUPED, because a name may legitimately appear in both lists and appending
+# blindly builds `CREATE TABLE params (... iters INTEGER, ... iters INTEGER)`.
+# sqlite rejects that with `duplicate column name: iters` — which names neither
+# the case nor which list the collision came from — and then every assertion in
+# the run reports `no such table: params`, i.e. five to eight red assertions
+# whose message points nowhere near the cause. That is exactly the failure this
+# file's guards below were written for, arriving through the one path they do
+# not cover: the SQL is well-formed and passes the `CREATE TABLE params` prefix
+# check, and only fails when sqlite executes it.
+#
+# Cost 6 assertions of the 05_osu_onesided round-2 run (job 45234904), whose
+# meta.json declares `iters` in workload_params while the shared list above
+# already has it. Re-declaring a shared name is redundant, not wrong — the
+# case cannot be expected to know which names are shared today — so this
+# absorbs it and says so rather than failing the run.
+dup_cols=""
+for c in $case_cols; do
+  case " $PARAM_COLS " in
+    *" $c "*) dup_cols="$dup_cols $c" ;;
+    *)        PARAM_COLS="$PARAM_COLS $c" ;;
+  esac
+done
+[ -n "$dup_cols" ] && echo "  ($case_name: workload_params re-declares shared name(s):$dup_cols — using the shared column)" >&2
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
 params_sql="$(meta_py 2>&1 <<'PY'

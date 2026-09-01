@@ -9,6 +9,49 @@
 : "${PCOMM_ROOT:=$HOME/proj/pcomm}"
 : "${PCOMM_BUILD:=$PCOMM_ROOT/build}"
 
+# A JOB SUBMITTED FROM A GPP LOGIN NODE INHERITS THE GPP MODULE TREE, and runs
+# on an ACC node regardless. sbatch defaults to --export=ALL, so MODULEPATH
+# arrives on the compute node still pointing at /apps/GPP/modulefiles — where
+# `gromacs/2025.2-gcc-nvhpcx`, `fftw/3.3.10-gcc-nvhpcx` and the rest of the
+# accelerated stack do not exist. Lmod then says only "module(s) are unknown",
+# the module load is not fatal, and the failure surfaces further down as
+# `mpirun was unable to find the specified executable: gmx_mpi` — which reads
+# as a broken MPI launch rather than as a job looking in the wrong tree.
+#
+# Cost the first GROMACS round-2 submission (job 45235223, FAILED in 15 s). It
+# only started mattering on 2026-08-30, when both ACC login nodes went down and
+# submissions moved to glogin1; the suite's own cases never noticed because
+# they resolve the SDK by globbing /apps/ACC/... directly rather than by module.
+#
+# Scoped to inside a job on purpose. On a login node MODULEPATH is correct for
+# the hardware you are on, and swapping it there would change which compilers
+# run_on_mn5.sh builds with — a working path this has no business touching.
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -d /apps/ACC/modulefiles ]; then
+    case "${MODULEPATH:-}" in
+        */apps/GPP/modulefiles*)
+            export MODULEPATH="${MODULEPATH//\/apps\/GPP\/modulefiles//apps/ACC/modulefiles}"
+            # AND PURGE, because the path was only half of it. glogin's login
+            # profile auto-loads impi/2021.10.0, mkl, UCX/1.15.0 and bsc, and
+            # those ride into the job too. The ACC GROMACS modulefile declares
+            # `conflict("impi")`, so with the tree corrected it still refused:
+            #   Cannot load module "gromacs/2025.2-gcc-nvhpcx" because these
+            #   module(s) are loaded: impi
+            # An inherited GPP module is never something an ACC job wanted, so
+            # dropping all of them is the honest state rather than unloading the
+            # one name that happened to collide today.
+            #
+            # Safe before pcomm_load_runtime, which every job calls next and
+            # which loads gcc/13.2.0 and nvidia-hpc-sdk/25.7 from the corrected
+            # tree — and those are exactly the prereqs the application modules
+            # declare (`prereq("nvidia-hpc-sdk")` in gromacs, `prereq_any` in
+            # fftw). Verified end to end on glogin1: purge, gcc, hpc-sdk, fftw,
+            # gromacs leaves gmx_mpi at /apps/ACC/GROMACS/2025.2/GCC/NVHPCX/bin.
+            module purge >/dev/null 2>&1 || true
+            echo "common.sh: GPP module environment inherited by an ACC job — MODULEPATH swapped to /apps/ACC/modulefiles and modules purged" >&2
+            ;;
+    esac
+fi
+
 # Tools + providers (the launcher finds .so via PCOMM_PROVIDER_PATH, colon-list).
 # One binary, verbs for everything: `$PCOMM run`, `$PCOMM read`, `$PCOMM export`.
 # There is no PCOMM_READ any more — there is no second executable to point it at.
