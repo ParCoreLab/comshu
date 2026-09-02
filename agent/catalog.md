@@ -12,7 +12,7 @@ plausible number that nobody computed is the one failure mode that matters here.
 
 ## The rules
 
-**1. Query the derived views before the raw tables.** The seven views at the top
+**1. Query the derived views before the raw tables.** The twelve views at the top
 of the next section are the answer to most questions. The raw `ib_*` / `gpu_*` /
 `mlx5_*` tables are the record stream as captured; reach for them only when the
 derived layer genuinely lacks the column you need.
@@ -123,6 +123,31 @@ quantities.** Never add `sends` across transports without saying so.
 see below). It is derived from node membership: `unknown` means the destination
 rank is unresolved, or one of the two ranks has no node identity, and guessing
 `network` there would inflate the very number the column exists to deflate.
+
+### `edge_sizes` — the same edges, split by message size
+`src_rank INT, dst_rank INT, transport VARCHAR, unit VARCHAR, scope VARCHAR, size_class BIGINT, sends BIGINT, bytes BIGINT`
+
+`comm_edges` one group-by deeper. Use it whenever the question is about the
+*shape* of the traffic rather than its total — "is this a halo exchange or a
+collective", "what message sizes does rank 0 send to rank 8", "did the small
+messages go over the fabric or stay on the node". `comm_edges` sums those away.
+
+`size_class` is the **lower bound of a power-of-two bucket**: 1024 holds
+1024..2047. Class `0` holds zero-length operations, which are kept — a message
+that moved no bytes is still a message.
+
+**`size_class` measures whatever `unit` names**, so classes from two lanes are
+not comparable and must not be summed into one distribution: bytes on `verbs`
+and `devx`, one access's width on `nvlink`, and a UCP *datatype count* on `ucx`.
+
+Rolled up over `size_class` it reproduces `comm_edges` exactly, on every column
+— asserted in both directions by `tests/comm_edges_rule.sh`.
+
+```sql
+-- What sizes does this pair actually exchange?
+SELECT size_class, sends, bytes FROM edge_sizes
+WHERE src_rank = 0 AND dst_rank = 8 AND transport = 'verbs' ORDER BY size_class;
+```
 
 ### `transport_mix` — which UCX transport actually carried it
 `rank INT, tl_name VARCHAR, dev_name VARCHAR, scope VARCHAR, op VARCHAR, ops BIGINT, out_bytes BIGINT, in_bytes BIGINT, advertised_bytes BIGINT, header_bytes BIGINT`

@@ -500,6 +500,46 @@ FROM (
 GROUP BY rank, endpoint, inbound
 )sql"},
 
+    // The UCX lane by size class, for the reason _sends_sized gives.
+    //
+    // `size_class` buckets the DATATYPE COUNT, not bytes, because that is what
+    // this lane's `units` measures and comm_edges labels `datatype-units`. On a
+    // contiguous 8-bit datatype the two coincide and the class is a byte size;
+    // on anything else it is a count, and a reader comparing these classes to
+    // the verbs lane's is comparing two different quantities. Same trap the
+    // `unit` column exists to name, arriving one aggregation deeper.
+    {"_ucx_sends_sized", R"sql(
+CREATE OR REPLACE VIEW _ucx_sends_sized AS
+SELECT rank, endpoint, size_class,
+       sum(n)::BIGINT AS sends, sum(units)::BIGINT AS units, inbound
+FROM (
+    SELECT rank, endpoint,
+           CASE WHEN "count" > 0 THEN (1::BIGINT << CAST(floor(log2("count")) AS INTEGER))
+                ELSE 0 END AS size_class,
+           count(*) AS n, sum("count")::HUGEINT AS units, FALSE AS inbound
+    FROM ucx_tag_send WHERE status_class <> 1 GROUP BY rank, endpoint, size_class
+    UNION ALL
+    SELECT rank, endpoint,
+           CASE WHEN "count" > 0 THEN (1::BIGINT << CAST(floor(log2("count")) AS INTEGER))
+                ELSE 0 END,
+           count(*), sum("count")::HUGEINT, FALSE
+    FROM ucx_am_send  WHERE status_class <> 1 GROUP BY rank, endpoint, 3
+    UNION ALL
+    SELECT rank, endpoint,
+           CASE WHEN "count" > 0 THEN (1::BIGINT << CAST(floor(log2("count")) AS INTEGER))
+                ELSE 0 END,
+           count(*), sum("count")::HUGEINT, FALSE
+    FROM ucx_rma      WHERE status_class <> 1 AND op = 0 GROUP BY rank, endpoint, 3
+    UNION ALL
+    SELECT rank, endpoint,
+           CASE WHEN "count" > 0 THEN (1::BIGINT << CAST(floor(log2("count")) AS INTEGER))
+                ELSE 0 END,
+           count(*), sum("count")::HUGEINT, TRUE
+    FROM ucx_rma      WHERE status_class <> 1 AND op = 1 GROUP BY rank, endpoint, 3
+)
+GROUP BY rank, endpoint, size_class, inbound
+)sql"},
+
     // --- naming what was interned ------------------------------------------
     //
     // (rank, domain, handle) -> the string, WITH the evidence that it is one
@@ -1026,6 +1066,27 @@ WHERE g.run_device <> g.mem_device
 GROUP BY 1, 2
 )sql"},
 
+    // The NVLink lane by size class. `size` here is ONE ACCESS's width — 4, 8,
+    // 16 bytes — not a message length, so the classes are narrow by nature and
+    // that is the honest shape: comm_edges calls this lane's unit `accesses`
+    // for the same reason.
+    {"_nvlink_sends_sized", R"sql(
+CREATE OR REPLACE VIEW _nvlink_sends_sized AS
+SELECT
+    CASE WHEN g.op IN (1, 2) THEN g.rank ELSE coalesce(o.rank, -1) END AS src_rank,
+    CASE WHEN g.op IN (1, 2) THEN coalesce(o.rank, -1) ELSE g.rank END AS dst_rank,
+    CASE WHEN g.size > 0 THEN (1::BIGINT << CAST(floor(log2(g.size)) AS INTEGER))
+         ELSE 0 END      AS size_class,
+    count(*)::BIGINT     AS sends,
+    sum(g.size)::BIGINT  AS bytes
+FROM gpu_access g
+LEFT JOIN _node n         ON n.rank = g.rank
+LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
+LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
+WHERE g.run_device <> g.mem_device
+GROUP BY 1, 2, 3
+)sql"},
+
     // Traffic per local endpoint, both planes. `transport` survives into the
     // endpoint table so a run can still be *asked* which plane moved the bytes,
     // even though comm_edges no longer distinguishes them.
@@ -1038,6 +1099,49 @@ UNION ALL
 SELECT rank, qp_num, 'devx' AS transport,
        count(*) AS sends, sum(length)::BIGINT AS bytes
 FROM mlx5_device_send GROUP BY rank, qp_num
+)sql"},
+
+    // The same traffic, one more group-by deep: by SIZE CLASS.
+    //
+    // WHY THE SIZE HAS TO SURVIVE SOMEWHERE. comm_edges sums bytes per
+    // (src, dst, transport) and the individual message sizes are gone by the
+    // time anything queries it, so a halo exchange and a collective landing on
+    // the same rank pair are one row and cannot be told apart. That is what made
+    // the LAMMPS round-2 study's per-peer message-split prediction unanswerable
+    // inside the derived layer: it had to drop to raw ib_post_send and redo the
+    // peer resolution by hand, which is the work this layer exists to have done
+    // once.
+    //
+    // POWER-OF-TWO CLASSES, named by the LOWER BOUND, which is the bucketing
+    // agent/catalog.md's own worked example already uses — so a reader who
+    // learned `1 << floor(log2(length))` there finds the same classes here
+    // instead of a second convention. A zero-length send (an RDMA write with no
+    // payload, a fenced doorbell) is class 0 and is kept: it is a message, it is
+    // just not bytes, and dropping it would make `sends` here disagree with
+    // comm_edges.
+    //
+    // These views are DELIBERATELY NOT the source comm_edges reads. Rewriting
+    // comm_edges to aggregate over them would give one definition instead of
+    // two, which is this file's usual preference — and comm_edges is the
+    // most-asserted table in the suite, checked against a second C++
+    // implementation (CsvAgg), so changing how it is computed to add a table
+    // beside it is the wrong risk to take. Instead
+    // tests/comm_edges_rule.sh asserts that edge_sizes ROLLS UP EXACTLY to
+    // comm_edges on every column, which turns the duplication from a drift
+    // hazard into a checked invariant.
+    {"_sends_sized", R"sql(
+CREATE OR REPLACE VIEW _sends_sized AS
+SELECT rank, qp_num, 'verbs' AS transport,
+       CASE WHEN length > 0 THEN (1::BIGINT << CAST(floor(log2(length)) AS INTEGER))
+            ELSE 0 END AS size_class,
+       count(*) AS sends, sum(length)::BIGINT AS bytes
+FROM ib_post_send GROUP BY rank, qp_num, size_class
+UNION ALL
+SELECT rank, qp_num, 'devx' AS transport,
+       CASE WHEN length > 0 THEN (1::BIGINT << CAST(floor(log2(length)) AS INTEGER))
+            ELSE 0 END AS size_class,
+       count(*) AS sends, sum(length)::BIGINT AS bytes
+FROM mlx5_device_send GROUP BY rank, qp_num, size_class
 )sql"},
 
     // (rank, qp_num) -> the rank on the other end. Extracted from `endpoint`,
@@ -1783,6 +1887,87 @@ FROM (
 LEFT JOIN _node ns ON ns.rank = e.src_rank
 LEFT JOIN _node nd ON nd.rank = e.dst_rank
 ORDER BY e.transport, e.src_rank, e.dst_rank
+)sql"},
+
+    // comm_edges, one group-by deeper: the same edges split by MESSAGE SIZE.
+    //
+    // WHAT IT IS FOR. comm_edges sums bytes per (src, dst, transport), so a halo
+    // exchange and a collective landing on the same rank pair are one row and
+    // cannot be separated. The LAMMPS round-2 study predicted a 2:2:1:1
+    // per-peer message split, could not check it inside the derived layer, and
+    // had to drop to raw ib_post_send and redo the peer resolution by hand —
+    // the work this layer exists to have done once. This is that question, in
+    // one join.
+    //
+    //     SELECT size_class, sum(sends) FROM edge_sizes
+    //     WHERE src_rank = 0 AND dst_rank = 8 GROUP BY 1 ORDER BY 1;
+    //
+    // `size_class` is the LOWER BOUND of a power-of-two bucket, so 1024 holds
+    // 1024..2047, and 0 holds zero-length operations — a message that moved no
+    // bytes is still a message, and dropping it would put this table out of
+    // step with comm_edges' `sends`.
+    //
+    // THE UNIT CAVEAT IS SHARPER HERE THAN IN comm_edges. `size_class` measures
+    // whatever `unit` names: bytes on the verbs and devx lanes, one access's
+    // width on nvlink, and a UCP DATATYPE COUNT on ucx — which equals bytes only
+    // for a contiguous 8-bit datatype. Classes from two lanes are not comparable
+    // and must not be summed into one distribution.
+    //
+    // The scope CASE is the same expression comm_edges uses. Deliberately
+    // duplicated rather than shared — see _sends_sized for why comm_edges was
+    // not rewritten to feed this — and made safe by tests/comm_edges_rule.sh,
+    // which asserts that rolling this table up over size_class reproduces
+    // comm_edges exactly, on every column and every lane.
+    //
+    // THE PEER JOIN IS `_peer_of_qp`, NOT comm_edges' INLINE _rtr + _owner, and
+    // that difference is not tidiness. Written inline here, with size_class as
+    // a fourth grouping column, one queue pair's two size classes resolved to
+    // DIFFERENT peers — the zero-length class fell to -1 while the 64-byte class
+    // on the same (rank, qp_num) resolved correctly. Reproduced on a two-row
+    // fixture; the identical join spelled out as a CTE over the same data gives
+    // the right answer for both, so this is something about the nesting rather
+    // than about the rule. comm_edges is unaffected (it has no size_class and
+    // resolves both sends correctly), which is why it has not been touched.
+    //
+    // `_peer_of_qp` is the same rule extracted as a view, is what `endpoint` and
+    // object_access already use, and gives the right answer here. Using it is
+    // the fix and was the better spelling anyway. The roll-up assertion is what
+    // holds the two tables to the same answer regardless.
+    {"edge_sizes", "src_rank,dst_rank,transport,unit,scope,size_class,sends,bytes",
+     R"sql(
+SELECT e.src_rank, e.dst_rank, e.transport, e.unit,
+       CASE WHEN e.dst_rank < 0                        THEN 'unknown'
+            WHEN ns.node IS NULL OR nd.node IS NULL    THEN 'unknown'
+            WHEN ns.node = nd.node                     THEN 'intra-node'
+            ELSE 'network'
+       END AS scope,
+       e.size_class, e.sends, e.bytes
+FROM (
+    SELECT s.rank                    AS src_rank,
+           coalesce(o.peer_rank, -1) AS dst_rank,
+           s.transport               AS transport,
+           'messages'                AS unit,
+           s.size_class              AS size_class,
+           sum(s.sends)::BIGINT AS sends,
+           sum(s.bytes)::BIGINT AS bytes
+    FROM _sends_sized s
+    LEFT JOIN _peer_of_qp o ON o.rank = s.rank AND o.qp_num = s.qp_num
+    GROUP BY 1, 2, 3, 4, 5
+  UNION ALL
+    SELECT src_rank, dst_rank, 'nvlink', 'accesses', size_class, sends, bytes
+    FROM _nvlink_sends_sized
+  UNION ALL
+    SELECT CASE WHEN s.inbound THEN coalesce(p.peer_rank, -1) ELSE s.rank END,
+           CASE WHEN s.inbound THEN s.rank ELSE coalesce(p.peer_rank, -1) END,
+           'ucx', 'datatype-units', s.size_class,
+           sum(s.sends)::BIGINT, sum(s.units)::BIGINT
+    FROM _ucx_sends_sized s
+    LEFT JOIN _ucx_peer_of_ep p ON p.rank = s.rank AND p.endpoint = s.endpoint
+    GROUP BY 1, 2, 5
+) e
+LEFT JOIN _node ns ON ns.rank = e.src_rank
+LEFT JOIN _node nd ON nd.rank = e.dst_rank
+ORDER BY e.transport, e.src_rank, e.dst_rank, e.size_class
 )sql"},
 
     // WHAT A UCP SEND BECAME ON THE WIRE — the two layers in one relation.

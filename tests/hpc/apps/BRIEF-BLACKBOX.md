@@ -62,6 +62,7 @@ The derived tables `pcomm link` builds, with their column contracts:
 
 ```
 comm_edges         src_rank,dst_rank,transport,unit,scope,sends,bytes
+edge_sizes         src_rank,dst_rank,transport,unit,scope,size_class,sends,bytes
 endpoint           rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes
 object_access      owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact
 rank_identity      rank,node_ix,node_hash,device,devices,label

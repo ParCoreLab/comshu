@@ -88,11 +88,12 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,2,0,1300,0,1310,0,2,4,4096,7,50,6,2,0,1
 1,2,0,1400,0,1410,0,2,5,4146,7,50,6,2,0,1
 2,2,0,1500,0,1510,0,3,6,4096,7,64,5,2,0,1
+2,2,0,1550,0,1560,0,3,12,4096,7,0,5,2,0,1
 3,2,0,1600,0,1610,0,9,7,4096,7,8,9,2,0,1
 3,2,0,1700,0,1710,0,9,8,4096,7,8,9,2,0,1
 3,2,0,1800,0,1810,0,9,9,4096,7,8,9,2,0,1
-3,2,0,1900,0,1910,0,9,10,4096,7,8,9,2,0,1
-3,2,0,2000,0,2010,0,9,11,4096,7,8,9,2,0,1
+3,2,0,1900,0,1910,0,9,10,4096,7,256,9,2,0,1
+3,2,0,2000,0,2010,0,9,11,4096,7,256,9,2,0,1
 CSV
 
 # The DEVX plane, carrying its own connect record and its own sends. Both are
@@ -249,7 +250,7 @@ expect() {  # <label> <sql> <expected>
 # filter adds 999 bytes to some edge.
 expect "the matrix" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||transport||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges" \
-    "1>3:devx:2:400 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:1:64 3>-1:verbs:5:40"
+    "1>3:devx:2:400 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 3>-1:verbs:5:536"
 
 # Stated again as the invariant rather than as a value, because it is the clause
 # no capture in the corpus can exercise: a Load moves bytes FROM the peer, so the
@@ -338,7 +339,64 @@ expect "am payload joins the edge and its header does not" \
 # executable is to restate it here whenever a lane is added.
 expect "the verbs/devx subset is untouched by the new lane" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges WHERE transport IN ('verbs','devx')" \
-    "1>3:2:400 0>2:3:300 1>3:2:100 2>0:1:64 3>-1:5:40"
+    "1>3:2:400 0>2:3:300 1>3:2:100 2>0:2:64 3>-1:5:536"
+
+# --- edge_sizes: the same edges, one group-by deeper -------------------------
+#
+# THE INVARIANT THAT MAKES THE DUPLICATION SAFE. edge_sizes repeats comm_edges'
+# peer resolution and scope expressions over size-bucketed source views rather
+# than sharing them, deliberately — comm_edges is checked against a second C++
+# implementation (CsvAgg) and rewriting how it is computed to add a table beside
+# it is the wrong risk. The price of that choice is two copies of one rule, and
+# this is what stops them drifting: rolled up over size_class, edge_sizes must
+# reproduce comm_edges EXACTLY, on every column and every lane.
+#
+# Stated as a set difference in both directions, so a row present in one and
+# absent from the other fails just as loudly as a row whose numbers disagree.
+expect "edge_sizes rolls up to comm_edges exactly" \
+    "SELECT count(*) FROM (
+       SELECT src_rank, dst_rank, transport, unit, scope, sum(sends) AS sends, sum(bytes) AS bytes
+       FROM edge_sizes GROUP BY 1,2,3,4,5
+       EXCEPT SELECT src_rank, dst_rank, transport, unit, scope, sends, bytes FROM comm_edges
+     )" "0"
+
+expect "and comm_edges has no edge that edge_sizes lost" \
+    "SELECT count(*) FROM (
+       SELECT src_rank, dst_rank, transport, unit, scope, sends, bytes FROM comm_edges
+       EXCEPT
+       SELECT src_rank, dst_rank, transport, unit, scope, sum(sends), sum(bytes)
+       FROM edge_sizes GROUP BY 1,2,3,4,5
+     )" "0"
+
+# THE WHOLE POINT OF THE TABLE: sizes comm_edges summed away are back.
+#
+# rank 3's queue pair posts three 8-byte sends and two 256-byte ones — MIXED
+# SIZES ON ONE EDGE, which no other pair in this fixture had, because until this
+# table existed nothing could tell them apart and there was no reason to build
+# one. comm_edges reports the edge as `5 sends, 536 bytes`; this splits it.
+# 256 rather than something larger so the total stays under the 999 sentinel the
+# local-access clause above depends on.
+expect "a rank pair's message sizes are separable" \
+    "SELECT string_agg(size_class||':'||sends, ' ' ORDER BY size_class)
+     FROM edge_sizes WHERE transport = 'verbs' AND src_rank = 3" \
+    "8:3 256:2"
+
+# A zero-length operation is class 0 and is KEPT. Dropping it would make `sends`
+# here disagree with comm_edges, which the roll-up above would catch — this
+# names the cause so a failure says which rule broke.
+expect "size classes are lower bounds of power-of-two buckets" \
+    "SELECT count(*) FROM edge_sizes
+      WHERE size_class <> 0 AND (size_class & (size_class - 1)) <> 0" "0"
+
+# A ZERO-LENGTH OPERATION IS CLASS 0 AND IS KEPT. rank 2 posts one 64-byte send
+# and one of length 0 — an RDMA write with no payload is still a message, and
+# dropping it would make `sends` here disagree with comm_edges. The roll-up
+# above would catch that; this names the cause, and the fixture carries the row
+# so the rule is exercised rather than merely written.
+expect "a zero-length operation keeps its own class" \
+    "SELECT string_agg(size_class||':'||sends||':'||bytes, ' ' ORDER BY size_class)
+     FROM edge_sizes WHERE transport = 'verbs' AND src_rank = 2 AND dst_rank = 0" \
+    "0:1:0 64:1:64"
 
 [ "$fail" -eq 0 ] || exit 1
 echo "ok: comm matrix holds on a capture built to break it"
