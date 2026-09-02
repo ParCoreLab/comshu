@@ -171,6 +171,12 @@ add_test(NAME tag_recv_rule
 add_test(NAME run_provenance_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_provenance_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# What `pcomm sql` accepts as a query. Not about SQL at all — about the
+# `COPY (<q>) TO` wrapper, which turns a trailing semicolon and a trailing
+# comment into parse errors that name neither.
+add_test(NAME sql_cli_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/sql_cli_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # ucx_deep's hot-path lookup tables, driven directly.
 #
 # UNCONDITIONAL, unlike everything else UCX in this file, and deliberately so:

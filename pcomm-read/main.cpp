@@ -2277,15 +2277,69 @@ int run_sql(const fs::path& dir, const std::string& query) {
         return 1;
     }
 
+    // BOUND TO A VIEW, NOT PARENTHESISED, and that is the whole of finding 13.
+    //
+    // This used to be `COPY (<query>) TO`, which is the obvious spelling and
+    // turns two ordinary things a person writes into parse errors:
+    //
+    //   SELECT 1;         -> COPY (SELECT 1;) TO ...    syntax error at ';'
+    //   SELECT 1 -- why   -> the comment eats the wrapper's own ')', and the
+    //                        error reads "syntax error at end of input", which
+    //                        points at nothing at all
+    //
+    // The second is the one that hurts: a trailing comment is how every .sql
+    // file under tests/hpc/*/asserts is annotated, and sql_check.sh carries a
+    // python splicer whose first job is to strip them back off before calling
+    // this command. Four of four application studies wrote their own assertion
+    // runner rather than use that harness.
+    //
+    // TEXTUAL NORMALISATION WAS TRIED FIRST AND ABANDONED. Stripping trailing
+    // semicolons and putting the ')' on its own line fixes both cases above and
+    // still fails on `SELECT 1; -- why`, where the ';' is no longer last. Going
+    // further means deciding whether a '--' is a comment or two characters
+    // inside a string literal, which is lexing — and a heuristic lexer that
+    // corrupts `SELECT 'a--b'` would be a far worse defect than the one it fixes.
+    //
+    // So DuckDB does the lexing. As a view BODY the query sits at statement
+    // level, where a trailing ';' terminates it and a trailing comment is just
+    // a comment. No guessing, and the accepted grammar becomes "whatever DuckDB
+    // accepts" instead of a rule this file has to maintain.
+    //
+    // NO FALLBACK TO THE OLD WRAPPER, because measurement said it would never
+    // fire. `COPY (<q>)` and a view body accept the same select-statement
+    // grammar: DESCRIBE, SHOW and SUMMARIZE are refused by BOTH (probed on
+    // du04), so a fallback would have been dead code that the next reader has to
+    // reason about. Those three are worth supporting one day; neither spelling
+    // supports them today and pretending otherwise helps nobody.
+    //
+    // The query goes on its OWN LINE so DuckDB's error text quotes what the
+    // user typed, with the caret under the user's column, instead of a line
+    // beginning `CREATE OR REPLACE TEMP VIEW _pcomm_query AS`. The reported
+    // LINE number is one higher than the user's for the same reason; the quoted
+    // text and the caret are what a person reads, and both are now theirs.
+    //
+    // One documented consequence: a result with duplicate output column names
+    // comes back as `x, x_1` where the old wrapper emitted `x, x`, because a
+    // view names its columns. That is the header for `SELECT a.*, b.*` becoming
+    // unambiguous, which is an improvement, but it IS a change.
+    constexpr const char* kQueryView = "_pcomm_query";
+    const std::string     bind =
+        "CREATE OR REPLACE TEMP VIEW " + std::string(kQueryView) + " AS\n" + query;
+
+    const auto tmp =
+        fs::temp_directory_path() / ("pcomm-sql-" + std::to_string(::getpid()) + ".csv");
+
     // Via a temp file, NOT `COPY ... TO '/dev/stdout'`. That spelling looks
     // tidier and is wrong: when stdout is a redirected file DuckDB opens it and
     // seeks to offset 0, silently overwriting whatever the process already
     // wrote. Two `sql` runs into one redirect lost the first, and so would any
     // `pcomm sql ... > out.csv` that printed anything beforehand.
-    const auto tmp =
-        fs::temp_directory_path() / ("pcomm-sql-" + std::to_string(::getpid()) + ".csv");
-    const bool ok = duck_exec(
-        con, "COPY (" + query + ") TO '" + tmp.string() + "' (FORMAT CSV, HEADER)", "query");
+    const bool ok =
+        duck_exec(con, bind, "query") &&
+        duck_exec(con,
+                  "COPY (SELECT * FROM " + std::string(kQueryView) + ") TO '" + tmp.string() +
+                      "' (FORMAT CSV, HEADER)",
+                  "query");
     if (ok) {
         if (std::FILE* f = std::fopen(tmp.c_str(), "rb")) {
             char        buf[64 * 1024];
