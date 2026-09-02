@@ -136,8 +136,27 @@ static void close_entity(const void* p, pcomm::core::RecordTypeId opener) {
 // the wrong slot of a live transport calls the wrong function with the wrong
 // arguments and takes the APPLICATION down. The asymmetry is total, so the
 // range is the one that was actually verified identical and nothing wider.
+//
+// The range is verified by md5 of `src/uct/api/tl.h`, the header that declares
+// uct_iface_ops_t, taken from the release tags themselves:
+//
+//   v1.14.0  bef986ac      v1.19.1        bef986ac
+//   v1.18.0  bef986ac      v1.20.0        bef986ac   <- added 2026-09-02
+//   v1.19.0  bef986ac      origin/master  bef986ac
+//
+// 20 was added because a capture demanded it and the evidence allowed it, in
+// that order. The 02_lammps round-2 study (jobs 45329318 and 45330017) ran on
+// MN5's UCX 1.20.0, GUARD 1 refused exactly as designed, and `transport_mix`
+// came back empty — so the second half of that study's prediction, that a scope
+// derived from tl_name agrees with one derived from node membership, could not
+// be answered at all.
+//
+// The refusal was right and the range was merely stale: master already carried
+// the same md5 when 19 was the ceiling, so 1.20.0 was always going to match. It
+// is widened here only because that was checked against the tag rather than
+// assumed from master.
 static constexpr unsigned kMinVerifiedMinor = 14;  // v1.14.0 — tl.h md5 bef986ac
-static constexpr unsigned kMaxVerifiedMinor = 19;  // v1.19.1 and origin/master, same md5
+static constexpr unsigned kMaxVerifiedMinor = 20;  // v1.20.0 and origin/master, same md5
 
 static std::uint32_t pack_version(unsigned major, unsigned minor, unsigned patch) noexcept {
     return (major << 16) | ((minor & 0xff) << 8) | (patch & 0xff);
