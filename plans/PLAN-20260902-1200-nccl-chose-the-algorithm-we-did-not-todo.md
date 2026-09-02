@@ -245,6 +245,36 @@ says so.
 spelled `Ring`. An assertion comparing them raw fails on a correct capture; the
 one in case 20 folds case.
 
+## The lifetime bug, which no test would have found
+
+`prof_stop_event` freed its `Event` with `delete`. That is wrong, and the reason
+is in NCCL's source rather than in any capture:
+
+```
+eDescr.parentObj = sub->taskEventHandle;   // profiler.cc:574 — the COLLECTIVE
+```
+
+`ncclProfilerStartProxyOpEvent` takes `ncclProxyArgs` and runs on the **proxy
+thread**, while the collective it names as parent is stopped from the
+application thread. A child can begin, and dereference its parent to read the
+id, after that parent has been freed.
+
+NVIDIA's own example plugin atomically increments `parent->refCount` when a child
+starts (`plugins/profiler/example/plugin.cc:531`). That is as direct a statement
+as one gets that the lifetime is not guaranteed.
+
+Events now come from a pool whose slots are never returned to the allocator — so
+a pointer NCCL kept is always readable memory — recycled only under a refcount,
+with a generation packed beside it to close the ABA window. A slot that was
+freed and re-acquired fails the compare-exchange and the child records parent 0,
+"not observed", rather than naming whichever event occupies the slot now.
+
+**No test on any machine we have would have caught this.** It needs a proxy op
+and a collective racing on two threads, which is a multi-node NCCL run, and even
+there it would corrupt silently far more often than it would crash. It was found
+by checking the lifetime instead of assuming it — the same move that rejected a
+thread-local for the commHash join.
+
 ## Three defects this work surfaced
 
 1. **The first version targeted profiler v5**, chosen from du04's *system*
