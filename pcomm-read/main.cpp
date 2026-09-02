@@ -251,6 +251,33 @@ template<> struct Table<NodeIdentity> {
     }
 };
 
+// What a device ordinal actually refers to. See core/records.hpp GpuDevice for
+// why an ordinal is not an identity and why the key is (node_hash, pci_bus).
+//
+// pci_bus is printed DECODED, as domain:bus:device, because that is the form
+// `nvidia-smi --query-gpu=pci.bus_id` prints and the only reason a reader wants
+// this column is to line the two up. The packed uint32 is an internal
+// convenience and putting it on a human-facing surface would make every
+// comparison a mental shift-and-mask.
+//
+// The UUID is printed as the 32 hex digits `nvidia-smi` shows after "GPU-",
+// without the dashes: two 64-bit halves, high first, which is the byte order
+// cuDeviceGetUuid fills. 0,0 means unavailable and prints as zeroes — the
+// schema's documented sentinel, and NOT a real all-zero UUID, which is a
+// distinction the reader has to keep because a degenerate UUID is exactly the
+// hazard this record was designed around.
+template<> struct Table<GpuDevice> {
+    static constexpr const char* name = "gpu_device";
+    static constexpr const char* cols = "ordinal,pci_bus,uuid,name";
+    static void row(std::FILE* f, const Stamped<GpuDevice>& s, const rec::InternDictionary& in) {
+        std::fprintf(f, "%u,%04x:%02x:%02x,%016llx%016llx,%s", s.payload.ordinal,
+                     (s.payload.pci_bus >> 16) & 0xFFFFu, (s.payload.pci_bus >> 8) & 0xFFu,
+                     s.payload.pci_bus & 0xFFu, (unsigned long long)s.payload.uuid_hi,
+                     (unsigned long long)s.payload.uuid_lo,
+                     in.str(rec::InternDomain::KernelName, s.payload.name));
+    }
+};
+
 // One process's mapping of a fabric-shared allocation.
 //
 // `allocation` is emitted as the interned STRING, not its handle: it is the
@@ -1361,7 +1388,8 @@ template<> struct Table<ncr::NcclDevComm> {
 
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
-    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, PeerMapping,
+    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, GpuDevice,
+               PeerMapping,
                ClockAnchor, Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
