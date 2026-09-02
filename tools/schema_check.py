@@ -446,6 +446,53 @@ def main():
         notes.append(f"schema hash 0x{want_hash:016X} matches "
                      f"pcomm/rec/stream_header.hpp")
 
+    # 5b. The derived layer PUBLISHES the vocabularies, and this holds that
+    #     publication equal to the schema.
+    #
+    #     `pcomm export --csv` decodes enums; `--parquet` does not; and the
+    #     derived layer is Parquet-only. So the export carrying comm_edges and
+    #     link_health is exactly the one that shows `3` where the other shows
+    #     `Prefetch`. link_sql.hpp's `vocabulary` table closes that — one row
+    #     per (vocab, value, name), joinable from any query — and being a
+    #     hand-written table inside a C++ string it is precisely the kind of
+    #     list this repo has watched go stale five times.
+    #
+    #     So it is parsed back out and compared. A value renamed in pcomm.fbs
+    #     now fails the build rather than publishing a wrong name to every
+    #     reader of every capture. Same bargain as tools/check_figures.py.
+    link_sql = (root / "pcomm-read/link_sql.hpp").read_text()
+    m = re.search(r'\{"vocabulary",\s*"vocab,value,name",\s*R"sql\((.*?)\)sql"',
+                  link_sql, re.S)
+    if not m:
+        fail("pcomm-read/link_sql.hpp: no `vocabulary` derived table found — it "
+             "moved or was renamed; update tools/schema_check.py")
+    else:
+        published = {}
+        for vocab, value, name in re.findall(
+                r"\('(\w+)',\s*(\d+),\s*'(\w+)'\)", m.group(1)):
+            published.setdefault(vocab, []).append((name, int(value)))
+        # Every vocabulary the table claims must exist, in C++ or in the schema,
+        # and must match member-for-member and value-for-value.
+        for vocab, rows in sorted(published.items()):
+            want = vocab_enums.get(vocab) or fb_enums.get(vocab)
+            if want is None:
+                fail(f"link_sql.hpp vocabulary publishes {vocab!r}, which is "
+                     f"neither a C++ enum class nor a pcomm.fbs enum")
+            elif rows != want:
+                fail(f"link_sql.hpp vocabulary disagrees with the schema for "
+                     f"{vocab}:\n      published: {rows}\n      declared : {want}")
+        # ...and every enum a RECORD FIELD uses must be published, or a Parquet
+        # reader meets a number this layer cannot name. That is the direction
+        # that catches an enum ADDED later, which is the one nobody remembers.
+        for name in sorted(used):
+            if name not in published:
+                fail(f"enum {name} is used by a record field but link_sql.hpp's "
+                     f"`vocabulary` table does not publish it — a Parquet reader "
+                     f"has no way to name its values")
+        if not any(name in e for e in errors for name in ("vocabulary", "vocab")):
+            notes.append(f"vocabulary: {sum(len(v) for v in published.values())} "
+                         f"names across {len(published)} enums match the schema")
+
     # 6. The two readers name ibverbs enum values from two hand-written tables:
     #    the switch statements in pcomm-read/main.cpp and the dicts in
     #    tools/read_pcs.py. The Python reader's entire claim is that it

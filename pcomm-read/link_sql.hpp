@@ -1506,6 +1506,69 @@ LEFT JOIN _rank_device d ON d.rank = n.rank
 ORDER BY n.rank
 )sql"},
 
+    // Every numeric vocabulary a reader of this capture will meet, as rows.
+    //
+    // THE PROBLEM. `pcomm export --csv` decodes enums and `--parquet` does not,
+    // and the derived layer is PARQUET-ONLY — `pcomm link` reads Parquet and
+    // writes Parquet. So the export that carries comm_edges, transport_mix and
+    // link_health is exactly the one that shows `3` where the other shows
+    // `Prefetch`, and a reader who wants the derived layer cannot have the
+    // names. Three separate application studies noticed independently; two of
+    // them reverse-engineered a mapping out of the suite's test files.
+    //
+    // Parquet not decoding is DELIBERATE and stays that way — see the export's
+    // own header, where resolving handles and enums "belongs to the
+    // derived-table layer". This is that layer doing its job: the raw column
+    // keeps the number the record holds, and the name is one join away.
+    //
+    //     SELECT k.name FROM gpu_access a
+    //     JOIN vocabulary k ON k.vocab = 'MemOp' AND k.value = a.op
+    //
+    // WHY A TABLE RATHER THAN A DECODED COLUMN ON EACH ONE. `temporal_kind` is
+    // on every raw table in the capture; MemOp and MemSpace are on gpu_access;
+    // EdgePredicate on attribution. Adding a decoded twin to each would put the
+    // vocabulary in as many places as it is used, which is how the five
+    // hand-maintained record lists in this repo got out of step. One table, one
+    // definition, joinable from anywhere.
+    //
+    // AND IT IS CHECKED. tools/schema_check.py parses these rows back out of
+    // this string and compares them to the enums in libpcomm/schema/pcomm.fbs,
+    // so a value renamed in the schema fails the build here rather than
+    // publishing a wrong name to every reader. That is the same bargain
+    // check_figures.py makes for the record set: the list may be written by
+    // hand, but it may not drift.
+    //
+    // The values are ON DISK — pcomm.fbs says "do not renumber" — so this is a
+    // decode of history, not a lookup that follows the source.
+    {"vocabulary", "vocab,value,name",
+     R"sql(
+SELECT * FROM (VALUES
+    ('TimeKind', 0, 'None'),
+    ('TimeKind', 1, 'Instant'),
+    ('TimeKind', 2, 'Interval'),
+    ('TimeKind', 3, 'Window'),
+    ('TimeKind', 4, 'Counter'),
+    ('RecordKind', 0, 'Event'),
+    ('RecordKind', 1, 'Entity'),
+    ('RecordKind', 2, 'Artifact'),
+    ('RecordKind', 3, 'Edge'),
+    ('MemOp', 0, 'Load'),
+    ('MemOp', 1, 'Store'),
+    ('MemOp', 2, 'Atomic'),
+    ('MemOp', 3, 'Prefetch'),
+    ('MemSpace', 0, 'Global'),
+    ('MemSpace', 1, 'Local'),
+    ('MemSpace', 2, 'Shared'),
+    ('EdgePredicate', 0, 'TouchedObject'),
+    ('EdgePredicate', 1, 'MapsToSourceLine'),
+    ('EdgePredicate', 2, 'ResidesOn'),
+    ('EdgePredicate', 3, 'MapsToQp'),
+    ('KernelSource', 0, 'Cupti'),
+    ('KernelSource', 1, 'NvbitGlobaltimer'),
+    ('KernelSource', 2, 'HostSubmit')
+) AS v(vocab, value, name)
+)sql"},
+
     // What each rank was ASKED to do, with the interned strings resolved.
     //
     // NAMED run_provenance AND NOT `invocation`, because `pcomm link` COPYs

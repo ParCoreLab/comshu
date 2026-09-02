@@ -100,14 +100,70 @@ still just data.
 ## The derived views — start here
 
 ### `comm_edges` — who sent how much to whom
-`src_rank INT, dst_rank INT, transport VARCHAR, unit VARCHAR, sends BIGINT, bytes BIGINT`
+`src_rank INT, dst_rank INT, transport VARCHAR, unit VARCHAR, scope VARCHAR, sends BIGINT, bytes BIGINT`
 
 One row per directed `(src_rank, dst_rank, transport)`. **Directed**: A→B and
 B→A are separate rows and must not be summed into one "pair" unless the question
-asked about a pair. `transport` is `verbs` (host-posted InfiniBand), `devx`
-(device-issued mlx5) or `nvlink`. `unit` says what `sends` counts — `messages`
-for the network transports, `accesses` for NVLink, and they are not comparable
-quantities. This is the table behind the communication matrix.
+asked about a pair. This is the table behind the communication matrix.
+
+`transport` — `verbs` (host-posted InfiniBand), `devx` (device-issued mlx5),
+`nvlink`, `ucx`.
+
+`unit` — **what `sends` counts, and the three values are not comparable
+quantities.** Never add `sends` across transports without saying so.
+
+| unit | on | one `sends` is |
+|---|---|---|
+| `messages` | `verbs`, `devx` | one posted work request |
+| `accesses` | `nvlink` | one recorded GPU access |
+| `datatype-units` | `ucx` | one UCP datatype count — **equal to bytes only for a contiguous 8-bit datatype**, so on any other datatype a reader is off by the type size |
+
+`scope` — `intra-node`, `network`, or `unknown`. **This is the general answer to
+"did this leave the node"**, not `transport_mix.scope` (which sees UCX only —
+see below). It is derived from node membership: `unknown` means the destination
+rank is unresolved, or one of the two ranks has no node identity, and guessing
+`network` there would inflate the very number the column exists to deflate.
+
+### `transport_mix` — which UCX transport actually carried it
+`rank INT, tl_name VARCHAR, dev_name VARCHAR, scope VARCHAR, op VARCHAR, ops BIGINT, out_bytes BIGINT, in_bytes BIGINT, advertised_bytes BIGINT, header_bytes BIGINT`
+
+**UCX ONLY.** This table is built from the UCT layer, so on a capture whose
+traffic is NCCL-over-ibverbs it sees only the MPI bootstrap — measured at
+579,914 B against 1.81 GB of IB, or 0.032%. Its `scope` is derived from
+`tl_name` (a shared-memory transport is intra-node, `rc_mlx5` is network), which
+is a different derivation from `comm_edges.scope` and agrees with it. Use
+`comm_edges.scope` for "did this leave the node"; use this one for "which
+transport", and for the byte split when the capture is UCX.
+
+**An empty `transport_mix` is ambiguous and `link_health` disambiguates it.**
+Check `uct_ops_patch_refused` first: non-zero means `ucx_deep` declined to
+instrument an unverified UCX version and the layer was never captured, which is
+not the same as a workload that sent nothing.
+
+Do not fold `advertised_bytes` into a transfer total: a rendezvous advertisement
+would count as a transfer and the peer's `Get*` then counts the same buffer
+again in the other direction. That is why these are four columns and not one.
+
+### `tag_flow` — what a UCP send became on the wire
+`rank INT, tag UBIGINT, status VARCHAR, ucp_sends BIGINT, ucp_units BIGINT, uct_ops BIGINT, uct_payload BIGINT, doors VARCHAR`
+
+Joins the UCP layer to the UCT layer per `(rank, tag)` — per tag rather than per
+message, because a tag is reused and pairing individual operations would need an
+ordering assumption between two layers that buffer independently.
+
+`status` is a closed vocabulary of three:
+
+| status | means |
+|---|---|
+| `tag_matched` | both layers present; `doors` names which hardware tag-matching door |
+| `no_tagged_wire_op` | a UCP send with no tagged UCT operation. **Not lost traffic** — the wire operations exist and simply carry no tag, because the message took a door that has none (a rendezvous RTS the peer pulls with `get_zcopy`). `transport_mix` accounts for those by transport instead. |
+| `wire_only` | a tagged wire operation with no UCP send — the receive side, or traffic the UCP layer did not originate |
+
+### `tag_recv_resolved` — the tag a `msg_recv` did not carry
+`rank INT, worker UINT, message UBIGINT, status VARCHAR, sender_tag UBIGINT, offered BIGINT, delivered BIGINT`
+
+`status` is `probe_matched` or `no_probe`. **`no_probe` is a real signal, not an
+error**: it means the receive consumed a message that no probe announced.
 
 ### `endpoint` — the same traffic, per queue pair
 `rank INT, qp_num UINT, lid UINT, peer_lid UINT, peer_qp_num UINT, peer_rank INT, transport VARCHAR, sends BIGINT, bytes BIGINT`
@@ -192,6 +248,14 @@ your answer and the Devices panel agree. `node_ix` is an *ordinal*, not a
 hostname: the capture stores only `node_hash`, a one-way FNV-1a of gethostname,
 so the machine's real name is not recoverable and you should not guess at one.
 Ranks on the same `node_ix` share a physical host.
+
+**`node_ix` is not rank order.** It is assigned by `dense_rank()` over the
+node_hash *value*, so ranks 0–3 can land on `n1` and ranks 4–7 on `n0`. Nothing
+is wrong when they do; do not read `n0` as "where rank 0 ran", and do not infer
+placement by comparing `node_ix` to `rank`.
+
+**`node_hash` is unsigned 64-bit.** A reader that renders it signed will show
+large hashes as negative. It is an identity to group by, never a quantity.
 
 `device` is NULL when a rank drives more than one GPU (`devices` says how many),
 which is a real state and not a gap — say so rather than picking one.
@@ -292,6 +356,23 @@ The ones worth knowing, by what they record:
 - `ib_queue_pair.qp_type`: 2 RC, 3 UC, 4 UD, 8 RAW_PACKET.
 - `gpu_access.op`: 0 Load, 1 Store, 2 Atomic, 3 Prefetch.
 - `gpu_access.space`: 0 Global, 1 Local, 2 Shared.
+
+**Do not hand-copy these into a query — join `vocabulary` instead.** The CSV
+export decodes enums and the Parquet export deliberately does not, and the
+derived layer is Parquet-only, so the export that carries `comm_edges` and
+`link_health` is exactly the one that shows `3` where the other shows
+`Prefetch`. The `vocabulary` table closes that gap and is checked against the
+schema on every build, so it cannot drift the way this list can:
+
+```sql
+SELECT v.name AS op, count(*) FROM gpu_access a
+JOIN vocabulary v ON v.vocab = 'MemOp' AND v.value = a.op
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+It covers `TimeKind`, `RecordKind`, `MemOp`, `MemSpace`, `EdgePredicate` and
+`KernelSource`. The ibverbs opcodes above are vendor constants rather than pcomm
+enums and are not in it.
 
 ## Worked examples
 

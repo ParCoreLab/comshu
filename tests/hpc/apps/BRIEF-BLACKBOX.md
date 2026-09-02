@@ -66,10 +66,59 @@ endpoint           rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,send
 object_access      owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact
 rank_identity      rank,node_ix,node_hash,device,devices,label
 run_provenance     rank,pid,argv,providers,build,images,env
+vocabulary         vocab,value,name
 transport_mix      rank,tl_name,dev_name,scope,op,ops,out_bytes,in_bytes,advertised_bytes,header_bytes
 tag_flow           rank,tag,status,ucp_sends,ucp_units,uct_ops,uct_payload,doors
 tag_recv_resolved  rank,worker,message,status,sender_tag,offered,delivered
 link_health        finding,severity,n,note
+```
+
+## The string vocabularies — ADDED 2026-09-02
+
+Four columns in the tables above hold strings from a **closed** set, and until
+now not one of those sets was written down anywhere a reader of this brief could
+see. Three separate round-2 studies filed that as a finding, correctly: `n = 0`
+on five rows and `n = 0` on twenty rows look equally clean when you cannot tell
+how many rows there should be.
+
+`comm_edges.unit` — **what `sends` counts, and the three values are not
+comparable.** Never add `sends` across transports without saying so.
+
+| unit | on transport | one `sends` is |
+|---|---|---|
+| `messages` | `verbs`, `devx` | one posted work request |
+| `accesses` | `nvlink` | one recorded GPU access |
+| `datatype-units` | `ucx` | one UCP datatype count — **equal to bytes only for a contiguous 8-bit datatype**. On any other datatype you are off by the type size. |
+
+`comm_edges.transport` — `verbs`, `devx`, `nvlink`, `ucx`.
+
+`tag_flow.status` — `tag_matched` (both layers present; `doors` says which
+hardware tag-matching door), `no_tagged_wire_op` (a UCP send with no *tagged*
+wire operation — **not lost traffic**: the message took a door that carries no
+tag, and `transport_mix` accounts for it by transport instead), `wire_only` (a
+tagged wire operation with no UCP send).
+
+`tag_recv_resolved.status` — `probe_matched`, `no_probe`. **`no_probe` is a real
+signal and not an error**: the receive consumed a message no probe announced.
+
+`link_health.finding` and `link_health.severity` — the full closed list is in the
+`link_health` paragraph below.
+
+`rank_identity.node_ix` — **not rank order.** It is a dense rank over the
+node_hash *value*, so ranks 0–3 may resolve to `n1` and ranks 4–7 to `n0`.
+Nothing is wrong when they do. `node_hash` itself is **unsigned 64-bit**; a
+reader that renders it signed shows large hashes as negative.
+
+The numeric vocabularies (`MemOp`, `MemSpace`, `TimeKind`, `RecordKind`,
+`EdgePredicate`, `KernelSource`) are in the `vocabulary` table, one row per
+`(vocab, value, name)`. That table exists because `--csv` decodes enums,
+`--parquet` does not, and the derived layer is Parquet-only — so the export that
+carries `comm_edges` is exactly the one that shows `3` where the other shows
+`Prefetch`. Join it rather than hard-coding a mapping:
+
+```sql
+SELECT v.name AS op, count(*) FROM gpu_access a
+JOIN vocabulary v ON v.vocab = 'MemOp' AND v.value = a.op GROUP BY 1;
 ```
 
 `transport_mix.scope` — ADDED 2026-08-30, and it was my omission rather than the
