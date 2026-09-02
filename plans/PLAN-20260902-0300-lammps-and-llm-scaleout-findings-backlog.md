@@ -187,41 +187,43 @@ this from the capture side.
 
 ---
 
-## Validation status, 2026-09-02
+## Validation status, 2026-09-02 — SUITE GREEN
 
-**The MN5 suite has NOT run against these commits.** Both Slurm controllers were
-down when it was submitted (`Slurmctld(primary) at sched1 is DOWN`, backup the
-same), so all 22 cases reported `no result (job SUBMIT_FAILED)`. The harness
-behaved correctly under that — manifest pinning meant no case inherited the
-previous run's PASS.
+`tests/hpc/run_on_mn5.sh` at commit `4357815`, job **45344718**: 18 of 18
+runnable cases PASS with fresh captures. The 4 SKIPs are the standing MN5
+environment ones (no `PeerMappingOverride=1`, no `nvidia_peermem`) and are
+unchanged. That validates the `kSchemaHash` change end to end — every capture on
+the board was taken fresh under the new schema.
 
-What DID get validated, and it is more than the fixtures:
+An earlier attempt found both Slurm controllers DOWN and returned a board of
+`SUBMIT_FAILED`. The harness handled it correctly: manifest pinning meant no
+case inherited the previous run's PASS.
 
-  * **The MN5 build succeeded** for all six providers across both toolchains
-    (gcc-11.4/NVBit/CUDA C++20/sm_90 for gpumem, gcc-13.2 for the rest). The
-    Invocation record, the engine changes and the CMake build-id target compile
-    on a compiler set du04 does not exercise.
-  * **Four real captures re-linked** with the new binary — hubspoke_ib (22 raw
-    tables, real verbs plus ib_qp_signalling), ucx_deep (21 raw, uct_binding),
-    nccl_p2p (9 raw, NVLink), lammps-ib-on (17 raw) — 13 derived tables each,
-    no failed query.
-  * **The edge_sizes roll-up invariant is exact on all four**, in both
-    directions, on real data rather than a 12-row fixture. edge_sizes genuinely
+**The first green board found a bug that green boards had been hiding.** Job
+45344306 passed while the `Invocation` record was missing from a third of its
+captures — see the commit that fixed it. Nothing looked, so nothing failed. The
+cross-cutting assertion added with the fix now runs on every case, which is
+visible on the board as +1 check per case (ucx_deep 13 -> 14, ib_pingpong
+19 -> 20). Skips do not increment that counter, so it ran and passed everywhere.
+
+Also verified, out of band, by re-linking four real captures with the new
+binary rather than relying on fixtures:
+
+  * **edge_sizes rolls up to comm_edges exactly** on hubspoke_ib, ucx_deep,
+    nccl_p2p and lammps-ib-on, in both directions, on real data. It genuinely
     splits: ucx_deep goes from 4 comm_edges rows to 28 size classes.
   * **link_health produces no false defects.** hubspoke_ib and ucx_deep come
-    back entirely clean; `uct_ops_patch_refused` correctly reads 0 where the
-    binding was accepted. nccl_p2p reports `unattributed_p2p_accesses`
-    = 1,179,948, and the PRE-CHANGE derived table from MN5 reports the identical
-    number — pre-existing, correctly classified, and never asserted by case 05.
+    back clean; `uct_ops_patch_refused` reads 0 where the binding was accepted.
+    nccl_p2p reports `unattributed_p2p_accesses` = 1,179,948 and the PRE-CHANGE
+    derived table from MN5 reports the identical number — pre-existing,
+    correctly classified, never asserted by case 05.
+  * **The multi-line `env` field survives the whole chain.** It is RFC-4180
+    quoted, python's csv reads 4 records where a naive line count says 319, and
+    sqlite's `.import` parses it correctly — so `ranks_seen` is not polluted by
+    it. Checked because a mis-import would have corrupted other assertions
+    silently.
   * **sql_check.sh's derived path works under the new `pcomm sql`**, which binds
-    the query as a TEMP VIEW instead of parenthesising it. That path splices
-    `params`/`ranks_seen` CTEs onto the front, so the statement becomes
-    `CREATE ... AS WITH params AS (...) SELECT ...`. Case 21 PASS with 13
-    assertions including all 8 derived ones; case 16 PASS with 13.
-
-Still unvalidated and needing the scheduler: the workloads themselves, the
-gpumem/NVBit and IBGDA cases, and any assertion whose capture must be taken
-fresh. Re-run `tests/hpc/run_on_mn5.sh` when the controller is back.
+    the query as a TEMP VIEW instead of parenthesising it.
 
 ---
 
