@@ -205,17 +205,33 @@ public:
     }
 
     // Take a reference on a slot IF it is still the live event it was, and
-    // return its id. The generation is what makes this safe against ABA: a slot
-    // freed and re-acquired between the load and the compare-exchange has a
-    // different generation, so the exchange fails and we report 0 rather than
-    // naming whichever event happens to occupy the slot now.
+    // return its id.
+    //
+    // THE GENERATION IS PINNED BEFORE THE LOOP, not re-read inside it, and that
+    // is the whole point. The obvious loop — reload `s` on a failed exchange and
+    // retry — accepts a slot that was released and re-acquired mid-loop: the
+    // retry sees refs == 1 again, succeeds, and returns the id of a DIFFERENT
+    // event. That is a confident wrong parent, which is worse than no parent.
+    // Comparing against the generation we started with turns it into a 0.
+    //
+    // WHAT THIS DOES NOT CLOSE, stated rather than implied. If the parent was
+    // already released and its slot already recycled BEFORE the first load
+    // here, nothing in the pointer distinguishes that from a live parent, and
+    // the id returned is the new occupant's. That window is inherent to an
+    // API that hands back a raw pointer, and NVIDIA's own pooled plugin has the
+    // same one — its refCount likewise cannot help a child that arrives after
+    // the count already reached zero. It is bounded by NCCL not passing a
+    // parentObj it has fully retired. When it does happen, the result shows up
+    // as nccl_proxy_op_unparented or as a proxy op on the wrong collective, and
+    // the first of those is counted in link_health.
     std::uint64_t id_of_live(Event* e) {
         if (!e)
             return 0;
-        std::uint64_t s = e->state.load(std::memory_order_acquire);
+        std::uint64_t       s = e->state.load(std::memory_order_acquire);
+        const std::uint64_t gen = s >> 32;
         for (;;) {
-            if ((s & 0xffffffffu) == 0)
-                return 0;  // already released — parent not observed
+            if ((s & 0xffffffffu) == 0 || (s >> 32) != gen)
+                return 0;  // released, or recycled under us — parent not observed
             if (e->state.compare_exchange_weak(s, s + 1, std::memory_order_acq_rel,
                                                std::memory_order_acquire))
                 break;
