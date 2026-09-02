@@ -1345,13 +1345,20 @@ static const char* nccl_redop_name(std::uint8_t raw) {
 // engine picked. They are also not the same number: a process is one rank in
 // the capture and may hold a different rank inside a communicator it joined —
 // which is the whole reason NCCL's rank is worth recording separately.
+//
+// `nccl_comm_hash` is NCCL's own hash of the same identity and is the join to
+// the profiler-plugin tables — NOT a duplicate of `comm_hash`, which is ours and
+// joins rank to rank. 0 means not derivable (ncclCommSplit, grow), so a join on
+// it must exclude 0.
 template<> struct Table<ncr::NcclComm> {
     static constexpr const char* name = "nccl_comm";
-    static constexpr const char* cols = "ticks,comm,comm_hash,nccl_rank,nranks,cuda_dev";
+    static constexpr const char* cols =
+        "ticks,comm,comm_hash,nccl_comm_hash,nccl_rank,nranks,cuda_dev";
     static void row(std::FILE* f, const Stamped<ncr::NcclComm>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%llu,%d,%d,%d", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.comm, (unsigned long long)s.payload.comm_hash, s.payload.rank,
-                     s.payload.nranks, s.payload.cuda_dev);
+        std::fprintf(f, "%llu,%u,%llu,%llu,%d,%d,%d", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.comm, (unsigned long long)s.payload.comm_hash,
+                     (unsigned long long)s.payload.nccl_comm_hash, s.payload.rank, s.payload.nranks,
+                     s.payload.cuda_dev);
     }
 };
 
@@ -1422,6 +1429,81 @@ template<> struct Table<ncr::NcclDevComm> {
     }
 };
 
+// --- the profiler-plugin tables ---------------------------------------------
+//
+// `nccl_comm_hash` is emitted as an unsigned decimal on every one of these, the
+// same width and signedness as on nccl_comm, because it is the join key across
+// all four and a column that changes representation between tables is a join
+// that silently returns nothing.
+
+template<> struct Table<ncr::NcclProfComm> {
+    static constexpr const char* name = "nccl_prof_comm";
+    static constexpr const char* cols = "ticks,nccl_comm_hash,comm_name,nnodes,nranks,nccl_rank";
+    static void                  row(std::FILE* f, const Stamped<ncr::NcclProfComm>& s,
+                                     const rec::InternDictionary& in) {
+        std::fprintf(f, "%llu,%llu,%s,%d,%d,%d", (unsigned long long)s.temporal.a.ticks,
+                     (unsigned long long)s.payload.nccl_comm_hash,
+                     csv_quoted(s.payload.comm_name ? in.str(s.payload.comm_name) : "").c_str(),
+                     s.payload.nnodes, s.payload.nranks, s.payload.rank);
+    }
+};
+
+// `algo` and `proto` are the reason this table exists, and they are emitted as
+// the strings NCCL gave rather than as handles: a reader asking "what algorithm
+// did this run use" should be able to GROUP BY the answer without joining to the
+// intern dictionary first.
+//
+// `ticks` and `end_ticks` are BOTH emitted, which no host-API nccl table does.
+// There the interval is an enqueue and its width means nothing useful; here it
+// is the collective's own lifetime inside NCCL, so the duration is a fact worth
+// having and dropping the end would throw it away.
+//
+// `planned_bytes` is deliberately ABSENT. It would have to come from the proxy
+// ops, and summing them here would present a plan as a measurement — see
+// nccl_proxy_op below.
+template<> struct Table<ncr::NcclCollExec> {
+    static constexpr const char* name = "nccl_coll_exec";
+    static constexpr const char* cols = "ticks,end_ticks,nccl_comm_hash,event_id,parent_event_id,"
+                                        "func,algo,proto,datatype,count,root,n_channels,n_warps,"
+                                        "seq_number";
+    static void row(std::FILE* f, const Stamped<ncr::NcclCollExec>& s,
+                    const rec::InternDictionary& in) {
+        auto t = [&in](core::Handle h) { return csv_quoted(h ? in.str(h) : ""); };
+        std::fprintf(f, "%llu,%llu,%llu,%llu,%llu,%s,%s,%s,%s,%llu,%d,%u,%u,%llu",
+                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
+                     (unsigned long long)s.payload.nccl_comm_hash,
+                     (unsigned long long)s.payload.event_id,
+                     (unsigned long long)s.payload.parent_event_id, t(s.payload.func).c_str(),
+                     t(s.payload.algo).c_str(), t(s.payload.proto).c_str(),
+                     t(s.payload.datatype).c_str(), (unsigned long long)s.payload.count,
+                     s.payload.root, s.payload.n_channels, s.payload.n_warps,
+                     (unsigned long long)s.payload.seq_number);
+    }
+};
+
+// `planned_bytes` is n_steps x chunk_size, and the name is the whole point: it
+// is what NCCL SCHEDULED, not what a completion confirmed. The column exists
+// because every reader would otherwise multiply the two, and it is named
+// `planned_` because the first reader to call it `bytes` would put it on a
+// bandwidth axis next to ib_post_send's byte counts, which ARE completions.
+template<> struct Table<ncr::NcclProxyOp> {
+    static constexpr const char* name = "nccl_proxy_op";
+    static constexpr const char* cols = "ticks,end_ticks,event_id,parent_event_id,dir,peer,"
+                                        "channel_id,n_steps,chunk_size,planned_bytes,pid";
+    static void row(std::FILE* f, const Stamped<ncr::NcclProxyOp>& s,
+                    const rec::InternDictionary&) {
+        const auto planned =
+            static_cast<long long>(s.payload.n_steps) * static_cast<long long>(s.payload.chunk_size);
+        std::fprintf(f, "%llu,%llu,%llu,%llu,%s,%d,%u,%d,%d,%lld,%d",
+                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
+                     (unsigned long long)s.payload.event_id,
+                     (unsigned long long)s.payload.parent_event_id,
+                     s.payload.is_send ? "send" : "recv", s.payload.peer,
+                     (unsigned)s.payload.channel_id, s.payload.n_steps, s.payload.chunk_size,
+                     planned, s.payload.pid);
+    }
+};
+
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
     std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, GpuDevice,
@@ -1437,7 +1519,8 @@ using TableRecords =
                ucr::UcxWorkerAddress, ucr::UcxEpConnection, ucr::UcxRkey, ucr::UcxRkeyPack,
                udr::UctBinding, udr::UctIface,
                udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective, ncr::NcclP2p,
-               ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm>;
+               ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm, ncr::NcclProfComm,
+               ncr::NcclCollExec, ncr::NcclProxyOp>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.

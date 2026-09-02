@@ -24,6 +24,12 @@
     ncclCommWindowRegister;
     ncclCommWindowDeregister;
     ncclDevCommCreate;
+    /* Not an interposer — a DATA symbol NCCL dlsym's out of this library after
+     * dlopening it by the path in NCCL_PROFILER_PLUGIN. Hiding it does not
+     * degrade the capture, it removes the profiler door entirely and silently:
+     * NCCL falls through v4 to v3 to v2, finds nothing, logs "is unsupported"
+     * at INFO level only, and runs on. See nccl_profiler_plugin.cpp. */
+    ncclProfiler_v4;
     pcomm_create_provider;
     pcomm_abi_version;
   local:

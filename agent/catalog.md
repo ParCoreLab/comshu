@@ -12,7 +12,7 @@ plausible number that nobody computed is the one failure mode that matters here.
 
 ## The rules
 
-**1. Query the derived views before the raw tables.** The twelve views at the top
+**1. Query the derived views before the raw tables.** The fifteen views at the top
 of the next section are the answer to most questions. The raw `ib_*` / `gpu_*` /
 `mlx5_*` tables are the record stream as captured; reach for them only when the
 derived layer genuinely lacks the column you need.
@@ -190,6 +190,47 @@ ordering assumption between two layers that buffer independently.
 `status` is `probe_matched` or `no_probe`. **`no_probe` is a real signal, not an
 error**: it means the receive consumed a message that no probe announced.
 
+### `nccl_execution` — what NCCL CHOSE, not what was asked for
+`rank INT, nccl_comm_hash UBIGINT, nccl_rank INT, nranks INT, nnodes INT, func VARCHAR, algo VARCHAR, proto VARCHAR, datatype VARCHAR, count UBIGINT, n_channels UTINYINT, n_warps UTINYINT, seq_number UBIGINT, event_id UBIGINT, parent_event_id UBIGINT, begin_ticks UBIGINT, end_ticks UBIGINT`
+
+**This is the only table that answers "which algorithm did this run use".**
+`nccl_collective` is what the application asked for; this is what NCCL decided
+inside the enqueue, reported by its own profiler plugin. `algo` is `RING`,
+`TREE`, `NVLS`, `COLLNETCHAIN`…; `proto` is `SIMPLE`, `LL`, `LL128`.
+
+Three things to get right:
+
+- **The strings are UPPERCASE.** `NCCL_ALGO`/`NCCL_PROTO` are spelled
+  mixed-case (`Ring`, `Simple`), so comparing this to `run_provenance.env`
+  requires folding case.
+- **`nranks`/`nnodes` may be NULL.** That means the communicator was built by
+  `ncclCommSplit` or the grow path, whose `commHash` we cannot derive — the
+  algorithm is still true, the rank layout is just unknown. `link_health`
+  counts these as `nccl_exec_comm_unresolved`.
+- **`begin_ticks`/`end_ticks` are NOT `nccl_collective`'s interval.** That one
+  is the host call — an enqueue, milliseconds ahead of the work. This one is
+  the operation's own lifetime inside NCCL. Do not present either as the other.
+
+**An empty table is ambiguous and `link_health` disambiguates it.** If
+`nccl_profiler_door_shut > 0` the plugin never loaded, so the run made no
+statement about its algorithm — that is not the same as a run with no
+collectives.
+
+### `nccl_peer_traffic` — where a collective became per-peer traffic
+`rank INT, nccl_comm_hash UBIGINT, func VARCHAR, algo VARCHAR, proto VARCHAR, peer INT, dir VARCHAR, channel_id UINT, n_steps INT, chunk_size INT, planned_bytes BIGINT, event_id UBIGINT, parent_event_id UBIGINT, begin_ticks UBIGINT, end_ticks UBIGINT`
+
+One row per NCCL proxy operation, attributed to its collective by **NCCL's own
+parent id** — not by our inference from timing or size. This is what makes
+"which call produced this movement" answerable at all.
+
+- **`planned_bytes` is `n_steps * chunk_size`: a SCHEDULE, not a completion.**
+  It is not comparable to `ib_post_send.bytes`, which are posts that happened.
+  Putting the two on one axis invents a measurement.
+- **Empty on a single node is CORRECT, not a defect.** Proxy operations exist
+  only for traffic that goes through NCCL's CPU proxy. Intra-node NVLink/P2P
+  movement and device-initiated (GIN/IBGDA) traffic never reach it, so they have
+  no row here — while their `nccl_execution` rows are complete.
+
 ### `endpoint` — the same traffic, per queue pair
 `rank INT, qp_num UINT, lid UINT, peer_lid UINT, peer_qp_num UINT, peer_rank INT, transport VARCHAR, sends BIGINT, bytes BIGINT`
 
@@ -326,17 +367,23 @@ The vocabulary is closed. These are all of them:
 | `wr_flight_unexplained_qps` | defect | QPs completing fewer WRs than they post and not saying why |
 | `wr_flight_backwards` | defect | a completion timed before its own send |
 | `uct_ops_patch_refused` | defect | `ucx_deep` declined an unverified UCX — **`transport_mix` and `uct_send` are empty for those ranks** |
+| `nccl_exec_comm_unresolved` | defect | an `nccl_coll_exec` row whose communicator is not in `nccl_comm` — `ncclCommSplit` and the grow path have no derivable `commHash` |
+| `nccl_profiler_door_shut` | defect | NCCL collectives recorded but **no execution rows at all** — the profiler plugin did not load, and NCCL reports that only at INFO level |
 | `kernel_rows_submission_only` | note | kernels timed at launch, not execution — excluded from the timeline |
 | `wr_flight_unretired_selective` | note | unretired posts on QPs that declared `sq_sig_all = 0` |
 | `wr_flight_selective_signalling_qps` | note | those QPs themselves — certainly selective signalling |
 | `uct_ops_patch_forced` | note | `PCOMM_UCX_DEEP_FORCE` overrode the version guard |
+| `nccl_proxy_op_unparented` | note | proxy ops naming no recorded collective — a point-to-point parent, tracked for linkage but not recorded |
+
 
 Check this before trusting an unusual answer: `unresolved_sends > 0` explains
 missing edges, `wr_flight_unretired > 0` explains why `wr_flow` has fewer rows
 than `ib_post_send`, and **`uct_ops_patch_refused > 0` is the one to look for
 whenever `transport_mix` comes back empty** — it means the answer was withheld,
-not that the workload sent nothing. When a number looks strange, the explanation
-is often here.
+not that the workload sent nothing. **`nccl_profiler_door_shut > 0` is the same
+shape**: `nccl_execution` is empty because the door never opened, not because the
+workload chose no algorithm. When a number looks strange, the explanation is
+often here.
 
 ## The raw record tables
 

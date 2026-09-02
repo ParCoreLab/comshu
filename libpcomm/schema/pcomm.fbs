@@ -892,13 +892,22 @@ struct UctBinding {
 // type 900, Entity. `comm_hash` is FNV-1a of the ncclUniqueId and is EQUAL on
 // every rank of the communicator; the comm pointer is not, so the hash is the
 // only cross-rank join.
+//
+// `nccl_comm_hash` is a different hash of the same identity and is NOT
+// interchangeable with it: it is NCCL's own comm->commHash, recomputed by us,
+// and it is the only name the profiler plugin is ever told — so it is the
+// cross-LAYER join to nccl_prof_comm and nccl_coll_exec. 0 means NOT DERIVABLE
+// (ncclCommSplit and the grow path mix their hash from a parent), never "no
+// communicator"; a join on it must exclude 0 rather than match it.
 struct NcclComm {
   temporal:Temporal;
   comm:uint32;
   comm_hash:uint64;
+  nccl_comm_hash:uint64;
   rank:int32;
   nranks:int32;
   cuda_dev:int32;
+  pad:int32;
 }
 
 // type 902, Event. `count` is ELEMENTS, not bytes, and the product with the
@@ -959,4 +968,85 @@ struct NcclDevComm {
   temporal:Temporal;
   comm:uint32;
   pad:int32;
+}
+
+// ---------------------------------------------------------------------------
+// NCCL profiler plugin, 912-916. What NCCL DECIDED, from callbacks inside its
+// own enqueue and proxy machinery — as opposed to 900-910 above, which is what
+// the application asked for.
+//
+// These are a separate set of records rather than columns on the host-API rows
+// because they come from a different mechanism at a different time: a run
+// without NCCL_PROFILER_PLUGIN wired up has complete 900-910 tables and empty
+// ones here, and a merged table could not say which of its columns were
+// meaningful. See providers/nccl/nccl_records.hpp.
+// ---------------------------------------------------------------------------
+
+// type 912, Artifact. The bridge row: `nccl_comm_hash` is the value NCCL handed
+// the plugin, and it joins to the identically-named column on NcclComm. Without
+// it a profiler event names no communicator, rank layout or device.
+struct NcclProfComm {
+  temporal:Temporal;
+  comm_name:uint32;
+  nccl_comm_hash:uint64;
+  nnodes:int32;
+  nranks:int32;
+  rank:int32;
+  pad:int32;
+}
+
+// type 914, Event. The collective as NCCL executed it, carrying the algorithm
+// and protocol it chose.
+//
+// THE TEMPORAL IS NOT NcclCollective's. That one is the duration of the host
+// call — an enqueue. This one runs from NCCL's startEvent to its stopEvent for
+// the collective itself. Reporting either as the other invents a number.
+//
+// `algo` and `proto` are NCCL's own strings, interned as given and never
+// bucketed: the set is NCCL's to extend, and an unrecognised name must survive
+// into the capture rather than collapse into "Other". They arrive UPPERCASED
+// ("RING", "SIMPLE") while NCCL_ALGO/NCCL_PROTO are spelled mixed-case, so any
+// comparison against what a run requested has to fold case.
+//
+// `root` is NCCL's value and NOT NcclCollective's convention: that record uses
+// -1 for a rootless operation because 0 is a valid rank, while NCCL reports 0.
+// The two records must not be compared on this column.
+//
+// `parent_event_id` is 0 for "parent not observed" — the parent's event family
+// was not in the activation mask — and never for "root".
+struct NcclCollExec {
+  temporal:Temporal;
+  func:uint32;
+  algo:uint32;
+  proto:uint32;
+  datatype:uint32;
+  nccl_comm_hash:uint64;
+  event_id:uint64;
+  parent_event_id:uint64;
+  seq_number:uint64;
+  count:uint64;
+  root:int32;
+  n_channels:uint8;
+  n_warps:uint8;
+  pad:uint16;
+}
+
+// type 916, Event. Where a collective becomes per-peer traffic: the finest
+// granularity at which NCCL names a peer, linked to its collective by
+// `parent_event_id` — NCCL's own linkage, not a reconstruction.
+//
+// n_steps * chunk_size is what NCCL PLANNED, not bytes a completion confirmed.
+// Device-initiated traffic never reaches the CPU proxy and so has no row here.
+// channel_id and is_send are widened to 32 bits rather than padded to the
+// struct's alignment — the same trade NcclGroup's `edge` makes.
+struct NcclProxyOp {
+  temporal:Temporal;
+  event_id:uint64;
+  parent_event_id:uint64;
+  peer:int32;
+  n_steps:int32;
+  chunk_size:int32;
+  pid:int32;
+  channel_id:uint32;
+  is_send:uint32;
 }

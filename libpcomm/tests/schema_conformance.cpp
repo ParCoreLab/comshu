@@ -105,6 +105,11 @@ PCOMM_SCHEMA_MATCH(nr::NcclGroup, fb::NcclGroup);
 PCOMM_SCHEMA_MATCH(nr::NcclWindow, fb::NcclWindow);
 PCOMM_SCHEMA_MATCH(nr::NcclDevComm, fb::NcclDevComm);
 
+// NCCL profiler plugin, 912-916.
+PCOMM_SCHEMA_MATCH(nr::NcclProfComm, fb::NcclProfComm);
+PCOMM_SCHEMA_MATCH(nr::NcclCollExec, fb::NcclCollExec);
+PCOMM_SCHEMA_MATCH(nr::NcclProxyOp, fb::NcclProxyOp);
+
 // The file framing is on disk in every capture, so it is held to the same
 // standard as the records: if StreamHeader and the schema disagree, every
 // reader misreads the first 32 bytes of every stream and then misreads the
@@ -325,9 +330,15 @@ int main() {
         c.payload.rank = 3;
         c.payload.nranks = 8;
         c.payload.cuda_dev = 2;
+        // The two hashes are given DIFFERENT values on purpose. They are
+        // adjacent uint64s of the same identity, so a field-order slip between
+        // record and schema would be invisible if both held the same number —
+        // and the cross-layer join would then silently key on the wrong one.
+        c.payload.nccl_comm_hash = 0xFEDCBA9876543210ull;
+        c.payload.pad = 0;
         fb::NcclComm f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9001),
                                     fb::TimePoint(2, 0x9002), 0),
-                       0x11, 0x0123456789ABCDEFull, 3, 8, 2);
+                       0x11, 0x0123456789ABCDEFull, 0xFEDCBA9876543210ull, 3, 8, 2, 0);
         expect_identical("NcclComm", &c, &f, sizeof(c));
     }
     {
@@ -397,6 +408,60 @@ int main() {
                                        fb::TimePoint(2, 0x900C), 0),
                           0x11, 0);
         expect_identical("NcclDevComm", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclProfComm> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9101}, {2, 0x9102});
+        c.payload.comm_name = 0x77;
+        c.payload.nccl_comm_hash = 0xFEDCBA9876543210ull;
+        c.payload.nnodes = 4;
+        c.payload.nranks = 16;
+        c.payload.rank = 9;
+        c.payload.pad = 0;
+        fb::NcclProfComm f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9101),
+                                        fb::TimePoint(2, 0x9102), 0),
+                           0x77, 0xFEDCBA9876543210ull, 4, 16, 9, 0);
+        expect_identical("NcclProfComm", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclCollExec> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9103}, {2, 0x9104});
+        // Four adjacent handles that a field-order slip would swap silently, so
+        // each gets its own value rather than a shared placeholder.
+        c.payload.func = 0x81;
+        c.payload.algo = 0x82;
+        c.payload.proto = 0x83;
+        c.payload.datatype = 0x84;
+        c.payload.nccl_comm_hash = 0xFEDCBA9876543210ull;
+        c.payload.event_id = 42;
+        c.payload.parent_event_id = 41;
+        c.payload.seq_number = 7;
+        c.payload.count = 262144;
+        c.payload.root = -1;
+        c.payload.n_channels = 4;
+        c.payload.n_warps = 8;
+        c.payload.pad = 0;
+        fb::NcclCollExec f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9103),
+                                        fb::TimePoint(2, 0x9104), 0),
+                           0x81, 0x82, 0x83, 0x84, 0xFEDCBA9876543210ull, 42, 41, 7, 262144, -1, 4,
+                           8, 0);
+        expect_identical("NcclCollExec", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclProxyOp> c{};
+        c.temporal = pcomm::core::Temporal::interval({1, 0x9105}, {2, 0x9106});
+        c.payload.event_id = 43;
+        c.payload.parent_event_id = 42;
+        c.payload.peer = 3;
+        c.payload.n_steps = 8;
+        c.payload.chunk_size = 524288;
+        c.payload.pid = 12345;
+        c.payload.channel_id = 2;
+        c.payload.is_send = 1;
+        fb::NcclProxyOp f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9105),
+                                       fb::TimePoint(2, 0x9106), 0),
+                          43, 42, 3, 8, 524288, 12345, 2, 1);
+        expect_identical("NcclProxyOp", &c, &f, sizeof(c));
     }
     {
         Stamped<ur::UcxTagProbe> c{};

@@ -88,6 +88,16 @@ target_link_libraries(intern_table_test PRIVATE pcomm::pcomm)
 pcomm_add_test(intern_table_test)
 add_test(NAME intern_table COMMAND intern_table_test)
 
+# NCCL's own commHash, which is the key the profiler-plugin rows join on. NOT
+# gated on PCOMM_PROVIDER_NCCL and deliberately so: the header pulls in no NCCL
+# and no CUDA, so this runs in every configuration, including the ones where the
+# provider is switched off. A join key that silently stops matching is the kind
+# of defect that only shows up as an empty table three machines later.
+add_executable(nccl_comm_hash_test nccl_comm_hash_test.cpp)
+target_include_directories(nccl_comm_hash_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/nccl)
+pcomm_add_test(nccl_comm_hash_test)
+add_test(NAME nccl_comm_hash COMMAND nccl_comm_hash_test)
+
 # The MN5 suite's cross-cutting assertions, run against synthetic captures that
 # contain a known defect. Every other test here checks the tool; this one checks
 # the *instruments* — an assertion that has been relaxed into silence looks

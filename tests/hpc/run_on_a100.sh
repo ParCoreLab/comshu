@@ -93,7 +93,12 @@ rsync -az --delete --exclude build --exclude 'build-*' --exclude .git \
 # ---- build ----------------------------------------------------------------
 if [ "$do_build" -eq 1 ]; then
   echo "== build (mlx5dv provider)"
-  rsh "cd $RDIR &&
+  # `set -o pipefail` is not decoration. `cmake --build | tail -3` exits with
+  # TAIL's status, so a failed build returned 0, the `||` below never fired, and
+  # the runner went on to execute cases against the previous binary. That is
+  # finding 14 of the round-2 studies, word for word, and it was still here in
+  # this file after being fixed in wait_and_run_mn5.sh.
+  rsh "set -o pipefail; cd $RDIR &&
        cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_MLX5DV=ON >/dev/null &&
        cmake --build build -j 2>&1 | tail -3" || {
     echo "run_on_a100.sh: build failed" >&2; exit 1; }

@@ -16,11 +16,13 @@
 #include "pcomm/rec/intern_table.hpp"
 #include "pcomm/tracer.hpp"
 
+#include "nccl_comm_hash.hpp"
 #include "nccl_event_source.hpp"
 #include "nccl_records.hpp"
 
 namespace nccl {
 namespace rr = pcomm::providers::nccl::records;
+using pcomm::providers::nccl::nccl_comm_hash;
 using pcomm::rec::InternDomain;
 
 static pcomm::rec::Recorder<>& rec() {
@@ -98,15 +100,22 @@ static std::uint64_t fnv1a(const void* data, std::size_t len) {
 // handed, because ncclCommInitRankConfig can be given a config that changes the
 // effective rank layout, and because a communicator built by ncclCommSplit (a
 // door not hooked here) would otherwise carry nothing at all.
-static void record_comm(ncclComm_t comm, std::uint64_t comm_hash, std::uint64_t begin,
-                        std::uint64_t end) {
+//
+// `nccl_hash` is NCCL's own commHash, recomputed from the same ncclUniqueId (see
+// nccl_comm_hash.hpp). It is passed in rather than derived here because the two
+// init doors below are the only places an ncclUniqueId is visible, and a
+// communicator that reaches this function by any other route must record 0 —
+// "not derivable" — rather than a hash of bytes it never saw.
+static void record_comm(ncclComm_t comm, std::uint64_t comm_hash, std::uint64_t nccl_hash,
+                        std::uint64_t begin, std::uint64_t end) {
     if (!comm)
         return;
     int rank = -1, nranks = -1, dev = -1;
     pncclCommUserRank(comm, &rank);
     pncclCommCount(comm, &nranks);
     pncclCommCuDevice(comm, &dev);
-    rec().record(span(begin, end), rr::NcclComm{{}, {}, h(comm), comm_hash, rank, nranks, dev});
+    rec().record(span(begin, end),
+                 rr::NcclComm{{}, {}, h(comm), comm_hash, nccl_hash, rank, nranks, dev, 0});
 }
 
 static void record_coll(rr::CollOp op, const void* sendbuff, void* recvbuff, std::size_t count,
@@ -138,13 +147,15 @@ Profiler::Profiler() {
     register_post<comm_init_rank_tag>(
         [](ncclResult_t res, ncclComm_t* comm, int, ncclUniqueId id, int, auto begin, auto end) {
             if (res == ncclSuccess && comm && *comm)
-                record_comm(*comm, fnv1a(id.internal, sizeof(id.internal)), begin, end);
+                record_comm(*comm, fnv1a(id.internal, sizeof(id.internal)),
+                            nccl_comm_hash(id.internal, sizeof(id.internal)), begin, end);
         });
     register_post<comm_init_rank_config_tag>([](ncclResult_t res, ncclComm_t* comm, int,
                                                 ncclUniqueId id, int, ncclConfig_t*, auto begin,
                                                 auto end) {
         if (res == ncclSuccess && comm && *comm)
-            record_comm(*comm, fnv1a(id.internal, sizeof(id.internal)), begin, end);
+            record_comm(*comm, fnv1a(id.internal, sizeof(id.internal)),
+                        nccl_comm_hash(id.internal, sizeof(id.internal)), begin, end);
     });
     // PRE, not post: after the call the communicator is gone and interning its
     // pointer would name a dead object — and worse, the allocator is free to

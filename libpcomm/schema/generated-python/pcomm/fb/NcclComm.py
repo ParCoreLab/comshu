@@ -11,7 +11,7 @@ class NcclComm(object):
 
     @classmethod
     def SizeOf(cls):
-        return 80
+        return 88
 
     # NcclComm
     def Init(self, buf, pos):
@@ -27,18 +27,23 @@ class NcclComm(object):
     # NcclComm
     def CommHash(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(56))
     # NcclComm
-    def Rank(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
+    def NcclCommHash(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
     # NcclComm
-    def Nranks(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(68))
+    def Rank(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
     # NcclComm
-    def CudaDev(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
+    def Nranks(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
+    # NcclComm
+    def CudaDev(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
+    # NcclComm
+    def Pad(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
 
-def CreateNcclComm(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, comm, commHash, rank, nranks, cudaDev):
-    builder.Prep(8, 80)
-    builder.Pad(4)
+def CreateNcclComm(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, comm, commHash, ncclCommHash, rank, nranks, cudaDev, pad):
+    builder.Prep(8, 88)
+    builder.PrependInt32(pad)
     builder.PrependInt32(cudaDev)
     builder.PrependInt32(nranks)
     builder.PrependInt32(rank)
+    builder.PrependUint64(ncclCommHash)
     builder.PrependUint64(commHash)
     builder.Pad(4)
     builder.PrependUint32(comm)

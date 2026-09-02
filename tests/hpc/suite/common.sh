@@ -95,6 +95,26 @@ unset _pdir _so _pcomm_has_so _pcomm_provider_path
 # gpumem build does) still resolves it.
 export LD_LIBRARY_PATH="$PCOMM_BUILD/libpcomm:${LD_LIBRARY_PATH:-}"
 
+# NCCL's profiler plugin door — the SAME library as the interposer.
+#
+# NCCL passes this value straight to dlopen when it contains a '/'
+# (reference/nccl-git/src/plugin/plugin_open.cc:79-95), so pointing it at the
+# already-LD_PRELOADed libnccl_trace.so gets the resident handle back: one
+# process, one recorder, and the plugin callbacks share the interposer's state.
+# Without this the 900-910 tables are complete and the 912-916 ones are empty —
+# the capture still says what the application ASKED for, and says nothing about
+# what NCCL CHOSE.
+#
+# Set only when the library actually exists, and never over a caller's value. A
+# path to a missing file is not a loud failure: NCCL logs "Could not find" at
+# INFO level, which nothing reads, and runs on.
+if [ -z "${NCCL_PROFILER_PLUGIN:-}" ]; then
+  for _so in "$PCOMM_BUILD"/providers/nccl/libnccl_trace.so; do
+    [ -e "$_so" ] && export NCCL_PROFILER_PLUGIN="$_so"
+  done
+  unset _so
+fi
+
 # NVIDIA HPC SDK. MN5's path was hardcoded here, and the SDK version and CUDA
 # version were baked into the NCCL/NVSHMEM paths with it — which silently broke
 # the moment a case ran anywhere else. On du04 the SDK is 25.9 under /opt with

@@ -3782,10 +3782,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclComm FLATBUFFERS_FINAL_CLASS {
   uint32_t comm_;
   int32_t padding0__;
   uint64_t comm_hash_;
+  uint64_t nccl_comm_hash_;
   int32_t rank_;
   int32_t nranks_;
   int32_t cuda_dev_;
-  int32_t padding1__;
+  int32_t pad_;
 
  public:
   NcclComm()
@@ -3793,24 +3794,24 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclComm FLATBUFFERS_FINAL_CLASS {
         comm_(0),
         padding0__(0),
         comm_hash_(0),
+        nccl_comm_hash_(0),
         rank_(0),
         nranks_(0),
         cuda_dev_(0),
-        padding1__(0) {
+        pad_(0) {
     (void)padding0__;
-    (void)padding1__;
   }
-  NcclComm(const pcomm::fb::Temporal &_temporal, uint32_t _comm, uint64_t _comm_hash, int32_t _rank, int32_t _nranks, int32_t _cuda_dev)
+  NcclComm(const pcomm::fb::Temporal &_temporal, uint32_t _comm, uint64_t _comm_hash, uint64_t _nccl_comm_hash, int32_t _rank, int32_t _nranks, int32_t _cuda_dev, int32_t _pad)
       : temporal_(_temporal),
         comm_(::flatbuffers::EndianScalar(_comm)),
         padding0__(0),
         comm_hash_(::flatbuffers::EndianScalar(_comm_hash)),
+        nccl_comm_hash_(::flatbuffers::EndianScalar(_nccl_comm_hash)),
         rank_(::flatbuffers::EndianScalar(_rank)),
         nranks_(::flatbuffers::EndianScalar(_nranks)),
         cuda_dev_(::flatbuffers::EndianScalar(_cuda_dev)),
-        padding1__(0) {
+        pad_(::flatbuffers::EndianScalar(_pad)) {
     (void)padding0__;
-    (void)padding1__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -3821,6 +3822,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclComm FLATBUFFERS_FINAL_CLASS {
   uint64_t comm_hash() const {
     return ::flatbuffers::EndianScalar(comm_hash_);
   }
+  uint64_t nccl_comm_hash() const {
+    return ::flatbuffers::EndianScalar(nccl_comm_hash_);
+  }
   int32_t rank() const {
     return ::flatbuffers::EndianScalar(rank_);
   }
@@ -3830,8 +3834,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclComm FLATBUFFERS_FINAL_CLASS {
   int32_t cuda_dev() const {
     return ::flatbuffers::EndianScalar(cuda_dev_);
   }
+  int32_t pad() const {
+    return ::flatbuffers::EndianScalar(pad_);
+  }
 };
-FLATBUFFERS_STRUCT_END(NcclComm, 80);
+FLATBUFFERS_STRUCT_END(NcclComm, 88);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclCollective FLATBUFFERS_FINAL_CLASS {
  private:
@@ -4095,6 +4102,224 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclDevComm FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(NcclDevComm, 56);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclProfComm FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t comm_name_;
+  int32_t padding0__;
+  uint64_t nccl_comm_hash_;
+  int32_t nnodes_;
+  int32_t nranks_;
+  int32_t rank_;
+  int32_t pad_;
+
+ public:
+  NcclProfComm()
+      : temporal_(),
+        comm_name_(0),
+        padding0__(0),
+        nccl_comm_hash_(0),
+        nnodes_(0),
+        nranks_(0),
+        rank_(0),
+        pad_(0) {
+    (void)padding0__;
+  }
+  NcclProfComm(const pcomm::fb::Temporal &_temporal, uint32_t _comm_name, uint64_t _nccl_comm_hash, int32_t _nnodes, int32_t _nranks, int32_t _rank, int32_t _pad)
+      : temporal_(_temporal),
+        comm_name_(::flatbuffers::EndianScalar(_comm_name)),
+        padding0__(0),
+        nccl_comm_hash_(::flatbuffers::EndianScalar(_nccl_comm_hash)),
+        nnodes_(::flatbuffers::EndianScalar(_nnodes)),
+        nranks_(::flatbuffers::EndianScalar(_nranks)),
+        rank_(::flatbuffers::EndianScalar(_rank)),
+        pad_(::flatbuffers::EndianScalar(_pad)) {
+    (void)padding0__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t comm_name() const {
+    return ::flatbuffers::EndianScalar(comm_name_);
+  }
+  uint64_t nccl_comm_hash() const {
+    return ::flatbuffers::EndianScalar(nccl_comm_hash_);
+  }
+  int32_t nnodes() const {
+    return ::flatbuffers::EndianScalar(nnodes_);
+  }
+  int32_t nranks() const {
+    return ::flatbuffers::EndianScalar(nranks_);
+  }
+  int32_t rank() const {
+    return ::flatbuffers::EndianScalar(rank_);
+  }
+  int32_t pad() const {
+    return ::flatbuffers::EndianScalar(pad_);
+  }
+};
+FLATBUFFERS_STRUCT_END(NcclProfComm, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclCollExec FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t func_;
+  uint32_t algo_;
+  uint32_t proto_;
+  uint32_t datatype_;
+  uint64_t nccl_comm_hash_;
+  uint64_t event_id_;
+  uint64_t parent_event_id_;
+  uint64_t seq_number_;
+  uint64_t count_;
+  int32_t root_;
+  uint8_t n_channels_;
+  uint8_t n_warps_;
+  uint16_t pad_;
+
+ public:
+  NcclCollExec()
+      : temporal_(),
+        func_(0),
+        algo_(0),
+        proto_(0),
+        datatype_(0),
+        nccl_comm_hash_(0),
+        event_id_(0),
+        parent_event_id_(0),
+        seq_number_(0),
+        count_(0),
+        root_(0),
+        n_channels_(0),
+        n_warps_(0),
+        pad_(0) {
+  }
+  NcclCollExec(const pcomm::fb::Temporal &_temporal, uint32_t _func, uint32_t _algo, uint32_t _proto, uint32_t _datatype, uint64_t _nccl_comm_hash, uint64_t _event_id, uint64_t _parent_event_id, uint64_t _seq_number, uint64_t _count, int32_t _root, uint8_t _n_channels, uint8_t _n_warps, uint16_t _pad)
+      : temporal_(_temporal),
+        func_(::flatbuffers::EndianScalar(_func)),
+        algo_(::flatbuffers::EndianScalar(_algo)),
+        proto_(::flatbuffers::EndianScalar(_proto)),
+        datatype_(::flatbuffers::EndianScalar(_datatype)),
+        nccl_comm_hash_(::flatbuffers::EndianScalar(_nccl_comm_hash)),
+        event_id_(::flatbuffers::EndianScalar(_event_id)),
+        parent_event_id_(::flatbuffers::EndianScalar(_parent_event_id)),
+        seq_number_(::flatbuffers::EndianScalar(_seq_number)),
+        count_(::flatbuffers::EndianScalar(_count)),
+        root_(::flatbuffers::EndianScalar(_root)),
+        n_channels_(::flatbuffers::EndianScalar(_n_channels)),
+        n_warps_(::flatbuffers::EndianScalar(_n_warps)),
+        pad_(::flatbuffers::EndianScalar(_pad)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t func() const {
+    return ::flatbuffers::EndianScalar(func_);
+  }
+  uint32_t algo() const {
+    return ::flatbuffers::EndianScalar(algo_);
+  }
+  uint32_t proto() const {
+    return ::flatbuffers::EndianScalar(proto_);
+  }
+  uint32_t datatype() const {
+    return ::flatbuffers::EndianScalar(datatype_);
+  }
+  uint64_t nccl_comm_hash() const {
+    return ::flatbuffers::EndianScalar(nccl_comm_hash_);
+  }
+  uint64_t event_id() const {
+    return ::flatbuffers::EndianScalar(event_id_);
+  }
+  uint64_t parent_event_id() const {
+    return ::flatbuffers::EndianScalar(parent_event_id_);
+  }
+  uint64_t seq_number() const {
+    return ::flatbuffers::EndianScalar(seq_number_);
+  }
+  uint64_t count() const {
+    return ::flatbuffers::EndianScalar(count_);
+  }
+  int32_t root() const {
+    return ::flatbuffers::EndianScalar(root_);
+  }
+  uint8_t n_channels() const {
+    return ::flatbuffers::EndianScalar(n_channels_);
+  }
+  uint8_t n_warps() const {
+    return ::flatbuffers::EndianScalar(n_warps_);
+  }
+  uint16_t pad() const {
+    return ::flatbuffers::EndianScalar(pad_);
+  }
+};
+FLATBUFFERS_STRUCT_END(NcclCollExec, 112);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclProxyOp FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t event_id_;
+  uint64_t parent_event_id_;
+  int32_t peer_;
+  int32_t n_steps_;
+  int32_t chunk_size_;
+  int32_t pid_;
+  uint32_t channel_id_;
+  uint32_t is_send_;
+
+ public:
+  NcclProxyOp()
+      : temporal_(),
+        event_id_(0),
+        parent_event_id_(0),
+        peer_(0),
+        n_steps_(0),
+        chunk_size_(0),
+        pid_(0),
+        channel_id_(0),
+        is_send_(0) {
+  }
+  NcclProxyOp(const pcomm::fb::Temporal &_temporal, uint64_t _event_id, uint64_t _parent_event_id, int32_t _peer, int32_t _n_steps, int32_t _chunk_size, int32_t _pid, uint32_t _channel_id, uint32_t _is_send)
+      : temporal_(_temporal),
+        event_id_(::flatbuffers::EndianScalar(_event_id)),
+        parent_event_id_(::flatbuffers::EndianScalar(_parent_event_id)),
+        peer_(::flatbuffers::EndianScalar(_peer)),
+        n_steps_(::flatbuffers::EndianScalar(_n_steps)),
+        chunk_size_(::flatbuffers::EndianScalar(_chunk_size)),
+        pid_(::flatbuffers::EndianScalar(_pid)),
+        channel_id_(::flatbuffers::EndianScalar(_channel_id)),
+        is_send_(::flatbuffers::EndianScalar(_is_send)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t event_id() const {
+    return ::flatbuffers::EndianScalar(event_id_);
+  }
+  uint64_t parent_event_id() const {
+    return ::flatbuffers::EndianScalar(parent_event_id_);
+  }
+  int32_t peer() const {
+    return ::flatbuffers::EndianScalar(peer_);
+  }
+  int32_t n_steps() const {
+    return ::flatbuffers::EndianScalar(n_steps_);
+  }
+  int32_t chunk_size() const {
+    return ::flatbuffers::EndianScalar(chunk_size_);
+  }
+  int32_t pid() const {
+    return ::flatbuffers::EndianScalar(pid_);
+  }
+  uint32_t channel_id() const {
+    return ::flatbuffers::EndianScalar(channel_id_);
+  }
+  uint32_t is_send() const {
+    return ::flatbuffers::EndianScalar(is_send_);
+  }
+};
+FLATBUFFERS_STRUCT_END(NcclProxyOp, 88);
 
 }  // namespace fb
 }  // namespace pcomm

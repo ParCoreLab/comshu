@@ -9,7 +9,11 @@
 find_path(NCCL_INCLUDE_DIR nccl.h REQUIRED)
 find_path(CUDA_RT_INCLUDE_DIR cuda_runtime_api.h REQUIRED)
 
-add_library(nccl_trace SHARED nccl_provider.cpp)
+# nccl_profiler_plugin.cpp is in the SAME .so on purpose. NCCL dlopens whatever
+# NCCL_PROFILER_PLUGIN names, and dlopen on a library that is already LD_PRELOADed
+# returns the resident handle — so one file serves as both the interposer and the
+# profiler plugin, sharing a recorder instead of coordinating two of them.
+add_library(nccl_trace SHARED nccl_provider.cpp nccl_profiler_plugin.cpp)
 set_target_properties(nccl_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "nccl_trace")
 target_include_directories(nccl_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${NCCL_INCLUDE_DIR}
   ${CUDA_RT_INCLUDE_DIR})

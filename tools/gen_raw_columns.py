@@ -120,6 +120,10 @@ def flatten(fields, structs, prefix, expr):
 # line on stderr, which is exactly what hid this one.
 RENAMES = {
     ("nccl_comm", "rank"): "nccl_rank",
+    # Same collision, same fix, and worth stating why it is not the same number:
+    # the profiler plugin is told the rank this process holds INSIDE the
+    # communicator, which is not the capture's rank.
+    ("nccl_prof_comm", "rank"): "nccl_rank",
 }
 
 INJECTED = {"rank"}

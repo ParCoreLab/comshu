@@ -71,8 +71,34 @@ vocabulary         vocab,value,name
 transport_mix      rank,tl_name,dev_name,scope,op,ops,out_bytes,in_bytes,advertised_bytes,header_bytes
 tag_flow           rank,tag,status,ucp_sends,ucp_units,uct_ops,uct_payload,doors
 tag_recv_resolved  rank,worker,message,status,sender_tag,offered,delivered
+nccl_execution     rank,nccl_comm_hash,nccl_rank,nranks,nnodes,func,algo,proto,datatype,count,n_channels,n_warps,seq_number,event_id,parent_event_id,begin_ticks,end_ticks
+nccl_peer_traffic  rank,nccl_comm_hash,func,algo,proto,peer,dir,channel_id,n_steps,chunk_size,planned_bytes,event_id,parent_event_id,begin_ticks,end_ticks
 link_health        finding,severity,n,note
 ```
+
+## What NCCL chose — ADDED 2026-09-02
+
+`nccl_execution` is the **only** table that says which algorithm and protocol a
+run actually used. `nccl_collective` is what the application asked for; NCCL
+picks Ring vs Tree vs NVLS and Simple vs LL vs LL128 inside the enqueue, after
+the API call has returned. Case 02's own notes record that pinning
+Ring/Simple/1-channel moved its wire volume from 57,280 sends to 26,880 — the
+choice is roughly half the traffic.
+
+Three traps, all of which have a wrong-looking-but-plausible failure mode:
+
+- `algo`/`proto` come back **UPPERCASE** (`RING`, `SIMPLE`) while
+  `NCCL_ALGO`/`NCCL_PROTO` are spelled mixed-case. Fold case before comparing to
+  `run_provenance.env`.
+- **An empty `nccl_execution` is ambiguous.** Check
+  `link_health.nccl_profiler_door_shut`: non-zero means the profiler plugin
+  never loaded, so the capture makes no statement about the algorithm. That is
+  not "the workload ran no collectives".
+- **`nccl_peer_traffic` is legitimately empty on a single node**, because proxy
+  operations only exist for traffic through NCCL's CPU proxy — NVLink/P2P and
+  device-initiated traffic never reach it. Its `planned_bytes` is
+  `n_steps * chunk_size`, a **schedule**, and is not comparable to
+  `ib_post_send.bytes`, which are posts that happened.
 
 ## The string vocabularies — ADDED 2026-09-02
 

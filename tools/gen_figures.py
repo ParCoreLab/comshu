@@ -3,7 +3,7 @@
 
 These are the ER half of the talk figures: 04-record-model.svg says what the four
 archetypes ARE, and these say which records exist, what keys them, and which join
-carries one to the next. There are 61 record types across six provider ranges, which
+carries one to the next. There are 64 record types across six provider ranges, which
 is more than anyone will place by hand twice — so the geometry is generated from one
 grid and the layout is data at the bottom of this file.
 
@@ -25,7 +25,7 @@ W, H = 230, 46          # one record box
 
 # What the figures actually drew, filled in by box(). The index table at the
 # foot of this file and the boxes in the diagrams are two hand-maintained lists
-# of the same 61 records, and nothing but this registry connects them —
+# of the same 64 records, and nothing but this registry connects them —
 # tools/check_figures.py compares both against the PCOMM_RECORD declarations.
 DRAWN = {}
 CX, CY = 290, 70        # column / row step
@@ -291,8 +291,26 @@ b.append(note(10, 243, "ordered, so these are enqueue facts.", cls="fnote"))
 b.append(note(10, 271, "nccl_p2p is the only NCCL call that names a", cls="fnote"))
 b.append(note(10, 285, "peer, and so the only one an exact edge", cls="fnote"))
 b.append(note(10, 299, "follows from.", cls="fnote"))
-FIGS["nccl"] = svg(790, 400, "".join(b),
-    "The NCCL provider's six record types, all hanging off the communicator")
+# The profiler-plugin layer. A SECOND column rather than more boxes hanging off
+# the communicator, because these do not join through `comm` at all: the plugin
+# is never told a ncclComm_t, only NCCL's own commHash — which is why nccl_comm
+# carries that hash as a second, differently-named column and why the rail below
+# leaves from it and not from the comm pointer.
+b.append(box(620, 40, "nccl_prof_comm", 912, "ART", "nccl_comm_hash · nranks", "ncc"))
+b.append(box(620, 130, "nccl_coll_exec", 914, "EVT", "algo · proto · n_channels", "ncc"))
+b.append(box(620, 220, "nccl_proxy_op", 916, "EVT", "peer · channel · n_steps", "ncc"))
+b.append(path("M236 143 H616", "nccl_comm_hash", 420, 138, anchor="middle"))
+b.append(path("M733 63 V126", None))
+b.append(path("M733 153 V216", "parent_event_id", 737, 190, anchor="start"))
+b.append(note(620, 262, "What NCCL DECIDED, not what was asked. The", cls="fnote"))
+b.append(note(620, 276, "temporal here is the collective's own lifetime,", cls="fnote"))
+b.append(note(620, 290, "NOT the enqueue on the left.", cls="fnote"))
+b.append(note(620, 312, "parent_event_id is NCCL's OWN linkage handed", cls="fnote"))
+b.append(note(620, 326, "back to us — not reconstructed from timing.", cls="fnote"))
+b.append(note(620, 348, "No proxy op exists for device-initiated or", cls="fnote"))
+b.append(note(620, 362, "NVLink traffic: it never reaches the CPU proxy.", cls="fnote"))
+FIGS["nccl"] = svg(1060, 400, "".join(b),
+    "The NCCL provider's nine record types: six host-API records hanging off the communicator, and three profiler-plugin records carrying what NCCL chose")
 
 # ------------------------------------------------------------ fig: cross-rank
 b = []
@@ -346,17 +364,25 @@ for i, n in enumerate(views):
              f'stroke="var(--rule-strong)" stroke-width="1.2" stroke-dasharray="4 3"/>'
              f'<text x="{342}" y="{y+24}" class="rname">{esc(n)}</text>')
     vy.append((y + 19))
-tables = [("comm_edges", "src → dst, per transport"), ("endpoint", "one row per local queue pair"),
+tables = [("comm_edges", "src → dst, per transport"), ("edge_sizes", "the same edges, split by size class"),
+          ("endpoint", "one row per local queue pair"),
           ("object_access", "every touch, as an offset in an object"), ("wr_flow", "posted → retired, with latency"),
           ("timeline_span", "every event on one wall clock"), ("rank_identity", "rank → node, device"),
           ("transport_mix", "which transport actually carried it"),
           ("tag_flow", "what a UCP send became on the wire"),
           ("tag_recv_resolved", "the tag a msg_recv did not carry"),
+          ("nccl_execution", "what NCCL CHOSE — algo, proto"),
+          ("nccl_peer_traffic", "where a collective became peer traffic"),
           ("run_provenance", "what the TRACER was asked to do"),
+          ("vocabulary", "every enum value, by name"),
           ("link_health", "what the graph could NOT account for")]
+# Bound to its own name because the header's count is rendered from it. A
+# hardcoded 7 sat there while this list grew to fourteen — the same drift the
+# record counts had, and the reason check_figures.py exists.
+DERIVED_TABLES = tables
 ty = []
 for i, (n, d) in enumerate(tables):
-    y = 52 + i * 56
+    y = 24 + i * 50
     b.append(f'<rect x="660" y="{y}" width="252" height="46" rx="3" fill="var(--surface)" '
              f'stroke="var(--fam-int)" stroke-width="1.4"/>'
              f'<rect x="660" y="{y}" width="3.5" height="46" rx="1.5" fill="var(--fam-int)"/>'
@@ -365,11 +391,11 @@ for i, (n, d) in enumerate(tables):
     ty.append((656, y + 23))
 b.append(bus(sy, 272, [(326, v) for v in vy]))
 b.append(bus([(552, v) for v in vy], 606, ty))
-b.append(note(20, 676, "records, as written", cls="collabel"))
-b.append(note(330, 676, "views — created in order", cls="collabel"))
-b.append(note(660, 676, "what the panels and the suite read", cls="collabel"))
-FIGS["derived"] = svg(930, 690, "".join(b),
-    "How the reader turns raw per-rank records into the eleven derived tables that the UI, the agent and the test suite query")
+b.append(note(20, 766, "records, as written", cls="collabel"))
+b.append(note(330, 766, "views — created in order", cls="collabel"))
+b.append(note(660, 766, "what the panels and the suite read", cls="collabel"))
+FIGS["derived"] = svg(930, 780, "".join(b),
+    "How the reader turns raw per-rank records into the fifteen derived tables that the UI, the agent and the test suite query")
 
 # --------------------------------------------------- fig: the capture container
 
@@ -609,6 +635,9 @@ NCC = [
  ("nccl_group", 906, "Event", "Group boundaries: N grouped sends are ONE launch, and nothing in a send row says so."),
  ("nccl_window", 908, "Entity", "A registered symmetric window \u2014 what makes GPU-initiated NCCL attributable where internal channel buffers are not."),
  ("nccl_dev_comm", 910, "Artifact", "The existence fact 'this workload initiates communication from the GPU'. Nothing else in a capture states it."),
+ ("nccl_prof_comm", 912, "Artifact", "The communicator as the profiler plugin was told about it. Carries NCCL's own commHash — the only name the plugin is ever given, and so the only join back to nccl_comm."),
+ ("nccl_coll_exec", 914, "Event", "The collective as NCCL EXECUTED it: the algorithm and protocol it chose. Its temporal is the operation's lifetime inside NCCL, NOT nccl_collective's enqueue."),
+ ("nccl_proxy_op", 916, "Event", "Where a collective becomes per-peer traffic, linked to it by NCCL's own parent id. n_steps × chunk_size is what NCCL PLANNED, not bytes a completion confirmed."),
 ]
 FAMILIES = [
  ("int", "the engine", "500\u2013599", INT),
@@ -658,10 +687,13 @@ PAGE_FIGURES = [
   "independently. Traffic through untagged doors carries its tag inside an AM payload and stays unjoinable; "
   "<code>transport_mix</code> accounts for that by transport instead."),
  ("10-nccl-records", "nccl",
-  "The one provider whose door is a supported profiling interface rather than an interposition. Six record "
-  "types, all hanging off the communicator.",
-  "Everything here is an <b>enqueue</b> fact. NCCL is stream-ordered, so a collective's temporal is the host "
-  "call, not the execution."),
+  "The one provider with two doors, and they answer different questions. Six host-API record types hang off "
+  "the communicator and say what the application <b>asked for</b>; three profiler-plugin records say what NCCL "
+  "<b>decided</b> — the algorithm, the protocol, and the decomposition into per-peer proxy operations.",
+  "The left column is entirely <b>enqueue</b> facts: NCCL is stream-ordered, so a collective's temporal there is "
+  "the host call, not the execution. The right column's temporals are the operation's own lifetime inside NCCL. "
+  "Reporting either as the other invents a number. The two columns join on NCCL's own commHash, not on the "
+  "comm pointer, because the plugin is never told one."),
  ("11-cross-rank-keys", "The five cross-rank keys",
   "Everything above is rank-local. A capture is N independent directories written by N processes that never "
   "coordinate, so joining them needs an identity both sides mint independently and agree on. There are exactly five.",
@@ -802,7 +834,7 @@ def page_html():
     <div><div class="n" style="color:var(--ib)">{kinds['Event']}</div><div class="l">event</div></div>
     <div><div class="n" style="color:var(--ucx)">{kinds['Artifact']}</div><div class="l">artifact</div></div>
     <div><div class="n" style="color:var(--ncc)">{kinds['Edge']}</div><div class="l">edge</div></div>
-    <div><div class="n">7</div><div class="l">derived tables</div></div>
+    <div><div class="n">{len(DERIVED_TABLES)}</div><div class="l">derived tables</div></div>
   </div>
 </header>
 
@@ -885,7 +917,7 @@ if __name__ == "__main__":
         ("09-ucx-records",      FIGS["ucx"],      "The UCX record family, and ucx_deep beneath it"),
         ("10-nccl-records",     FIGS["nccl"],     "The NCCL record family"),
         ("11-cross-rank-keys",  FIGS["cross"],    "The five cross-rank join keys"),
-        ("12-derived-tables",   FIGS["derived"],  "Records to views to the eleven derived tables"),
+        ("12-derived-tables",   FIGS["derived"],  "Records to views to the fifteen derived tables"),
     ]
     for name, body, title in items:
         out = convert(body, title)

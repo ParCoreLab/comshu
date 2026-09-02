@@ -74,12 +74,26 @@ enum class GroupEdge : std::uint8_t {
 // ucx_worker_address uses and for the same reason: deterministic everywhere, no
 // process salt). Two rows on two ranks with one comm_hash are two members of
 // one communicator, and that is the join the comm matrix needs.
+//
+// `nccl_comm_hash` is a SECOND hash of the same identity, and the two are not
+// interchangeable. `comm_hash` is ours and is the cross-RANK join. This one is
+// NCCL's own `comm->commHash`, recomputed by us from the ncclUniqueId (see
+// nccl_comm_hash.hpp), and it is the cross-LAYER join: it is the only name the
+// profiler plugin is ever told, so without it a nccl_coll_exec row cannot be
+// attached to the communicator it belongs to.
+//
+// It is 0 where NOT DERIVABLE — communicators built by ncclCommSplit or by the
+// grow path get a commHash mixed from their parent, which no ncclUniqueId we
+// are shown determines. 0 means "unknown", never "no communicator", and a join
+// on it must exclude 0 rather than treat it as a value.
 PCOMM_RECORD(NcclComm, RecordKind::Entity, 900, "nccl_comm") {
-    Handle        comm;       // interned ncclComm_t
-    std::uint64_t comm_hash;  // FNV-1a of the ncclUniqueId — equal across the comm
-    std::int32_t  rank;       // this process's rank WITHIN this communicator
+    Handle        comm;            // interned ncclComm_t
+    std::uint64_t comm_hash;       // FNV-1a of the ncclUniqueId — equal across the comm
+    std::uint64_t nccl_comm_hash;  // NCCL's own commHash; 0 = not derivable
+    std::int32_t  rank;            // this process's rank WITHIN this communicator
     std::int32_t  nranks;
     std::int32_t  cuda_dev;
+    std::int32_t  pad;
 };
 
 // One collective call. Both buffers are interned so they join to mem_object
@@ -169,6 +183,130 @@ PCOMM_RECORD(NcclWindow, RecordKind::Entity, 908, "nccl_window") {
 PCOMM_RECORD(NcclDevComm, RecordKind::Artifact, 910, "nccl_dev_comm") {
     Handle       comm;
     std::int32_t pad;
+};
+
+// ---------------------------------------------------------------------------
+// THE PROFILER-PLUGIN LAYER (912-916) — what NCCL DECIDED, not what was asked.
+//
+// Everything above this line is the host API: the call the application made.
+// Everything below comes from NCCL's profiler plugin callbacks, which fire from
+// inside the enqueue and proxy machinery and report the decisions taken there —
+// the algorithm, the protocol, the channel count, and the decomposition into
+// per-peer proxy operations.
+//
+// WHY THIS IS A SEPARATE SET OF RECORDS AND NOT FIELDS ON nccl_collective. The
+// host-API records are written by an interposer that returns before NCCL has
+// chosen anything; these are written by a different mechanism (a plugin NCCL
+// dlopens and calls back into) at a different time, and on a run where the
+// plugin is not wired up they are simply absent while the host-API rows are
+// complete. Folding them together would produce a table whose columns are
+// sometimes populated and sometimes not, with nothing in the row to say which —
+// exactly the ambiguity that makes a capture unreadable.
+//
+// THE CAUSAL CHAIN IS NCCL'S, NOT OURS. Every profiler event descriptor carries
+// a `parentObj`, and that pointer is the handle WE returned from startEvent for
+// the parent event. So the chain coll -> proxyOp is stated by NCCL rather than
+// inferred by us from timing or size, which is the whole reason this door is
+// worth opening: no other surface can say which collective produced which
+// per-peer traffic without guessing.
+//
+// WHAT THESE CANNOT SEE, so no reader assumes otherwise:
+//   - Device-initiated traffic (GIN/IBGDA puts from inside a kernel) never
+//     reaches the CPU proxy, so no nccl_proxy_op describes it. The algo/proto
+//     on the collective row is still true; the decomposition is not there.
+//   - NVLink/P2P-direct movement, for the same reason.
+//   - Bytes actually delivered. chunk_size x n_steps is what NCCL PLANNED. It
+//     is not a completion count and must never be reported as one.
+
+// One communicator, as the profiler plugin was told about it. Emitted from the
+// plugin's `init`, which NCCL calls once per communicator.
+//
+// This is the bridge row. `nccl_comm_hash` is the value NCCL passed us, and it
+// joins to the identically-named column on nccl_comm — the only path from a
+// profiler event back to a communicator, a rank layout, and a device.
+//
+// `comm_name` is the user-assigned name from ncclConfig_t, empty where unset.
+// It is interned rather than dropped because it is the only human-readable name
+// a communicator ever has, and a workload that names its comms ("dp", "tp",
+// "pp") is telling us its parallelism strategy for free.
+PCOMM_RECORD(NcclProfComm, RecordKind::Artifact, 912, "nccl_prof_comm") {
+    Handle        comm_name;
+    std::uint64_t nccl_comm_hash;
+    std::int32_t  nnodes;
+    std::int32_t  nranks;
+    std::int32_t  rank;
+    std::int32_t  pad;
+};
+
+// One collective, as NCCL EXECUTED it.
+//
+// THE TEMPORAL HERE IS NOT THE ONE ON nccl_collective, and conflating them
+// produces a number that does not exist. nccl_collective's interval is the
+// duration of the HOST CALL — an enqueue, milliseconds ahead of the work. This
+// interval runs from NCCL's startEvent to its stopEvent for the collective
+// itself, which is the operation's own lifetime inside NCCL.
+//
+// `algo` and `proto` are NCCL's strings ("Ring", "Tree", "NVLS", "CollnetChain";
+// "Simple", "LL", "LL128"), interned as given. They are NOT normalised into an
+// enum: the set is NCCL's to extend, and a build that returns a name we have not
+// seen must record that name rather than fall into an "Other" bucket that
+// destroys the one fact the row exists to carry.
+//
+// `event_id` is a per-process counter we assign; `parent_event_id` is the id of
+// the event NCCL named as this one's parent, or 0 where that parent's event
+// family was masked off and we therefore never saw it. 0 means "not observed",
+// never "root".
+PCOMM_RECORD(NcclCollExec, RecordKind::Event, 914, "nccl_coll_exec") {
+    Handle        func;      // "AllReduce", "Broadcast", ... as NCCL spells it
+    Handle        algo;      // "Ring" / "Tree" / "NVLS" / ...
+    Handle        proto;     // "Simple" / "LL" / "LL128"
+    Handle        datatype;  // NCCL's own name for it
+    std::uint64_t nccl_comm_hash;
+    std::uint64_t event_id;
+    std::uint64_t parent_event_id;  // 0 = not observed
+    std::uint64_t seq_number;       // NCCL's per-comm collective sequence number
+    std::uint64_t count;  // ELEMENTS, as on nccl_collective
+    // NCCL's own value, and it is NOT nccl_collective's convention. That record
+    // writes -1 for an operation with no root, deliberately, because 0 is a
+    // valid rank. NCCL reports 0 — measured on du04, every AllReduce,
+    // AllGather and ReduceScatter row came back root=0. So a 0 here means
+    // "NCCL said 0" and NOT "rank 0 is the root", and the two records must not
+    // be compared on this column.
+    std::int32_t root;
+    std::uint8_t  n_channels;
+    std::uint8_t  n_warps;
+    std::uint16_t pad;
+};
+
+// One proxy operation — the row where a collective becomes per-peer traffic.
+//
+// This is the finest granularity at which NCCL names a PEER, and it is the
+// reason this door answers "which call produced this movement" without
+// inference. `parent_event_id` points at the nccl_coll_exec (or nccl_p2p event)
+// that owns it; `peer` is a rank within that communicator.
+//
+// `pid` is NCCL's, carried on the descriptor so a plugin can tell whether the
+// parent event belongs to this process — proxy threads service operations for
+// other ranks on the same node. It is recorded rather than filtered on, because
+// a row whose pid is not ours is a fact about shared-proxy topology, and
+// dropping it would make the parent chain look broken instead of shared.
+//
+// n_steps x chunk_size is a PLAN. See the header comment above.
+//
+// `channel_id` and `is_send` are 8-bit facts widened to 32, for the reason
+// NcclGroup's `edge` is: the record would otherwise need six bytes of declared
+// padding, which is six bytes two schemas have to keep truthful forever in
+// exchange for nothing. Widening leaves the struct exactly 8-aligned with no
+// hole to keep honest.
+PCOMM_RECORD(NcclProxyOp, RecordKind::Event, 916, "nccl_proxy_op") {
+    std::uint64_t event_id;
+    std::uint64_t parent_event_id;  // 0 = not observed
+    std::int32_t  peer;             // rank within the communicator
+    std::int32_t  n_steps;
+    std::int32_t  chunk_size;       // bytes per step, as NCCL planned them
+    std::int32_t  pid;
+    std::uint32_t channel_id;
+    std::uint32_t is_send;  // 1 send, 0 recv
 };
 
 }  // namespace pcomm::providers::nccl::records

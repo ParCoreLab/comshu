@@ -1717,6 +1717,128 @@ LEFT JOIN _intern_name e ON e.rank = i.rank AND e.domain = 2 AND e.handle = i.en
 ORDER BY i.rank
 )sql"},
 
+    // What NCCL DECIDED, joined back to the communicator the application built.
+    //
+    // The whole reason this table exists is that neither side can answer the
+    // question alone. `nccl_coll_exec` knows the algorithm and protocol and
+    // nothing about who is in the group; `nccl_comm` knows the rank layout and
+    // nothing about what NCCL chose. `nccl_comm_hash` is the only column they
+    // share, and it is not the `comm_hash` next to it — see nccl_comm_hash.hpp.
+    //
+    // The join EXCLUDES 0, and that is not defensive tidying. A communicator
+    // built by ncclCommSplit or by the grow path gets a commHash mixed from its
+    // parent, which no ncclUniqueId we are shown determines, so the host-API
+    // side records 0 for "not derivable". Joining on 0 would marry every such
+    // communicator on a rank to every other one — a cartesian product presented
+    // as attribution. Those rows still appear here, with NULL rank layout, and
+    // link_health counts them.
+    //
+    // LEFT JOIN, not INNER, for the same reason: an execution row whose
+    // communicator cannot be named is a fact about the capture and must not
+    // vanish from the table whose subject it is.
+    //
+    // Note `algo`/`proto` arrive UPPERCASED from NCCL ("RING", "SIMPLE") while
+    // NCCL_ALGO/NCCL_PROTO are spelled mixed-case; anything comparing this to
+    // run_provenance.env has to fold case.
+// This layer mounts the RAW streams, so `func`/`algo`/`proto`/`datatype` arrive
+// as intern HANDLES and the temporal arrives as `temporal_a_ticks` /
+// `temporal_b_ticks` — the on-disk shape, not the shape `pcomm export --csv`
+// prints. Resolving the handles is this layer's job (see the header on
+// _intern_name), and the `texts = 1` guard is load-bearing for the reason
+// run_provenance gives: a REPLAYED capture nests several passes under one rank
+// with independent dictionaries, so one handle can name two strings and a bare
+// join would multiply the table.
+//
+// `domain = 2` is InternDomain::String, spelled as a number because an enum here
+// is a number.
+    {"nccl_execution",
+     "rank,nccl_comm_hash,nccl_rank,nranks,nnodes,func,algo,proto,datatype,count,n_channels,"
+     "n_warps,seq_number,event_id,parent_event_id,t0_ns,t1_ns",
+     R"sql(
+SELECT x.rank,
+       x.nccl_comm_hash,
+       c.nccl_rank,
+       c.nranks,
+       pc.nnodes,
+       CASE WHEN f.texts  = 1 THEN f.text  END AS func,
+       CASE WHEN al.texts = 1 THEN al.text END AS algo,
+       CASE WHEN pr.texts = 1 THEN pr.text END AS proto,
+       CASE WHEN dt.texts = 1 THEN dt.text END AS datatype,
+       x.count,
+       x.n_channels,
+       x.n_warps,
+       x.seq_number,
+       x.event_id,
+       x.parent_event_id,
+       (k.w0::HUGEINT
+          + ((x.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t0_ns,
+       (k.w0::HUGEINT
+          + ((greatest(x.temporal_b_ticks, x.temporal_a_ticks)::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns
+FROM nccl_coll_exec x
+LEFT JOIN nccl_comm c
+       ON c.rank = x.rank
+      AND c.nccl_comm_hash = x.nccl_comm_hash
+      AND x.nccl_comm_hash <> 0
+LEFT JOIN nccl_prof_comm pc
+       ON pc.rank = x.rank
+      AND pc.nccl_comm_hash = x.nccl_comm_hash
+LEFT JOIN _intern_name f  ON f.rank  = x.rank AND f.domain  = 2 AND f.handle  = x.func
+LEFT JOIN _intern_name al ON al.rank = x.rank AND al.domain = 2 AND al.handle = x.algo
+LEFT JOIN _intern_name pr ON pr.rank = x.rank AND pr.domain = 2 AND pr.handle = x.proto
+LEFT JOIN _intern_name dt ON dt.rank = x.rank AND dt.domain = 2 AND dt.handle = x.datatype
+LEFT JOIN _clock k ON k.rank = x.rank AND k.domain = x.temporal_a_domain
+ORDER BY x.rank, x.temporal_a_ticks
+)sql"},
+
+    // A collective's decomposition into per-peer traffic, attributed to the
+    // collective by NCCL'S OWN parent id rather than by our guess.
+    //
+    // `parent_event_id` on a proxy op names the coll event NCCL says it belongs
+    // to, and the ids are minted per process, so the join carries `rank` — an
+    // event_id is unique within a rank and repeats across ranks.
+    //
+    // EMPTY IS THE EXPECTED RESULT ON A SINGLE NODE, and a reader must not read
+    // that as a defect. Proxy operations exist only for traffic that goes
+    // through NCCL's CPU proxy; intra-node NVLink/P2P movement and
+    // device-initiated (GIN/IBGDA) traffic never reach it. Case 20 on du04
+    // produced 8 nccl_coll_exec rows per rank and zero proxy ops, correctly.
+    //
+    // `planned_bytes` is n_steps x chunk_size and is named to say what it is: a
+    // schedule, not a completion count. It is NOT comparable to
+    // ib_post_send.bytes without saying so.
+    {"nccl_peer_traffic",
+     "rank,nccl_comm_hash,func,algo,proto,peer,dir,channel_id,n_steps,chunk_size,planned_bytes,"
+     "event_id,parent_event_id,t0_ns,t1_ns",
+     R"sql(
+SELECT p.rank,
+       x.nccl_comm_hash,
+       CASE WHEN f.texts  = 1 THEN f.text  END AS func,
+       CASE WHEN al.texts = 1 THEN al.text END AS algo,
+       CASE WHEN pr.texts = 1 THEN pr.text END AS proto,
+       p.peer,
+       CASE WHEN p.is_send <> 0 THEN 'send' ELSE 'recv' END AS dir,
+       p.channel_id,
+       p.n_steps,
+       p.chunk_size,
+       (p.n_steps::BIGINT * p.chunk_size::BIGINT) AS planned_bytes,
+       p.event_id,
+       p.parent_event_id,
+       (k.w0::HUGEINT
+          + ((p.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t0_ns,
+       (k.w0::HUGEINT
+          + ((greatest(p.temporal_b_ticks, p.temporal_a_ticks)::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns
+FROM nccl_proxy_op p
+LEFT JOIN nccl_coll_exec x
+       ON x.rank = p.rank
+      AND x.event_id = p.parent_event_id
+      AND p.parent_event_id <> 0
+LEFT JOIN _intern_name f  ON f.rank  = p.rank AND f.domain  = 2 AND f.handle  = x.func
+LEFT JOIN _intern_name al ON al.rank = p.rank AND al.domain = 2 AND al.handle = x.algo
+LEFT JOIN _intern_name pr ON pr.rank = p.rank AND pr.domain = 2 AND pr.handle = x.proto
+LEFT JOIN _clock k ON k.rank = p.rank AND k.domain = p.temporal_a_domain
+ORDER BY p.rank, p.temporal_a_ticks
+)sql"},
+
     {"endpoint", "rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes",
      R"sql(
 SELECT r.rank,
@@ -2578,6 +2700,59 @@ SELECT 'uct_ops_patch_forced',
        coalesce(count(*), 0)::BIGINT,
        'ranks where PCOMM_UCX_DEEP_FORCE overrode the version guard — uct_* rows rest on an unverified ops layout'
 FROM uct_binding WHERE forced = 1
+UNION ALL
+-- A profiler-plugin row that names a communicator the host-API door never
+-- recorded. Expected and bounded: ncclCommSplit and the grow path mix their
+-- commHash from a parent, which no ncclUniqueId we see determines, so
+-- nccl_comm.nccl_comm_hash is 0 for them and cannot match. The rows are still
+-- true — they carry the algorithm and protocol — they just cannot be attributed
+-- to a rank layout, and nccl_execution shows them with NULL nranks. Counting
+-- them is how a reader learns that "23 of 40 collectives" is not the whole story.
+SELECT 'nccl_exec_comm_unresolved',
+       'defect',
+       coalesce(count(*), 0)::BIGINT,
+       'nccl_coll_exec rows whose communicator is not in nccl_comm — ncclCommSplit and grow have no derivable commHash'
+FROM nccl_coll_exec x
+LEFT JOIN nccl_comm c ON c.rank = x.rank
+                     AND c.nccl_comm_hash = x.nccl_comm_hash
+                     AND x.nccl_comm_hash <> 0
+WHERE c.rank IS NULL
+UNION ALL
+-- A proxy op NCCL did not attach to a collective we saw. Not the same failure:
+-- the parent may be a point-to-point event, whose family we track for linkage
+-- but do not record, so this is a NOTE. It becomes interesting when it is large
+-- on a collectives-only workload.
+SELECT 'nccl_proxy_op_unparented',
+       'note',
+       coalesce(count(*), 0)::BIGINT,
+       'proxy ops naming no nccl_coll_exec parent — point-to-point parents are tracked for linkage but not recorded'
+FROM nccl_proxy_op p
+LEFT JOIN nccl_coll_exec x ON x.rank = p.rank
+                          AND x.event_id = p.parent_event_id
+                          AND p.parent_event_id <> 0
+WHERE x.rank IS NULL
+UNION ALL
+-- The door was not opened. A capture with collectives and no execution rows is
+-- one where NCCL_PROFILER_PLUGIN was unset, pointed at a missing file, or named
+-- a library whose NCCL wanted a version this plugin does not export — and every
+-- one of those failures is SILENT, logged by NCCL at INFO level only. Without
+-- this row the capture looks like a complete answer to "what algorithm did this
+-- use", and the answer is that nobody asked.
+--
+-- A DEFECT, on the precedent of uct_ops_patch_refused directly above: both are
+-- a door that did not open, leaving a table empty in a way indistinguishable
+-- from "the workload did none of that". Calling it a note would put it in the
+-- category a reader is explicitly told not to act on.
+--
+-- It cannot fire on a capture with no NCCL, because the count is conditioned on
+-- nccl_collective being non-empty. A capture that ran collectives and recorded
+-- no execution rows has lost something, whether or not the operator meant to.
+SELECT 'nccl_profiler_door_shut',
+       'defect',
+       CASE WHEN (SELECT count(*) FROM nccl_collective) > 0
+             AND (SELECT count(*) FROM nccl_coll_exec) = 0
+            THEN (SELECT count(*) FROM nccl_collective)::BIGINT ELSE 0 END,
+       'NCCL collectives recorded but no execution rows — the profiler plugin did not load, and NCCL says so only at INFO level'
 )sql"},
 };
 
@@ -2601,8 +2776,19 @@ inline bool columns_match(duckdb_connection con, const Table& t) {
     duckdb_result     res;
     const std::string q = "SELECT * FROM (" + std::string(t.sql) + ") LIMIT 0";
     if (duckdb_query(con, q.c_str(), &res) != DuckDBSuccess) {
+        // REPORT IT HERE. This used to `return false` with the comment "the
+        // CREATE already reported why", which is true of kViews and false of
+        // kTables — nothing ever CREATEs a kTables entry, `link` COPYs each
+        // one straight to Parquet. So a derived table whose SQL did not parse
+        // failed silently: `pcomm link` printed "13 derived ... (SOME FAILED,
+        // see above)" with nothing above it. That is the same trap link_health
+        // fell into, and it cost a debugging cycle on nccl_execution, whose
+        // query named `ticks` when the raw mount calls it `temporal_a_ticks`.
+        const char* err = duckdb_result_error(&res);
+        std::fprintf(stderr, "pcomm: %s failed to plan: %s\n", t.name,
+                     err ? err : "(no message)");
         duckdb_destroy_result(&res);
-        return false;  // the CREATE already reported why
+        return false;
     }
     std::string got;
     for (idx_t i = 0; i < duckdb_column_count(&res); i++) {
