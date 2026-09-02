@@ -3,7 +3,7 @@
 
 These are the ER half of the talk figures: 04-record-model.svg says what the four
 archetypes ARE, and these say which records exist, what keys them, and which join
-carries one to the next. There are 53 record types across six provider ranges, which
+carries one to the next. There are 60 record types across six provider ranges, which
 is more than anyone will place by hand twice — so the geometry is generated from one
 grid and the layout is data at the bottom of this file.
 
@@ -25,7 +25,7 @@ W, H = 230, 46          # one record box
 
 # What the figures actually drew, filled in by box(). The index table at the
 # foot of this file and the boxes in the diagrams are two hand-maintained lists
-# of the same 53 records, and nothing but this registry connects them —
+# of the same 60 records, and nothing but this registry connects them —
 # tools/check_figures.py compares both against the PCOMM_RECORD declarations.
 DRAWN = {}
 CX, CY = 290, 70        # column / row step
@@ -128,7 +128,7 @@ FIGS = {}
 
 # ---------------------------------------------------------------- fig: engine
 b = []
-b.append(band(8, 306, 844, 100, "int", "intern dictionary — every Handle in every record, in every family, resolves here"))
+b.append(band(8, 392, 844, 100, "int", "intern dictionary — every Handle in every record, in every family, resolves here"))
 b.append(box(300, 40, "gpu_access", 700, "EVT", "pc · object · address · launch", "gpu"))
 b.append(box(10, 40, "mem_object", 520, "ENT", "id · range · device", "int"))
 b.append(box(590, 40, "gpu_kernel", 530, "EVT", "correlation · stream · name", "int"))
@@ -138,19 +138,24 @@ b.append(box(590, 145, "attribution", 760, "EDG", "subject · object · pred", "
 b.append(box(10, 230, "node_identity", 524, "ART", "node_hash", "int"))
 b.append(box(300, 230, "entity_close", 522, "EVT", "subject · opener", "int"))
 b.append(box(590, 230, "clock_anchor", 590, "ART", "domain · local_ticks · wall_ns", "int"))
-b.append(box(150, 336, "intern_key", 510, "ART", "key → handle · domain", "int"))
-b.append(box(450, 336, "intern_string", 512, "ART", "offset · length → blob", "int"))
+b.append(box(10, 316, "gpu_device", 528, "ART", "ordinal · pci_bus · uuid", "int"))
+b.append(box(150, 422, "intern_key", 510, "ART", "key → handle · domain", "int"))
+b.append(box(450, 422, "intern_string", 512, "ART", "offset · length → blob", "int"))
 b.append(path("M300 63 H245", "object → id", 272, 32))
 b.append(path("M530 63 H585", "launch → correlation", 558, 32))
 b.append(path("M415 86 V140", "pc", 423, 116, anchor="start"))
 b.append(path("M125 145 V90", "peer addr → owner base", 133, 122, anchor="start"))
-b.append(path("M415 276 V300", None))
-b.append(path("M125 276 V300", None))
-b.append(path("M705 276 V300", None))
-b.append(note(10, 424, "entity_close is one shared type for every provider: subject is the interned handle the OPEN record carried,", cls="fnote"))
-b.append(note(10, 438, "and opener is that record's type_id. A close naming a subject nothing opened is not a bug in the close hook —", cls="fnote"))
-b.append(note(10, 452, "it is evidence of a creation door that is not hooked, and it is counted rather than suppressed.", cls="fnote"))
-FIGS["engine"] = svg(860, 466, "".join(b),
+b.append(path("M415 276 V386", None))
+b.append(path("M705 276 V386", None))
+# node_identity -> gpu_device, and the arrow is the whole point of the record:
+# gpu_device names a card by PCI address, which is unique on ONE machine. The
+# node_hash above it is what makes that name unique across the capture.
+b.append(path("M125 276 V312", "ordinals and PCI addresses are node-local", 133, 298, anchor="start"))
+b.append(path("M125 362 V386", None))
+b.append(note(10, 510, "entity_close is one shared type for every provider: subject is the interned handle the OPEN record carried,", cls="fnote"))
+b.append(note(10, 524, "and opener is that record's type_id. A close naming a subject nothing opened is not a bug in the close hook —", cls="fnote"))
+b.append(note(10, 538, "it is evidence of a creation door that is not hooked, and it is counted rather than suppressed.", cls="fnote"))
+FIGS["engine"] = svg(860, 552, "".join(b),
     "The engine's records in the 500 range and the gpumem provider's in the 700 range, with the intern dictionary every handle resolves through")
 
 # ---------------------------------------------------------------- fig: ibverbs
@@ -525,7 +530,9 @@ MONO_STACK = ('ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, '
               '"Liberation Mono", monospace')
 
 # name, type_id, kind, one line. Cross-checked against the PCOMM_RECORD declarations
-# in libpcomm/, providers/ and gpu-backends/ when written: 53 records, no duplicates.
+# in libpcomm/, providers/ and gpu-backends/ — by tools/check_figures.py on every
+# commit, not "when written". The three counts in this file said 53 while the tree
+# held 60, because a comment is not a check and drifted the moment one was added.
 IB = [
  ("ib_mem_region", 100, "Entity", "A registered region, [reg, dereg). lkey/rkey are what a send or a receive resolves its buffer through."),
  ("ib_queue_pair", 102, "Entity", "A queue-pair endpoint, [create, destroy)."),
@@ -560,6 +567,7 @@ INT = [
  ("entity_close", 522, "Event", "An entity's lifetime ended. One shared type for every provider; opener is the type_id of the record that should have opened it."),
  ("node_identity", 524, "Artifact", "Which machine this rank ran on. A device ordinal is node-local, so run_device 0 on two nodes is two different GPUs."),
  ("peer_mapping", 526, "Entity", "One process's mapping of a shared allocation, keyed by the CUDA fabric handle \u2014 FABRIC only, because a POSIX fd names the driver node."),
+ ("gpu_device", 528, "Artifact", "One visible GPU, named by PCI address. What a device ordinal actually points at, so two ranks that both say 'device 0' can be told apart."),
  ("gpu_kernel", 530, "Event", "One kernel's EXECUTION window. Never submission: the two are ~800x the kernel's own duration apart."),
  ("clock_anchor", 590, "Artifact", "A clock-domain calibration anchor. Two per rank per domain, which is exactly what a line needs."),
 ]
