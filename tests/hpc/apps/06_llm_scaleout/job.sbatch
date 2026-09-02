@@ -42,6 +42,12 @@ CASE="$PCOMM_ROOT/tests/hpc/apps/06_llm_scaleout"
 source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime                          # gcc 13.2 + HPC SDK 25.7 + CUDA
 export LD_LIBRARY_PATH="$NCCL_HOME/lib:$PCOMM_SDK/math_libs/12.9/lib64:$LD_LIBRARY_PATH"
+# libcupti is the KERNEL backend's own dependency and nothing in common.sh
+# puts it on the path. Without it `-p nccl,ib,kernel` fails at exec with
+# "train_gpt2cu: error while loading shared libraries: libcupti.so.12", which
+# names the application rather than the provider and reads as a broken build
+# (job 45330280, z0k arm, exit 127 on all sixteen ranks).
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$PCOMM_SDK/cuda/extras/CUPTI/lib64"
 
 # The private build at the repo checkout, as 02_lammps round 2 uses. The shared
 # $PCOMM_ROOT/build is another agent's and apps/README.md says not to rebuild it.

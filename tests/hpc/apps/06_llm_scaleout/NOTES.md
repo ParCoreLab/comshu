@@ -55,11 +55,16 @@ shared object file: No such file or directory     (exit 127)
 ```
 
 `pcomm run` had already found and injected the backend; the missing library is
-the backend's OWN dependency, and the error names the application. On MN5
-`libcupti.so.12` is in `/cuda/extras/CUPTI/lib64`, which nothing in
-`common.sh` puts on `LD_LIBRARY_PATH`. Add it before selecting `-p kernel`.
+the backend's OWN dependency, and the error names the *application*, so it reads
+as a broken build of llm.c. On MN5 `libcupti.so.12` lives in
+`$PCOMM_SDK/cuda/extras/CUPTI/lib64`, which nothing in `common.sh` puts on
+`LD_LIBRARY_PATH`. Append it before selecting `-p kernel`:
 
+```bash
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$PCOMM_SDK/cuda/extras/CUPTI/lib64"
+```
 
+Separately, and the reason this section existed before the failure:
 `-p kernel` comes from `gpu-backends/cupti/libcupti_trace.so`, which is a
 different subtree and, on MN5, a different **build directory**
 (`build-cupti/`). `PCOMM_PROVIDER_PATH` takes a colon-separated list; a
