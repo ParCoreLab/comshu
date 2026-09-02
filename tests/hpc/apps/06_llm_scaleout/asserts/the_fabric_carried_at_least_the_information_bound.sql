@@ -40,13 +40,13 @@
 -- post is correct here and must not be a violation.
 SELECT 'the fabric carried less than an all-reduce over four nodes requires' AS problem,
        total_bytes,
-       (SELECT nodes * iters * grad_elems * elem_bytes FROM params) AS bound,
+       (SELECT CAST(nodes AS BIGINT) * iters * grad_elems * elem_bytes FROM params) AS bound,
        posts
 FROM (SELECT sum(CAST(length AS BIGINT)) AS total_bytes, count(*) AS posts FROM ib_post_send) x
-WHERE total_bytes < (SELECT nodes * iters * grad_elems * elem_bytes FROM params)
+WHERE total_bytes < (SELECT CAST(nodes AS BIGINT) * iters * grad_elems * elem_bytes FROM params)
 
 UNION ALL
 
 SELECT 'ib_post_send is empty, so this assertion checked nothing', 0,
-       (SELECT nodes * iters * grad_elems * elem_bytes FROM params), 0
+       (SELECT CAST(nodes AS BIGINT) * iters * grad_elems * elem_bytes FROM params), 0
 WHERE (SELECT count(*) FROM ib_post_send) = 0;
