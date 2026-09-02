@@ -187,6 +187,44 @@ this from the capture side.
 
 ---
 
+## Validation status, 2026-09-02
+
+**The MN5 suite has NOT run against these commits.** Both Slurm controllers were
+down when it was submitted (`Slurmctld(primary) at sched1 is DOWN`, backup the
+same), so all 22 cases reported `no result (job SUBMIT_FAILED)`. The harness
+behaved correctly under that — manifest pinning meant no case inherited the
+previous run's PASS.
+
+What DID get validated, and it is more than the fixtures:
+
+  * **The MN5 build succeeded** for all six providers across both toolchains
+    (gcc-11.4/NVBit/CUDA C++20/sm_90 for gpumem, gcc-13.2 for the rest). The
+    Invocation record, the engine changes and the CMake build-id target compile
+    on a compiler set du04 does not exercise.
+  * **Four real captures re-linked** with the new binary — hubspoke_ib (22 raw
+    tables, real verbs plus ib_qp_signalling), ucx_deep (21 raw, uct_binding),
+    nccl_p2p (9 raw, NVLink), lammps-ib-on (17 raw) — 13 derived tables each,
+    no failed query.
+  * **The edge_sizes roll-up invariant is exact on all four**, in both
+    directions, on real data rather than a 12-row fixture. edge_sizes genuinely
+    splits: ucx_deep goes from 4 comm_edges rows to 28 size classes.
+  * **link_health produces no false defects.** hubspoke_ib and ucx_deep come
+    back entirely clean; `uct_ops_patch_refused` correctly reads 0 where the
+    binding was accepted. nccl_p2p reports `unattributed_p2p_accesses`
+    = 1,179,948, and the PRE-CHANGE derived table from MN5 reports the identical
+    number — pre-existing, correctly classified, and never asserted by case 05.
+  * **sql_check.sh's derived path works under the new `pcomm sql`**, which binds
+    the query as a TEMP VIEW instead of parenthesising it. That path splices
+    `params`/`ranks_seen` CTEs onto the front, so the statement becomes
+    `CREATE ... AS WITH params AS (...) SELECT ...`. Case 21 PASS with 13
+    assertions including all 8 derived ones; case 16 PASS with 13.
+
+Still unvalidated and needing the scheduler: the workloads themselves, the
+gpumem/NVBit and IBGDA cases, and any assertion whose capture must be taken
+fresh. Re-run `tests/hpc/run_on_mn5.sh` when the controller is back.
+
+---
+
 ## Not a finding, recorded so it is not re-derived
 
 LAMMPS's `per_peer_message_split_is_two_two_one_one` is marked xfail with
