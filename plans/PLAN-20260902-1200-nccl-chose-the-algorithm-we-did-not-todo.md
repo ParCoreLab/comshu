@@ -216,13 +216,60 @@ and do not let a green board stand in for either.
 
 ## Order of work
 
-1. `getHash` + parity test — no hardware needed.
-2. `nccl_comm_hash` column on `NcclComm`, 0 where not derivable.
-3. The v4 plugin surface, mask, and the three records.
-4. `nccl.map` export; `NCCL_PROFILER_PLUGIN` wiring in `suite/common.sh`.
-5. Derived layer: a `nccl_execution` table joining coll → proxyOp → `nccl_comm`,
-   and the `link_health` row for unmatched hashes.
-6. du04 build + smoke (single node, so `proxyOp` may be empty — that is expected
-   and must not read as failure).
-7. MN5 multi-node, unpinned and pinned.
-8. `catalog.md`, `BRIEF-BLACKBOX.md`, `gen_figures.py` counts.
+1. ✅ `getHash` + parity test — no hardware needed. `tests/nccl_comm_hash_test.cpp`,
+   goldens generated from NCCL's own `bitops.h`.
+2. ✅ `nccl_comm_hash` column on `NcclComm`, 0 where not derivable.
+3. ✅ The v4 plugin surface, mask, and the three records.
+4. ✅ `nccl.map` export; `NCCL_PROFILER_PLUGIN` wiring in `suite/common.sh`.
+5. ✅ Derived layer: `nccl_execution` and `nccl_peer_traffic`, plus three
+   `link_health` rows.
+6. ✅ du04 build + smoke. Case 20 PASS, 8 assertions. `proxyOp` empty as
+   predicted (single node, no CPU proxy) and that did not read as failure.
+7. ⏳ MN5 multi-node — job 45350397, 4 nodes. The only place proxy ops exist.
+8. ✅ `catalog.md`, `BRIEF-BLACKBOX.md`, `gen_figures.py` counts.
+
+## What the runs actually settled
+
+**The join key, proven rather than argued.** On du04 case 20,
+`nccl_comm.nccl_comm_hash` — computed by us from the `ncclUniqueId` — came back
+`4313309560565514636`, byte-identical to the value NCCL handed the plugin and
+recorded in `nccl_prof_comm`. Two independent computations of the same number in
+different code at different times.
+
+**`root` is NCCL's convention and not ours.** Every rootless collective came back
+`root = 0`, where `nccl_collective` deliberately writes `-1` because 0 is a valid
+rank. The two records must not be compared on that column, and the schema now
+says so.
+
+**`algo`/`proto` are uppercased.** `RING`, `SIMPLE` — while `NCCL_ALGO` is
+spelled `Ring`. An assertion comparing them raw fails on a correct capture; the
+one in case 20 folds case.
+
+## Three defects this work surfaced
+
+1. **The first version targeted profiler v5**, chosen from du04's *system*
+   libnccl. The cases load `$NCCL_HOME`, a different and older NCCL. Caught by
+   checking the symbol table of the library the cases actually load rather than
+   the one on the default path.
+2. **`link::columns_match` swallowed SQL errors.** Its comment said "the CREATE
+   already reported why" — true of `kViews`, false of `kTables`, which are never
+   CREATEd. `pcomm link` printed "(SOME FAILED, see above)" with nothing above
+   it. Fixed; it now prints the planner error.
+3. **`run_on_a100.sh` built through `cmake --build | tail -3`**, so a failed
+   build exited 0 and the runner proceeded against the previous binary. Finding
+   14 verbatim, still present in this file after being fixed elsewhere.
+
+## Two vacuous passes caught, both by measuring
+
+**The assertion.** `nccl_stated_what_it_chose.sql` first declared
+`-- requires: nccl_coll_exec`. Re-running case 20 with
+`NCCL_PROFILER_PLUGIN=none` reported `[skip]` and `PASS` over a capture that had
+lost the entire profiler layer. With the requirement dropped it fails, naming
+every rank.
+
+**The fixture.** `tests/nccl_execution_rule.sh` passed on its first run. Deleting
+`AND x.nccl_comm_hash <> 0` from the join — the clause that stops every
+underivable communicator marrying every other one — changed nothing, because no
+fixture row had a zero hash on the execution side and the clause was unreachable.
+Adding that row makes the mutation fail three assertions. The rank-scope mutation
+on the parent join was caught from the start (`4|2` where `2|1` is right).

@@ -181,6 +181,17 @@ add_test(NAME tag_recv_rule
 add_test(NAME run_provenance_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_provenance_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# The NCCL profiler layer's two joins. A fixture and not a capture because the
+# cases that break them do not occur on the hardware we can run: a communicator
+# whose commHash is underivable needs ncclCommSplit, and the event-id rank-scope
+# clause needs two ranks whose per-process counters collide — which they always
+# do, but only a fixture can pin them to the exact same numbers and check that
+# the traffic did not cross over. It also drives link_health's three new rows to
+# non-zero, since a rubric row nobody has seen fire is a row that reads as clean
+# on the day it is right.
+add_test(NAME nccl_execution_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/nccl_execution_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # What `pcomm sql` accepts as a query. Not about SQL at all — about the
 # `COPY (<q>) TO` wrapper, which turns a trailing semicolon and a trailing
 # comment into parse errors that name neither.
