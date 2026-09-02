@@ -34,7 +34,31 @@ The verified range was 1.14–1.19 and LAMMPS ran 1.20.0. Resolved by measuring
 v1.18.0, v1.19.0, v1.19.1, **v1.20.0** and `origin/master` — and widening the
 range with that evidence.
 
+**Confirmed on hardware, job 45332111.** `accepted` went 0 -> 1 with
+`runtime_version = 70656` (0x11400 = 1.20.0) on all 16 ranks, `transport_mix`
+went from empty to 148 rows, and the study's dead prediction is answered: the
+scope derived from `tl_name` and the scope derived from node membership agree.
+The `comm_edges` bytes mirror across the two placements to within 0.003%
+(250,401,000 / 318,713,225 block, 318,706,048 / 250,408,177 cyclic), for network
+shares of 56.00% and 44.00% against a pre-committed 55.68% / 44.32%.
+
 The *reporting* half of this one is still open; see finding 3.
+
+**14. Nothing records which BUILD produced a capture, and it cost a run.**
+Job 45331793 was submitted to verify the range widening and reported
+`accepted = 0` on 1.20.0 — apparently refuting the change. It did not. That job
+loads `build-apps06/providers-sysucx/`, a tree of `.so` files hand-copied out of
+`build-ucx120`; the source change had synced and `build/` had rebuilt, but the
+copied artefact was two hours stale. There are now SIX UCX build directories on
+MN5 (`build-ucx`, `build-ucx06`, `build-ucx06sys`, `build-ucx120`, `build-ucx2`,
+`build-ucxtest`) and one job pointing at copies from one of them.
+
+`uct_binding` already carries `compiled_version` and `runtime_version`, so a
+capture can say which UCX HEADERS it was built against — but not which pcomm
+commit, which is the axis that actually bit. This is the same class of gap as
+finding 10: provenance of the binary rather than of the invocation, and the two
+want fixing together. I nearly reported the stale result as evidence against my
+own change.
 
 ---
 
