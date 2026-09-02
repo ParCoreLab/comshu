@@ -165,15 +165,25 @@ because the previous session's verification loop was the HPC suite while that
 check lives in the local ctest set. Three record counts in `gen_figures.py` said
 53 while the tree held 60. `50d95ce`.
 
-**A join that was silently wrong**, found while building `edge_sizes` and
-recorded because the class matters more than the instance. With comm_edges'
-inline `_rtr + _owner` join and `size_class` as a fourth grouping column, one
-queue pair's two size classes resolved to DIFFERENT peers — the zero-length class
-fell to `dst_rank = -1` while the 64-byte class on the same `(rank, qp_num)`
-resolved correctly. The identical join spelled out as a CTE over the same data is
-correct for both, so it is the view nesting rather than the rule. comm_edges is
-unaffected. Fixed by using `_peer_of_qp`, the same rule already extracted as a
-view. Worth a second look if it recurs anywhere else in this file.
+**A JOIN I REPORTED AS SILENTLY WRONG, AND WAS NOT.** While building
+`edge_sizes` I observed one queue pair's two size classes resolving to different
+peers — the zero-length class falling to `dst_rank = -1` while the 64-byte class
+on the same `(rank, qp_num)` resolved correctly — and wrote it up as a probable
+DuckDB planner issue, in a code comment and in this file.
+
+**It was a stale binary holding my own mutation.** A mutation test had appended
+`AND s.size_class > 0` to that exact LEFT JOIN, which produces precisely that
+symptom and nothing else. The source was restored; two rebuild-skipping test
+cycles ran afterwards, so the binary kept answering for the mutated tree. From a
+clean build both spellings agree, and re-applying the mutation reproduces the
+"anomaly" byte for byte. There is no planner bug and `comm_edges` was never at
+risk.
+
+Recorded because it is finding 14's failure mode arriving one commit after
+finding 14 was closed, in the work that closed it. Two process changes came out
+of it: the local runner no longer has a skip-the-build flag, and `Invocation`
+now records the mtime of every mapped object, which is what would have caught
+this from the capture side.
 
 ---
 

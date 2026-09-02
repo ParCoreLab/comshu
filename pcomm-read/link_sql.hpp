@@ -1919,20 +1919,34 @@ ORDER BY e.transport, e.src_rank, e.dst_rank
     // which asserts that rolling this table up over size_class reproduces
     // comm_edges exactly, on every column and every lane.
     //
-    // THE PEER JOIN IS `_peer_of_qp`, NOT comm_edges' INLINE _rtr + _owner, and
-    // that difference is not tidiness. Written inline here, with size_class as
-    // a fourth grouping column, one queue pair's two size classes resolved to
-    // DIFFERENT peers — the zero-length class fell to -1 while the 64-byte class
-    // on the same (rank, qp_num) resolved correctly. Reproduced on a two-row
-    // fixture; the identical join spelled out as a CTE over the same data gives
-    // the right answer for both, so this is something about the nesting rather
-    // than about the rule. comm_edges is unaffected (it has no size_class and
-    // resolves both sends correctly), which is why it has not been touched.
+    // The peer join is `_peer_of_qp` — the same rule extracted as a view, and
+    // already what `endpoint` and object_access use. One definition of "who is
+    // at the other end of this queue pair" rather than a third copy of it,
+    // which is the argument that view's own comment makes.
     //
-    // `_peer_of_qp` is the same rule extracted as a view, is what `endpoint` and
-    // object_access already use, and gives the right answer here. Using it is
-    // the fix and was the better spelling anyway. The roll-up assertion is what
-    // holds the two tables to the same answer regardless.
+    // AN EARLIER VERSION OF THIS COMMENT CLAIMED A PLANNER BUG here: that with
+    // the inline `_rtr + _owner` join, one queue pair's two size classes
+    // resolved to DIFFERENT peers — the zero-length class falling to
+    // dst_rank = -1 while the 64-byte class on the same (rank, qp_num) resolved
+    // correctly. That was false. It is retracted here rather than quietly
+    // deleted, because how it happened is worth more than the claim was.
+    //
+    // The symptom was real; the cause was a STALE BINARY still holding a
+    // mutation from a mutation test — `AND s.size_class > 0` appended to that
+    // very LEFT JOIN, which produces exactly -1 for the zero-length class and
+    // nothing else. The source had been restored, but two rebuild-skipping test
+    // cycles ran after it, so the binary went on answering for the mutated
+    // tree. From a clean build both spellings are correct; re-applying the
+    // mutation reproduces the "anomaly" byte for byte.
+    //
+    // So there is no planner bug, comm_edges was never at risk, and the inline
+    // join is correct wherever it appears. This is precisely the failure mode
+    // records.hpp's Invocation comment was written for, arriving one commit
+    // later in the same session — which is why `images` records the mtime of
+    // every mapped object.
+    //
+    // The roll-up assertion in tests/comm_edges_rule.sh is what actually holds
+    // this table and comm_edges to one answer, and none of the above touches it.
     {"edge_sizes", "src_rank,dst_rank,transport,unit,scope,size_class,sends,bytes",
      R"sql(
 SELECT e.src_rank, e.dst_rank, e.transport, e.unit,
