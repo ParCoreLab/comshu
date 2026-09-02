@@ -246,6 +246,12 @@ study spent two days treating a correct refusal as a tool defect while its
 central prediction went unanswered — because nothing distinguished "the answer
 was withheld" from "the workload sent nothing".
 
+**`nccl_profiler_door_shut` is the same row for NCCL, and reads the same way.**
+Non-zero means the profiler plugin did not load, so `nccl_execution` is empty
+because nobody asked what algorithm ran — not because the workload chose none.
+It is classified `defect` for exactly the reason above: a withheld answer that
+looks like a negative one is the failure this rubric exists to prevent.
+
 ## What is new since round 1, and therefore untested
 
 Round 1's studies were judged against `comm_edges` and the raw UCX tables. Since
