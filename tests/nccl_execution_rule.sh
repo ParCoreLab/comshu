@@ -87,6 +87,17 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,2,0,140,0,195,0,12,99,0,2,1024,5001,0,1
 CSV
 
+# The host-API side, needed only for the broadcast row in link_health: two
+# broadcasts (op = 1, CollOp::Broadcast) that no execution row accounts for.
+# That is the shape NCCL_ALLGATHERV_ENABLE produces on a real 2.29 run — the
+# call is recorded at the host door and the profiler is never offered the event
+# — and without these rows the rubric row could not be seen to fire.
+cat > "$WORK/nccl_collective.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,comm,sendbuff,recvbuff,stream,count,root,op,datatype,redop,pad
+0,2,0,900,0,910,0,1,10,11,12,262144,0,1,0,255,0
+1,2,0,910,0,920,0,1,10,11,12,262144,0,1,0,255,0
+CSV
+
 # The clock, or every t0_ns is NULL and the temporal half of both tables is
 # untested. One anchor per (rank, domain).
 cat > "$WORK/clock_anchor.csv" <<'CSV'
@@ -235,6 +246,14 @@ expect "the unparented proxy op is counted" \
 # Its firing case is checked below, on a second capture.
 expect "the door-shut row is zero when the door was open" \
     "SELECT n FROM link_health WHERE finding = 'nccl_profiler_door_shut'" "0"
+
+# TWO broadcasts at the host door, ONE Broadcast execution row (rank 0's handle
+# 5 resolves to it), so the answer is 1 — the row counts what is MISSING, not
+# what was called. Asserting 2 here was the first version and it was wrong,
+# which is the more useful test: a row that simply counted host-API broadcasts
+# would report 2 on a capture where the profiler saw one of them perfectly well.
+expect "the broadcast row counts what is missing, not what was called" \
+    "SELECT n FROM link_health WHERE finding = 'nccl_bcast_invisible_to_profiler'" "1"
 
 # --- the door that did not open ---------------------------------------------
 #

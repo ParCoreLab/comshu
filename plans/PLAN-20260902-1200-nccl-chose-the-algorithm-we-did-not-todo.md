@@ -225,7 +225,8 @@ and do not let a green board stand in for either.
    `link_health` rows.
 6. ✅ du04 build + smoke. Case 20 PASS, 8 assertions. `proxyOp` empty as
    predicted (single node, no CPU proxy) and that did not read as failure.
-7. ⏳ MN5 multi-node — job 45350397, 4 nodes. The only place proxy ops exist.
+7. ⏳ MN5 multi-node. Job 45350397 was RED on case 20 and that is the most
+   valuable single result of this work — see below.
 8. ✅ `catalog.md`, `BRIEF-BLACKBOX.md`, `gen_figures.py` counts.
 
 ## What the runs actually settled
@@ -244,6 +245,39 @@ says so.
 **`algo`/`proto` are uppercased.** `RING`, `SIMPLE` — while `NCCL_ALGO` is
 spelled `Ring`. An assertion comparing them raw fails on a correct capture; the
 one in case 20 folds case.
+
+## What the first MN5 board found: NCCL cannot see its own broadcasts
+
+Job 45350397: 21 of 22 cases PASS, case 20 RED, and the assertion that failed
+was the one written two hours earlier — `24 exec vs 32 calls`. The 8 missing
+collectives were **every single broadcast**, on all four ranks.
+
+It is not the plugin. `NCCL_ALLGATHERV_ENABLE` defaults to **1**
+(`src/enqueue.cc:30`), and with it `ncclBroadcast` is rewritten to
+`ncclFuncAllGatherV` and enqueued on `planner->peers[root].bcastQueue`
+(`enqueue.cc:2703-2722`). `ncclProfilerStartTaskEvents` walks `collTaskQueue`
+and `p2pTaskQueue` and nothing else (`src/plugin/profiler.cc:478,520`). **No
+plugin at any version is ever offered the event.** du04's older NCCL has no such
+path, which is why it recorded all four operations and the gap only appeared on
+2.29.
+
+The first hypothesis was the v6 copy-engine event family, and it was wrong:
+`ncclCeImplemented` (`src/ce_coll.cc:93`) lists AllGather, AlltoAll, Scatter and
+Gather — not Broadcast — and AllGather was fully present. Checking beat guessing
+by about ten minutes.
+
+**The response is not to weaken the assertion and not to leave the board red.**
+A permanently red board is a board nobody reads; deleting the clause gives back
+the only check that catches a door dropping work. So the count comparison now
+excludes broadcasts, a second clause fires if broadcasts are *partially* visible
+(which matches no known NCCL path), and the broadcasts themselves are counted in
+`link_health` as `nccl_bcast_invisible_to_profiler` — a note, because the tool
+did everything available to it and `nccl_collective` still describes the call.
+
+One trap found while fixing it: `nccl_collective.op` is the **name** in the CSV
+export and the **enum** in the raw Parquet the derived layer mounts. Writing the
+Parquet form in a CSV assertion reported "8 of 0" — a filter matching nothing,
+dressed as a finding.
 
 ## The lifetime bug, which no test would have found
 

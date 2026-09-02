@@ -1306,6 +1306,43 @@ LEFT JOIN LATERAL (
 ) m ON TRUE
 WHERE c.opcode = 128 AND c.status = 0
 )sql"},
+
+    // The profiler-plugin collectives with their handles resolved.
+    //
+    // A view rather than resolution inlined into each consumer, because there
+    // are three of them — nccl_execution, nccl_peer_traffic and link_health —
+    // and a fourth copy of a four-way LEFT JOIN to _intern_name is a fourth
+    // place for the `texts = 1` guard or the `domain = 2` scope to be dropped.
+    //
+    // `domain = 2` is InternDomain::String, spelled as a number for the reason
+    // the UCT views give: this layer mounts RAW streams, where an enum is a
+    // number. The `texts = 1` guard is load-bearing on a REPLAYED capture,
+    // where two passes nest under one rank with independent dictionaries and a
+    // handle can name two strings — see run_provenance for the full argument.
+    {"_nccl_exec", R"sql(
+CREATE OR REPLACE VIEW _nccl_exec AS
+SELECT x.rank,
+       x.nccl_comm_hash,
+       x.event_id,
+       x.parent_event_id,
+       x.seq_number,
+       x.count,
+       x.root,
+       x.n_channels,
+       x.n_warps,
+       x.temporal_a_domain AS domain,
+       x.temporal_a_ticks  AS a,
+       x.temporal_b_ticks  AS b,
+       CASE WHEN f.texts  = 1 THEN f.text  END AS func,
+       CASE WHEN al.texts = 1 THEN al.text END AS algo,
+       CASE WHEN pr.texts = 1 THEN pr.text END AS proto,
+       CASE WHEN dt.texts = 1 THEN dt.text END AS datatype
+FROM nccl_coll_exec x
+LEFT JOIN _intern_name f  ON f.rank  = x.rank AND f.domain  = 2 AND f.handle  = x.func
+LEFT JOIN _intern_name al ON al.rank = x.rank AND al.domain = 2 AND al.handle = x.algo
+LEFT JOIN _intern_name pr ON pr.rank = x.rank AND pr.domain = 2 AND pr.handle = x.proto
+LEFT JOIN _intern_name dt ON dt.rank = x.rank AND dt.domain = 2 AND dt.handle = x.datatype
+)sql"},
 };
 
 // Derived tables, materialised and written as Parquet in this order.
@@ -1760,10 +1797,10 @@ SELECT x.rank,
        c.nccl_rank,
        c.nranks,
        pc.nnodes,
-       CASE WHEN f.texts  = 1 THEN f.text  END AS func,
-       CASE WHEN al.texts = 1 THEN al.text END AS algo,
-       CASE WHEN pr.texts = 1 THEN pr.text END AS proto,
-       CASE WHEN dt.texts = 1 THEN dt.text END AS datatype,
+       x.func,
+       x.algo,
+       x.proto,
+       x.datatype,
        x.count,
        x.n_channels,
        x.n_warps,
@@ -1771,10 +1808,10 @@ SELECT x.rank,
        x.event_id,
        x.parent_event_id,
        (k.w0::HUGEINT
-          + ((x.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t0_ns,
+          + ((x.a::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t0_ns,
        (k.w0::HUGEINT
-          + ((greatest(x.temporal_b_ticks, x.temporal_a_ticks)::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns
-FROM nccl_coll_exec x
+          + ((greatest(x.b, x.a)::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns
+FROM _nccl_exec x
 LEFT JOIN nccl_comm c
        ON c.rank = x.rank
       AND c.nccl_comm_hash = x.nccl_comm_hash
@@ -1782,12 +1819,8 @@ LEFT JOIN nccl_comm c
 LEFT JOIN nccl_prof_comm pc
        ON pc.rank = x.rank
       AND pc.nccl_comm_hash = x.nccl_comm_hash
-LEFT JOIN _intern_name f  ON f.rank  = x.rank AND f.domain  = 2 AND f.handle  = x.func
-LEFT JOIN _intern_name al ON al.rank = x.rank AND al.domain = 2 AND al.handle = x.algo
-LEFT JOIN _intern_name pr ON pr.rank = x.rank AND pr.domain = 2 AND pr.handle = x.proto
-LEFT JOIN _intern_name dt ON dt.rank = x.rank AND dt.domain = 2 AND dt.handle = x.datatype
-LEFT JOIN _clock k ON k.rank = x.rank AND k.domain = x.temporal_a_domain
-ORDER BY x.rank, x.temporal_a_ticks
+LEFT JOIN _clock k ON k.rank = x.rank AND k.domain = x.domain
+ORDER BY x.rank, x.a
 )sql"},
 
     // A collective's decomposition into per-peer traffic, attributed to the
@@ -1812,9 +1845,9 @@ ORDER BY x.rank, x.temporal_a_ticks
      R"sql(
 SELECT p.rank,
        x.nccl_comm_hash,
-       CASE WHEN f.texts  = 1 THEN f.text  END AS func,
-       CASE WHEN al.texts = 1 THEN al.text END AS algo,
-       CASE WHEN pr.texts = 1 THEN pr.text END AS proto,
+       x.func,
+       x.algo,
+       x.proto,
        p.peer,
        CASE WHEN p.is_send <> 0 THEN 'send' ELSE 'recv' END AS dir,
        p.channel_id,
@@ -1828,13 +1861,10 @@ SELECT p.rank,
        (k.w0::HUGEINT
           + ((greatest(p.temporal_b_ticks, p.temporal_a_ticks)::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns
 FROM nccl_proxy_op p
-LEFT JOIN nccl_coll_exec x
+LEFT JOIN _nccl_exec x
        ON x.rank = p.rank
       AND x.event_id = p.parent_event_id
       AND p.parent_event_id <> 0
-LEFT JOIN _intern_name f  ON f.rank  = p.rank AND f.domain  = 2 AND f.handle  = x.func
-LEFT JOIN _intern_name al ON al.rank = p.rank AND al.domain = 2 AND al.handle = x.algo
-LEFT JOIN _intern_name pr ON pr.rank = p.rank AND pr.domain = 2 AND pr.handle = x.proto
 LEFT JOIN _clock k ON k.rank = p.rank AND k.domain = p.temporal_a_domain
 ORDER BY p.rank, p.temporal_a_ticks
 )sql"},
@@ -2753,6 +2783,35 @@ SELECT 'nccl_profiler_door_shut',
              AND (SELECT count(*) FROM nccl_coll_exec) = 0
             THEN (SELECT count(*) FROM nccl_collective)::BIGINT ELSE 0 END,
        'NCCL collectives recorded but no execution rows — the profiler plugin did not load, and NCCL says so only at INFO level'
+UNION ALL
+-- BROADCASTS NCCL'S OWN PROFILER CANNOT SEE. Not our gap and not fixable here.
+--
+-- With NCCL_ALLGATHERV_ENABLE, which DEFAULTS TO 1
+-- (reference/nccl-git/src/enqueue.cc:30), ncclBroadcast is rewritten into a
+-- ncclTaskBcast with func = ncclFuncAllGatherV and enqueued on
+-- planner->peers[root].bcastQueue (enqueue.cc:2703-2722). ncclProfilerStart-
+-- TaskEvents walks collTaskQueue and p2pTaskQueue and nothing else
+-- (src/plugin/profiler.cc:478,520), so no ncclProfileColl event is ever
+-- generated for it — at any plugin version.
+--
+-- MEASURED, not deduced from the source: MN5 job 45350397, 32 host-API
+-- collectives over 4 ranks, 24 execution rows, and the 8 missing were every
+-- single broadcast. du04's older NCCL has no such path and recorded all four
+-- operations.
+--
+-- A note, not a defect: the tool did everything available to it, and the
+-- broadcast is still fully described by nccl_collective. What is missing is the
+-- algorithm and protocol for that one operation, and a reader comparing
+-- nccl_execution against nccl_collective needs this number to explain the
+-- difference rather than concluding the tool dropped work.
+--
+-- op = 1 is CollOp::Broadcast; this layer mounts raw streams, where an enum is
+-- a number.
+SELECT 'nccl_bcast_invisible_to_profiler',
+       'note',
+       greatest(0, (SELECT count(*) FROM nccl_collective WHERE op = 1)
+                 - (SELECT count(*) FROM _nccl_exec WHERE func = 'Broadcast'))::BIGINT,
+       'broadcasts with no execution row — NCCL_ALLGATHERV_ENABLE (default 1) moves them to a queue its own profiler never walks'
 )sql"},
 };
 

@@ -191,7 +191,7 @@ ordering assumption between two layers that buffer independently.
 error**: it means the receive consumed a message that no probe announced.
 
 ### `nccl_execution` — what NCCL CHOSE, not what was asked for
-`rank INT, nccl_comm_hash UBIGINT, nccl_rank INT, nranks INT, nnodes INT, func VARCHAR, algo VARCHAR, proto VARCHAR, datatype VARCHAR, count UBIGINT, n_channels UTINYINT, n_warps UTINYINT, seq_number UBIGINT, event_id UBIGINT, parent_event_id UBIGINT, begin_ticks UBIGINT, end_ticks UBIGINT`
+`rank INT, nccl_comm_hash UBIGINT, nccl_rank INT, nranks INT, nnodes INT, func VARCHAR, algo VARCHAR, proto VARCHAR, datatype VARCHAR, count UBIGINT, n_channels UTINYINT, n_warps UTINYINT, seq_number UBIGINT, event_id UBIGINT, parent_event_id UBIGINT, t0_ns BIGINT, t1_ns BIGINT`
 
 **This is the only table that answers "which algorithm did this run use".**
 `nccl_collective` is what the application asked for; this is what NCCL decided
@@ -203,11 +203,17 @@ Three things to get right:
 - **The strings are UPPERCASE.** `NCCL_ALGO`/`NCCL_PROTO` are spelled
   mixed-case (`Ring`, `Simple`), so comparing this to `run_provenance.env`
   requires folding case.
+- **Broadcasts may be missing entirely.** On NCCL with
+  `NCCL_ALLGATHERV_ENABLE` (default 1) a broadcast is rewritten to
+  `ncclFuncAllGatherV` and enqueued where NCCL's own profiler does not look, so
+  it has a `nccl_collective` row and no `nccl_execution` row. Check
+  `link_health.nccl_bcast_invisible_to_profiler` before concluding the tool
+  dropped work — measured on MN5, 8 of 32 collectives, every one a broadcast.
 - **`nranks`/`nnodes` may be NULL.** That means the communicator was built by
   `ncclCommSplit` or the grow path, whose `commHash` we cannot derive — the
   algorithm is still true, the rank layout is just unknown. `link_health`
   counts these as `nccl_exec_comm_unresolved`.
-- **`begin_ticks`/`end_ticks` are NOT `nccl_collective`'s interval.** That one
+- **`t0_ns`/`t1_ns` are NOT `nccl_collective`'s interval.** That one
   is the host call — an enqueue, milliseconds ahead of the work. This one is
   the operation's own lifetime inside NCCL. Do not present either as the other.
 
@@ -217,7 +223,7 @@ statement about its algorithm — that is not the same as a run with no
 collectives.
 
 ### `nccl_peer_traffic` — where a collective became per-peer traffic
-`rank INT, nccl_comm_hash UBIGINT, func VARCHAR, algo VARCHAR, proto VARCHAR, peer INT, dir VARCHAR, channel_id UINT, n_steps INT, chunk_size INT, planned_bytes BIGINT, event_id UBIGINT, parent_event_id UBIGINT, begin_ticks UBIGINT, end_ticks UBIGINT`
+`rank INT, nccl_comm_hash UBIGINT, func VARCHAR, algo VARCHAR, proto VARCHAR, peer INT, dir VARCHAR, channel_id UINT, n_steps INT, chunk_size INT, planned_bytes BIGINT, event_id UBIGINT, parent_event_id UBIGINT, t0_ns BIGINT, t1_ns BIGINT`
 
 One row per NCCL proxy operation, attributed to its collective by **NCCL's own
 parent id** — not by our inference from timing or size. This is what makes
@@ -374,6 +380,7 @@ The vocabulary is closed. These are all of them:
 | `wr_flight_selective_signalling_qps` | note | those QPs themselves — certainly selective signalling |
 | `uct_ops_patch_forced` | note | `PCOMM_UCX_DEEP_FORCE` overrode the version guard |
 | `nccl_proxy_op_unparented` | note | proxy ops naming no recorded collective — a point-to-point parent, tracked for linkage but not recorded |
+| `nccl_bcast_invisible_to_profiler` | note | broadcasts with no execution row. **NCCL's own limitation, not the tool's**: `NCCL_ALLGATHERV_ENABLE` (default 1) rewrites a broadcast onto a queue its profiler never walks, so no plugin at any version is offered the event |
 
 
 Check this before trusting an unusual answer: `unresolved_sends > 0` explains

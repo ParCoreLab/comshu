@@ -71,8 +71,8 @@ vocabulary         vocab,value,name
 transport_mix      rank,tl_name,dev_name,scope,op,ops,out_bytes,in_bytes,advertised_bytes,header_bytes
 tag_flow           rank,tag,status,ucp_sends,ucp_units,uct_ops,uct_payload,doors
 tag_recv_resolved  rank,worker,message,status,sender_tag,offered,delivered
-nccl_execution     rank,nccl_comm_hash,nccl_rank,nranks,nnodes,func,algo,proto,datatype,count,n_channels,n_warps,seq_number,event_id,parent_event_id,begin_ticks,end_ticks
-nccl_peer_traffic  rank,nccl_comm_hash,func,algo,proto,peer,dir,channel_id,n_steps,chunk_size,planned_bytes,event_id,parent_event_id,begin_ticks,end_ticks
+nccl_execution     rank,nccl_comm_hash,nccl_rank,nranks,nnodes,func,algo,proto,datatype,count,n_channels,n_warps,seq_number,event_id,parent_event_id,t0_ns,t1_ns
+nccl_peer_traffic  rank,nccl_comm_hash,func,algo,proto,peer,dir,channel_id,n_steps,chunk_size,planned_bytes,event_id,parent_event_id,t0_ns,t1_ns
 link_health        finding,severity,n,note
 ```
 
@@ -94,6 +94,12 @@ Three traps, all of which have a wrong-looking-but-plausible failure mode:
   `link_health.nccl_profiler_door_shut`: non-zero means the profiler plugin
   never loaded, so the capture makes no statement about the algorithm. That is
   not "the workload ran no collectives".
+- **Broadcasts may have no row at all.** `NCCL_ALLGATHERV_ENABLE` defaults to 1
+  and rewrites a broadcast onto a queue NCCL's own profiler never walks, so the
+  call appears in `nccl_collective` and nowhere in `nccl_execution`. This is
+  NCCL's limitation, not the tool's, and
+  `link_health.nccl_bcast_invisible_to_profiler` counts it. Do not report it as
+  dropped work.
 - **`nccl_peer_traffic` is legitimately empty on a single node**, because proxy
   operations only exist for traffic through NCCL's CPU proxy — NVLink/P2P and
   device-initiated traffic never reach it. Its `planned_bytes` is

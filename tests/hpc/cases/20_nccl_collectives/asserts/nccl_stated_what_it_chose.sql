@@ -85,13 +85,50 @@ SELECT * FROM (
   FROM nccl_comm WHERE nccl_comm_hash = 0
 
   UNION ALL
-  -- The two doors must agree on how many collectives ran. They count the same
-  -- calls from opposite ends — one on the host thread as the API returns, one
-  -- inside the enqueue — so a mismatch means one of them is dropping work.
-  SELECT 'the two NCCL doors disagree on the collective count',
-         CAST((SELECT count(*) FROM nccl_coll_exec) AS VARCHAR) || ' exec vs ' ||
-         CAST((SELECT count(*) FROM nccl_collective) AS VARCHAR) || ' calls'
-  WHERE (SELECT count(*) FROM nccl_coll_exec) != (SELECT count(*) FROM nccl_collective)
+  -- The two doors must agree on how many collectives ran, EXCLUDING BROADCAST.
+  -- They count the same calls from opposite ends — one on the host thread as the
+  -- API returns, one inside the enqueue — so a mismatch means work is being
+  -- dropped.
+  --
+  -- WHY BROADCAST IS EXCLUDED, and it is not to make the board green. NCCL's own
+  -- profiler cannot see a broadcast on a build where NCCL_ALLGATHERV_ENABLE is
+  -- set, which is the DEFAULT (reference/nccl-git/src/enqueue.cc:30). The
+  -- broadcast is rewritten to ncclFuncAllGatherV and enqueued on
+  -- planner->peers[root].bcastQueue (enqueue.cc:2703), while
+  -- ncclProfilerStartTaskEvents walks only collTaskQueue and p2pTaskQueue
+  -- (src/plugin/profiler.cc:478,520). No plugin at any version is offered the
+  -- event.
+  --
+  -- This assertion is what FOUND that: MN5 job 45350397 reported "24 exec vs 32
+  -- calls" and the 8 missing were every broadcast. Keeping the strict form would
+  -- mean a permanently red board, which is a board nobody reads; deleting the
+  -- clause would give back the only check that catches a door dropping work.
+  -- So the count is compared without broadcasts, and the broadcasts themselves
+  -- are counted in link_health as nccl_bcast_invisible_to_profiler — where a
+  -- reader comparing the two tables will find the explanation.
+  --
+  -- `op` IS THE NAME HERE, NOT THE ENUM, and the two layers disagree on that.
+  -- These assertions run against the CSV export, where the reader prints
+  -- nccl_collective.op through nccl_coll_op_name() — so it is 'broadcast'. The
+  -- derived layer mounts the RAW stream, where the same column is the uint8, so
+  -- link_health's matching row spells it `op = 1`. One column name, two
+  -- representations, and writing the Parquet form here reported "8 of 0" — a
+  -- filter that matched nothing and looked like a finding.
+  SELECT 'the two NCCL doors disagree on the collective count (broadcasts excluded)',
+         CAST((SELECT count(*) FROM nccl_coll_exec WHERE func != 'Broadcast') AS VARCHAR) || ' exec vs ' ||
+         CAST((SELECT count(*) FROM nccl_collective WHERE op != 'broadcast') AS VARCHAR) || ' calls'
+  WHERE (SELECT count(*) FROM nccl_coll_exec WHERE func != 'Broadcast')
+        != (SELECT count(*) FROM nccl_collective WHERE op != 'broadcast')
+
+  UNION ALL
+  -- Broadcast is all-or-nothing. Either this NCCL routes every one of them off
+  -- the profiled queue, or it profiles them all; a partial count is neither of
+  -- the known behaviours and means something else is wrong.
+  SELECT 'broadcasts are partially visible, which matches no known NCCL path',
+         CAST((SELECT count(*) FROM nccl_coll_exec WHERE func = 'Broadcast') AS VARCHAR) || ' of ' ||
+         CAST((SELECT count(*) FROM nccl_collective WHERE op = 'broadcast') AS VARCHAR)
+  WHERE (SELECT count(*) FROM nccl_coll_exec WHERE func = 'Broadcast') NOT IN
+        (0, (SELECT count(*) FROM nccl_collective WHERE op = 'broadcast'))
 
   UNION ALL
   -- An interval that ends before it starts is the signature of reading the
