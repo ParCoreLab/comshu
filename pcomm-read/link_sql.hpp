@@ -1794,8 +1794,15 @@ ORDER BY i.rank
      R"sql(
 SELECT x.rank,
        x.nccl_comm_hash,
-       c.nccl_rank,
-       c.nranks,
+       -- PROFILER FIRST, host API second, and the order matters. The plugin is
+       -- loaded by NCCL through NCCL_PROFILER_PLUGIN, which is independent of
+       -- whether pcomm's nccl INTERPOSER provider was selected: case 02 runs
+       -- `pcomm run -p ib` and still gets 912/914/916 records. Reading the rank
+       -- layout only from nccl_comm left every row on that capture with NULL
+       -- nranks, as if the communicator were unknown — when nccl_prof_comm was
+       -- sitting there with rank, nranks and nnodes, told to us by NCCL itself.
+       coalesce(pc.nccl_rank, c.nccl_rank) AS nccl_rank,
+       coalesce(pc.nranks, c.nranks)       AS nranks,
        pc.nnodes,
        x.func,
        x.algo,
@@ -2738,15 +2745,23 @@ UNION ALL
 -- true — they carry the algorithm and protocol — they just cannot be attributed
 -- to a rank layout, and nccl_execution shows them with NULL nranks. Counting
 -- them is how a reader learns that "23 of 40 collectives" is not the whole story.
+-- NEITHER table, not just nccl_comm. An execution row whose communicator is
+-- absent from the host-API door but present in nccl_prof_comm is fully
+-- described — NCCL told the plugin its rank, nranks and nnodes at init — and
+-- that is the normal shape of any capture where the nccl interposer was not
+-- selected. Counting those as defects made case 02 report 160 of them on a
+-- capture with nothing wrong with it.
 SELECT 'nccl_exec_comm_unresolved',
        'defect',
        coalesce(count(*), 0)::BIGINT,
-       'nccl_coll_exec rows whose communicator is not in nccl_comm — ncclCommSplit and grow have no derivable commHash'
+       'nccl_coll_exec rows whose communicator is in neither nccl_comm nor nccl_prof_comm — no rank layout can be attached'
 FROM nccl_coll_exec x
 LEFT JOIN nccl_comm c ON c.rank = x.rank
                      AND c.nccl_comm_hash = x.nccl_comm_hash
                      AND x.nccl_comm_hash <> 0
-WHERE c.rank IS NULL
+LEFT JOIN nccl_prof_comm pc ON pc.rank = x.rank
+                           AND pc.nccl_comm_hash = x.nccl_comm_hash
+WHERE c.rank IS NULL AND pc.rank IS NULL
 UNION ALL
 -- A proxy op NCCL did not attach to a collective we saw. Not the same failure:
 -- the parent may be a point-to-point event, whose family we track for linkage

@@ -107,11 +107,10 @@ struct ProfComm {
 // collective, and because a union here would be one more place where reading
 // the wrong arm produces a plausible number instead of a compile error.
 struct Event {
-    // `state` is a generation in the high 32 bits and a reference count in the
-    // low 32. See EventPool below for why both are needed; refs == 0 means the
-    // slot is free and its contents describe a PAST event.
-    std::atomic<std::uint64_t> state;
-    Event*                     next_free;
+    // Bumped on every acquire. A handle carries the generation it was minted
+    // with, so a stale one never matches a re-issued slot. See EventPool.
+    std::uint32_t generation;
+    std::uint32_t next_free;  // slot index, kNoSlot at the end of the list
 
     std::uint64_t id;
     std::uint64_t parent;
@@ -142,110 +141,126 @@ enum EventKind : std::uint8_t {
     kProxyOp = 2,
 };
 
-// --- the event pool ---------------------------------------------------------
+// --- the event pool -------------------------------------------------------
 //
-// WHY THIS IS NOT `new`/`delete`, which is what it was until the lifetime was
-// actually checked rather than assumed.
+// THE HANDLE WE GIVE NCCL IS NOT A POINTER. It is (slot index, generation)
+// packed into the void*, and that is the entire design.
 //
-// A proxy op's parent is the COLLECTIVE event — NCCL sets
-// `eDescr.parentObj = sub->taskEventHandle`
+// Why a pointer cannot work. A proxy op's parent is the COLLECTIVE event — NCCL
+// sets `eDescr.parentObj = sub->taskEventHandle`
 // (reference/nccl-git/src/plugin/profiler.cc:574) — and
-// ncclProfilerStartProxyOpEvent runs on the PROXY THREAD, while the collective
-// is stopped from the application thread. So a child can begin, and read its
-// parent, after the parent has been stopped. Deleting an Event at stopEvent
-// makes that a use-after-free.
+// ncclProfilerStartProxyOpEvent runs on the PROXY THREAD while the collective is
+// stopped from the application thread. So NCCL routinely hands back a handle for
+// an event that has already ended. With `new`/`delete` that is a use-after-free.
+// With a recycled pool it is worse: the slot has been reused, and the child
+// reads a plausible id belonging to a DIFFERENT event.
 //
-// This is not a theoretical reading of the ordering. NVIDIA's own example
-// plugin refcounts its event pools for precisely this
-// (reference/nccl-git/plugins/profiler/example/plugin.cc:531, an atomic
-// increment of `parent->refCount` when a child starts), which is as direct a
-// statement as one gets that the parent is not guaranteed to outlive the child.
+// That is not hypothetical. It was measured on MN5 job 45350841, case 02:
+// proxy op 42's parent came back as 42 — ITSELF — and ops 43 and 44 also named
+// 42, because the collective they belonged to had been stopped and its slot
+// re-issued to proxy op 42. Confidently wrong attribution, which is the one
+// outcome worse than no attribution.
 //
-// SLOTS ARE NEVER RETURNED TO THE ALLOCATOR. Blocks are allocated and held for
-// the life of the process, so a pointer NCCL kept is always readable memory —
-// the worst case becomes reading a RECYCLED slot rather than freed memory, and
-// the generation counter turns that from a wrong answer into "not observed".
+// A refcount does not fix this and NVIDIA's example plugin has the same hole
+// (plugins/profiler/example/plugin.cc:531 increments `parent->refCount`, which
+// cannot help a child that arrives after the count already reached zero).
 //
-// The alternative — never recycling at all — is unbounded: a long training run
-// makes millions of proxy ops. Recycling under a refcount keeps the pool at
-// roughly the number of events in flight.
+// The generation does fix it, completely. Slots live in blocks that are never
+// freed, so an index is always valid; a generation is stamped on every acquire,
+// so a handle minted before a recycle carries the OLD generation and can never
+// match. The check is exact in both directions:
+//
+//   generation matches  -> the slot still describes that event, and its id is
+//                          correct EVEN IF the event has already stopped. A
+//                          stopped-but-not-yet-reused parent is still that
+//                          parent, and naming it is right.
+//   generation differs   -> the slot was re-issued; report 0, "not observed".
+//
+// No refcount is needed, which removes the ABA problem rather than defending
+// against it.
 class EventPool {
 public:
-    // A slot with refs = 1 and a fresh generation.
-    Event* acquire() {
+    // Encoded handle: index in the high 32 bits, generation in the low 32.
+    // Generations start at 1 so a valid handle is never null — NCCL tests
+    // `if (handle)` before calling stopEvent.
+    static void*         encode(std::uint32_t index, std::uint32_t gen) {
+        return reinterpret_cast<void*>((static_cast<std::uint64_t>(index) << 32) | gen);
+    }
+
+    Event* acquire(void** out_handle) {
         std::lock_guard<std::mutex> lk(mu_);
-        if (!free_) {
-            auto* block = new (std::nothrow) Event[kBlock];
-            if (!block)
-                return nullptr;
-            blocks_.push_back(block);
-            for (std::size_t i = 0; i < kBlock; ++i) {
-                block[i].state.store(0, std::memory_order_relaxed);
-                block[i].next_free = free_;
-                free_ = &block[i];
-            }
-        }
-        Event* e = free_;
+        if (free_ == kNoSlot && !grow())
+            return nullptr;
+        const std::uint32_t index = free_;
+        Event*              e = at(index);
         free_ = e->next_free;
-        const std::uint64_t gen = (e->state.load(std::memory_order_relaxed) >> 32) + 1;
-        // Payload is reset by the caller; only the bookkeeping is set here.
-        e->state.store((gen << 32) | 1u, std::memory_order_release);
+        const std::uint32_t gen = e->generation + 1;
+        e->generation = gen;
+        *out_handle = encode(index, gen);
         return e;
     }
 
-    void release(Event* e) {
-        if (!e)
-            return;
-        const std::uint64_t prev = e->state.fetch_sub(1, std::memory_order_acq_rel);
-        if ((prev & 0xffffffffu) != 1u)
-            return;  // someone else still holds it
-        std::lock_guard<std::mutex> lk(mu_);
-        e->next_free = free_;
-        free_ = e;
+    // Resolve a handle to its event, or nullptr if the slot has been re-issued.
+    Event* resolve(void* handle) {
+        const auto          raw = reinterpret_cast<std::uint64_t>(handle);
+        const std::uint32_t index = static_cast<std::uint32_t>(raw >> 32);
+        const std::uint32_t gen = static_cast<std::uint32_t>(raw);
+        if (gen == 0 || index >= count_.load(std::memory_order_acquire))
+            return nullptr;
+        Event* e = at(index);
+        return e->generation == gen ? e : nullptr;
     }
 
-    // Take a reference on a slot IF it is still the live event it was, and
-    // return its id.
-    //
-    // THE GENERATION IS PINNED BEFORE THE LOOP, not re-read inside it, and that
-    // is the whole point. The obvious loop — reload `s` on a failed exchange and
-    // retry — accepts a slot that was released and re-acquired mid-loop: the
-    // retry sees refs == 1 again, succeeds, and returns the id of a DIFFERENT
-    // event. That is a confident wrong parent, which is worse than no parent.
-    // Comparing against the generation we started with turns it into a 0.
-    //
-    // WHAT THIS DOES NOT CLOSE, stated rather than implied. If the parent was
-    // already released and its slot already recycled BEFORE the first load
-    // here, nothing in the pointer distinguishes that from a live parent, and
-    // the id returned is the new occupant's. That window is inherent to an
-    // API that hands back a raw pointer, and NVIDIA's own pooled plugin has the
-    // same one — its refCount likewise cannot help a child that arrives after
-    // the count already reached zero. It is bounded by NCCL not passing a
-    // parentObj it has fully retired. When it does happen, the result shows up
-    // as nccl_proxy_op_unparented or as a proxy op on the wrong collective, and
-    // the first of those is counted in link_health.
-    std::uint64_t id_of_live(Event* e) {
+    void release(void* handle) {
+        std::lock_guard<std::mutex> lk(mu_);
+        Event*                      e = resolve(handle);
         if (!e)
-            return 0;
-        std::uint64_t       s = e->state.load(std::memory_order_acquire);
-        const std::uint64_t gen = s >> 32;
-        for (;;) {
-            if ((s & 0xffffffffu) == 0 || (s >> 32) != gen)
-                return 0;  // released, or recycled under us — parent not observed
-            if (e->state.compare_exchange_weak(s, s + 1, std::memory_order_acq_rel,
-                                               std::memory_order_acquire))
-                break;
-        }
-        const std::uint64_t id = e->id;
-        release(e);
-        return id;
+            return;
+        e->next_free = free_;
+        free_ = static_cast<std::uint32_t>(reinterpret_cast<std::uint64_t>(handle) >> 32);
     }
 
 private:
-    static constexpr std::size_t kBlock = 512;
-    std::mutex                   mu_;
-    std::vector<Event*>          blocks_;
-    Event*                       free_ = nullptr;
+    // 512 events per block, and a block table sized so the ceiling is far above
+    // anything in flight: slots are recycled, so the high-water mark is the
+    // number of events NCCL has open at once, not the number it ever created.
+    static constexpr std::uint32_t kBlock = 512;
+    static constexpr std::uint32_t kMaxBlocks = 4096;
+    static constexpr std::uint32_t kNoSlot = 0xffffffffu;
+
+    // Block pointers are published atomically and never removed, so resolve()
+    // reads them without the mutex — it runs on NCCL's proxy thread on the hot
+    // path, and taking a lock there to read a pointer that never changes would
+    // be a contention point for nothing.
+    std::atomic<Event*> blocks_[kMaxBlocks]{};
+    std::atomic<std::uint32_t> count_{0};  // slots published so far
+    std::uint32_t              free_ = kNoSlot;
+    std::mutex                 mu_;
+
+    Event* at(std::uint32_t index) {
+        return blocks_[index / kBlock].load(std::memory_order_acquire) + (index % kBlock);
+    }
+
+    // Caller holds mu_.
+    bool grow() {
+        const std::uint32_t published = count_.load(std::memory_order_relaxed);
+        const std::uint32_t block = published / kBlock;
+        if (block >= kMaxBlocks)
+            return false;
+        auto* mem = new (std::nothrow) Event[kBlock]();
+        if (!mem)
+            return false;
+        blocks_[block].store(mem, std::memory_order_release);
+        // Published only after the block pointer is visible, so an index below
+        // count_ always resolves.
+        count_.store(published + kBlock, std::memory_order_release);
+        for (std::uint32_t i = kBlock; i-- > 0;) {
+            mem[i].generation = 0;
+            mem[i].next_free = free_;
+            free_ = published + i;
+        }
+        return true;
+    }
 };
 
 static EventPool& pool() {
@@ -256,13 +271,12 @@ static EventPool& pool() {
     return *p;
 }
 
-// The id NCCL's parentObj refers to, or 0 if we were never given that parent or
-// it has already been released.
-//
-// The cast is safe only because every non-null pointer NCCL puts in parentObj is
-// one this file returned from startEvent: NCCL never synthesises a handle.
+// The id NCCL's parentObj refers to, or 0 when that handle names a slot that has
+// since been re-issued — see EventPool for why 0 is the right answer there and
+// a plausible id is not.
 static std::uint64_t parent_id_of(void* parent_obj) {
-    return pool().id_of_live(static_cast<Event*>(parent_obj));
+    const Event* e = pool().resolve(parent_obj);
+    return e ? e->id : 0;
 }
 
 // --- the activation mask ----------------------------------------------------
@@ -334,7 +348,8 @@ static int prof_start_event(void* context, void** eHandle,
     if (!eHandle || !eDescr)
         return 0;
 
-    Event* ev = pool().acquire();
+    void*  handle = nullptr;
+    Event* ev = pool().acquire(&handle);
     if (!ev)
         return 0;  // NCCL tolerates a null handle; a dropped event beats a crash
     // The slot is recycled, so every payload field is written here — a stale
@@ -388,14 +403,14 @@ static int prof_start_event(void* context, void** eHandle,
         break;
     }
 
-    *eHandle = ev;
+    *eHandle = handle;
     return 0;
 }
 
 static int prof_stop_event(void* eHandle) {
-    auto* ev = static_cast<Event*>(eHandle);
+    Event* ev = pool().resolve(eHandle);
     if (!ev)
-        return 0;
+        return 0;  // a handle for a slot already re-issued; nothing to emit
     const std::uint64_t end = now();
 
     switch (ev->kind) {
@@ -431,10 +446,11 @@ static int prof_stop_event(void* eHandle) {
     default:
         break;
     }
-    // Release, not delete. The slot returns to the pool only when nothing else
-    // holds it — a proxy op that took a reference to name this collective as
-    // its parent keeps it alive until it is done reading. See EventPool.
-    pool().release(ev);
+    // The slot goes back on the free list, but the handle NCCL may still be
+    // holding for this event stays RESOLVABLE until the slot is re-issued —
+    // and once it is, the generation makes the stale handle report 0 rather
+    // than name the new occupant. See EventPool.
+    pool().release(eHandle);
     return 0;
 }
 

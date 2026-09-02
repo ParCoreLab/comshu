@@ -98,6 +98,18 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,2,0,910,0,920,0,1,10,11,12,262144,0,1,0,255,0
 CSV
 
+# The profiler's own view of the communicator, which is what a capture has when
+# NCCL loaded the plugin but pcomm's nccl INTERPOSER was not selected — the
+# shape case 02 produces with `pcomm run -p ib`. It carries nnodes, which the
+# host-API door has no column for, so a non-null nnodes downstream proves this
+# table is actually joined rather than the layout coming entirely from
+# nccl_comm.
+cat > "$WORK/nccl_prof_comm.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,comm_name,nccl_comm_hash,nnodes,nranks,nccl_rank,pad
+0,1,0,5,0,0,0,0,111,2,2,0,0
+1,1,0,5,0,0,0,0,111,2,2,1,0
+CSV
+
 # The clock, or every t0_ns is NULL and the temporal half of both tables is
 # untested. One anchor per (rank, domain).
 cat > "$WORK/clock_anchor.csv" <<'CSV'
@@ -182,6 +194,11 @@ expect "and that row is still present, unattributed" \
 expect "resolved rows carry the rank layout" \
     "SELECT string_agg(CAST(nccl_rank AS VARCHAR), '|' ORDER BY rank, t0_ns)
      FROM nccl_execution WHERE nranks = 2" "0|0|1|1"
+
+# nnodes comes only from the profiler's own row — the host-API door has no such
+# column — so a non-null value here proves nccl_prof_comm is joined at all.
+expect "nnodes comes from the profiler communicator" \
+    "SELECT count(*) FROM nccl_execution WHERE nnodes = 2" "4"
 
 # THE HANDLE JOIN. algo 2 is "RING" in InternDomain::String and a kernel name in
 # InternDomain::KernelName; a join that forgets `domain` picks up the decoy.

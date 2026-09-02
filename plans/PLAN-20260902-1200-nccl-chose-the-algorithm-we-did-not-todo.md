@@ -279,6 +279,38 @@ export and the **enum** in the raw Parquet the derived layer mounts. Writing the
 Parquet form in a CSV assertion reported "8 of 0" — a filter matching nothing,
 dressed as a finding.
 
+## The green board that was still wrong
+
+Job 45350841 was SUITE GREEN — and reading the multi-node NCCL data underneath
+it found two defects no assertion covered.
+
+**Proxy ops named the wrong collective.** On case 02, proxy op 42's parent came
+back as 42 — itself — and ops 43 and 44 also named 42. NCCL routinely hands back
+a `parentObj` for an event it has already stopped, and the pool had recycled
+that slot to proxy op 42. A refcount cannot fix this and NVIDIA's example plugin
+has the same hole. The handle is no longer a pointer: it is (slot index,
+generation) packed into the `void*`, slots live in blocks that are never freed,
+and a generation is stamped on every acquire. A stale handle carries the old
+generation and can never match a re-issued slot, so the answer is 0 — "not
+observed" — instead of a plausible wrong id. The refcount is gone entirely,
+which removes the ABA problem rather than defending against it.
+
+**The rank layout was dropped whenever the interposer was not loaded.** NCCL
+loads the plugin through `NCCL_PROFILER_PLUGIN` independently of whether pcomm's
+nccl INTERPOSER provider was selected, so case 02 — `pcomm run -p ib` — has
+912/914/916 records and no `nccl_comm` rows at all. `nccl_execution` read the
+layout only from `nccl_comm` and returned NULL for all 160 rows, and
+`link_health` called every one of them a defect, on a capture with nothing wrong
+with it. `nccl_prof_comm` had rank, nranks and nnodes the whole time, told to us
+by NCCL at init. The table now prefers it, and the defect row fires only when a
+communicator is in NEITHER table.
+
+**Open question, deliberately not answered here.** `suite/common.sh` sets
+`NCCL_PROFILER_PLUGIN` unconditionally, so a run that asked for `-p ib` also
+pays for NCCL's profiler callbacks. The data is well-formed and useful, but it
+is a side effect the caller did not request. The right place for that decision
+is the launcher, which knows the `-p` list; this plan does not make it.
+
 ## The lifetime bug, which no test would have found
 
 `prof_stop_event` freed its `Event` with `delete`. That is wrong, and the reason
