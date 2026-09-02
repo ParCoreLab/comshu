@@ -41,11 +41,19 @@
 -- `unknown` scope are bytes the ratio cannot account for, so the denominator is
 -- incomplete and the headline must not be believed -- which is exactly how
 -- gdr_copy was caught missing from the mapping on 01_gromacs.
+-- THE COALESCE IS NOT DECORATION, AND IT WAS FOUND BY THE DELETE-THE-INPUT TEST.
+-- On job 45329318 transport_mix came out EMPTY (the UCT binding was refused --
+-- see uct_binding_was_accepted.sql) and the first version of this file PASSED,
+-- because `sum(...)` over zero rows is NULL, not 0, so `net + shm = 0` evaluated
+-- to NULL and the "recorded no wire bytes" clause never fired. An assertion
+-- whose headline claim is a ratio, passing on a table with nothing in it, is the
+-- exact defect BRIEF-BLACKBOX.md calls the most common in this suite. COALESCE
+-- turns the NULLs into zeroes so the first clause fires as it was meant to.
 WITH t AS (
-  SELECT sum(CASE WHEN scope = 'network'    THEN CAST(out_bytes AS BIGINT) + CAST(in_bytes AS BIGINT) ELSE 0 END) AS net,
-         sum(CASE WHEN scope = 'intra-node' THEN CAST(out_bytes AS BIGINT) + CAST(in_bytes AS BIGINT) ELSE 0 END) AS shm,
-         sum(CASE WHEN scope IS NULL OR scope NOT IN ('network','intra-node')
-                                       THEN CAST(out_bytes AS BIGINT) + CAST(in_bytes AS BIGINT) ELSE 0 END) AS unk
+  SELECT COALESCE(sum(CASE WHEN scope = 'network'    THEN CAST(out_bytes AS BIGINT) + CAST(in_bytes AS BIGINT) ELSE 0 END), 0) AS net,
+         COALESCE(sum(CASE WHEN scope = 'intra-node' THEN CAST(out_bytes AS BIGINT) + CAST(in_bytes AS BIGINT) ELSE 0 END), 0) AS shm,
+         COALESCE(sum(CASE WHEN scope IS NULL OR scope NOT IN ('network','intra-node')
+                                       THEN CAST(out_bytes AS BIGINT) + CAST(in_bytes AS BIGINT) ELSE 0 END), 0) AS unk
   FROM transport_mix
 )
 SELECT 'transport_mix recorded no wire bytes in either scope' AS problem,

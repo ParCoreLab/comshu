@@ -46,10 +46,10 @@ WITH tot AS (
 ), placed AS (
   SELECT h.*,
          CASE WHEN (SELECT placement FROM params) = 0
-              THEN h.src_rank / (SELECT ranks_per_node FROM params)
+              THEN h.src_rank // (SELECT ranks_per_node FROM params)
               ELSE h.src_rank % (SELECT nodes FROM params) END AS src_node,
          CASE WHEN (SELECT placement FROM params) = 0
-              THEN h.dst_rank / (SELECT ranks_per_node FROM params)
+              THEN h.dst_rank // (SELECT ranks_per_node FROM params)
               ELSE h.dst_rank % (SELECT nodes FROM params) END AS dst_node
   FROM heavy h
 )
@@ -73,4 +73,15 @@ UNION ALL
 SELECT 'scope took a value outside the three the contract declares',
        src_rank, dst_rank, src_node, dst_node, COALESCE(scope,'<null>'), '-', bytes
 FROM placed
-WHERE scope IS NOT NULL AND scope NOT IN ('intra-node','network','unknown');
+WHERE scope IS NOT NULL AND scope NOT IN ('intra-node','network','unknown')
+
+UNION ALL
+
+-- ANTI-VACUITY. `heavy` reaches comm_edges through an inner join against the
+-- per-rank total, so an empty comm_edges empties `placed` and all three clauses
+-- above report nothing while asserting nothing. Both other assertions in this
+-- directory that had this shape have now been caught doing exactly that once
+-- each; this one says so up front.
+SELECT 'comm_edges is empty, so this assertion checked nothing',
+       -1, -1, -1, -1, '-', '-', 0
+WHERE (SELECT count(*) FROM comm_edges) = 0;

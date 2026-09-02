@@ -39,8 +39,8 @@
 WITH universe AS (
   SELECT i AS rank FROM range(0, 1024) t(i), params p WHERE i < p.ranks
 ), coord AS (
-  SELECT u.rank, u.rank % p.px AS i, (u.rank / p.px) % p.py AS j,
-         u.rank / (p.px * p.py) AS k, p.px, p.py, p.pz
+  SELECT u.rank, u.rank % p.px AS i, (u.rank // p.px) % p.py AS j,
+         u.rank // (p.px * p.py) AS k, p.px, p.py, p.pz
   FROM universe u, params p
 ), nb AS (
   SELECT rank, ((i + 1) % px)      + px * j                  + px * py * k AS peer FROM coord

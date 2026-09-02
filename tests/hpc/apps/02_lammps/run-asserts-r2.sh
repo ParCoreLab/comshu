@@ -113,6 +113,14 @@ for q in "$CASE_DIR"/asserts-r2/*.sql; do
 
   an=$((an+1))
   body="$(sed '/^[[:space:]]*--/d; /^[[:space:]]*$/d' "$q" | sed '$ s/;[[:space:]]*$//')"
+  # `params` is a leading CTE, so an assertion that opens with its OWN `WITH`
+  # would produce `WITH params AS (...) WITH universe AS (...)`, which is a
+  # Parser Error and cost job 45329318 five of its nine assertions. Splice the
+  # two CTE lists instead: the file's leading WITH becomes a comma. Anything
+  # else -- a bare SELECT -- is appended unchanged.
+  case "$body" in
+    WITH\ *|WITH$'\n'*|WITH$'\t'*) body=", ${body#WITH}" ;;
+  esac
   out="$("$PCOMM" sql "$PQ" "$PARAMS$body" 2>&1)"
   rows="$(printf '%s\n' "$out" | tail -n +2 | grep -c . || true)"
   case " $XFAIL " in *" $name "*) mark="xfail" ;; *) mark="" ;; esac

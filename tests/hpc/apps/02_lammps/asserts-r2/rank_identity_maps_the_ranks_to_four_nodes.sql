@@ -39,12 +39,12 @@ UNION ALL
 SELECT 'two ranks share a node in the capture but not under the launcher, or the reverse',
        a.rank, b.rank, CAST(a.node_hash = b.node_hash AS VARCHAR),
        CAST(CASE WHEN (SELECT placement FROM params) = 0
-                 THEN a.rank / (SELECT ranks_per_node FROM params) = b.rank / (SELECT ranks_per_node FROM params)
+                 THEN a.rank // (SELECT ranks_per_node FROM params) = b.rank // (SELECT ranks_per_node FROM params)
                  ELSE a.rank % (SELECT nodes FROM params) = b.rank % (SELECT nodes FROM params) END AS VARCHAR)
 FROM rank_identity a JOIN rank_identity b ON b.rank > a.rank
 WHERE (a.node_hash = b.node_hash)
    <> (CASE WHEN (SELECT placement FROM params) = 0
-            THEN a.rank / (SELECT ranks_per_node FROM params) = b.rank / (SELECT ranks_per_node FROM params)
+            THEN a.rank // (SELECT ranks_per_node FROM params) = b.rank // (SELECT ranks_per_node FROM params)
             ELSE a.rank % (SELECT nodes FROM params) = b.rank % (SELECT nodes FROM params) END)
 
 UNION ALL

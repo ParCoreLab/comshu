@@ -43,7 +43,7 @@
 -- collective and wireup residue and much narrower than the 3.4-point gap
 -- between the x and y shares -- so a permutation of the four is caught.
 WITH coord AS (
-  SELECT i AS rank, i % p.px AS ci, (i / p.px) % p.py AS cj, i / (p.px * p.py) AS ck,
+  SELECT i AS rank, i % p.px AS ci, (i // p.px) % p.py AS cj, i // (p.px * p.py) AS ck,
          p.px, p.py, p.pz
   FROM range(0, 1024) t(i), params p WHERE i < p.ranks
 ), axis AS (
@@ -84,4 +84,16 @@ FROM (SELECT rank, peer, bytes FROM share WHERE ax = 'z+') a
 JOIN (SELECT rank, peer, bytes FROM share WHERE ax = 'z-') b ON b.rank = a.rank
 WHERE a.bytes + b.bytes > 0
   AND (100 * (CASE WHEN a.bytes > b.bytes THEN a.bytes - b.bytes ELSE b.bytes - a.bytes END))
-      > 10 * (a.bytes + b.bytes) / 2;
+      > 10 * (a.bytes + b.bytes) / 2
+
+UNION ALL
+
+-- THE ANTI-VACUITY GUARD, and it is needed because `share` reaches comm_edges
+-- through an INNER join against the per-rank total: with comm_edges empty, `tot`
+-- is empty, `share` is empty, and both clauses above report no offending rows
+-- while checking nothing. That is the failure mode round 1 of this case shipped
+-- three times over an empty peer-resolved relation (NOTES.md #7), and the same
+-- shape that let network_share_of_wire_bytes.sql pass on an empty transport_mix
+-- until it was caught.
+SELECT 'comm_edges is empty, so this assertion checked nothing', -1, '-', -1, 0, 0, 0
+WHERE (SELECT count(*) FROM comm_edges) = 0;

@@ -29,7 +29,7 @@
 -- reverse-comm population (it does, and that removal is uniform across swaps).
 -- Tolerance +-10 %.
 WITH coord AS (
-  SELECT i AS rank, i % p.px AS ci, (i / p.px) % p.py AS cj, i / (p.px * p.py) AS ck,
+  SELECT i AS rank, i % p.px AS ci, (i // p.px) % p.py AS cj, i // (p.px * p.py) AS ck,
          p.px, p.py, p.pz
   FROM range(0, 1024) t(i), params p WHERE i < p.ranks
 ), axis AS (
