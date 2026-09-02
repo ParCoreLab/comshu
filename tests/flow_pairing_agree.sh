@@ -124,6 +124,13 @@ check_zero "one completion retired more than one send" \
 # link_health must also see a clean pairing: an unretired or backwards row means
 # the rule dropped work that the counts above cannot reveal, because both sides
 # would drop it identically.
+#
+# DELIBERATELY UNFILTERED BY SEVERITY. Elsewhere the clean predicate is
+# `severity = 'defect'`, but this fixture emits no ib_qp_signalling at all, so
+# every queue pair's sq_sig_all is NULL and NOTHING may land on the 'note' side.
+# Summing both is therefore the stronger claim here: it would catch a
+# wr_flight_unretired_selective row appearing where no queue pair ever declared
+# anything.
 HEALTH=$("$PCOMM" sql "$WORK/pq" \
     "SELECT coalesce(sum(n), 0) FROM link_health WHERE finding LIKE 'wr_flight%'" 2>/dev/null | tail -1)
 if [ "${HEALTH:-0}" != "0" ]; then

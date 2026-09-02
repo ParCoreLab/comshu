@@ -258,7 +258,7 @@ for label in qe-r2-npool1 qe-r2-npool2; do
     echo "  -- rank_identity: does a ucx-only capture know which GPU a rank had? --"
     "$PCOMM" sql "$OUT.pq" "SELECT * FROM rank_identity ORDER BY rank" 2>&1 | sed 's/^/    /'
     echo "  -- link_health --"
-    "$PCOMM" sql "$OUT.pq" "SELECT finding, n, note FROM link_health WHERE n > 0" 2>&1 | sed 's/^/    /'
+    "$PCOMM" sql "$OUT.pq" "SELECT finding, severity, n, note FROM link_health WHERE n > 0 ORDER BY severity" 2>&1 | sed 's/^/    /'
   else
     echo "    (no derived layer — raw uct_send op counts follow)"
     # rank,ticks,op,... — the CSV export prepends `rank` to the record's own

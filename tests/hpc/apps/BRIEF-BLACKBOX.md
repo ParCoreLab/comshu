@@ -68,7 +68,7 @@ rank_identity      rank,node_ix,node_hash,device,devices,label
 transport_mix      rank,tl_name,dev_name,scope,op,ops,out_bytes,in_bytes,advertised_bytes,header_bytes
 tag_flow           rank,tag,status,ucp_sends,ucp_units,uct_ops,uct_payload,doors
 tag_recv_resolved  rank,worker,message,status,sender_tag,offered,delivered
-link_health        finding,n,note
+link_health        finding,severity,n,note
 ```
 
 `transport_mix.scope` — ADDED 2026-08-30, and it was my omission rather than the
@@ -137,14 +137,37 @@ and not one.
 
 `link_health` is a **fixed rubric, not an empty table** — CORRECTED 2026-08-29
 after the 04_llmc agent measured it. It emits one row per finding KIND with a
-count, so a healthy capture has every row present with `n = 0`. Query it as
-`SELECT finding, n FROM link_health WHERE n > 0`, which is what
-`tests/hpc/cases/21_ucx_deep/job.sbatch` does. An earlier version of this brief
-said the table was expected to be empty; that would have made a clean capture
-look like it had a dozen defects, and it came from the table's own head comment
-in the pcomm source, which contradicts the SQL beneath it. The comment is wrong,
-the rubric is right, and the fact that a documented contract disagrees with its
-implementation is itself one of this round's findings.
+count, so a healthy capture has every row present with `n = 0`. An earlier
+version of this brief said the table was expected to be empty; that would have
+made a clean capture look like it had a dozen defects, and it came from the
+table's own head comment in the pcomm source, which contradicted the SQL
+beneath it.
+
+**`severity` — ADDED 2026-09-02, and the second correction to this paragraph.**
+The query above used to be `WHERE n > 0`. It is now
+
+```sql
+SELECT finding, n, note FROM link_health WHERE n > 0 AND severity = 'defect';
+```
+
+because `WHERE n > 0` alone was still wrong, in the opposite direction from the
+first mistake. Three rows in the rubric count things that are **not faults**:
+a queue pair's own declaration that it does not signal every work request
+(`wr_flight_selective_signalling_qps`, `wr_flight_unretired_selective`), and
+kernels timed at submission rather than execution
+(`kernel_rows_submission_only`). The 06_llm_scaleout study filed three findings
+against a capture whose every genuine defect row was zero, and it was right to
+under the contract it was given. `severity` is `'defect'` or `'note'`; a
+non-zero `'note'` is the capture explaining itself and must not be reported as a
+problem.
+
+**Look for `uct_ops_patch_refused` whenever `transport_mix` comes back empty.**
+That row (added at the same time) says `ucx_deep` declined to instrument an
+un-verified UCX version, so the UCT layer was never captured for those ranks.
+Before it existed the only evidence was a line on stderr, and the 02_lammps
+study spent two days treating a correct refusal as a tool defect while its
+central prediction went unanswered — because nothing distinguished "the answer
+was withheld" from "the workload sent nothing".
 
 ## What is new since round 1, and therefore untested
 

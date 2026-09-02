@@ -127,8 +127,10 @@ anything else is an error worth reporting loudly. `opcode` is the ibverbs work
 request opcode as posted (raw), `wc_opcode` the one reported on completion.
 
 Unsignalled work requests never complete and so are absent here — `link_health`
-counts them. Do not present `count(*) FROM wr_flow` as "the number of sends";
-that is `ib_post_send`.
+counts them, as `wr_flight_unretired_selective` when the queue pair declared
+`sq_sig_all = 0` and as `wr_flight_unretired` when nothing explains it. Do not
+present `count(*) FROM wr_flow` as "the number of sends"; that is
+`ib_post_send`.
 
 ### `timeline_span` — everything that has a start and an end
 `rank INT, stream VARCHAR, ep UINT, bytes BIGINT, t0_ns BIGINT, t1_ns BIGINT`
@@ -171,14 +173,57 @@ Ranks on the same `node_ix` share a physical host.
 which is a real state and not a gap — say so rather than picking one.
 
 ### `link_health` — what the capture knows is wrong with itself
-`finding VARCHAR, n BIGINT, note VARCHAR`
+`finding VARCHAR, severity VARCHAR, n BIGINT, note VARCHAR`
 
-Fourteen fixed rows, each a count of a specific attribution failure with a
-`note` explaining it. **`n = 0` on every row is a clean capture.** Check this
-before trusting an unusual answer: `unresolved_sends > 0` explains missing
-edges, `self_edges > 0` is the qp_num-collision signature, `wr_flight_unretired
-> 0` explains why `wr_flow` has fewer rows than `ib_post_send`. When a number
-looks strange, the explanation is often here.
+A **fixed rubric**, not a table that is expected to be empty. Every row below is
+always present, with a count. The clean predicate is
+
+```sql
+SELECT * FROM link_health WHERE n > 0 AND severity = 'defect';   -- empty = clean
+```
+
+**`severity` is `defect` or `note`, and the difference is not cosmetic.** A
+`defect` is something the *link* could not do — an attribution that failed, a
+join that dropped rows, an identity that collided. A `note` is something the
+*capture can account for*: a fact that explains a defect beside it or bounds
+what a table can contain. **A non-zero `note` is not a problem and must not be
+reported as one.** Reporting them was a real failure — an NCCL capture whose
+every defect row was zero was described as having three findings, because the
+queue pairs' own declaration that they do not signal every work request was
+counted as a fault.
+
+The vocabulary is closed. These are all of them:
+
+| finding | severity | fires when |
+|---|---|---|
+| `colliding_endpoints` | defect | two ranks claim one `(lid, qp_num)` |
+| `unresolved_sends` | defect | a send whose peer no RTR transition names |
+| `unresolved_nvlink` | defect | an NVLink access with no peer rank — usually no node identity at all |
+| `unresolved_ucx` | defect | a UCX op with no dialled address, or a prefix hash two workers share |
+| `unnamed_uct_transport` | defect | a UCT op whose `tl_name` did not resolve |
+| `colliding_gpu_uuids` | defect | two PCI addresses on one node reporting one UUID |
+| `unattributed_p2p_accesses` | defect | a GPU access `object_access` could not place |
+| `self_edges` | defect | a rank sending to itself — the qp_num-collision signature |
+| `ambiguous_recv_buffers` | defect | a `wr_id` naming more than one posted buffer |
+| `unattributed_recv_completions` | defect | a receive resolving to no known object |
+| `ambiguous_qp_recv_keys` | defect | `(qp_num, wr_id)` naming more than one buffer |
+| `recv_spilled_past_first_sge` | defect | a receive whose bytes ran past `sge[0]` |
+| `timeline_unanchored` | defect | events whose `(rank, domain)` has no clock anchor |
+| `wr_flight_unretired` | defect | posts never matched to a completion, **with no declared cause** |
+| `wr_flight_unexplained_qps` | defect | QPs completing fewer WRs than they post and not saying why |
+| `wr_flight_backwards` | defect | a completion timed before its own send |
+| `uct_ops_patch_refused` | defect | `ucx_deep` declined an unverified UCX — **`transport_mix` and `uct_send` are empty for those ranks** |
+| `kernel_rows_submission_only` | note | kernels timed at launch, not execution — excluded from the timeline |
+| `wr_flight_unretired_selective` | note | unretired posts on QPs that declared `sq_sig_all = 0` |
+| `wr_flight_selective_signalling_qps` | note | those QPs themselves — certainly selective signalling |
+| `uct_ops_patch_forced` | note | `PCOMM_UCX_DEEP_FORCE` overrode the version guard |
+
+Check this before trusting an unusual answer: `unresolved_sends > 0` explains
+missing edges, `wr_flight_unretired > 0` explains why `wr_flow` has fewer rows
+than `ib_post_send`, and **`uct_ops_patch_refused > 0` is the one to look for
+whenever `transport_mix` comes back empty** — it means the answer was withheld,
+not that the workload sent nothing. When a number looks strange, the explanation
+is often here.
 
 ## The raw record tables
 
@@ -313,8 +358,8 @@ GROUP BY 1 ORDER BY accesses DESC LIMIT 10;
 SELECT node_hash, count(*) AS ranks, list(rank) AS members
 FROM node_identity GROUP BY 1 ORDER BY 2 DESC;
 
--- Is the capture clean?
-SELECT finding, n, note FROM link_health WHERE n > 0;
+-- Is the capture clean? (severity = 'defect' — a non-zero 'note' is not a fault)
+SELECT finding, n, note FROM link_health WHERE n > 0 AND severity = 'defect';
 ```
 
 ## How to answer

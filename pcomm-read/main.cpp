@@ -2139,10 +2139,17 @@ int run_link(const fs::path& dir) {
         if (std::string_view(t.name) == "link_health")
             health_sql = t.sql;
 
+    // Severity is carried into the line rather than used to filter it. A 'note'
+    // row is exactly the context a reader needs when a 'defect' row above it
+    // looks alarming — "69,470 unretired" reads very differently once the line
+    // beneath it says the queue pairs declared they would not signal. Printing
+    // only defects would reproduce, on this surface, the same missing-context
+    // failure the severity column was added to fix.
     duckdb_result res;
     if (health_sql && duckdb_query(con,
-                                   ("SELECT finding::VARCHAR, n::VARCHAR FROM (" +
-                                    std::string(health_sql) + ") WHERE n > 0")
+                                   ("SELECT finding::VARCHAR, n::VARCHAR, severity::VARCHAR FROM (" +
+                                    std::string(health_sql) +
+                                    ") WHERE n > 0 ORDER BY severity, finding")
                                        .c_str(),
                                    &res) == DuckDBSuccess) {
         auto text = [](duckdb_string_t s) {
@@ -2156,15 +2163,18 @@ int run_link(const fs::path& dir) {
                 duckdb_vector_get_data(duckdb_data_chunk_get_vector(chunk, 0)));
             auto* nv = static_cast<duckdb_string_t*>(
                 duckdb_vector_get_data(duckdb_data_chunk_get_vector(chunk, 1)));
+            auto* sv = static_cast<duckdb_string_t*>(
+                duckdb_vector_get_data(duckdb_data_chunk_get_vector(chunk, 2)));
             for (idx_t row = 0; row < rows; ++row) {
                 // Reported, not counted as a failure. `failed` drives the exit
                 // code and the "SOME FAILED" banner, and those mean a query did
                 // not run. A finding means a query ran and found something —
                 // including things that are properties of the capture rather
                 // than of the link, like a run that stopped with work in
-                // flight.
-                std::fprintf(stderr, "pcomm: link_health: %s = %s\n", text(fv[row]).c_str(),
-                             text(nv[row]).c_str());
+                // flight. That last sentence is now a COLUMN rather than a
+                // caveat in a comment nobody printing this line will read.
+                std::fprintf(stderr, "pcomm: link_health [%s]: %s = %s\n", text(sv[row]).c_str(),
+                             text(fv[row]).c_str(), text(nv[row]).c_str());
             }
             duckdb_destroy_data_chunk(&chunk);
         }

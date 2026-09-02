@@ -56,8 +56,15 @@ export async function describe(capture) {
     span = { ns: Number(r.ns), streams: Number(r.streams), spans: Number(r.n) };
   }
 
+  // Both severities are fetched and they are rendered separately below. A model
+  // told "wr_flight_unretired = 69,470" with no counterweight will build an
+  // answer around a broken capture; the same model shown the 'note' row beside
+  // it — the queue pairs declared they do not signal every work request — has
+  // the explanation in the same paragraph as the alarming number.
   const health = byName.link_health
-    ? await capture.rows('SELECT finding, n, note FROM link_health WHERE n > 0 ORDER BY n DESC')
+    ? await capture.rows(
+        'SELECT finding, severity, n, note FROM link_health WHERE n > 0 ORDER BY n DESC',
+      )
     : [];
 
   const providers = PROVIDER_EVIDENCE.filter(([, t]) => (byName[t] ?? 0) > 0).map(([label]) => label);
@@ -88,11 +95,28 @@ export function renderPreamble(d) {
     out.push('Querying one of these is not an error, but it answers nothing — say the capture lacks that data.');
   }
 
-  if (d.health.length) {
+  const defects = d.health.filter((h) => h.severity === 'defect');
+  const notes = d.health.filter((h) => h.severity !== 'defect');
+
+  if (defects.length) {
     out.push('', '**`link_health` is not clean.** These findings are non-zero and may explain odd numbers:', '');
-    for (const h of d.health) out.push(`- \`${h.finding}\` = ${h.n} — ${h.note}`);
+    for (const h of defects) out.push(`- \`${h.finding}\` = ${h.n} — ${h.note}`);
   } else {
-    out.push('', '`link_health` is all zero: attribution is clean in this capture.');
+    out.push('', '`link_health` reports no defect: attribution is clean in this capture.');
+  }
+
+  // Said explicitly, because the failure this guards against is a model
+  // reporting a healthy capture as broken. These counts are the capture
+  // accounting for itself — a queue pair that declared it does not signal every
+  // work request, a kernel timed at submission, a forced version guard.
+  if (notes.length) {
+    out.push(
+      '',
+      '**`link_health` notes** — non-zero and NOT defects. They explain the numbers above, ' +
+        'or bound what a table can contain. Do not report these as problems:',
+      '',
+    );
+    for (const h of notes) out.push(`- \`${h.finding}\` = ${h.n} — ${h.note}`);
   }
 
   return out.join('\n');

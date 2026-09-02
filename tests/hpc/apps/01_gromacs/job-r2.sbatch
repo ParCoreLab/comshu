@@ -265,7 +265,7 @@ for v in direct_on direct_off tm; do
     "SELECT status, count(*) AS flows, sum(ucp_sends) AS ucp_sends, sum(uct_ops) AS uct_ops FROM tag_flow GROUP BY status" || true
 done
 echo "=== link_health rubric ==="
-"$PCOMM" sql "$PQ" "SELECT finding, n, note FROM link_health ORDER BY n DESC"
+"$PCOMM" sql "$PQ" "SELECT finding, severity, n, note FROM link_health ORDER BY severity, n DESC"
 
 echo "=== artefacts ==="
 ls -la "$RUN"

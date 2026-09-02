@@ -252,6 +252,36 @@ JOIN _wr_pairable p
 WHERE c.a >= s.a
 )sql"},
 
+    // Posts the flight lane could not pair, per queue pair, WITH THE QUEUE
+    // PAIR'S OWN ACCOUNT OF WHY.
+    //
+    // This exists because link_health's wr_flight_unretired was a single global
+    // number, and on job 45330280 (NCCL over ibverbs, 16 ranks) it read 69,470
+    // — 65.6% of every post in the capture — while the other fifteen rows of the
+    // rubric were zero. Nothing was wrong. NCCL selectively signals, its queue
+    // pairs SAID SO at creation via sq_sig_all = 0, the rubric's own
+    // wr_flight_selective_signalling_qps row recorded that they said so, and
+    // then the unretired count reported the consequence as a defect anyway.
+    //
+    // A rubric whose contract is "n > 0 is a finding" must not count what the
+    // capture can already explain. So the split is by evidence, not by guess:
+    // sq_sig_all = 0 is a declaration the queue pair made, not an inference from
+    // the counts. NULL is left on the defect side — a capture written before
+    // ib_qp_signalling existed has no declaration and must not be quietly
+    // absolved by its own age.
+    //
+    // sum(unretired) over BOTH severities equals the old global number, which is
+    // the property tests/wr_flow_rule.sh asserts: the split reclassifies, it
+    // does not lose rows.
+    {"_wr_unretired", R"sql(
+CREATE OR REPLACE VIEW _wr_unretired AS
+SELECT p.rank, p.qp_num, p.sq_sig_all,
+       coalesce(p.sends, 0) - coalesce(f.n, 0) AS unretired
+FROM _wr_pairable p
+LEFT JOIN (SELECT rank, qp_num, count(*) AS n FROM _wr_flight GROUP BY 1, 2) f
+       USING (rank, qp_num)
+)sql"},
+
     // Every event stream in one shape, tick-timed. Split from timeline_span so
     // the union is written once and the clock join once; link_health needs the
     // same rows to count what the join drops.
@@ -1880,14 +1910,46 @@ JOIN _clock c ON c.rank = f.rank AND c.domain = f.domain
     // as a health rubric. Both of yesterday's documentation defects were of
     // this kind: prose that stopped matching the code beneath it and was then
     // maintained anyway, without re-reading what it sat on.
-    {"link_health", "finding,n,note",
+    //
+    // ---- severity, and why the table grew a column --------------------------
+    //
+    // `severity` is 'defect' or 'note', and the clean predicate is
+    //
+    //     SELECT * FROM link_health WHERE n > 0 AND severity = 'defect'
+    //
+    // returning nothing. It was added on 2026-09-02 because two rows here were
+    // structurally incapable of being defects and were counted as such anyway:
+    //
+    //   * wr_flight_selective_signalling_qps PROVES the traffic beside it is
+    //     unpairable by design — the queue pair declared sq_sig_all = 0 — and
+    //     then the rubric counted the consequence as a finding. On job
+    //     45330280 that is 65.6% of every post in a capture whose other fifteen
+    //     rows are zero.
+    //   * kernel_rows_submission_only, whose own comment already said "Not an
+    //     error", was a finding purely because there was no other shelf.
+    //
+    // The rule for choosing: a 'defect' is something the LINK could not do —
+    // an attribution that failed, a join that dropped rows, an identity that
+    // collided. A 'note' is something the CAPTURE can account for — a fact
+    // that bounds another table or explains a defect row, and whose non-zero
+    // value is the normal case for some legitimate workload.
+    //
+    // This is the same lesson as the deleted ucx_edges_include_intranode row
+    // (see below), arriving from the other direction. That one fired on every
+    // healthy capture and was removed; these two fire on every honest NCCL and
+    // CUPTI capture and are reclassified. Both failures are the same failure —
+    // a rubric that cries defect on the normal case is a rubric nobody reads on
+    // the day it is right.
+    {"link_health", "finding,severity,n,note",
      R"sql(
 SELECT 'colliding_endpoints' AS finding,
+       'defect'              AS severity,
        count(*)              AS n,
        'two ranks claim one (lid, qp_num) — impossible on a sane fabric' AS note
 FROM _owner WHERE claimants > 1
 UNION ALL
 SELECT 'unresolved_sends',
+       'defect',
        coalesce(sum(sends), 0)::BIGINT,
        'sends whose peer rank could not be resolved from any RTR transition'
 FROM (
@@ -1903,6 +1965,7 @@ UNION ALL
 -- clean bill of health while 100% of its GPU traffic was unattributed. Found on
 -- nccl_p2p, which has no IB and therefore no LID to derive a node from.
 SELECT 'unresolved_nvlink',
+       'defect',
        coalesce(sum(sends), 0)::BIGINT,
        'NVLink accesses whose peer rank is unknown — this capture records no node identity'
 FROM _nvlink_sends WHERE src_rank = -1 OR dst_rank = -1
@@ -1920,6 +1983,7 @@ UNION ALL
 -- reports a clean bill of health, which is exactly the failure the
 -- unresolved_nvlink row was added for.
 SELECT 'unresolved_ucx',
+       'defect',
        coalesce(sum(s.sends), 0)::BIGINT,
        'UCX operations whose peer rank is unknown — no dialled address, or a prefix hash two workers share'
 FROM _ucx_sends s
@@ -1932,6 +1996,7 @@ UNION ALL
 -- scope, and an 'unknown' bucket nobody counts is an 'unknown' bucket nobody
 -- notices — the same argument unresolved_nvlink was added on.
 SELECT 'unnamed_uct_transport',
+       'defect',
        coalesce(sum(s.ops), 0)::BIGINT,
        'UCT operations whose transport name did not resolve — no uct_iface row, or an ambiguous intern handle'
 FROM _uct_scoped s WHERE s.tl_name IS NULL
@@ -1968,6 +2033,7 @@ UNION ALL
 -- UUIDs are excluded because 0,0 is the documented "unavailable" value, not a
 -- claim of identity.
 SELECT 'colliding_gpu_uuids',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'two GPUs on one node report the same UUID — the identity cross-check cannot confirm ownership here'
 FROM (
@@ -1986,6 +2052,7 @@ UNION ALL
 -- empties the whole p2p half of the object view, and an empty Objects panel
 -- must read as a count here rather than as "this workload touched nothing".
 SELECT 'unattributed_p2p_accesses',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'GPU accesses object_access could not place: owning rank unnameable, or the owner has no buffer at the actor''s extent'
 FROM (
@@ -2005,6 +2072,7 @@ LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
 WHERE po.owner_rank IS NULL OR om.id IS NULL
 UNION ALL
 SELECT 'self_edges',
+       'defect',
        coalesce(count(*), 0),
        'a rank sending to itself — the qp_num-collision signature'
 FROM (
@@ -2023,6 +2091,7 @@ UNION ALL
 -- in — but that is a property of the workload's wr_id discipline, not a
 -- guarantee of the method, so it is measured per capture rather than assumed.
 SELECT 'ambiguous_recv_buffers',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'recv completions whose wr_id named more than one posted buffer — attributed to the lowest, marked inexact'
 FROM _recv_attr WHERE addrs > 1
@@ -2031,6 +2100,7 @@ UNION ALL
 -- no object we can name. Either the receive was posted before the door was
 -- hooked, or its buffer lies outside every region the capture knows.
 SELECT 'unattributed_recv_completions',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'successful recv completions resolving to no posted buffer or no known object'
 FROM _recv_attr WHERE addr IS NULL OR object IS NULL
@@ -2041,6 +2111,7 @@ UNION ALL
 -- an SRQ does, and the arm would quietly take the lower address. Measured
 -- rather than assumed, for the same reason its SRQ counterpart is.
 SELECT 'ambiguous_qp_recv_keys',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'QP receive keys (qp_num, wr_id) that named more than one buffer'
 FROM (
@@ -2056,6 +2127,7 @@ UNION ALL
 -- byte_len <= the first entry's length — which is why num_sge > 1 alone is not
 -- the finding, and the length comparison is.
 SELECT 'recv_spilled_past_first_sge',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'receives whose bytes ran past sge[0] into a buffer the capture does not record'
 FROM _recv_attr WHERE spilled
@@ -2067,6 +2139,7 @@ UNION ALL
 -- did no work. Expect this the day a provider emits a second clock domain (a
 -- GPU globaltimer, say) without anchoring it.
 SELECT 'timeline_unanchored',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'events whose (rank, domain) has no clock anchor — omitted from the timeline'
 FROM _tl_raw e
@@ -2078,37 +2151,63 @@ UNION ALL
 -- so the count has to be visible or a capture with only submission timestamps
 -- looks like a capture with no kernels. See core/vocab.hpp KernelSource.
 SELECT 'kernel_rows_submission_only',
+       'note',
        coalesce(count(*), 0)::BIGINT,
        'kernel rows timed at launch, not execution — excluded from the timeline'
 FROM gpu_kernel WHERE source = 2
 UNION ALL
--- Sends this capture never saw retire. A few mean a trace that stopped with
--- work in flight, which is ordinary; a lot mean the (qp_num, wr_id) key is not
--- holding, and every one of them is a work request missing from the flight lane
--- and from wr_flow. Without this row that lane would simply be short and look
--- complete.
+-- Sends this capture never saw retire AND CANNOT EXPLAIN. A few mean a trace
+-- that stopped with work in flight, which is ordinary; a lot mean the
+-- (qp_num, wr_id) key is not holding, and every one of them is a work request
+-- missing from the flight lane and from wr_flow. Without this row that lane
+-- would simply be short and look complete.
+--
+-- Posts on a queue pair that DECLARED sq_sig_all = 0 are excluded and counted
+-- as a note below — see _wr_unretired for why, and for the arithmetic that
+-- guarantees the two rows still sum to every unpaired post.
 SELECT 'wr_flight_unretired',
-       (SELECT count(*) FROM ib_post_send) - (SELECT count(*) FROM _wr_flight),
-       'work requests posted but never matched to a completion — absent from the flight lane'
+       'defect',
+       coalesce(sum(unretired), 0)::BIGINT,
+       'work requests posted but never matched to a completion, with no declared cause — absent from the flight lane'
+FROM _wr_unretired WHERE sq_sig_all IS DISTINCT FROM 0
 UNION ALL
--- Queue pairs that post more work requests than they complete. These use
--- UNSIGNALLED work requests: a WR posted without IBV_SEND_SIGNALED produces no
--- completion and is retired silently by the next one, so no completion can be
--- attributed to a specific send. They are excluded from the flight lane
--- entirely rather than paired positionally, which would print a latency
--- measured from the wrong send. Fixing this needs send_flags on ib_post_send,
--- which the capture does not record.
-SELECT 'wr_flight_unsignalled_qps',
-       coalesce(count(*), 0)::BIGINT,
-       'queue pairs posting more WRs than they complete — unsignalled, so unpairable'
-FROM _wr_pairable WHERE coalesce(sends, 0) <> coalesce(comps, 0)
+-- The other side of that split, and a note rather than a defect: these posts
+-- were never going to produce a completion, because their queue pair said at
+-- creation that it does not signal every work request. They are absent from the
+-- flight lane for a reason the capture states, not for one it cannot find.
+SELECT 'wr_flight_unretired_selective',
+       'note',
+       coalesce(sum(unretired), 0)::BIGINT,
+       'posts on queue pairs that declared sq_sig_all = 0 — no completion was ever going to be emitted for them'
+FROM _wr_unretired WHERE sq_sig_all = 0
 UNION ALL
--- Of those, the ones the capture can name the cause for. A queue pair that
--- declared sq_sig_all = 0 and then completed fewer WRs than it posted IS doing
--- selective signalling — no inference, the queue pair said so at creation. The
--- remainder are unknown: either selective signalling on a capture written
+-- Queue pairs that post more work requests than they complete and DO NOT SAY
+-- WHY. These use UNSIGNALLED work requests: a WR posted without
+-- IBV_SEND_SIGNALED produces no completion and is retired silently by the next
+-- one, so no completion can be attributed to a specific send. They are excluded
+-- from the flight lane entirely rather than paired positionally, which would
+-- print a latency measured from the wrong send.
+--
+-- RENAMED from wr_flight_unsignalled_qps, because that name became a lie the
+-- moment the declared cases moved out: what is left is precisely the set whose
+-- cause the capture CANNOT name — selective signalling on a capture written
 -- before ib_qp_signalling existed, or a run that stopped with work in flight.
+SELECT 'wr_flight_unexplained_qps',
+       'defect',
+       coalesce(count(*), 0)::BIGINT,
+       'queue pairs posting more WRs than they complete, with no sq_sig_all declaration to explain it'
+FROM _wr_pairable
+WHERE coalesce(sends, 0) <> coalesce(comps, 0) AND sq_sig_all IS DISTINCT FROM 0
+UNION ALL
+-- The ones the capture CAN name the cause for. A queue pair that declared
+-- sq_sig_all = 0 and then completed fewer WRs than it posted IS doing selective
+-- signalling — no inference, the queue pair said so at creation.
+--
+-- A NOTE, NOT A DEFECT, and this row is the reason the column exists. It was a
+-- finding, so a capture that proved its own traffic unpairable by design scored
+-- three findings for having done so. See the severity paragraph above the SQL.
 SELECT 'wr_flight_selective_signalling_qps',
+       'note',
        coalesce(count(*), 0)::BIGINT,
        'unpairable queue pairs that declared sq_sig_all = 0 — certainly selective signalling'
 FROM _wr_pairable
@@ -2117,6 +2216,7 @@ UNION ALL
 -- Completions that appeared to precede their own post. See the WHERE in
 -- _wr_flight: these are dropped rather than drawn at negative width.
 SELECT 'wr_flight_backwards',
+       'defect',
        coalesce(count(*), 0)::BIGINT,
        'completions timed before the send they retire — capture began mid-flight'
 FROM (
@@ -2136,6 +2236,42 @@ FROM (
       ON c.rank = s.rank AND c.qp_num = s.qp_num AND c.wr_id = s.wr_id AND c.gen = s.gen
     WHERE c.a < s.a
 )
+UNION ALL
+-- ucx_deep declined to patch uct_iface_ops_t, so this capture has NO UCT data
+-- plane at all.
+--
+-- THE MOST EXPENSIVE MISSING ROW IN THIS TABLE'S HISTORY. The guard is correct
+-- and it announces itself precisely — on stderr, at load time, in a job log
+-- nobody keeps. What survives into the capture is uct_binding.accepted = 0, a
+-- column no document mentioned, in a table no derived view read. The visible
+-- symptom is that `transport_mix` — the table a reader is pointed at to answer
+-- "did this leave the node" — comes back EMPTY, which is indistinguishable from
+-- "this workload sent nothing".
+--
+-- That cost two days on the LAMMPS round-2 study (jobs 45329318 / 45330017):
+-- the study filed a correct refusal as a tool defect, and its central
+-- prediction went unanswered because nothing said the answer was withheld
+-- rather than absent. A refusal that only exists in stderr is a refusal the
+-- capture does not carry.
+--
+-- Counted per RANK, not per capture: a heterogeneous allocation can bind on
+-- some nodes and refuse on others, and "3 of 16" is the number that tells a
+-- reader their transport_mix is partial rather than empty.
+SELECT 'uct_ops_patch_refused',
+       'defect',
+       coalesce(count(*), 0)::BIGINT,
+       'ranks where ucx_deep refused to patch an unverified uct_iface_ops_t — uct_send and transport_mix are empty for them'
+FROM uct_binding WHERE accepted = 0
+UNION ALL
+-- The opposite lever, and a note because it is a deliberate act rather than a
+-- failure: PCOMM_UCX_DEEP_FORCE overrode the guard. The run patched a layout
+-- nobody verified, so every uct_* row in this capture is trustworthy only as
+-- far as that decision was. A capture must carry the fact that it was taken.
+SELECT 'uct_ops_patch_forced',
+       'note',
+       coalesce(count(*), 0)::BIGINT,
+       'ranks where PCOMM_UCX_DEEP_FORCE overrode the version guard — uct_* rows rest on an unverified ops layout'
+FROM uct_binding WHERE forced = 1
 )sql"},
 };
 

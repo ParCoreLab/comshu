@@ -147,8 +147,13 @@ for a in "$PRIMARY" "$CONTRAST"; do
       "SELECT scope, tl_name, op, sum(ops) AS ops, sum(out_bytes) AS out_bytes,
               sum(in_bytes) AS in_bytes, sum(advertised_bytes) AS advertised
        FROM transport_mix GROUP BY 1,2,3 ORDER BY 1,2,3" 2>&1
+    # severity included: on this case the row that matters most is
+    # uct_ops_patch_refused, and a refusal printed without the word 'defect'
+    # beside it is what let a correct guard read as an empty capture for two
+    # days. See link_sql.hpp's severity paragraph.
     "$PCOMM" sql "$a.pq" \
-      "SELECT finding, n FROM link_health WHERE n > 0" 2>&1
+      "SELECT finding, severity, n FROM link_health WHERE n > 0
+       ORDER BY severity, finding" 2>&1
   else
     echo "   (no derived layer for this arm — the raw uct_send counts follow)"
     # rank,ticks,op,... — the CSV export prepends `rank` to Table<UctSend>::cols,

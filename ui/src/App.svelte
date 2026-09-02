@@ -60,7 +60,11 @@
 
   let health = $state([]);
   $effect(() => {
-    query('SELECT finding, n, note FROM link_health WHERE n > 0')
+    // Defects only. This is a BANNER — it exists to say the capture cannot be
+    // trusted at face value — and a 'note' row is by definition a count the
+    // capture can account for, so raising one here would train a reader to
+    // dismiss the banner. The notes are still in the table for anyone querying it.
+    query("SELECT finding, n, note FROM link_health WHERE n > 0 AND severity = 'defect'")
       .then((r) => (health = r))
       .catch(() => (health = []));
   });

@@ -191,7 +191,7 @@ if [ -d "$WORK/z0k.pq" ]; then
   "$PCOMM" sql "$WORK/z0k.pq" "SELECT k.rank, count(*) AS nccl_kernels FROM gpu_kernel k JOIN intern_text t ON t.handle = k.name WHERE t.text LIKE '%ncclDevKernel%' GROUP BY 1 ORDER BY 1" || true
 fi
 echo "=== link_health rubric ==="
-"$PCOMM" sql "$PQ" "SELECT finding, n, note FROM link_health ORDER BY n DESC"
+"$PCOMM" sql "$PQ" "SELECT finding, severity, n, note FROM link_health ORDER BY severity, n DESC"
 echo "=== is there a gpu_device table? PREDICTION.md §4 predicts no ==="
 ls "$PQ" | grep -i gpu || echo "  (no gpu_* parquet in the export)"
 

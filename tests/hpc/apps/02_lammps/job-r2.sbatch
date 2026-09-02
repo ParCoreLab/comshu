@@ -246,7 +246,7 @@ for arm in block cyclic; do
   echo "=== tag_flow status distribution ==="
   "$PCOMM" sql "$PQ" "SELECT status, count(*) AS flows, sum(ucp_sends) AS ucp_sends, sum(uct_ops) AS uct_ops FROM tag_flow GROUP BY status" || true
   echo "=== link_health rubric ==="
-  "$PCOMM" sql "$PQ" "SELECT finding, n, note FROM link_health ORDER BY n DESC"
+  "$PCOMM" sql "$PQ" "SELECT finding, severity, n, note FROM link_health ORDER BY severity, n DESC"
   echo "=== is there a gpu_device table? PREDICTION-r2.md §4 predicts no ==="
   ls "$PQ" | grep -i gpu || echo "  (no gpu_* parquet in the export)"
 done

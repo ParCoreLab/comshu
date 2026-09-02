@@ -21,8 +21,16 @@
 -- there is no way to assert COMPLETENESS. Clause 2 does the little that can be
 -- done -- if the table is empty rather than a rubric of zeroes, something did
 -- not run -- and the rest is in QUESTIONS.md.
+--
+-- SEVERITY FILTER ADDED 2026-09-02. link_health grew a `severity` column of
+-- 'defect' or 'note', and the clean predicate is now `n > 0 AND severity =
+-- 'defect'`. Without the filter this assertion fires on rows that are not
+-- defects at all -- most sharply wr_flight_selective_signalling_qps and the
+-- unretired posts beside it, which are a queue pair's own declaration that it
+-- does not signal every work request. See link_sql.hpp for the rule that
+-- decides which side a row lands on.
 SELECT 'a link_health finding fired' AS problem, finding, n, note
-FROM link_health WHERE CAST(n AS BIGINT) > 0
+FROM link_health WHERE CAST(n AS BIGINT) > 0 AND severity = 'defect'
 
 UNION ALL
 

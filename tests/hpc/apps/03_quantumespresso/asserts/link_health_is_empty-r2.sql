@@ -28,6 +28,14 @@
 --
 -- Names no finding and no threshold, so it stays correct as the reader grows
 -- new checks -- which is the point of asserting the table rather than a row.
-SELECT finding, n, note
+--
+-- SEVERITY FILTER ADDED 2026-09-02. link_health grew a `severity` column of
+-- 'defect' or 'note', and the clean predicate is now `n > 0 AND severity =
+-- 'defect'`. Without the filter this assertion fires on rows that are not
+-- defects at all -- most sharply wr_flight_selective_signalling_qps and the
+-- unretired posts beside it, which are a queue pair's own declaration that it
+-- does not signal every work request. See link_sql.hpp for the rule that
+-- decides which side a row lands on.
+SELECT finding, severity, n, note
 FROM link_health
-WHERE CAST(n AS INTEGER) > 0;
+WHERE CAST(n AS INTEGER) > 0 AND severity = 'defect';

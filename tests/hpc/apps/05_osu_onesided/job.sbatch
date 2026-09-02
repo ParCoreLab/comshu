@@ -191,7 +191,7 @@ doors() {
     "$PCOMM" sql "$out.pq" \
       "SELECT rank, tl_name, op, sum(ops) AS ops, sum(out_bytes) AS out_bytes,
               sum(in_bytes) AS in_bytes FROM transport_mix GROUP BY 1,2,3 ORDER BY 1,2,3" 2>&1
-    "$PCOMM" sql "$out.pq" "SELECT finding, n, note FROM link_health WHERE n > 0" 2>&1
+    "$PCOMM" sql "$out.pq" "SELECT finding, severity, n, note FROM link_health WHERE n > 0 ORDER BY severity" 2>&1
     "$PCOMM" sql "$out.pq" "SELECT * FROM comm_edges ORDER BY bytes DESC" 2>&1
   fi
 }

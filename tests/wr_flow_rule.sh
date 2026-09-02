@@ -143,21 +143,55 @@ expect "no send paired to a RECEIVE completion" \
 expect "the backwards pair was dropped and counted" \
     "SELECT n FROM link_health WHERE finding = 'wr_flight_backwards'" "1"
 
-# qp 8 posts two work requests and completes one — the unsignalled signature.
-# Pairing it positionally would attribute a completion to a send it did not
-# retire, so the queue pair is refused entirely and said so.
-expect "the unsignalled queue pair is refused, not paired" \
-    "SELECT n FROM link_health WHERE finding = 'wr_flight_unsignalled_qps'" "3"
+# qps 8, 9 and 10 all post more than they complete, and ALL THREE declared
+# sq_sig_all = 0. So the capture can name the cause of every one of them and
+# nothing is left unexplained — which is the point of the row being zero here
+# rather than absent.
+expect "no unpairable queue pair is left without a cause" \
+    "SELECT n FROM link_health WHERE finding = 'wr_flight_unexplained_qps'" "0"
 
-# qp 8 declared sq_sig_all = 0, so the cause is not inferred — the queue pair
-# said so. qp 7 declared 1 and balances, so it is not counted here.
+# The same three, on the side of the rubric that is not a defect. They declared
+# they would not signal every work request; the mismatch is the declaration
+# coming true, not a failure of the link.
 expect "the cause of the refusal is named, not guessed" \
     "SELECT n FROM link_health WHERE finding = 'wr_flight_selective_signalling_qps'" "3"
 
-# Three sends could not retire: qp 8's two (refused wholesale) and qp 7's
-# backwards one.
-expect "unretired sends are counted, not hidden" \
-    "SELECT n FROM link_health WHERE finding = 'wr_flight_unretired'" "6"
+# THE SPLIT IS THE WHOLE POINT. Six sends never reached the flight lane, and
+# exactly ONE of them is a defect: qp 7's backwards work request, on the only
+# queue pair that declared it signals everything. The other five are qp 8's two,
+# qp 9's unsignalled one and qp 10's two — posts for which no completion was
+# ever going to be emitted, because their queue pairs said so at creation.
+#
+# Before the severity column this read 6, and a reader chasing it found five
+# posts that were working as designed. That ratio is 1:5 on a ten-row fixture;
+# on job 45330280 it was 0:69,470.
+expect "unretired sends with no declared cause" \
+    "SELECT n FROM link_health WHERE finding = 'wr_flight_unretired'" "1"
+
+expect "unretired sends the queue pair already accounted for" \
+    "SELECT n FROM link_health WHERE finding = 'wr_flight_unretired_selective'" "5"
+
+# The split RECLASSIFIES, it does not lose rows: the two counts must still sum
+# to every post the flight lane could not pair. Without this, narrowing the
+# defect row's WHERE clause to zero would look like a fix.
+expect "the two unretired rows account for every unpaired post" \
+    "SELECT (SELECT count(*) FROM ib_post_send) - (SELECT count(*) FROM wr_flow)
+       - (SELECT sum(n) FROM link_health WHERE finding LIKE 'wr_flight_unretired%')" "0"
+
+# Severity is not decoration: of the four wr_flight rows that fire on this
+# fixture, exactly two must survive the clean predicate. Scoped to wr_flight%
+# rather than to the whole rubric because this fixture ships no ib_modify_qp and
+# no mem_object, so unresolved_sends and unattributed_recv_completions fire too
+# — correctly, and for reasons this file does not test.
+expect "the clean predicate keeps qp 7's backwards send and drops the declared ones" \
+    "SELECT string_agg(finding, ',' ORDER BY finding) FROM link_health
+      WHERE n > 0 AND severity = 'defect' AND finding LIKE 'wr_flight%'" \
+    "wr_flight_backwards,wr_flight_unretired"
+
+expect "and the declared ones are present, on the other side" \
+    "SELECT string_agg(finding, ',' ORDER BY finding) FROM link_health
+      WHERE n > 0 AND severity = 'note' AND finding LIKE 'wr_flight%'" \
+    "wr_flight_selective_signalling_qps,wr_flight_unretired_selective"
 
 # The Timeline reads the same relation through timeline_span; a lane that
 # disagrees with the table under it is the drift this whole file guards.
