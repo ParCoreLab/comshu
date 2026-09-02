@@ -73,8 +73,15 @@ module load gcc/13.2.0
 export PCOMM_BUILD="${PCOMM_BUILD_R2:-$PCOMM_ROOT/build-apps06}"
 export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
 export PCOMM_PROVIDER_PATH="$PCOMM_BUILD/providers-sysucx/ucx:$PCOMM_BUILD/providers-sysucx/ucx_deep"
-export LD_LIBRARY_PATH="$PCOMM_BUILD/libpcomm:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$PCOMM_BUILD/libpcomm:${LD_LIBRARY_PATH:-}:/lib64"
 unset PCOMM_UCX_DEEP_FORCE          # a forced binding is not an ordinary pass
+# /lib64 APPENDED, never prepended. It is belt-and-braces now that the providers
+# carry no UCX in their RUNPATH — nothing should be able to offer a different
+# libucp — but a module that quietly put one on LD_LIBRARY_PATH would silently
+# recreate round 1's hybrid, and appending costs nothing. Prepending would
+# shadow gcc-13.2's libstdc++ with /lib64's and every pcomm binary would then die
+# with `GLIBCXX_3.4.30 not found`, which reads as a completely different bug
+# (round 1 NOTES.md trap 1).
 
 echo "=== stack ==="
 which lmp_mpi mpirun
