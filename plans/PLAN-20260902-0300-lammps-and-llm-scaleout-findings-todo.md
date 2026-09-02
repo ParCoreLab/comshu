@@ -1,6 +1,8 @@
 # What the LAMMPS and LLM-scale-out round-2 studies found in the tool
 
-**Status:** todo. Twelve findings, of which two are fixed and ten are not.
+**Status:** todo. Fourteen findings, of which two are fixed and twelve are not.
+Finding 14 was produced by verifying finding 2 — the act of checking a fix
+surfaced a defect in how fixes reach the machine at all.
 
 **The runs.** Everything here comes from three MN5 jobs and nothing here is
 speculation:
@@ -43,22 +45,6 @@ The `comm_edges` bytes mirror across the two placements to within 0.003%
 shares of 56.00% and 44.00% against a pre-committed 55.68% / 44.32%.
 
 The *reporting* half of this one is still open; see finding 3.
-
-**14. Nothing records which BUILD produced a capture, and it cost a run.**
-Job 45331793 was submitted to verify the range widening and reported
-`accepted = 0` on 1.20.0 — apparently refuting the change. It did not. That job
-loads `build-apps06/providers-sysucx/`, a tree of `.so` files hand-copied out of
-`build-ucx120`; the source change had synced and `build/` had rebuilt, but the
-copied artefact was two hours stale. There are now SIX UCX build directories on
-MN5 (`build-ucx`, `build-ucx06`, `build-ucx06sys`, `build-ucx120`, `build-ucx2`,
-`build-ucxtest`) and one job pointing at copies from one of them.
-
-`uct_binding` already carries `compiled_version` and `runtime_version`, so a
-capture can say which UCX HEADERS it was built against — but not which pcomm
-commit, which is the axis that actually bit. This is the same class of gap as
-finding 10: provenance of the binary rather than of the invocation, and the two
-want fixing together. I nearly reported the stale result as evidence against my
-own change.
 
 ---
 
@@ -116,6 +102,22 @@ about a collective run.
 nothing inside either capture says which is which. An `Invocation` artifact —
 argv, provider list, the `PCOMM_*` environment — would make a capture
 self-describing. This is the cheapest high-value item in this file.
+
+**14. Nothing records which BUILD produced a capture, and it cost a run.**
+Job 45331793 was submitted to verify the range widening and reported
+`accepted = 0` on 1.20.0 — apparently refuting the change. It did not. That job
+loads `build-apps06/providers-sysucx/`, a tree of `.so` files hand-copied out of
+`build-ucx120`; the source change had synced and `build/` had rebuilt, but the
+copied artefact was two hours stale. There are now SIX UCX build directories on
+MN5 (`build-ucx`, `build-ucx06`, `build-ucx06sys`, `build-ucx120`, `build-ucx2`,
+`build-ucxtest`) and one job pointing at copies from one of them.
+
+`uct_binding` already carries `compiled_version` and `runtime_version`, so a
+capture can say which UCX HEADERS it was built against — but not which pcomm
+commit, which is the axis that actually bit. This is the same class of gap as
+finding 10: provenance of the binary rather than of the invocation, and the two
+want fixing together. I nearly reported the stale result as evidence against my
+own change.
 
 **11. `transport_mix` covers UCX only**, while the brief presents its `scope` as
 the general answer to "did this leave the node". On the NCCL capture it saw
