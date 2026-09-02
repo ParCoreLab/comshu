@@ -44,6 +44,8 @@ struct NodeIdentity;
 
 struct GpuDevice;
 
+struct Invocation;
+
 struct PeerMapping;
 
 struct GpuKernel;
@@ -963,6 +965,59 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuDevice FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(GpuDevice, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Invocation FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t argv_;
+  uint32_t env_;
+  uint32_t providers_;
+  uint32_t build_;
+  uint32_t images_;
+  uint32_t pid_;
+
+ public:
+  Invocation()
+      : temporal_(),
+        argv_(0),
+        env_(0),
+        providers_(0),
+        build_(0),
+        images_(0),
+        pid_(0) {
+  }
+  Invocation(const pcomm::fb::Temporal &_temporal, uint32_t _argv, uint32_t _env, uint32_t _providers, uint32_t _build, uint32_t _images, uint32_t _pid)
+      : temporal_(_temporal),
+        argv_(::flatbuffers::EndianScalar(_argv)),
+        env_(::flatbuffers::EndianScalar(_env)),
+        providers_(::flatbuffers::EndianScalar(_providers)),
+        build_(::flatbuffers::EndianScalar(_build)),
+        images_(::flatbuffers::EndianScalar(_images)),
+        pid_(::flatbuffers::EndianScalar(_pid)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t argv() const {
+    return ::flatbuffers::EndianScalar(argv_);
+  }
+  uint32_t env() const {
+    return ::flatbuffers::EndianScalar(env_);
+  }
+  uint32_t providers() const {
+    return ::flatbuffers::EndianScalar(providers_);
+  }
+  uint32_t build() const {
+    return ::flatbuffers::EndianScalar(build_);
+  }
+  uint32_t images() const {
+    return ::flatbuffers::EndianScalar(images_);
+  }
+  uint32_t pid() const {
+    return ::flatbuffers::EndianScalar(pid_);
+  }
+};
+FLATBUFFERS_STRUCT_END(Invocation, 72);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) PeerMapping FLATBUFFERS_FINAL_CLASS {
  private:

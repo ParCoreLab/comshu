@@ -46,6 +46,7 @@ PCOMM_SCHEMA_MATCH(cr::SourceLine, fb::SourceLine);
 PCOMM_SCHEMA_MATCH(cr::Attribution, fb::Attribution);
 PCOMM_SCHEMA_MATCH(cr::NodeIdentity, fb::NodeIdentity);
 PCOMM_SCHEMA_MATCH(cr::GpuDevice, fb::GpuDevice);
+PCOMM_SCHEMA_MATCH(cr::Invocation, fb::Invocation);
 PCOMM_SCHEMA_MATCH(cr::PeerMapping, fb::PeerMapping);
 PCOMM_SCHEMA_MATCH(cr::GpuKernel, fb::GpuKernel);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
@@ -664,6 +665,25 @@ int main() {
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
             0x0011223344556677ull, 0x8899AABBCCDDEEFFull, 0x00001B00u, 0x12345678u, 0xABCD);
         expect_identical("GpuDevice", &c, &f, sizeof(c));
+    }
+    {
+        // Six uint32s and no tail hole, so there is nowhere for a layout
+        // disagreement to hide quietly — which is exactly why every field is
+        // still distinct: a transposed pair of handles would compare equal
+        // across a struct of repeated values and would put argv's text in the
+        // env column of every capture.
+        Stamped<cr::Invocation> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.argv = 0x11111111u;
+        c.payload.env = 0x22222222u;
+        c.payload.providers = 0x33333333u;
+        c.payload.build = 0x44444444u;
+        c.payload.images = 0x55555555u;
+        c.payload.pid = 0x66666666u;
+        fb::Invocation f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u, 0x55555555u, 0x66666666u);
+        expect_identical("Invocation", &c, &f, sizeof(c));
     }
     {
         // Every field distinct and non-zero: the tail hole after `source` is

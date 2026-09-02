@@ -15,7 +15,10 @@
 // still L0-L2 core (see ARCHITECTURE.md §0).
 
 #include <dlfcn.h>
+#include <sys/stat.h>
+#include <unistd.h>  // getpid, and glibc's declaration of `environ`
 
+#include <atomic>
 #include <csignal>
 #include <signal.h>
 #include <cerrno>
@@ -26,8 +29,26 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
+
+// Regenerated on every build by cmake/write_build_id.cmake, into this target's
+// binary dir. Private to pcomm_engine: no provider and no header sees it, so
+// there is exactly one object in the process that can answer "which tree".
+#include "pcomm_build_id.h"
+
+// POSIX spells it here rather than in a header on every platform: glibc only
+// declares it in <unistd.h> under _GNU_SOURCE. Declared once, at file scope, so
+// Invocation's env capture does not depend on which feature macros happen to be
+// set for this translation unit.
+extern "C" char** environ;
+
+namespace pcomm {
+// Defined below, beside the provider registry it reads. Declared here because
+// pcomm_engine_arena_flush calls it several hundred lines earlier.
+void maybe_emit_invocation();
+}  // namespace pcomm
 
 #include "pcomm/engine_abi.h"
 #include "pcomm/hook/dlsym/Dlsym.hpp"
@@ -320,6 +341,12 @@ void pcomm_engine_arena_flush(pcomm_arena* arena) {
     // first time a record buffer fills while the process is still alive.
     // A relaxed load on a path that has just done I/O.
     pcomm::Tracer::instance().maybe_emit_gpu_devices();
+    // Invocation rides the same path for a DIFFERENT reason. It could be
+    // written at start — nothing it reads changes — except for `providers`,
+    // which is only complete once every preloaded .so has declared itself, and
+    // for its interned handles, which the early flush cannot help anyway. Here
+    // it is late enough to be complete and early enough to beat teardown.
+    pcomm::maybe_emit_invocation();
 }
 
 void pcomm_engine_drain_thread(void) {
@@ -485,7 +512,196 @@ bool type_is_declared(std::uint16_t type_id) {
     return false;
 }
 
+// ---- Invocation (532) ------------------------------------------------------
+//
+// See core/records.hpp for what this record is for. It lives HERE rather than
+// in tracer.hpp for two reasons that both come down to the same thing: the
+// build id header is private to this target, and `declared()` is private to
+// this file. Everything Invocation needs to answer "what was asked, and by
+// which build" is already in this translation unit and nowhere else.
+
+// The whole file, or "" — used for /proc/self/cmdline. Sized rather than
+// stat'd because procfs reports st_size 0 for these.
+std::string read_proc_file(const char* path) {
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f)
+        return {};
+    std::string out;
+    char        buf[4096];
+    std::size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0)
+        out.append(buf, n);
+    std::fclose(f);
+    return out;
+}
+
+// The traced command line, with the NUL separators rendered as spaces.
+//
+// This is the ONE fact a reader wants first and the capture never carried. It
+// is the application's argv, not the launcher's: under mpirun each rank's
+// cmdline is the target binary, which is why `env` below has to carry the
+// mapping policy separately.
+std::string traced_argv() {
+    std::string raw = read_proc_file("/proc/self/cmdline");
+    while (!raw.empty() && raw.back() == '\0')
+        raw.pop_back();
+    for (char& c : raw)
+        if (c == '\0')
+            c = ' ';
+    return raw;
+}
+
+// The environment, filtered to an allowlist. See records.hpp: writing all of
+// environ would put credentials and home paths in every capture, for the sake
+// of the two variables anyone actually reads.
+//
+// The defaults are chosen to answer "why did the traffic look like that":
+// SLURM_ and OMPI_MCA_rmaps_ carry the placement decision that made jobs
+// 45329318 and 45330017 differ, and CUDA_VISIBLE_DEVICES is the remap that
+// GpuDevice exists to survive — never once exercised in a capture, because
+// nothing recorded whether it was set.
+std::string captured_env() {
+    static const char* const kDefault[] = {
+        "PCOMM_", "SLURM_", "OMPI_MCA_rmaps_", "OMPI_COMM_WORLD_", "PMIX_RANK",
+        "CUDA_VISIBLE_DEVICES", "LD_PRELOAD", "UCX_TLS", "NCCL_ALGO", "NCCL_PROTO",
+    };
+    std::vector<std::string> prefixes(std::begin(kDefault), std::end(kDefault));
+    // Comma-separated additions, so a study can capture the variables ITS
+    // question turns on without editing the engine.
+    if (const char* extra = std::getenv("PCOMM_ENV_CAPTURE")) {
+        std::string_view v{extra};
+        while (!v.empty()) {
+            const auto comma = v.find(',');
+            auto       one = v.substr(0, comma);
+            if (!one.empty())
+                prefixes.emplace_back(one);
+            if (comma == std::string_view::npos)
+                break;
+            v.remove_prefix(comma + 1);
+        }
+    }
+
+    std::string out;
+    for (char** e = environ; e && *e; ++e) {
+        std::string_view kv{*e};
+        for (const auto& p : prefixes) {
+            if (kv.size() >= p.size() && kv.compare(0, p.size(), p) == 0) {
+                out.append(kv);
+                out.push_back('\n');
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+// Every mapped libpcomm object, with the size and mtime of the FILE ON DISK.
+//
+// This is the field that would have caught job 45331793 outright: the stale
+// provider was a hand-made copy in a second directory, and its path and mtime
+// say so immediately. Reads /proc/self/maps and keeps one line per distinct
+// path whose basename starts with "libpcomm" or contains "_trace" — the two
+// naming conventions this project's shared objects use.
+std::string mapped_images() {
+    const std::string      maps = read_proc_file("/proc/self/maps");
+    std::vector<std::string> seen;
+    std::string            out;
+    std::size_t            pos = 0;
+    while (pos < maps.size()) {
+        const auto eol = maps.find('\n', pos);
+        std::string_view line{maps.data() + pos, (eol == std::string::npos ? maps.size() : eol) - pos};
+        pos = (eol == std::string::npos) ? maps.size() : eol + 1;
+
+        // The path is the last field and starts at the first '/'; anonymous and
+        // special mappings ([heap], [stack]) have none.
+        const auto slash = line.find('/');
+        if (slash == std::string_view::npos)
+            continue;
+        std::string path{line.substr(slash)};
+        const auto  base = path.rfind('/');
+        std::string_view name{path};
+        if (base != std::string::npos)
+            name = std::string_view{path}.substr(base + 1);
+        if (name.rfind("libpcomm", 0) != 0 && name.find("_trace") == std::string_view::npos)
+            continue;
+        bool dup = false;
+        for (const auto& s : seen)
+            if (s == path) {
+                dup = true;
+                break;
+            }
+        if (dup)
+            continue;
+        seen.push_back(path);
+
+        struct stat st {};
+        if (::stat(path.c_str(), &st) == 0) {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, " %lld %lld", static_cast<long long>(st.st_size),
+                          static_cast<long long>(st.st_mtime));
+            out.append(path).append(buf).push_back('\n');
+        } else {
+            // Recorded anyway: a mapped object whose file is gone (deleted or
+            // replaced under a running job) is itself the answer to "which
+            // binary answered", and dropping it would hide exactly that.
+            out.append(path).append(" ? ?").push_back('\n');
+        }
+    }
+    return out;
+}
+
+std::atomic<bool> g_invocation_done{false};
+
 }  // namespace
+
+namespace pcomm {
+
+// Once per process, from the arena-flush path. Same relaxed-atomic gate as
+// GpuDevice and for the same reason: the only cost of two threads both passing
+// it is a duplicate row, and this path has just done I/O.
+void maybe_emit_invocation() {
+    if (g_invocation_done.load(std::memory_order_relaxed))
+        return;
+    auto& tracer = Tracer::instance();
+    if (!tracer.has_recorder())
+        return;
+    g_invocation_done.store(true, std::memory_order_relaxed);
+
+    std::string provs;
+    {
+        std::lock_guard lock(declared_mutex());
+        for (const auto& d : declared()) {
+            if (!provs.empty())
+                provs += ',';
+            provs += d.name;
+        }
+    }
+
+    // commit, dirty flag, build type, engine ABI and schema hash in one line.
+    // The last two are here rather than left to the stream header because this
+    // is the row a reader looks at when a capture will not parse.
+    char build[192];
+    std::snprintf(build, sizeof build, "commit=%s type=%s abi=%u schema=0x%016llX",
+                  PCOMM_BUILD_COMMIT, PCOMM_BUILD_TYPE,
+                  static_cast<unsigned>(PCOMM_ENGINE_ABI_VERSION),
+                  static_cast<unsigned long long>(pcomm::rec::kSchemaHash));
+
+    auto& rec = tracer.recorder();
+    auto  s = [&rec](const std::string& v) {
+        return v.empty() ? core::kNullHandle : rec.intern(rec::InternDomain::String, v);
+    };
+    rec.record(core::Temporal::none(),
+               core::records::Invocation{{},
+                                         {},
+                                         s(traced_argv()),
+                                         s(captured_env()),
+                                         s(provs),
+                                         s(build),
+                                         s(mapped_images()),
+                                         static_cast<std::uint32_t>(::getpid())});
+}
+
+}  // namespace pcomm
 
 extern "C" int pcomm_engine_declare_provider(const char* name, std::uint16_t id_lo,
                                              std::uint16_t id_hi, std::uint32_t abi_version) {

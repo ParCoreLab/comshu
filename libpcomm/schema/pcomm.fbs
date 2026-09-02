@@ -236,6 +236,49 @@ struct GpuDevice {
   ordinal:uint16;
 }
 
+// type 532, Artifact. What this rank was ASKED to do, and by which build.
+//
+// Every other record says what the application did. None said what the TRACER
+// was told to do, which left a capture unable to describe itself. Two MN5 jobs
+// — 45329318 and 45330017 — differ only in mpirun's `--map-by`, produce
+// measurably different traffic, and nothing inside either capture says which is
+// which. The placement is recoverable from node_identity plus rank, but the
+// REQUEST that produced it was recorded nowhere.
+//
+// `images` is the other half, and it has a scar. Job 45331793 reported
+// uct_binding.accepted = 0 on a UCX the guard had just been widened to admit,
+// and read as a clean refutation of the change. It was not: that job loads
+// .so files hand-copied into a second directory, and the copy was two hours
+// stale while the build tree beside it was correct. There were six UCX build
+// directories on that machine. So this walks /proc/self/maps at emit time and
+// records every mapped libpcomm object with its size and mtime — no cooperation
+// from providers, no ABI change, and it answers "which file actually answered"
+// for the engine and every provider at once.
+//
+// `build` is the compile-time counterpart: commit, dirty flag, build type,
+// engine ABI. Regenerated on every build rather than at configure time — a
+// build id that only refreshes when someone re-runs cmake is precisely the
+// stale-provenance failure this field exists to catch.
+//
+// `env` is an allowlist, not the environment. Prefix PCOMM_, plus the launcher
+// variables that decide placement (SLURM_*, OMPI_MCA_rmaps_*, CUDA_VISIBLE_DEVICES,
+// LD_PRELOAD). Extend it with PCOMM_ENV_CAPTURE. A whole environ would put
+// credentials in every capture and is not worth it for the two variables that
+// matter.
+//
+// One row per rank. All five payload fields are interned strings, so unlike
+// NodeIdentity and ClockAnchor this record CANNOT be part of the early flush —
+// its handles are undefined until the dictionary is written at teardown.
+struct Invocation {
+  temporal:Temporal;
+  argv:uint32;
+  env:uint32;
+  providers:uint32;
+  build:uint32;
+  images:uint32;
+  pid:uint32;
+}
+
 // type 526, Entity. One process's mapping of a shared allocation, keyed by an
 // identity both sides agree on.
 //

@@ -1212,7 +1212,7 @@ struct Table {
     //
     // The on-disk format is defended four ways — magic, format version, stride,
     // schema hash, a byte-level conformance test and a Python reader proving
-    // portability. These seven tables, which are what the UI panels, the agent
+    // portability. These tables, which are what the UI panels, the agent
     // and every suite assertion actually read, had nothing: consumers bound to
     // column names that existed only inside a SQL string in this header. Rename
     // one and nothing failed to build; a panel went blank and a query returned
@@ -1504,6 +1504,50 @@ SELECT n.rank,
 FROM _node n
 LEFT JOIN _rank_device d ON d.rank = n.rank
 ORDER BY n.rank
+)sql"},
+
+    // What each rank was ASKED to do, with the interned strings resolved.
+    //
+    // NAMED run_provenance AND NOT `invocation`, because `pcomm link` COPYs
+    // every kTables entry to <name>.parquet in the same directory the raw
+    // tables were written to — so a derived table sharing a raw table's name
+    // silently overwrites it. That is a foot-gun in the link path rather than
+    // in this view, and it is worth stating where the next person will hit it.
+    //
+    // The dictionary join is the whole reason this exists. Parquet does not
+    // decode handles (see the export's own header: decoding "belongs to the
+    // derived-table layer"), so the raw `invocation` table holds five uint32s
+    // and answers nothing on its own.
+    //
+    // Through _intern_name, not intern_text, and the `texts = 1` guard is
+    // load-bearing rather than copied. A REPLAYED capture nests one rank-*
+    // directory per pass and both load as rank 0 with independent dictionaries,
+    // so handle 3 can be an argv in one pass and a kernel name in the other. A
+    // direct join to intern_text would emit one row per candidate string and
+    // quietly multiply this table; the guard turns that into a NULL and keeps
+    // the rank's row. `domain = 2` is InternDomain::String, spelled as a number
+    // for the reason the UCT views below give — this layer mounts RAW streams,
+    // where an enum is a number.
+    //
+    // The row surviving with NULLs is the point: it is evidence the engine was
+    // alive on that rank, which is a different claim from the rank having no
+    // invocation row at all.
+    {"run_provenance", "rank,pid,argv,providers,build,images,env",
+     R"sql(
+SELECT i.rank,
+       i.pid,
+       CASE WHEN a.texts = 1 THEN a.text END AS argv,
+       CASE WHEN p.texts = 1 THEN p.text END AS providers,
+       CASE WHEN b.texts = 1 THEN b.text END AS build,
+       CASE WHEN m.texts = 1 THEN m.text END AS images,
+       CASE WHEN e.texts = 1 THEN e.text END AS env
+FROM invocation i
+LEFT JOIN _intern_name a ON a.rank = i.rank AND a.domain = 2 AND a.handle = i.argv
+LEFT JOIN _intern_name p ON p.rank = i.rank AND p.domain = 2 AND p.handle = i.providers
+LEFT JOIN _intern_name b ON b.rank = i.rank AND b.domain = 2 AND b.handle = i.build
+LEFT JOIN _intern_name m ON m.rank = i.rank AND m.domain = 2 AND m.handle = i.images
+LEFT JOIN _intern_name e ON e.rank = i.rank AND e.domain = 2 AND e.handle = i.env
+ORDER BY i.rank
 )sql"},
 
     {"endpoint", "rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes",

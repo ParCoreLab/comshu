@@ -27,11 +27,30 @@ target_compile_features(pcomm INTERFACE cxx_std_20)
 # define it, and Dlsym.hpp has always said so ("can only be linked against ONCE
 # in the entire program"). Now the build enforces it — a second hook provider
 # can no longer bring its own copy.
+# The build identity Invocation carries. A TARGET, not configure_file: a commit
+# stamped at configure time keeps reporting whichever commit someone last ran
+# `cmake` on, and a provenance field that goes stale is a confident wrong answer
+# — the failure job 45331793 nearly turned into a false refutation. The script
+# only rewrites the header when the content changes, so an unchanged commit does
+# not relink the world on every build.
+set(PCOMM_BUILD_ID_H "${CMAKE_CURRENT_BINARY_DIR}/pcomm_build_id.h")
+add_custom_target(pcomm_build_id ALL
+  BYPRODUCTS "${PCOMM_BUILD_ID_H}"
+  COMMAND ${CMAKE_COMMAND}
+          -DPCOMM_SRC=${CMAKE_SOURCE_DIR}
+          -DPCOMM_OUT=${PCOMM_BUILD_ID_H}
+          -DPCOMM_BUILD_TYPE=$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,unset>
+          -P ${CMAKE_SOURCE_DIR}/cmake/write_build_id.cmake
+  COMMENT "pcomm: stamping build id"
+  VERBATIM)
+
 add_library(pcomm_engine SHARED
   src/engine.cpp
   src/hook/Dlsym.cpp
   src/hook/SymbolResolver.cpp
 )
+add_dependencies(pcomm_engine pcomm_build_id)
+target_include_directories(pcomm_engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_library(pcomm::engine ALIAS pcomm_engine)
 # Kept as an alias so existing provider CMake keeps working; pcomm::hook is now
 # the same shared engine rather than a separate static lib.

@@ -278,6 +278,42 @@ template<> struct Table<GpuDevice> {
     }
 };
 
+// What this rank was asked to do, and by which build. See core/records.hpp
+// Invocation.
+//
+// THE FIRST RECORD WHOSE PAYLOAD IS FREE TEXT, and therefore the first that
+// needs real CSV quoting. Every other interned string in this format is an
+// identifier — a kernel name, a transport name, a hex handle — and got away
+// without it. These four fields contain commas (argv), '=' and newlines (env),
+// and spaces and newlines (images), so an unquoted row would silently produce
+// extra columns and extra rows in anything that read it back.
+//
+// RFC 4180: wrap in quotes, double any embedded quote. DuckDB's read_csv
+// understands both, including the embedded newlines, which is what keeps
+// `pcomm sql` on a --csv export working on this table.
+static std::string csv_quoted(const char* s) {
+    std::string out(1, '"');
+    for (const char* p = s ? s : ""; *p; ++p) {
+        if (*p == '"')
+            out += "\"\"";
+        else
+            out += *p;
+    }
+    out += '"';
+    return out;
+}
+
+template<> struct Table<Invocation> {
+    static constexpr const char* name = "invocation";
+    static constexpr const char* cols = "pid,argv,providers,build,images,env";
+    static void row(std::FILE* f, const Stamped<Invocation>& s, const rec::InternDictionary& in) {
+        auto t = [&in](core::Handle h) { return csv_quoted(h ? in.str(h) : ""); };
+        std::fprintf(f, "%u,%s,%s,%s,%s,%s", s.payload.pid, t(s.payload.argv).c_str(),
+                     t(s.payload.providers).c_str(), t(s.payload.build).c_str(),
+                     t(s.payload.images).c_str(), t(s.payload.env).c_str());
+    }
+};
+
 // One process's mapping of a fabric-shared allocation.
 //
 // `allocation` is emitted as the interned STRING, not its handle: it is the
@@ -1389,7 +1425,7 @@ template<> struct Table<ncr::NcclDevComm> {
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
     std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, GpuDevice,
-               PeerMapping,
+               Invocation, PeerMapping,
                ClockAnchor, Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,

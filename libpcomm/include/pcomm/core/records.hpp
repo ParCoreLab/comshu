@@ -267,6 +267,56 @@ PCOMM_RECORD(GpuDevice, RecordKind::Artifact, 528, "gpu_device") {
     DeviceId      ordinal;   // the runtime ordinal every other record uses
 };
 
+// ARTIFACT — what this rank was ASKED to do, and by which build.
+//
+// EVERY OTHER RECORD IN THIS FILE SAYS WHAT THE APPLICATION DID. None said what
+// the TRACER was told to do, and a capture that cannot describe its own inputs
+// is not self-contained. Jobs 45329318 and 45330017 differ ONLY in mpirun's
+// `--map-by`, produce measurably different traffic, and nothing inside either
+// capture says which is which. The resulting placement is recoverable from
+// node_identity plus rank — comm_edges.scope proves it — but the REQUEST that
+// produced it was recorded nowhere, so the two directories are distinguishable
+// only by the shell history of whoever launched them.
+//
+// `images` IS THE FIELD WITH A SCAR. Job 45331793 reported
+// uct_binding.accepted = 0 on a UCX version the guard had just been widened to
+// admit, which read as a clean refutation of the change. It was not. That job
+// loads `.so` files hand-copied into a second directory, and the copy was two
+// hours stale while the build tree beside it was correct — there were SIX UCX
+// build directories on that machine and one job pointing at copies from one of
+// them. I nearly reported a stale binary as evidence against my own change.
+//
+// So this walks /proc/self/maps at emit time and records every mapped libpcomm
+// object with its size and mtime. No cooperation from providers, no ABI change,
+// and it answers "which file actually answered" for the engine and every
+// provider at once — which is strictly more than a commit baked into the engine
+// could say about a provider copied out of a different tree.
+//
+// `build` is the compile-time counterpart: commit, dirty flag, build type,
+// engine ABI, schema hash. Regenerated on EVERY build rather than at configure
+// time, because a build id that only refreshes when someone re-runs cmake is
+// precisely the stale-provenance failure this record exists to catch.
+//
+// `env` IS AN ALLOWLIST, NOT THE ENVIRONMENT. Prefix PCOMM_, plus the launcher
+// variables that actually decide placement — SLURM_*, OMPI_MCA_rmaps_*,
+// CUDA_VISIBLE_DEVICES, LD_PRELOAD. PCOMM_ENV_CAPTURE extends the prefix list.
+// Writing all of environ would put credentials and home paths into every
+// capture, which is a real cost for the two variables anyone wants.
+//
+// EMITTED LAZILY, WITH THE ARENA FLUSH, AND NOT AT START. Every payload field
+// is an interned string, and the dictionary those handles resolve against is
+// only written at teardown — so unlike NodeIdentity and ClockAnchor this record
+// cannot join the early flush that defends against a signal. See Tracer::start
+// for why those two can and this one cannot.
+PCOMM_RECORD(Invocation, RecordKind::Artifact, 532, "invocation") {
+    Handle        argv;       // /proc/self/cmdline, NULs rendered as spaces
+    Handle        env;        // captured variables, one "K=V" per line
+    Handle        providers;  // every provider that declared itself, comma-joined
+    Handle        build;      // commit, dirty, build type, ABI, schema hash
+    Handle        images;     // mapped libpcomm objects: "path size mtime" per line
+    std::uint32_t pid;        // this rank's pid, which the rank number may also be
+};
+
 // ENTITY — one process's mapping of a shared allocation, keyed by an identity
 // both sides of the share agree on.
 //

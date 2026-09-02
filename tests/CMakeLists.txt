@@ -163,6 +163,14 @@ add_test(NAME tag_flow_rule
 add_test(NAME tag_recv_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_recv_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# The invocation record's handle join. A fixture rather than a capture because
+# the two clauses worth testing — handles being scoped to (rank, domain), and a
+# handle claimed by two strings resolving to NULL instead of to a guess — only
+# appear on a multi-rank or a REPLAYED capture, and neither is something a
+# single local run produces.
+add_test(NAME run_provenance_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_provenance_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # ucx_deep's hot-path lookup tables, driven directly.
 #
 # UNCONDITIONAL, unlike everything else UCX in this file, and deliberately so:

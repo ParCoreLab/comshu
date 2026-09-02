@@ -3,7 +3,7 @@
 
 These are the ER half of the talk figures: 04-record-model.svg says what the four
 archetypes ARE, and these say which records exist, what keys them, and which join
-carries one to the next. There are 60 record types across six provider ranges, which
+carries one to the next. There are 61 record types across six provider ranges, which
 is more than anyone will place by hand twice — so the geometry is generated from one
 grid and the layout is data at the bottom of this file.
 
@@ -25,7 +25,7 @@ W, H = 230, 46          # one record box
 
 # What the figures actually drew, filled in by box(). The index table at the
 # foot of this file and the boxes in the diagrams are two hand-maintained lists
-# of the same 60 records, and nothing but this registry connects them —
+# of the same 61 records, and nothing but this registry connects them —
 # tools/check_figures.py compares both against the PCOMM_RECORD declarations.
 DRAWN = {}
 CX, CY = 290, 70        # column / row step
@@ -139,6 +139,7 @@ b.append(box(10, 230, "node_identity", 524, "ART", "node_hash", "int"))
 b.append(box(300, 230, "entity_close", 522, "EVT", "subject · opener", "int"))
 b.append(box(590, 230, "clock_anchor", 590, "ART", "domain · local_ticks · wall_ns", "int"))
 b.append(box(10, 316, "gpu_device", 528, "ART", "ordinal · pci_bus · uuid", "int"))
+b.append(box(300, 316, "invocation", 532, "ART", "argv · env · build · images", "int"))
 b.append(box(150, 422, "intern_key", 510, "ART", "key → handle · domain", "int"))
 b.append(box(450, 422, "intern_string", 512, "ART", "offset · length → blob", "int"))
 b.append(path("M300 63 H245", "object → id", 272, 32))
@@ -328,7 +329,7 @@ b = []
 srcs = [("ib_post_send", 110, "ib"), ("mlx5_device_send", 214, "mlx"), ("ib_modify_qp", 106, "ib"),
         ("ib_port", 122, "ib"), ("ib_poll_cq", 112, "ib"), ("ib_post_recv", 114, "ib"),
         ("gpu_access", 700, "gpu"), ("mem_object", 520, "int"), ("node_identity", 524, "int"),
-        ("clock_anchor", 590, "int")]
+        ("invocation", 532, "int"), ("clock_anchor", 590, "int")]
 sy = []
 for i, (n, t, f) in enumerate(srcs):
     y = 40 + i * 54
@@ -351,10 +352,11 @@ tables = [("comm_edges", "src → dst, per transport"), ("endpoint", "one row pe
           ("transport_mix", "which transport actually carried it"),
           ("tag_flow", "what a UCP send became on the wire"),
           ("tag_recv_resolved", "the tag a msg_recv did not carry"),
+          ("run_provenance", "what the TRACER was asked to do"),
           ("link_health", "what the graph could NOT account for")]
 ty = []
 for i, (n, d) in enumerate(tables):
-    y = 52 + i * 60
+    y = 52 + i * 56
     b.append(f'<rect x="660" y="{y}" width="252" height="46" rx="3" fill="var(--surface)" '
              f'stroke="var(--fam-int)" stroke-width="1.4"/>'
              f'<rect x="660" y="{y}" width="3.5" height="46" rx="1.5" fill="var(--fam-int)"/>'
@@ -367,7 +369,7 @@ b.append(note(20, 676, "records, as written", cls="collabel"))
 b.append(note(330, 676, "views — created in order", cls="collabel"))
 b.append(note(660, 676, "what the panels and the suite read", cls="collabel"))
 FIGS["derived"] = svg(930, 690, "".join(b),
-    "How the reader turns raw per-rank records into the ten derived tables that the UI, the agent and the test suite query")
+    "How the reader turns raw per-rank records into the eleven derived tables that the UI, the agent and the test suite query")
 
 # --------------------------------------------------- fig: the capture container
 
@@ -568,6 +570,7 @@ INT = [
  ("node_identity", 524, "Artifact", "Which machine this rank ran on. A device ordinal is node-local, so run_device 0 on two nodes is two different GPUs."),
  ("peer_mapping", 526, "Entity", "One process's mapping of a shared allocation, keyed by the CUDA fabric handle \u2014 FABRIC only, because a POSIX fd names the driver node."),
  ("gpu_device", 528, "Artifact", "One visible GPU, named by PCI address. What a device ordinal actually points at, so two ranks that both say 'device 0' can be told apart."),
+ ("invocation", 532, "Artifact", "What the TRACER was asked to do — argv, the captured environment, the providers that loaded, the build, and which .so files were actually mapped."),
  ("gpu_kernel", 530, "Event", "One kernel's EXECUTION window. Never submission: the two are ~800x the kernel's own duration apart."),
  ("clock_anchor", 590, "Artifact", "A clock-domain calibration anchor. Two per rank per domain, which is exactly what a line needs."),
 ]
@@ -665,7 +668,7 @@ PAGE_FIGURES = [
   "Where a key is absent the reader does not guess. A pure-NVLink capture has no LID to derive a node from, and "
   "that shows up as a counted row in <code>link_health</code> rather than as a confident matrix over a hole."),
  ("12-derived-tables", "What the reader builds",
-  "The records are what a capture holds; these seven tables are what anything actually queries \u2014 the UI panels, "
+  "The records are what a capture holds; these eleven tables are what anything actually queries \u2014 the UI panels, "
   "the suite's assertions, the agent's SQL. They are outputs of the reader rather than parts of the format, "
   "which is why they carry no schema.",
   "Dashed boxes are intermediate views, created in order, each free to reference the ones above it. "
@@ -882,7 +885,7 @@ if __name__ == "__main__":
         ("09-ucx-records",      FIGS["ucx"],      "The UCX record family, and ucx_deep beneath it"),
         ("10-nccl-records",     FIGS["nccl"],     "The NCCL record family"),
         ("11-cross-rank-keys",  FIGS["cross"],    "The five cross-rank join keys"),
-        ("12-derived-tables",   FIGS["derived"],  "Records to views to the nine derived tables"),
+        ("12-derived-tables",   FIGS["derived"],  "Records to views to the eleven derived tables"),
     ]
     for name, body, title in items:
         out = convert(body, title)

@@ -65,6 +65,7 @@ comm_edges         src_rank,dst_rank,transport,unit,scope,sends,bytes
 endpoint           rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes
 object_access      owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact
 rank_identity      rank,node_ix,node_hash,device,devices,label
+run_provenance     rank,pid,argv,providers,build,images,env
 transport_mix      rank,tl_name,dev_name,scope,op,ops,out_bytes,in_bytes,advertised_bytes,header_bytes
 tag_flow           rank,tag,status,ucp_sends,ucp_units,uct_ops,uct_payload,doors
 tag_recv_resolved  rank,worker,message,status,sender_tag,offered,delivered

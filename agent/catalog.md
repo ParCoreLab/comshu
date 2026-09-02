@@ -156,6 +156,30 @@ local mapping delta is not in the record — so it is the true offset only if th
 workload touched the start of the buffer. Never average or compare offsets
 across `exact = true` and `exact = false` without saying which is which.
 
+### `run_provenance` — what the tracer was asked to do, and by which build
+`rank INT, pid UINT, argv VARCHAR, providers VARCHAR, build VARCHAR, images VARCHAR, env VARCHAR`
+
+One row per rank. **This is the only table that describes the capture rather
+than the workload**, and it is where to start when two captures need telling
+apart or a result looks like it came from the wrong binary.
+
+- `argv` is the traced program's command line — under a launcher this is the
+  target binary, *not* mpirun, so the placement decision is in `env`.
+- `env` is an allowlist (PCOMM_\*, SLURM_\*, OMPI_MCA_rmaps_\*,
+  `CUDA_VISIBLE_DEVICES`, `LD_PRELOAD`, and whatever `PCOMM_ENV_CAPTURE` adds),
+  one `K=V` per line. It is not the whole environment and never was.
+- `build` is `commit=… type=… abi=… schema=…`, restamped on every build.
+  `-dirty` on the commit means the tree had uncommitted changes.
+- `images` is every mapped `libpcomm*` / `*_trace` object with its **size and
+  mtime on disk**, one per line. Use it when a result contradicts a change you
+  believe you made: a path outside the build tree, or an mtime older than the
+  edit, means the run loaded a stale copy. That has happened (job 45331793) and
+  it nearly produced a false refutation.
+
+A field is NULL when the engine could not fill it, or when the capture is a
+**replay** whose nested passes gave one handle two meanings — the join refuses
+to guess rather than picking one.
+
 ### `rank_identity` — which host and GPU a rank is
 `rank INT, node_ix BIGINT, node_hash UBIGINT, device UINT, devices BIGINT, label VARCHAR`
 
