@@ -44,11 +44,10 @@
 // set for this translation unit.
 extern "C" char** environ;
 
-namespace pcomm {
-// Defined below, beside the provider registry it reads. Declared here because
-// pcomm_engine_arena_flush calls it several hundred lines earlier.
-void maybe_emit_invocation();
-}  // namespace pcomm
+// pcomm::maybe_emit_invocation() is declared in pcomm/tracer.hpp (included
+// below) and defined further down this file, beside the provider registry and
+// the build-id header it reads. Both of its call sites — the arena flush here
+// and Tracer::finalize() there — reach it through that one declaration.
 
 #include "pcomm/engine_abi.h"
 #include "pcomm/hook/dlsym/Dlsym.hpp"

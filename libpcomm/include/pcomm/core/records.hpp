@@ -303,11 +303,19 @@ PCOMM_RECORD(GpuDevice, RecordKind::Artifact, 528, "gpu_device") {
 // Writing all of environ would put credentials and home paths into every
 // capture, which is a real cost for the two variables anyone wants.
 //
-// EMITTED LAZILY, WITH THE ARENA FLUSH, AND NOT AT START. Every payload field
-// is an interned string, and the dictionary those handles resolve against is
-// only written at teardown — so unlike NodeIdentity and ClockAnchor this record
-// cannot join the early flush that defends against a signal. See Tracer::start
-// for why those two can and this one cannot.
+// EMITTED LAZILY, NOT AT START. Every payload field is an interned string, and
+// the dictionary those handles resolve against is only written at teardown — so
+// unlike NodeIdentity and ClockAnchor this record cannot join the early flush
+// that defends against a signal. See Tracer::start for why those two can and
+// this one cannot.
+//
+// TWO SITES, and the second is a backstop the first needs. The arena flush is
+// preferred, because it runs while the process is alive and `providers` is
+// complete by then. But it only fires when a record buffer FILLS, so a short
+// capture never reached it — measured on MN5 job 45344306, where ucx_deep,
+// ib_pingpong and ib_send_bw carried no invocation row at all. Tracer::finalize
+// therefore calls it too; nothing this record reads goes away at teardown, so
+// unlike GpuDevice it can be written there.
 PCOMM_RECORD(Invocation, RecordKind::Artifact, 532, "invocation") {
     Handle        argv;       // /proc/self/cmdline, NULs rendered as spaces
     Handle        env;        // captured variables, one "K=V" per line

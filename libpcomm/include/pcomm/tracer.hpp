@@ -43,6 +43,13 @@ struct Config {
     static Config from_env();
 };
 
+// Write the Invocation record (532) unless it has already been written.
+//
+// Defined in src/engine.cpp, beside the provider registry and the build-id
+// header it reads, and declared here because Tracer::finalize() is one of its
+// two call sites. Idempotent: whichever site reaches it first wins.
+void maybe_emit_invocation();
+
 class Tracer {
 public:
     // Deliberately leaked (never destroyed): backends invoke stop() from
@@ -148,6 +155,27 @@ public:
         // NOT emit_gpu_devices() here: by this point the CUDA driver has
         // returned CUDA_ERROR_DEINITIALIZED and the enumeration yields nothing.
         // It runs from the arena-flush path instead — see maybe_emit_gpu_devices.
+        //
+        // INVOCATION, HOWEVER, IS EMITTED HERE, and the asymmetry is the point.
+        // It rides the arena-flush path too, which needs a record buffer to
+        // FILL — so a short capture never reached it. Measured on MN5 job
+        // 45344306: hubspoke_ib (41,721 sends) and nvshmem_multinode carried
+        // their invocation rows, while ucx_deep, ib_pingpong (40 sends) and
+        // ib_send_bw (1,000) carried NONE.
+        //
+        // GpuDevice's boundary comment argues that a capture too small to fill
+        // a buffer "has nothing to attribute to a GPU anyway". That is true of
+        // GpuDevice and false of this record: a tiny capture still has an argv,
+        // a build id and a .so that answered, and those are worth MORE on a
+        // small odd capture, not less. Case 21 — where "which binary answered"
+        // cost two days this session — was one of the empty ones.
+        //
+        // Safe here where GpuDevice is not, because nothing this reads goes
+        // away at teardown: /proc/self/cmdline, environ, /proc/self/maps and the
+        // declared-provider list are all still readable. It must run BEFORE
+        // emit_intern_records(), since every field it writes is an interned
+        // string; the gate makes it a no-op when the flush path got there first.
+        maybe_emit_invocation();
         // Emitted after the application's records, then drained themselves: the
         // dictionary describes handles that by now all exist.
         emit_intern_records();
