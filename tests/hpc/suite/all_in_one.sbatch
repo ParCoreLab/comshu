@@ -192,11 +192,29 @@ for c in $CASES; do
   timeout -k 30 "$cap" bash "$job" > "$log" 2>&1
   rc=$?
   dt=$(( SECONDS - t0 ))
+  # A CAPTURE THAT LOST DATA CANNOT PRODUCE A BOARD, whatever its assertions say.
+  #
+  # The engine prints "CAPTURE INCOMPLETE" when a stream write failed — added
+  # 2026-09-03, after MN5's home quota filled and three cases went red pointing
+  # at InfiniBand and UCX behaviour while the real fault was a zero-byte file.
+  # Every assertion in those cases was reading a capture that had lost whole
+  # streams, so both the reds AND any greens beside them were meaningless.
+  #
+  # Caught here rather than by PCOMM_STRICT_WRITES, which makes the rank exit 70
+  # at finalize. Under mpirun that aborts the job and destroys the rest of the
+  # evidence — including the log line that says what went wrong. The message is
+  # already on stderr and stderr is already in $log; reading it costs nothing and
+  # loses nothing.
+  if grep -q "CAPTURE INCOMPLETE" "$log" 2>/dev/null; then
+    rc=$(( rc == 0 ? 75 : rc ))     # 75 = EX_TEMPFAIL: the run, not the code
+    note="CAPTURE INCOMPLETE — a stream write failed; check quota and free space"
+  fi
   # 124 is timeout's own code; 137 is SIGKILL, i.e. the -k grace also elapsed.
   case "$rc" in
     124|137) note="TIMEOUT after ${cap}s" ;;
+    75)      ;;                      # set above; do not clear it
     0)       note="" ;;
-    *)       note="" ;;
+    *)       note="${note}" ;;
   esac
   echo "<< $c   rc=$rc   ${dt}s ${note}"
   tail -5 "$log" | sed 's/^/   | /'

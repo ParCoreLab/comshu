@@ -73,35 +73,65 @@ out before the quota was ever looked at.
 The `Invocation` record answering "what actually ran" made check 2 possible, one
 day after it landed.
 
-## What to fix
+## Fixed (2026-09-03)
 
-1. **Check every write.** `fwrite` returns the count actually written. A short
-   write must be fatal to the stream and visible: the sink should latch an error
-   flag, and the engine should report it. A tracer that loses data quietly is
-   worse than one that refuses to start.
-2. **Say it in the capture.** A stream that failed to write should leave
-   evidence the reader can find — today the only signal is `pcomm read` printing
-   "no stream header", a line someone has to think to look at. This belongs in
-   `link_health`, where the suite already looks, alongside
-   `nccl_profiler_door_shut` and `uct_ops_patch_refused`: all three are "the
-   answer was withheld", and only one of them currently says so.
-3. **Fail the run, not the analysis.** `mpirun exit=0` on a capture that lost
-   three streams is the real indictment. The engine knows at `finalize` whether
-   every stream closed clean.
+1. **Every write is checked.** `fwrite` (records), `fwrite` (header), `fflush`
+   and `fclose` all have their results inspected, and the sink latches per-stream
+   loss counts that `losses()` reports. `fflush` matters as much as the others:
+   with buffered stdio a quota failure usually surfaces there, not at the write.
 
-## Operational note, needing a decision that is not mine
+   Two latent bugs fell out of the rewrite. A failed `fopen` used to cache a
+   **null `FILE*`** in the stream map, so every later record of that type was a
+   silent no-op — and the destructor then called `fclose(nullptr)`, undefined
+   behaviour on a path that only runs once something has already gone wrong. And
+   a header write that fails now **closes the file** instead of writing records
+   into an unframed one: a zero-length file is honestly empty, a headerless file
+   with records in it is a trap.
 
-`~/pcomm-suite` is 63 GB of accumulated per-job results on a home directory that
-is over an 80 GB quota. **The suite cannot produce a trustworthy board until
-that is under control**, and every board run in the meantime is suspect for
-reasons that have nothing to do with the code under test.
+2. **The run says so.** `Tracer::finalize` prints `CAPTURE INCOMPLETE`, the
+   directory, and per-stream record and byte counts. `PCOMM_STRICT_WRITES=1`
+   turns it fatal (exit 70) — off by default, because a capture that lost one
+   stream is still worth analysing and killing a 4-node job at teardown would
+   destroy the rest of the evidence.
 
-Old job directories are regenerable, but they are the user's data and deleting
-63 GB is not a call this plan makes. Options worth weighing: prune runs older
-than the last two, move `PCOMM_OUT_ROOT` to `gpfs_scratch` (592 GB of a 1 TB
-group quota, far more headroom than home), or both. Moving the output root is
-the durable fix — a suite that writes its results into a quota'd home directory
-will hit this again.
+3. **The suite refuses to grade it.** `all_in_one.sbatch` fails any case whose
+   log contains `CAPTURE INCOMPLETE`, with exit 75 (EX_TEMPFAIL — the run, not
+   the code). Caught from the log rather than through `PCOMM_STRICT_WRITES`,
+   because `_Exit(70)` under mpirun aborts the job and takes the explanatory log
+   line with it.
+
+   This is the part that matters most. In job 45351029 every assertion in those
+   cases was reading a capture that had lost whole streams, so the three reds
+   AND the greens beside them were equally meaningless. A board must not grade a
+   capture it cannot trust.
+
+4. **Tested where it can be.** `tests/sink_write_errors.cpp` cannot fill a
+   filesystem, so it takes the write paths away instead: an unwritable
+   directory, an uncreatable one, and the happy path that proves the loss
+   counters stay quiet when nothing is wrong. A sink that cried loss on healthy
+   runs would be switched off within a week. Mutation-checked — removing the
+   loss accounting for a stream that never opened fails two assertions.
+
+## Still open
+
+**`link_health` does not carry this yet.** A reader who only ever sees the
+derived tables still cannot tell a capture that lost a stream from one whose
+workload was quiet. The reader has the evidence — a file with no header is
+detectable — but plumbing it from `pcomm export` into a rubric row is a separate
+change. Until then the signal lives on stderr and in the suite board.
+
+## Operational, done and not done
+
+`~/pcomm-suite` held 63 GB of accumulated per-job results on a home directory
+over an 80 GB quota. Deleted on the user's instruction, which returns home to
+roughly 21 GB of 80 and unblocks the suite.
+
+**The durable fix is still open.** A suite that writes its results into a
+quota'd home directory will hit this again — it is 1,512 entries after a few
+weeks. `PCOMM_OUT_ROOT` should point at `gpfs_scratch`, which had 592 GB used of
+a 1 TB group quota, and the suite should prune runs older than the last N. Not
+done here because it changes where every board on this machine lands, which is
+worth deciding deliberately rather than as a footnote to a bug fix.
 
 ## What it is worth
 

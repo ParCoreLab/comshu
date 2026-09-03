@@ -181,6 +181,7 @@ public:
         emit_intern_records();
         rec::ThreadBufferRegistry::instance().drain_all();
         m_sink->flush();
+        report_losses();
     }
 
     // Best-effort flush from a fatal-signal handler, in this order and for the
@@ -323,6 +324,57 @@ private:
         // Without this the child's records land in arenas nobody drains: the
         // parent wrote 130/130 and the child 0 of 50 (fork_smoke).
         pcomm_engine_reset_arenas_for_fork();
+    }
+
+    // Say it, loudly, on the way out.
+    //
+    // Until 2026-09-03 the sink ignored every write result, so a capture that
+    // lost whole streams to a filesystem quota exited 0 and looked fine. Three
+    // MN5 suite cases went red pointing at InfiniBand and UCX behaviour; the
+    // fault was `gpfs_home` at 83.99 GB against an 80 GB quota. See
+    // plans/PLAN-20260903-0100.
+    //
+    // stderr and not a record, on purpose. The one condition this reports is
+    // "writes to this directory are failing", and a record describing it would
+    // be written through the same sink that just failed. The reader has its own
+    // half of this — a stream with no header is detectable from the file — and
+    // the two together mean neither surface has to be trusted alone.
+    //
+    // PCOMM_STRICT_WRITES=1 turns it fatal. Not the default: a capture that lost
+    // a stream is still worth analysing, and killing a 4-node job at teardown
+    // over it would destroy the rest of the evidence. But a suite that wants a
+    // board it can trust should set it, which is exactly what the HPC runner now
+    // does.
+    void report_losses() {
+        if (!m_sink)
+            return;
+        const bool dir_failed = m_sink->directory_failed();
+        const auto losses = m_sink->losses();
+        if (!dir_failed && losses.empty())
+            return;
+
+        std::fprintf(stderr, "pcomm: CAPTURE INCOMPLETE in %s\n", m_sink->dir().c_str());
+        if (dir_failed)
+            std::fprintf(stderr, "  the output directory could not be created — nothing was written\n");
+        std::uint64_t records = 0;
+        for (const auto& l : losses) {
+            records += l.lost_records;
+            std::fprintf(stderr, "  stream %u: %llu record(s), %llu byte(s) lost%s%s\n", l.type_id,
+                         static_cast<unsigned long long>(l.lost_records),
+                         static_cast<unsigned long long>(l.lost_bytes),
+                         l.header_lost ? " — HEADER LOST, stream is unreadable" : "",
+                         l.never_opened ? " — file could never be opened" : "");
+        }
+        std::fprintf(stderr,
+                     "  This capture is missing data. Check free space and quota on that "
+                     "filesystem before trusting any table derived from it.\n");
+
+        const char* strict = std::getenv("PCOMM_STRICT_WRITES");
+        if (strict && *strict && *strict != '0') {
+            std::fprintf(stderr, "  PCOMM_STRICT_WRITES is set — failing the run (%llu records lost)\n",
+                         static_cast<unsigned long long>(records));
+            std::_Exit(70);  // EX_SOFTWARE; _Exit so no atexit handler re-enters finalize
+        }
     }
 
     void emit_anchor() {

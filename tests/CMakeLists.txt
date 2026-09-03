@@ -88,6 +88,15 @@ target_link_libraries(intern_table_test PRIVATE pcomm::pcomm)
 pcomm_add_test(intern_table_test)
 add_test(NAME intern_table COMMAND intern_table_test)
 
+# The sink's failure paths. Every interesting case here is a case where the
+# filesystem refuses, which is exactly the class this project had no test for
+# until a filesystem quota on MN5 produced captures missing whole streams and
+# three suite cases went red pointing at the wrong layer entirely.
+add_executable(sink_write_errors sink_write_errors.cpp)
+target_link_libraries(sink_write_errors PRIVATE pcomm::pcomm)
+pcomm_add_test(sink_write_errors)
+add_test(NAME sink_write_errors COMMAND sink_write_errors)
+
 # NCCL's own commHash, which is the key the profiler-plugin rows join on. NOT
 # gated on PCOMM_PROVIDER_NCCL and deliberately so: the header pulls in no NCCL
 # and no CUDA, so this runs in every configuration, including the ones where the
