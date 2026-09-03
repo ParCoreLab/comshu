@@ -178,22 +178,48 @@ enum EventKind : std::uint8_t {
 //
 // No refcount is needed, which removes the ABA problem rather than defending
 // against it.
+//
+// A FREED SLOT IS NOT REUSED WHILE ANY UNUSED SLOT REMAINS, and that is what
+// makes the linkage USEFUL rather than merely safe.
+//
+// The generation alone is safe: a recycled slot reports 0 instead of naming the
+// wrong event. But on the first clean multi-node board (MN5 job 45359727,
+// case 02) safe-alone turned every one of 320 proxy ops into parent 0 — correct,
+// and useless. NCCL stops a collective long before the proxy ops it spawned
+// arrive, and a LIFO free list hands that just-freed slot to the very next
+// event, so the parent was always gone by the time a child asked.
+//
+// So the pool hands out never-used storage first and only falls back to freed
+// slots, oldest-first, once it reaches its ceiling. Correctness never rests on
+// that ordering — a child arriving after its parent is finally reissued still
+// gets 0, never a wrong id — so the delay buys usefulness without being
+// load-bearing.
 class EventPool {
 public:
     // Encoded handle: index in the high 32 bits, generation in the low 32.
     // Generations start at 1 so a valid handle is never null — NCCL tests
     // `if (handle)` before calling stopEvent.
-    static void*         encode(std::uint32_t index, std::uint32_t gen) {
+    static void* encode(std::uint32_t index, std::uint32_t gen) {
         return reinterpret_cast<void*>((static_cast<std::uint64_t>(index) << 32) | gen);
     }
 
     Event* acquire(void** out_handle) {
         std::lock_guard<std::mutex> lk(mu_);
-        if (free_ == kNoSlot && !grow())
+        std::uint32_t               index;
+        if (fresh_next_ < count_.load(std::memory_order_relaxed) || grow()) {
+            // Never-used storage first: nothing can hold a handle to it, so it
+            // cannot disturb anyone's parent lookup.
+            index = fresh_next_++;
+        } else if (quarantined_ > 0) {
+            // At the block ceiling. Reuse the oldest freed slot even though the
+            // quarantine is short — the generation still makes a stale handle
+            // report 0, so this degrades the linkage window and never the
+            // correctness.
+            index = pop_oldest();
+        } else {
             return nullptr;
-        const std::uint32_t index = free_;
+        }
         Event*              e = at(index);
-        free_ = e->next_free;
         const std::uint32_t gen = e->generation + 1;
         e->generation = gen;
         *out_handle = encode(index, gen);
@@ -211,34 +237,52 @@ public:
         return e->generation == gen ? e : nullptr;
     }
 
+    // To the BACK of the queue, never the front. A LIFO free list hands the
+    // just-stopped collective straight to the next proxy op that starts, which
+    // is exactly the pairing that must not happen.
     void release(void* handle) {
         std::lock_guard<std::mutex> lk(mu_);
-        Event*                      e = resolve(handle);
-        if (!e)
+        if (!resolve(handle))
             return;
-        e->next_free = free_;
-        free_ = static_cast<std::uint32_t>(reinterpret_cast<std::uint64_t>(handle) >> 32);
+        const auto index = static_cast<std::uint32_t>(reinterpret_cast<std::uint64_t>(handle) >> 32);
+        at(index)->next_free = kNoSlot;
+        if (tail_ == kNoSlot)
+            head_ = index;
+        else
+            at(tail_)->next_free = index;
+        tail_ = index;
+        ++quarantined_;
     }
 
 private:
-    // 512 events per block, and a block table sized so the ceiling is far above
-    // anything in flight: slots are recycled, so the high-water mark is the
-    // number of events NCCL has open at once, not the number it ever created.
     static constexpr std::uint32_t kBlock = 512;
     static constexpr std::uint32_t kMaxBlocks = 4096;
     static constexpr std::uint32_t kNoSlot = 0xffffffffu;
+    // Freed slots are only reissued once the pool runs out of never-used
+    // storage, and then oldest-first. With 4096 blocks of 512 that is up to 2M
+    // slots before any reuse at all, which is far more than any collective's
+    // proxy ops can lag it by.
+    static constexpr std::uint32_t kMaxSlots = kBlock * kMaxBlocks;
 
-    // Block pointers are published atomically and never removed, so resolve()
-    // reads them without the mutex — it runs on NCCL's proxy thread on the hot
-    // path, and taking a lock there to read a pointer that never changes would
-    // be a contention point for nothing.
-    std::atomic<Event*> blocks_[kMaxBlocks]{};
-    std::atomic<std::uint32_t> count_{0};  // slots published so far
-    std::uint32_t              free_ = kNoSlot;
+    std::atomic<Event*>        blocks_[kMaxBlocks]{};
+    std::atomic<std::uint32_t> count_{0};       // slots published so far
+    std::uint32_t              fresh_next_ = 0; // next never-used slot
+    std::uint32_t              head_ = kNoSlot; // oldest freed
+    std::uint32_t              tail_ = kNoSlot;
+    std::uint32_t              quarantined_ = 0;
     std::mutex                 mu_;
 
     Event* at(std::uint32_t index) {
         return blocks_[index / kBlock].load(std::memory_order_acquire) + (index % kBlock);
+    }
+
+    std::uint32_t pop_oldest() {
+        const std::uint32_t index = head_;
+        head_ = at(index)->next_free;
+        if (head_ == kNoSlot)
+            tail_ = kNoSlot;
+        --quarantined_;
+        return index;
     }
 
     // Caller holds mu_.
@@ -250,15 +294,12 @@ private:
         auto* mem = new (std::nothrow) Event[kBlock]();
         if (!mem)
             return false;
+        for (std::uint32_t i = 0; i < kBlock; ++i)
+            mem[i].generation = 0;
         blocks_[block].store(mem, std::memory_order_release);
         // Published only after the block pointer is visible, so an index below
         // count_ always resolves.
         count_.store(published + kBlock, std::memory_order_release);
-        for (std::uint32_t i = kBlock; i-- > 0;) {
-            mem[i].generation = 0;
-            mem[i].next_free = free_;
-            free_ = published + i;
-        }
         return true;
     }
 };
