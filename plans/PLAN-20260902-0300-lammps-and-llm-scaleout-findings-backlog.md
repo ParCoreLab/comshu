@@ -1,7 +1,8 @@
 # What the LAMMPS and LLM-scale-out round-2 studies found in the tool
 
-**Status: 13 of 14 closed.** Finding 9 is open and needs a new provider door plus
-a hardware run; everything else is fixed, tested and on `main`.
+**Status: 14 of 14 closed.** Finding 9 closed 2026-09-03 — see
+`PLAN-20260902-1200-nccl-chose-the-algorithm-we-did-not-done.md`. Everything here
+is fixed, tested and on `main`.
 
 Finding 14 was produced by verifying finding 2 — the act of checking a fix
 surfaced a defect in how fixes reach the machine at all. Finding 13 turned out to
