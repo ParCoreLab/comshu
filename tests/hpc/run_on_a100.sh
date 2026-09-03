@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # run_on_a100.sh — one command, from a checkout of this repo: sync it to the
 # A100 box, build the mlx5dv provider, run the IBGDA case, print the verdict.
 #

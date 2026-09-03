@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # run_on_mn5.sh — one command, from a checkout of this repo: sync it to
 # MareNostrum 5, build everything (tools + ibverbs + gpumem/NVBit), run the whole
 # integration suite, and print the board. Blocks until every case has a verdict.
