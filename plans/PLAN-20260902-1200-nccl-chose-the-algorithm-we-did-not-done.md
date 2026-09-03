@@ -372,3 +372,58 @@ underivable communicator marrying every other one — changed nothing, because n
 fixture row had a zero hash on the execution side and the clause was unreachable.
 Adding that row makes the mutation fail three assertions. The rank-scope mutation
 on the parent join was caught from the start (`4|2` where `2|1` is right).
+
+## The side effect this left behind, and what it measures out at
+
+`suite/common.sh` sets `NCCL_PROFILER_PLUGIN` whenever the library is built and
+the variable is unset — for **every** case, not only the ones that select the
+nccl provider. That was flagged when finding 9 closed as a side effect the
+caller did not request, and it is what produced case 02's odd shape: 8
+`nccl_prof_comm`, 160 `nccl_coll_exec` and 320 `nccl_proxy_op` rows beside
+**zero** `nccl_comm` and `nccl_collective` rows, in a capture that asked for
+`-p ib`.
+
+Put to the user on 2026-09-03. The answer was that it is fine **provided it does
+not alter the behaviour of runs that did not ask for `-p nccl`**, so that became
+the thing to measure rather than to argue. Measured on du04, same workload, same
+`-p ib`, twice, the only difference being the variable:
+
+| | plugin off | plugin on |
+|---|---|---|
+| workload's own result | `ranks=4 count=1048576 iters=8 ok` | identical |
+| NCCL's algo/proto/channel picks | 121 distinct patterns | **identical** |
+| wall clock, 4 interleaved reps | 3.66–3.69 s | 3.63–3.68 s |
+| `ib_device`/`ib_port`/`invocation`/`node_identity` | 1/1/1/1 | unchanged |
+| `intern_string`, `intern_text` | 6 | **13** |
+| `nccl_coll_exec`, `nccl_prof_comm` | absent | 64, 4 |
+
+And for an application that never calls NCCL at all — cases 01, 08, 09, 19, 21,
+22, most of the suite — it is entirely inert: case 09 run twice produced **22
+comparable streams with byte-identical sizes** and no 9xx stream either way.
+NCCL loads a profiler plugin from inside `ncclCommInitRank`, so a process that
+never builds a communicator never reads the variable.
+
+So: the RUN is untouched; the CAPTURE gains two tables and seven dictionary
+entries, and only when the application actually uses NCCL. The timing difference
+is noise and says so by having the wrong sign — the plugin-on runs came out
+marginally faster.
+
+**One hypothesis died here, and it was the only one worth having.** Plugin
+records go through the same thread buffers and the same arena, and this tree
+already knows that `invocation` "rides the arena-flush path, which needs a
+record buffer to FILL — so a short capture never reached it" (measured on job
+45344306, where three cases carried no `invocation` row). More records means
+more flushes, so the plugin could have made rows appear in captures that have
+nothing to do with NCCL. It did not: `invocation` is 1 either way.
+
+**Three vacuous results were caught getting here**, each of which would have read
+as a clean pass: the "workload output" diff was really diffing NCCL log lines
+containing pids; the algo comparison compared two *empty* greps and printed
+"identical: YES"; and the first inert-plugin run compared two captures holding
+*zero* streams. The measurement script now refuses each of those explicitly.
+
+**Known thin spot.** In the NCCL-using half the `-p ib` capture held only 2 ib
+rows, so "ib rows unchanged" rests on very little there. The strong evidence is
+the 22-stream byte-identical comparison, which covers the non-NCCL case only. A
+run of case 02 with the plugin deliberately off would close it; nothing on MN5
+currently produces that counterpart.

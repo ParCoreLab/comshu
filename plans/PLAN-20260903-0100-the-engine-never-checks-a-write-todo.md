@@ -112,13 +112,54 @@ day after it landed.
    runs would be switched off within a week. Mutation-checked — removing the
    loss accounting for a stream that never opened fails two assertions.
 
-## Still open
+## `link_health` — CLOSED, and it was worse than this plan guessed
 
-**`link_health` does not carry this yet.** A reader who only ever sees the
-derived tables still cannot tell a capture that lost a stream from one whose
-workload was quiet. The reader has the evidence — a file with no header is
-detectable — but plumbing it from `pcomm export` into a rubric row is a separate
-change. Until then the signal lives on stderr and in the suite board.
+Closed in `463bc2a`. This section predicted a plumbing job; the measurement
+found a defect, so it is worth recording what was actually true rather than
+leaving the guess.
+
+The guess above was that a reader "cannot tell a capture that lost a stream from
+one whose workload was quiet". Measured on du04 — one real capture, copied four
+times and damaged the three ways a capture can actually be damaged:
+
+| variant | `mlx5_umem` rows | ranks | link_health non-zero |
+|---|---|---|---|
+| pristine | 10 | 2 | 0 of 25 |
+| deleted | 5 | 1 | 0 of 25 |
+| zeroed | 5 | 1 | 0 of 25 |
+| truncated | 9 | 2 | 0 of 25 |
+
+Not merely "cannot tell". The rubric returned a clean bill of health four times
+out of four, with half a table gone and one of two ranks gone entirely. By its
+own contract that is a false attestation, and it is the same failure
+`unresolved_nvlink` exists for — "a capture with NO node identity at all
+reported a clean bill of health" — one layer lower down.
+
+**This section's other claim was also wrong.** It says "the reader has the
+evidence — a file with no header is detectable", implying only plumbing was
+missing. Two of the three damage shapes are invisible to the reader alone: a
+stream that was never opened leaves no file to inspect, and one deleted after
+the run leaves nothing to compare against. The fix therefore needed a *writer*
+witness as well — `capture_status` (record 592), whose value is mostly in its
+ABSENCE: emitted only by a normal `finalize()`, so a rank in `clock_anchor`
+without one started and did not finish. That also catches an OOM-killed rank,
+which had always produced a short capture that read as a quiet one.
+
+Five rows, all verified firing on their own cause, plus a real `fopen` failure
+end to end (`capture_records_lost 2`, `never_opened 1`). Verified on MN5 job
+45385134: all five read 0 on a healthy 8-rank capture, and `streams_open` equals
+`streams_found` at 26 on every rank.
+
+Two things fell out that this plan did not anticipate:
+
+- **A crash.** `load_stream` used the throwing `fs::file_size`, so `pcomm
+  export` died with `terminate called ... cannot get file size: Is a directory`.
+  A reader that crashes on a damaged capture is the same defect class as one
+  that lies about it.
+- **`suite/asserts/capture_is_complete.sql`**, which makes every HPC case refuse
+  a capture it cannot trust. It deliberately carries no `-- requires:` line:
+  guarding on `capture_status` would skip the assertion precisely when no rank
+  finished. Job 45385134 shows `[ok] capture_is_complete` 18 times, zero skips.
 
 ## Operational, done and not done
 
@@ -126,12 +167,16 @@ change. Until then the signal lives on stderr and in the suite board.
 over an 80 GB quota. Deleted on the user's instruction, which returns home to
 roughly 21 GB of 80 and unblocks the suite.
 
-**The durable fix is still open.** A suite that writes its results into a
-quota'd home directory will hit this again — it is 1,512 entries after a few
-weeks. `PCOMM_OUT_ROOT` should point at `gpfs_scratch`, which had 592 GB used of
-a 1 TB group quota, and the suite should prune runs older than the last N. Not
-done here because it changes where every board on this machine lands, which is
-worth deciding deliberately rather than as a footnote to a bug fix.
+**`PCOMM_OUT_ROOT` stays on home — decided, not deferred.** This section argued
+it should move to `gpfs_scratch` (592 GB used of a 1 TB group quota). Put to the
+user on 2026-09-03; the answer was to keep it where it is. Recorded as a
+decision so it is not re-proposed as an oversight.
+
+The pressure it was meant to relieve is real but no longer urgent: home is back
+to 22.89 GB of 80 after the deletion, measured the same day. What remains true
+is that the suite accumulates — 1,512 entries in a few weeks — so this will
+recur. If it does, pruning runs older than the last N is the smaller change of
+the two and does not move where any board lands.
 
 ## What it is worth
 
