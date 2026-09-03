@@ -336,6 +336,24 @@ struct ClockAnchor {
   mono_ns:uint64;      // CLOCK_MONOTONIC_RAW at the same moment
 }
 
+// type 592, Artifact. Whether this rank's capture is COMPLETE. One row per rank,
+// written only by a normal finalize(), so a rank present in clock_anchor and
+// absent here started and did not finish — see the C++ declaration in
+// libpcomm/include/pcomm/core/records.hpp for why absence carries more than any
+// field below, and for the measurement that made the case for the record.
+struct CaptureStatus {
+  temporal:Temporal;
+  records_lost:uint64;  // rounded UP; a partially written record is a lost one
+  bytes_lost:uint64;
+  streams_open:uint32;  // streams framed, INCLUDING this record's own stream
+  streams_lost:uint32;
+  dir_failed:uint8;
+  header_lost:uint8;
+  never_opened:uint8;
+  pad:uint8;
+  pad2:uint32;
+}
+
 // --- ibverbs provider records (100-199) ------------------------------------
 
 // type 100, Entity. A registered memory region, lifetime [reg, dereg).

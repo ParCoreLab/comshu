@@ -407,4 +407,66 @@ PCOMM_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {
     std::uint64_t mono_ns;      // CLOCK_MONOTONIC_RAW at the same moment
 };
 
+// ARTIFACT — one row per rank saying whether that rank's capture is COMPLETE.
+// Id 592, beside ClockAnchor and for its reason: both are facts about the run
+// rather than about anything the application did.
+//
+// WHY THIS RECORD EXISTS, and it is not the reason the loss counters exist.
+// FileSink has checked every write since 2026-09-03 and Tracer::report_losses
+// prints `CAPTURE INCOMPLETE` when one fails. Both are true and both are
+// EPHEMERAL: they live in the stderr of the traced process. What gets copied off
+// a cluster and analysed weeks later is the Parquet, and that carried no trace
+// of it at all. Measured on du04 — one real capture, damaged the three ways this
+// sink can fail, run through `pcomm export` and `pcomm link`:
+//
+//     variant      mlx5_umem rows   ranks   link_health non-zero
+//     pristine          10            2          0 of 25
+//     deleted            5            1          0 of 25
+//     zeroed             5            1          0 of 25
+//     truncated          9            2          0 of 25
+//
+// Half the table gone and one of two ranks gone entirely, and the health rubric
+// returned a clean bill of health four times out of four. That is the same
+// failure `unresolved_nvlink` was added for — "a capture with NO node identity
+// at all reported a clean bill of health while 100% of its GPU traffic was
+// unattributed" (link_sql.hpp) — arriving one layer lower down.
+//
+// PRESENCE IS THE ATTESTATION, and it is the half that survives what the
+// counters cannot. Tracer::report_losses argues, correctly, that a record
+// describing "writes to this directory are failing" would be written through the
+// sink that is failing. So this record does not try to be reliable. It is
+// emitted ONLY from a normal finalize(), never from flush_from_signal(), which
+// makes its ABSENCE meaningful in a way a loss counter can never be:
+//
+//     row present, all zero  -> this rank finished and lost nothing
+//     row present, non-zero  -> this rank finished and lost exactly this much
+//     NO ROW for a rank      -> unknown. It was killed, it faulted, or it could
+//                               not write even these 32 bytes. Not "healthy".
+//
+// The third state is the one that was missing, and it is worth more than write
+// loss alone: a rank whose process was OOM-killed mid-run has always produced a
+// short capture that read as a quiet one. `clock_anchor` is written at start for
+// every rank, so a rank in clock_anchor with no capture_status here is exactly
+// "started but never finished" — see link_health.capture_unattested_ranks.
+//
+// The counts EXCLUDE this record's own stream, which is written after the
+// snapshot is taken. A failure to write the attestation therefore shows up as
+// the attestation being absent or short, which is the third state above and not
+// a fourth thing to reason about.
+//
+// No Handle fields, deliberately: the intern dictionary has already been written
+// by the time finalize() gets here, so a string in this record would resolve to
+// nothing. Everything is a number.
+PCOMM_RECORD(CaptureStatus, RecordKind::Artifact, 592, "capture_status") {
+    std::uint64_t records_lost;     // rounded UP; a partial record is a lost one
+    std::uint64_t bytes_lost;       // what the sink knows exactly
+    std::uint32_t streams_open;     // streams framed, INCLUDING this record's own
+    std::uint32_t streams_lost;     // how many streams lost anything at all
+    std::uint8_t  dir_failed;       // the output directory itself could not be made
+    std::uint8_t  header_lost;      // >=1 stream has no header and is unreadable
+    std::uint8_t  never_opened;     // >=1 stream could not be opened at all
+    std::uint8_t  pad;
+    std::uint32_t pad2;
+};
+
 }  // namespace pcomm::core::records

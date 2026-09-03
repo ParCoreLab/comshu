@@ -2407,6 +2407,82 @@ JOIN _clock c ON c.rank = f.rank AND c.domain = f.domain
     // the day it is right.
     {"link_health", "finding,severity,n,note",
      R"sql(
+-- FIRST, because these two gate the meaning of every row below them. Each of
+-- the others answers "did the link succeed over this capture?"; these answer
+-- "is this capture the whole capture?", and a zero anywhere else is worth
+-- nothing until they are both zero too.
+--
+-- They were added on 2026-09-03 after the rubric was measured against a capture
+-- that had been damaged on purpose. One real du04 capture, copied four times
+-- and broken the three ways FileSink can actually fail:
+--
+--     variant      mlx5_umem rows   ranks   link_health non-zero
+--     pristine          10            2          0 of 25
+--     deleted            5            1          0 of 25
+--     zeroed             5            1          0 of 25
+--     truncated          9            2          0 of 25
+--
+-- Half the table gone, one of two ranks gone entirely, and this table returned
+-- a clean bill of health four times out of four. The tracer HAD noticed — it
+-- printed CAPTURE INCOMPLETE — and the reader HAD noticed — it printed "not a
+-- whole number of 88-byte records". Both said so on the stderr of a process
+-- that had already exited. What gets carried off a cluster is the Parquet.
+--
+-- This is `unresolved_nvlink`'s lesson one layer lower: that row exists because
+-- "a capture with NO node identity at all reported a clean bill of health while
+-- 100% of its GPU traffic was unattributed". Same failure, earlier in the
+-- pipeline.
+SELECT 'capture_records_lost' AS finding,
+       'defect'               AS severity,
+       coalesce((SELECT sum(records_lost) FROM capture_status), 0)::BIGINT AS n,
+       'records the tracer could not write — check quota and free space on the '
+       'capture filesystem before trusting ANY table here' AS note
+UNION ALL
+-- The half a loss counter cannot express. capture_status is written only by a
+-- normal finalize(), so a rank that appears in clock_anchor (written at start)
+-- and not in capture_status started and did not finish: OOM-killed, faulted, or
+-- unable to write even its own attestation. That capture is short by an unknown
+-- amount, which is worse than short by a known one.
+--
+-- A capture written before this record existed reports every rank here, and that
+-- is the honest answer rather than a false negative: its completeness genuinely
+-- is unknown. The stream header's schema hash is how you tell the two apart.
+SELECT 'capture_unattested_ranks',
+       'defect',
+       (SELECT count(*) FROM (
+            SELECT DISTINCT rank FROM clock_anchor
+            EXCEPT
+            SELECT DISTINCT rank FROM capture_status))::BIGINT,
+       'ranks that started but never finished — their captures are short by an '
+       'unknown amount, or predate capture_status'
+UNION ALL
+-- The three below are the READER's witness, from capture_integrity: what is no
+-- longer on disk, as opposed to what the writer failed to put there. A capture
+-- damaged after the run — an interrupted copy off a cluster, a truncated
+-- archive, a stray rm — is invisible to capture_status and plain here.
+SELECT 'capture_streams_unreadable',
+       'defect',
+       coalesce((SELECT sum(streams_unreadable) FROM capture_integrity), 0)::BIGINT,
+       'stream files present but unframed — zero length, bad magic, or no header'
+UNION ALL
+SELECT 'capture_streams_truncated',
+       'defect',
+       coalesce((SELECT sum(streams_truncated) FROM capture_integrity), 0)::BIGINT,
+       'stream files ending mid-record — the tail of each is missing'
+UNION ALL
+-- Compared with `<` and not `<>` on purpose. A replayed capture nests several
+-- rank-* directories and can hold MORE files than one finalize() framed, which
+-- is not damage; fewer than were attested always is. capture_status.streams_open
+-- counts its own stream, so the two numbers are directly comparable — see the
+-- +1 in Tracer::emit_capture_status for why that is done there and not here.
+SELECT 'capture_streams_missing',
+       'defect',
+       coalesce((SELECT sum(s.streams_open - i.streams_found)
+                 FROM capture_status s
+                 JOIN capture_integrity i ON i.rank = s.rank
+                 WHERE i.streams_found < s.streams_open), 0)::BIGINT,
+       'stream files the writer attested to that are no longer on disk'
+UNION ALL
 SELECT 'colliding_endpoints' AS finding,
        'defect'              AS severity,
        count(*)              AS n,

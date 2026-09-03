@@ -79,6 +79,47 @@ constexpr const char* kInternTextDdl =
     "CREATE OR REPLACE TABLE \"intern_text\" ("
     "rank INTEGER, domain UTINYINT, handle UINTEGER, text VARCHAR)";
 
+// What the READER found on disk, one row per rank. The companion to
+// `capture_status`, which is what the WRITER attested to, and the two are
+// separate tables because they are separate witnesses: the writer knows what it
+// failed to write, the reader knows what is no longer there. A capture damaged
+// after the run — an interrupted copy off a cluster, a truncated archive — is
+// invisible to the first and obvious to the second.
+//
+// Not a PCOMM_RECORD for the same reason `intern_text` is not: it describes the
+// capture rather than being part of it, and it does not exist until something
+// reads the files.
+//
+// `streams_found` counts *.pcs in the rank directory, NOT streams successfully
+// loaded, and not only streams of a type this build knows. Counting files is
+// what makes it comparable with capture_status.streams_open, which is also a
+// count of files the writer framed.
+constexpr const char* kCaptureIntegrityTable = "capture_integrity";
+constexpr const char* kCaptureIntegrityDdl =
+    "CREATE OR REPLACE TABLE \"capture_integrity\" ("
+    "rank INTEGER, streams_found INTEGER, streams_unreadable INTEGER, "
+    "streams_truncated INTEGER, streams_foreign_schema INTEGER)";
+
+/**
+ * Mount reader-side integrity from an export, empty when it is absent.
+ */
+inline bool mount_capture_integrity(duckdb_connection con, const fs::path& dir) {
+    const auto parquet = dir / (std::string(kCaptureIntegrityTable) + ".parquet");
+    const auto csv = dir / (std::string(kCaptureIntegrityTable) + ".csv");
+    if (fs::exists(parquet))
+        return exec(con,
+                    "CREATE OR REPLACE VIEW \"" + std::string(kCaptureIntegrityTable) +
+                        "\" AS SELECT * FROM read_parquet('" + parquet.string() + "')",
+                    kCaptureIntegrityTable);
+    if (fs::exists(csv))
+        return exec(con, kCaptureIntegrityDdl, kCaptureIntegrityTable) &&
+               exec(con,
+                    "COPY \"" + std::string(kCaptureIntegrityTable) + "\" FROM '" + csv.string() +
+                        "' (FORMAT CSV, HEADER)",
+                    kCaptureIntegrityTable);
+    return exec(con, kCaptureIntegrityDdl, kCaptureIntegrityTable);
+}
+
 /**
  * Mount the intern dictionary from an export, empty when it is absent.
  *
@@ -141,6 +182,11 @@ inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir) 
     // that worked in none. Not counted in `present` — it is not a raw stream,
     // and the number is printed as "raw tables".
     mount_intern_text(con, dir);
+    // Same reasoning, and it matters more here: link_health's first two rows are
+    // the ones that say whether the capture is whole, so a path that reached the
+    // rubric without this table would report a clean bill of health for the
+    // exact reason the rubric was extended to stop doing that.
+    mount_capture_integrity(con, dir);
     return present;
 }
 

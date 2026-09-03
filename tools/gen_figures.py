@@ -140,6 +140,12 @@ b.append(box(300, 230, "entity_close", 522, "EVT", "subject · opener", "int"))
 b.append(box(590, 230, "clock_anchor", 590, "ART", "domain · local_ticks · wall_ns", "int"))
 b.append(box(10, 316, "gpu_device", 528, "ART", "ordinal · pci_bus · uuid", "int"))
 b.append(box(300, 316, "invocation", 532, "ART", "argv · env · build · images", "int"))
+# Beneath clock_anchor, and the pairing is the point: clock_anchor is written at
+# START for every rank and capture_status only by a normal FINALIZE, so a rank
+# with the first and not the second began and did not end. No arrow to the
+# intern band — it is the one engine record with no Handle field, because the
+# dictionary is already written by the time it is emitted.
+b.append(box(590, 316, "capture_status", 592, "ART", "records_lost · streams_open", "int"))
 b.append(box(150, 422, "intern_key", 510, "ART", "key → handle · domain", "int"))
 b.append(box(450, 422, "intern_string", 512, "ART", "offset · length → blob", "int"))
 b.append(path("M300 63 H245", "object → id", 272, 32))
@@ -147,7 +153,7 @@ b.append(path("M530 63 H585", "launch → correlation", 558, 32))
 b.append(path("M415 86 V140", "pc", 423, 116, anchor="start"))
 b.append(path("M125 145 V90", "peer addr → owner base", 133, 122, anchor="start"))
 b.append(path("M415 276 V386", None))
-b.append(path("M705 276 V386", None))
+b.append(path("M705 276 V296 H835 V386", None))
 # node_identity -> gpu_device, and the arrow is the whole point of the record:
 # gpu_device names a card by PCI address, which is unique on ONE machine. The
 # node_hash above it is what makes that name unique across the capture.
@@ -599,6 +605,7 @@ INT = [
  ("invocation", 532, "Artifact", "What the TRACER was asked to do — argv, the captured environment, the providers that loaded, the build, and which .so files were actually mapped."),
  ("gpu_kernel", 530, "Event", "One kernel's EXECUTION window. Never submission: the two are ~800x the kernel's own duration apart."),
  ("clock_anchor", 590, "Artifact", "A clock-domain calibration anchor. Two per rank per domain, which is exactly what a line needs."),
+ ("capture_status", 592, "Artifact", "Whether this rank's capture is COMPLETE. Written only by a normal finalize, so a rank in clock_anchor with no row here started and did not finish — absence says what no counter can."),
 ]
 UCX = [
  ("ucx_context", 600, "Entity", "A public UCP context."),

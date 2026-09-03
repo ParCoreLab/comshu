@@ -50,6 +50,7 @@ PCOMM_SCHEMA_MATCH(cr::Invocation, fb::Invocation);
 PCOMM_SCHEMA_MATCH(cr::PeerMapping, fb::PeerMapping);
 PCOMM_SCHEMA_MATCH(cr::GpuKernel, fb::GpuKernel);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
+PCOMM_SCHEMA_MATCH(cr::CaptureStatus, fb::CaptureStatus);
 PCOMM_SCHEMA_MATCH(cr::InternKey, fb::InternKey);
 PCOMM_SCHEMA_MATCH(cr::InternString, fb::InternString);
 PCOMM_SCHEMA_MATCH(ir::IbMemRegion, fb::IbMemRegion);
@@ -784,6 +785,24 @@ int main() {
             fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(3, 0xABC), fb::TimePoint(0, 0), 0), 3,
             0xDEAD, 0xBEEF, 0xF00D);
         expect_identical("ClockAnchor", &c, &f, sizeof(c));
+    }
+    {
+        // Distinct values in every field on purpose: this record is eight
+        // numbers of four different widths ending in two pads, which is exactly
+        // the shape where a reordering keeps the size and changes the meaning.
+        Stamped<cr::CaptureStatus> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.records_lost = 0x1111222233334444ull;
+        c.payload.bytes_lost = 0x5555666677778888ull;
+        c.payload.streams_open = 0x99AABBCCu;
+        c.payload.streams_lost = 0xDDEEFF00u;
+        c.payload.dir_failed = 1;
+        c.payload.header_lost = 2;
+        c.payload.never_opened = 3;
+        fb::CaptureStatus f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0x1111222233334444ull, 0x5555666677778888ull, 0x99AABBCCu, 0xDDEEFF00u, 1, 2, 3, 0, 0);
+        expect_identical("CaptureStatus", &c, &f, sizeof(c));
     }
     {
         Stamped<ir::IbMemRegion> c{};

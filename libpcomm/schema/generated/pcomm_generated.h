@@ -52,6 +52,8 @@ struct GpuKernel;
 
 struct ClockAnchor;
 
+struct CaptureStatus;
+
 struct IbMemRegion;
 
 struct IbQueuePair;
@@ -147,6 +149,12 @@ struct NcclGroup;
 struct NcclWindow;
 
 struct NcclDevComm;
+
+struct NcclProfComm;
+
+struct NcclCollExec;
+
+struct NcclProxyOp;
 
 enum TimeKind : uint8_t {
   TimeKind_None = 0,
@@ -1225,6 +1233,77 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) ClockAnchor FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(ClockAnchor, 80);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) CaptureStatus FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t records_lost_;
+  uint64_t bytes_lost_;
+  uint32_t streams_open_;
+  uint32_t streams_lost_;
+  uint8_t dir_failed_;
+  uint8_t header_lost_;
+  uint8_t never_opened_;
+  uint8_t pad_;
+  uint32_t pad2_;
+
+ public:
+  CaptureStatus()
+      : temporal_(),
+        records_lost_(0),
+        bytes_lost_(0),
+        streams_open_(0),
+        streams_lost_(0),
+        dir_failed_(0),
+        header_lost_(0),
+        never_opened_(0),
+        pad_(0),
+        pad2_(0) {
+  }
+  CaptureStatus(const pcomm::fb::Temporal &_temporal, uint64_t _records_lost, uint64_t _bytes_lost, uint32_t _streams_open, uint32_t _streams_lost, uint8_t _dir_failed, uint8_t _header_lost, uint8_t _never_opened, uint8_t _pad, uint32_t _pad2)
+      : temporal_(_temporal),
+        records_lost_(::flatbuffers::EndianScalar(_records_lost)),
+        bytes_lost_(::flatbuffers::EndianScalar(_bytes_lost)),
+        streams_open_(::flatbuffers::EndianScalar(_streams_open)),
+        streams_lost_(::flatbuffers::EndianScalar(_streams_lost)),
+        dir_failed_(::flatbuffers::EndianScalar(_dir_failed)),
+        header_lost_(::flatbuffers::EndianScalar(_header_lost)),
+        never_opened_(::flatbuffers::EndianScalar(_never_opened)),
+        pad_(::flatbuffers::EndianScalar(_pad)),
+        pad2_(::flatbuffers::EndianScalar(_pad2)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t records_lost() const {
+    return ::flatbuffers::EndianScalar(records_lost_);
+  }
+  uint64_t bytes_lost() const {
+    return ::flatbuffers::EndianScalar(bytes_lost_);
+  }
+  uint32_t streams_open() const {
+    return ::flatbuffers::EndianScalar(streams_open_);
+  }
+  uint32_t streams_lost() const {
+    return ::flatbuffers::EndianScalar(streams_lost_);
+  }
+  uint8_t dir_failed() const {
+    return ::flatbuffers::EndianScalar(dir_failed_);
+  }
+  uint8_t header_lost() const {
+    return ::flatbuffers::EndianScalar(header_lost_);
+  }
+  uint8_t never_opened() const {
+    return ::flatbuffers::EndianScalar(never_opened_);
+  }
+  uint8_t pad() const {
+    return ::flatbuffers::EndianScalar(pad_);
+  }
+  uint32_t pad2() const {
+    return ::flatbuffers::EndianScalar(pad2_);
+  }
+};
+FLATBUFFERS_STRUCT_END(CaptureStatus, 80);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
  private:

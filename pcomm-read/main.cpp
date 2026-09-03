@@ -368,6 +368,21 @@ template<> struct Table<ClockAnchor> {
     }
 };
 
+// One row per rank, and the row a reader should look at FIRST: it is the only
+// thing in a capture that says whether the rest of it is complete. A rank that
+// appears in clock_anchor and not here did not finish. See core/records.hpp.
+template<> struct Table<CaptureStatus> {
+    static constexpr const char* name = "capture_status";
+    static constexpr const char* cols =
+        "records_lost,bytes_lost,streams_open,streams_lost,dir_failed,header_lost,never_opened";
+    static void row(std::FILE* f, const Stamped<CaptureStatus>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%llu,%u,%u,%u,%u,%u", (unsigned long long)s.payload.records_lost,
+                     (unsigned long long)s.payload.bytes_lost, s.payload.streams_open,
+                     s.payload.streams_lost, s.payload.dir_failed, s.payload.header_lost,
+                     s.payload.never_opened);
+    }
+};
+
 template<> struct Table<Attribution> {
     static constexpr const char* name = "attribution";
     static constexpr const char* cols = "ticks,subject,object,pred";
@@ -1508,7 +1523,8 @@ template<> struct Table<ncr::NcclProxyOp> {
 using TableRecords =
     std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, GpuDevice,
                Invocation, PeerMapping,
-               ClockAnchor, Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp,
+               ClockAnchor, CaptureStatus, Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue,
+               ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
                ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort, mxr::Mlx5Umem, mxr::Mlx5Uar,
@@ -2140,6 +2156,11 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     // derived layer able to group by an interned column but not to NAME one —
     // "uct_iface grouped by tl_name = 4123" is not an answer about a transport.
     const std::size_t intern_rows = capture::load_intern_text(con, ranks);
+    // What the files themselves look like, written beside the records they
+    // frame. This is the only table in an export that describes the EXPORT
+    // rather than the run, and it exists because a damaged capture used to
+    // produce a Parquet directory indistinguishable from a healthy one.
+    const std::size_t integrity_rows = capture::load_capture_integrity(con, ranks);
 
     std::size_t tables = 0, rows_total = st.rows, failed = st.failed;
     for_each_type<raw::RawRecords>([&]<typename R>() {
@@ -2172,6 +2193,24 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
                       duck::kInternTextTable)) {
             tables++;
             rows_total += intern_rows;
+        } else {
+            failed++;
+        }
+    }
+
+    // UNCONDITIONAL, unlike the dictionary above. An export with no
+    // capture_integrity is one a reader cannot judge, and "the capture was so
+    // broken there were no ranks to describe" is exactly when it must not be
+    // silently omitted. A zero-row table still says the export ran.
+    {
+        const auto out =
+            (outdir / (std::string(duck::kCaptureIntegrityTable) + ".parquet")).string();
+        if (duck_exec(con,
+                      "COPY \"" + std::string(duck::kCaptureIntegrityTable) + "\" TO '" + out +
+                          "' (FORMAT PARQUET)",
+                      duck::kCaptureIntegrityTable)) {
+            tables++;
+            rows_total += integrity_rows;
         } else {
             failed++;
         }

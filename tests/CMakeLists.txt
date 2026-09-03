@@ -201,6 +201,15 @@ add_test(NAME run_provenance_rule
 add_test(NAME nccl_execution_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/nccl_execution_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# link_health's capture-completeness rows, over a fixture rather than a real
+# capture for the same reason as above: the interesting states are a rank that
+# was killed mid-run and a stream file that disappeared after the run, and
+# neither can be arranged on demand by running a workload. It also holds the
+# no-false-positive case, which is the one that decides whether anyone keeps
+# reading the rubric at all.
+add_test(NAME capture_integrity_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/capture_integrity_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # What `pcomm sql` accepts as a query. Not about SQL at all — about the
 # `COPY (<q>) TO` wrapper, which turns a trailing semicolon and a trailing
 # comment into parse errors that name neither.

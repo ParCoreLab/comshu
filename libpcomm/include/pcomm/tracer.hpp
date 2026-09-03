@@ -181,6 +181,14 @@ public:
         emit_intern_records();
         rec::ThreadBufferRegistry::instance().drain_all();
         m_sink->flush();
+        // LAST, and after that flush rather than before it. Everything this rank
+        // will ever write is now on disk, so the sink's loss counters are final
+        // and the attestation describes the whole capture instead of a prefix of
+        // it. Its own stream is the one thing it cannot describe — see the
+        // record's comment.
+        emit_capture_status();
+        rec::ThreadBufferRegistry::instance().drain_all();
+        m_sink->flush();
         report_losses();
     }
 
@@ -345,6 +353,46 @@ private:
     // over it would destroy the rest of the evidence. But a suite that wants a
     // board it can trust should set it, which is exactly what the HPC runner now
     // does.
+    // The durable half of report_losses. That one writes to stderr, which is the
+    // right place for a human running a job and the wrong place for the Parquet
+    // that outlives it; this one puts the same facts where `pcomm link` can read
+    // them. See core/records.hpp CaptureStatus for the measurement that made the
+    // case, and for why absence carries more information than any field here.
+    void emit_capture_status() {
+        if (!m_recorder || !m_sink)
+            return;
+        const auto    losses = m_sink->losses();
+        std::uint64_t records = 0, bytes = 0;
+        bool          header_lost = false, never_opened = false;
+        for (const auto& l : losses) {
+            records += l.lost_records;
+            bytes += l.lost_bytes;
+            header_lost |= l.header_lost;
+            never_opened |= l.never_opened;
+        }
+        m_recorder->record(
+            core::Temporal::none(),
+            core::records::CaptureStatus{
+                {},
+                {},
+                records,
+                bytes,
+                // +1 for THIS record's own stream, which the sink has not
+                // created yet — the count is taken before the record is drained.
+                // Without it the reader's file count is one higher than the
+                // attested one on every healthy capture, and the one comparison
+                // that catches a stream deleted AFTER the run would either fire
+                // on everything or have to guess. Counting it here keeps that
+                // arithmetic in the place that knows why it is needed.
+                static_cast<std::uint32_t>(m_sink->open_streams() + 1),
+                static_cast<std::uint32_t>(losses.size()),
+                static_cast<std::uint8_t>(m_sink->directory_failed() ? 1 : 0),
+                static_cast<std::uint8_t>(header_lost ? 1 : 0),
+                static_cast<std::uint8_t>(never_opened ? 1 : 0),
+                0,
+                0});
+    }
+
     void report_losses() {
         if (!m_sink)
             return;

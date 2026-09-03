@@ -142,6 +142,19 @@ public:
         return out;
     }
 
+    // How many streams this sink framed and still holds open. Not derivable from
+    // losses(): that reports only the damaged ones, so a capture with no losses
+    // returns an empty vector whether it wrote eleven streams or none. The
+    // attestation record needs the denominator, not just the numerator.
+    std::size_t open_streams() const {
+        std::lock_guard lock(m_mutex);
+        std::size_t     n = 0;
+        for (const auto& [id, s] : m_streams)
+            if (s.f)
+                n++;
+        return n;
+    }
+
     // The output directory could not be created at all — every stream is lost
     // and there is nothing to enumerate.
     bool directory_failed() const { return m_dir_failed; }

@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -238,6 +239,80 @@ inline std::size_t load_intern_text(duckdb_connection con, const std::vector<Ran
 // happens not to emit would otherwise fail outright, and each would have to
 // branch on which provider ran. Same policy duck_mount.hpp applies to a
 // Parquet export, applied to a freshly loaded capture.
+// Walk every `.pcs` in every rank directory and record what is STRUCTURALLY
+// wrong with it, into duck::kCaptureIntegrityTable. Returns the row count.
+//
+// TYPE-AGNOSTIC ON PURPOSE, which is why this is a separate pass rather than a
+// counter threaded through load_raw_tables. Everything it checks lives in the
+// 32-byte StreamHeader — magic, format version, stride against the file size —
+// so it needs no record definition and therefore also sees streams whose type
+// this build does not know. A capture from a build with a provider we lack is
+// exactly the case where "the reader silently skipped it" is worst.
+//
+// It is the second of two witnesses. capture_status says what the WRITER failed
+// to write; this says what is no longer on disk. The writer cannot see an
+// interrupted copy off a cluster, and the reader cannot see a record that never
+// reached a file — neither table is sufficient alone, which is the same
+// argument Tracer::report_losses makes for not relying on a record.
+inline std::size_t load_capture_integrity(duckdb_connection            con,
+                                          const std::vector<RankDir>& ranks) {
+    if (!duck::exec(con, duck::kCaptureIntegrityDdl, duck::kCaptureIntegrityTable))
+        return 0;
+    duckdb_appender ap{};
+    if (duckdb_appender_create(con, nullptr, duck::kCaptureIntegrityTable, &ap) != DuckDBSuccess) {
+        std::fprintf(stderr, "pcomm: cannot append to %s\n", duck::kCaptureIntegrityTable);
+        return 0;
+    }
+
+    std::size_t rows = 0;
+    for (const auto& r : ranks) {
+        std::int32_t   found = 0, unreadable = 0, truncated = 0, foreign = 0;
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(r.dir, ec)) {
+            if (!e.is_regular_file() || e.path().extension() != ".pcs")
+                continue;
+            found++;
+            const auto bytes = static_cast<std::uint64_t>(e.file_size(ec));
+            if (ec || bytes < sizeof(rec::StreamHeader)) {
+                // Zero length is the shape a failed header write leaves behind:
+                // FileSink creates the file, cannot write the 32 bytes, and
+                // closes it rather than putting records into an unframed file.
+                unreadable++;
+                continue;
+            }
+            std::ifstream       in(e.path(), std::ios::binary);
+            rec::StreamHeader   h{};
+            if (!in || !in.read(reinterpret_cast<char*>(&h), sizeof h)) {
+                unreadable++;
+                continue;
+            }
+            if (h.magic != rec::kStreamMagic || h.format_version != rec::kStreamFormatVersion ||
+                h.stride == 0) {
+                unreadable++;
+                continue;
+            }
+            if (h.schema_hash != rec::kSchemaHash)
+                foreign++;
+            if ((bytes - sizeof(rec::StreamHeader)) % h.stride)
+                truncated++;
+        }
+        duckdb_append_int32(ap, r.rank);
+        duckdb_append_int32(ap, found);
+        duckdb_append_int32(ap, unreadable);
+        duckdb_append_int32(ap, truncated);
+        duckdb_append_int32(ap, foreign);
+        duckdb_appender_end_row(ap);
+        rows++;
+    }
+
+    const bool flushed = duckdb_appender_flush(ap) == DuckDBSuccess;
+    if (!flushed)
+        std::fprintf(stderr, "pcomm: %s: appender flush failed: %s\n",
+                     duck::kCaptureIntegrityTable, duckdb_appender_error(ap));
+    duckdb_appender_destroy(&ap);
+    return flushed ? rows : 0;
+}
+
 inline void fill_missing_raw_tables(duckdb_connection con) {
     for_each_type<raw::RawRecords>([&]<typename R>() {
         using Raw = raw::RawTable<R>;
