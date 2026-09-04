@@ -244,9 +244,38 @@ if [ "$do_build" -eq 1 ]; then
   # which reads as a broken login node rather than as one bad module name. That
   # cost a cycle on 2026-08-30 when the run moved to the GPP login nodes, where
   # gcc/11.4.0 does not exist. Swallow the chatter, never the status.
-  say "build tools + ibverbs provider (gcc-13.2, DuckDB=$DUCK_ON)"
+  # PCOMM_CUPTI=ON, and CUDA_HOME is what makes it findable.
+  #
+  # The cupti backend compiles as PLAIN C++ with no CUDA language — its own
+  # CMakeLists says so, and that is precisely why it belongs in this tree rather
+  # than in gpumem's separate gcc-11.4/nvcc build. But it still needs cupti.h,
+  # libcupti and cuda.h, and this build loads no CUDA module at all, so until now
+  # the target was skipped and libcupti_trace.so was never produced here.
+  #
+  # THE COST OF THAT WAS A GREEN BOARD OVER UNCOMPILED CODE. Job 45405085 reported
+  # SUITE GREEN with cases 23 and 24 skipping on "this build has no
+  # libcupti_trace.so" — the merge gate had never compiled the backend the change
+  # was about. That is the same family as case 08's empty ib_queue_pair: an absent
+  # thing and a broken thing look identical downstream.
+  #
+  # CUDA_HOME rather than -DCUDA_TOOLKIT_ROOT_DIR, because the backend's three
+  # find_ calls do NOT share one root. CUPTI's header and library hang off
+  # <root>/extras/CUPTI and the cache variable reaches both, but cuda.h is sought
+  # under $ENV{CUDA_HOME}/include and never under ${CUDA_TOOLKIT_ROOT_DIR}/include
+  # — so the cache variable satisfies two of three and the target still skips.
+  #
+  # 12.9 is the same versioned tree the gpumem build pins, and for a related
+  # reason: $SDK/cuda/ is a dispatch root whose extras/CUPTI the SDK does not
+  # populate. Verified present on MN5: extras/CUPTI/include/cupti_activity.h,
+  # extras/CUPTI/lib64/libcupti.so and include/cuda.h all exist under cuda/12.9.
+  #
+  # A host without CUPTI still builds — the backend skips with a STATUS line
+  # naming all three missing pieces. Skipping loudly is fine; skipping silently,
+  # which is what happened above, is not.
+  say "build tools + ibverbs provider + cupti backend (gcc-13.2, DuckDB=$DUCK_ON)"
   rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
-       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
+       export CUDA_HOME=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7/cuda/12.9 &&
+       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_CUPTI=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
        bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2
          echo "  if the output above mentions variables that require the cache to be" >&2
