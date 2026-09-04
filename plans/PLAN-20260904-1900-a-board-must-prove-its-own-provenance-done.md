@@ -148,9 +148,14 @@ it as INTEGER would be a lie. A second table is the honest shape.
 Landed as described, with two deviations and both are worth keeping.
 
 **It reads `invocation`, not `run_provenance`.** `run_provenance` is a DERIVED
-table, and MN5 builds with `PCOMM_DUCKDB=OFF` whenever the shipped libduckdb is
-not there — so the assertion would have been invisible on the one board it
-exists to protect. The CSV export resolves Invocation's handles to text itself
+table, so it is only there when the build has DuckDB *and* the case exported
+Parquet. Measured on job 45426571: MN5's build does have DuckDB, and 20 of the
+24 cases export Parquet — so a derived-only assertion would have covered 20 of
+24 rather than all of them, and would have vanished entirely on any board where
+the libduckdb push failed, which is the documented `PCOMM_DUCKDB=OFF` default.
+(An earlier draft of this section said MN5 has no DuckDB at all; that is wrong
+and the corrected numbers are above.) The CSV export resolves Invocation's
+handles to text itself
 (`pcomm-read/main.cpp`, `Table<Invocation>`), so the sqlite path can answer.
 The Parquet re-run never fires for it, because `pq_only` skips any assertion
 whose tables the CSV set already has — which is right: on that path `build` is

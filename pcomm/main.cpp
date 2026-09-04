@@ -9,6 +9,10 @@
 #include <string_view>
 
 #include "cli.hpp"
+#include "pcomm/engine_abi.h"
+#include "pcomm/rec/stream_header.hpp"
+// Generated per build by cmake/write_build_id.cmake — see pcomm/CMakeLists.txt.
+#include "pcomm_build_id.h"
 
 namespace {
 
@@ -43,7 +47,9 @@ void usage() {
         std::fprintf(stderr, "  %-7s %-34s %s%s\n", v.name, v.args, v.what,
                      v.available ? "" : "   [not in this build]");
     }
-    std::fputs("\n  pcomm <command> with no arguments prints that command's own usage.\n", stderr);
+    std::fputs("\n  pcomm <command> with no arguments prints that command's own usage.\n"
+               "  pcomm --version prints the build id a capture will report.\n",
+               stderr);
 #if !PCOMM_HAVE_DUCKDB
     std::fputs("\n  This build has no DuckDB, so link/sql/ui are absent. To get them:\n"
                "    tools/get_duckdb.sh && cmake -B build -DPCOMM_DUCKDB=ON\n"
@@ -70,6 +76,17 @@ int main(int argc, char** argv) {
     const std::string_view cmd = argv[1];
     if (cmd == "-h" || cmd == "--help" || cmd == "help") {
         usage();
+        return 0;
+    }
+
+    // WORD FOR WORD THE STRING `Invocation.build` CARRIES (engine.cpp), because
+    // the point is to compare them: a capture says which build produced it, and
+    // until now nothing could ask a binary the same question without running a
+    // workload first. On stdout, single line, so a script can read it.
+    if (cmd == "--version" || cmd == "version") {
+        std::printf("commit=%s type=%s abi=%u schema=0x%016llX\n", PCOMM_BUILD_COMMIT,
+                    PCOMM_BUILD_TYPE, static_cast<unsigned>(PCOMM_ENGINE_ABI_VERSION),
+                    static_cast<unsigned long long>(pcomm::rec::kSchemaHash));
         return 0;
     }
 

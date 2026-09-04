@@ -15,13 +15,28 @@ target_link_libraries(pcomm_launcher PRIVATE pcomm::pcomm pcomm_read)
 set_property(TARGET pcomm_launcher APPEND PROPERTY
   BUILD_RPATH "${CMAKE_BINARY_DIR}/libpcomm")
 
-if(PCOMM_DUCKDB)
+if(PCOMM_UI)
   target_link_libraries(pcomm_launcher PRIVATE pcomm_ui)
+endif()
+if(PCOMM_DUCKDB AND NOT PCOMM_DUCKDB_STATIC)
   # libduckdb.so lives outside any install prefix, so an uninstalled build has
-  # to carry its location.
+  # to carry its location. This is also the reason PCOMM_DUCKDB_STATIC exists:
+  # an RPATH into someone's source tree is not a thing you can copy to a cluster.
   set_property(TARGET pcomm_launcher APPEND PROPERTY
     BUILD_RPATH "${CMAKE_SOURCE_DIR}/.tools/duckdb")
 endif()
+
+# `pcomm --version` — the build id, from the same generated header the engine
+# stamps into every capture (libpcomm/CMakeLists, pcomm_build_id). Two consumers
+# of one generator rather than a second source of truth.
+#
+# It exists because every provenance check in tests/hpc had to go THROUGH a
+# capture to learn which commit a binary was: the header is private to the
+# engine target and nothing else could ask. That left the preventive layer
+# (suite/check_build_freshness.sh) inferring staleness from mtimes when the
+# binary knew the answer exactly. See PLAN-20260904-1900.
+add_dependencies(pcomm_launcher pcomm_build_id)
+target_include_directories(pcomm_launcher PRIVATE "${CMAKE_BINARY_DIR}/libpcomm")
 
 # Installed at <prefix>/bin, with the engine one hop away at ../lib/pcomm.
 # BUILD_RPATH is untouched, so the build tree keeps working exactly as before

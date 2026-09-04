@@ -20,6 +20,15 @@
 #
 #   tools/get_duckdb.sh          # fetch into .tools/duckdb
 #   cmake -B build -DPCOMM_DUCKDB=ON
+#
+#   tools/get_duckdb.sh --static   # the archive set, for PCOMM_DUCKDB_STATIC
+#
+# --static fetches the vendor's `static-libs` bundle into .tools/duckdb-static:
+# libduckdb_static.a plus eighteen extension and third-party archives. It is 30
+# MB to download and 130 MB unpacked, against 41/70 for the shared library, and
+# it buys a `pcomm` that is ONE file — no RPATH into a source tree, nothing to
+# ship beside it. That is what makes the launcher copyable to a cluster; see
+# PCOMM_DUCKDB_STATIC in the root CMakeLists.
 set -euo pipefail
 
 VERSION="v1.5.5"
@@ -27,6 +36,31 @@ ASSET="libduckdb-linux-amd64.zip"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="$root/.tools/duckdb"
+
+if [[ "${1:-}" == "--static" ]]; then
+    ASSET="static-libs-linux-amd64.zip"
+    dest="$root/.tools/duckdb-static"
+    # The archive set carries duckdb.h and nothing else to check a version
+    # against, so the same header check below decides freshness for both shapes.
+    if [[ -f "$dest/duckdb.h" ]] && ls "$dest"/*.a >/dev/null 2>&1; then
+        have=$(grep -oE 'DUCKDB_VERSION "[^"]+"' "$dest/duckdb.h" 2>/dev/null | head -1 | cut -d'"' -f2 || true)
+        if [[ "$have" == "$VERSION" ]]; then
+            echo "libduckdb ${VERSION} (static) already at $dest"
+            exit 0
+        fi
+    fi
+    command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
+    command -v unzip >/dev/null || { echo "unzip is required" >&2; exit 1; }
+    work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+    url="https://github.com/duckdb/duckdb/releases/download/${VERSION}/${ASSET}"
+    echo "fetching ${url}"
+    curl -fsSL "$url" -o "$work/duckdb.zip"
+    rm -rf "$dest"; mkdir -p "$dest"
+    unzip -q -o "$work/duckdb.zip" -d "$dest"
+    echo "libduckdb ${VERSION} (static, $(ls "$dest"/*.a | wc -l) archives) -> $dest"
+    du -sh "$dest"
+    exit 0
+fi
 
 # The C API, not the C++ one. duckdb.hpp across a prebuilt .so is an ABI bet on
 # the vendor's compiler matching ours; duckdb.h is a stable C boundary, and

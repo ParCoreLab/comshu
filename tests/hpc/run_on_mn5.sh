@@ -256,32 +256,48 @@ if [ "$do_build" -eq 1 ]; then
   # this is a separate rsync and not a consequence of the push. It was already
   # present on MN5 by some earlier manual step, which is exactly the kind of
   # undeclared dependency that works until someone runs --clean on a new account.
-  # TWO gitignored things are needed, not one. Enabling PCOMM_DUCKDB also enters
-  # pcomm-ui (CMakeLists: the UI is a DuckDB consumer by definition), and that
-  # subdirectory refuses to configure without a built ui/dist. Both are untracked,
-  # so neither rides along with the git push above and both must be sent here.
+  #
+  # ONE gitignored thing now, not two. This used to also require a built
+  # `ui/dist`, because PCOMM_DUCKDB entered pcomm-ui and that subdirectory
+  # refuses to configure without a frontend bundle — so a cluster with the
+  # library and no bundle got NO Parquet and NO `pcomm sql` either, and the
+  # derived-layer assertions went dark for want of a web page nobody was going
+  # to open on a login node. PCOMM_UI is its own option now and stays off here.
+  #
+  # STATIC, and that is the ergonomic half. The shared library has to be found
+  # at run time through an RPATH pointing into this source tree, so the launcher
+  # is only runnable where it was built; the archive set is linked in and
+  # `pcomm` becomes one file. Both shapes still work — PCOMM_DUCKDB_STATIC picks
+  # — and this pushes whichever the workstation has, preferring the archives.
+  DUCK_STATIC_LOCAL="$REPO_ROOT/.tools/duckdb-static"
   DUCK_LOCAL="$REPO_ROOT/.tools/duckdb"
-  if [ -e "$DUCK_LOCAL/libduckdb.so" ] && [ -e "$REPO_ROOT/ui/dist/index.html" ]; then
-    if ! $SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so -a -e $PROOT/ui/dist/index.html"; then
-      say "ship libduckdb + ui/dist to the remote (no network there to fetch them)"
-      $SSH "$REMOTE" "mkdir -p $PROOT/.tools/duckdb $PROOT/ui/dist"
+  if ls "$DUCK_STATIC_LOCAL"/*.a >/dev/null 2>&1; then
+    if ! $SSH "$REMOTE" "ls $PROOT/.tools/duckdb-static/*.a >/dev/null 2>&1"; then
+      say "ship the DuckDB archive set to the remote (no network there to fetch it)"
+      $SSH "$REMOTE" "mkdir -p $PROOT/.tools/duckdb-static"
+      rsync -az -e "$SSH" "$DUCK_STATIC_LOCAL"/ "$REMOTE:$PROOT/.tools/duckdb-static/" \
+        || echo "  (push failed — building without DuckDB; derived-layer assertions will skip)" >&2
+    fi
+  elif [ -e "$DUCK_LOCAL/libduckdb.so" ]; then
+    if ! $SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so"; then
+      say "ship libduckdb.so to the remote (no network there to fetch it)"
+      $SSH "$REMOTE" "mkdir -p $PROOT/.tools/duckdb"
       rsync -az -e "$SSH" "$DUCK_LOCAL/libduckdb.so" "$DUCK_LOCAL/duckdb.h" "$DUCK_LOCAL/duckdb.hpp" \
-            "$REMOTE:$PROOT/.tools/duckdb/" &&
-      rsync -az --delete -e "$SSH" "$REPO_ROOT/ui/dist/" "$REMOTE:$PROOT/ui/dist/" \
+            "$REMOTE:$PROOT/.tools/duckdb/" \
         || echo "  (push failed — building without DuckDB; derived-layer assertions will skip)" >&2
     fi
   else
-    [ -e "$DUCK_LOCAL/libduckdb.so" ] \
-      || echo "  (no local .tools/duckdb — run tools/get_duckdb.sh for derived-layer assertions)" >&2
-    [ -e "$REPO_ROOT/ui/dist/index.html" ] \
-      || echo "  (no local ui/dist — run 'pnpm build' in ui/ for derived-layer assertions)" >&2
+    echo "  (no local DuckDB — run tools/get_duckdb.sh --static for derived-layer assertions)" >&2
   fi
-  # PCOMM_DUCKDB follows what is actually there, so a missing library degrades to
-  # the old CSV-only behaviour instead of failing the configure.
-  # BOTH must be present remotely, for the reason above: libduckdb alone turns
-  # PCOMM_DUCKDB on, which pulls in pcomm-ui, which then fails the configure for
-  # want of ui/dist — turning a missing optional into a broken build.
-  DUCK_ON=$($SSH "$REMOTE" "test -e $PROOT/.tools/duckdb/libduckdb.so -a -e $PROOT/ui/dist/index.html && echo ON || echo OFF")
+  # PCOMM_DUCKDB follows what is actually THERE, so a missing library degrades to
+  # the old CSV-only behaviour instead of failing the configure. Static wins when
+  # both are present: it is the shape that survives being copied.
+  DUCK_KIND=$($SSH "$REMOTE" "ls $PROOT/.tools/duckdb-static/*.a >/dev/null 2>&1 && echo static || { test -e $PROOT/.tools/duckdb/libduckdb.so && echo shared || echo none; }")
+  case "$DUCK_KIND" in
+    static) DUCK_ON=ON;  DUCK_STATIC=ON ;;
+    shared) DUCK_ON=ON;  DUCK_STATIC=OFF ;;
+    *)      DUCK_ON=OFF; DUCK_STATIC=OFF ;;
+  esac
 
   # EVERY `cmake --build` BELOW IS CHECKED TOO, and that is a separate bug from
   # the module one. Each was written `cmake --build ... 2>&1 | tail -2`, and a
@@ -336,10 +352,10 @@ if [ "$do_build" -eq 1 ]; then
   # A host without CUPTI still builds — the backend skips with a STATUS line
   # naming all three missing pieces. Skipping loudly is fine; skipping silently,
   # which is what happened above, is not.
-  say "build tools + ibverbs provider + cupti backend (gcc-13.2, DuckDB=$DUCK_ON)"
+  say "build tools + ibverbs provider + cupti backend (gcc-13.2, DuckDB=$DUCK_ON/$DUCK_KIND)"
   rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
        export CUDA_HOME=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7/cuda/12.9 &&
-       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_CUPTI=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
+       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_CUPTI=ON -DPCOMM_DUCKDB=$DUCK_ON -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
        bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2
          echo "  if the output above mentions variables that require the cache to be" >&2

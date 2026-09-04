@@ -23,6 +23,58 @@ option(PCOMM_PROVIDER_NCCL    "Build the NCCL host-API provider (needs nccl.h)" 
 # its own CMakeLists skips the target (loudly) when CUPTI is not found.
 option(PCOMM_CUPTI "Build the CUPTI kernel-timing backend (needs libcupti)" OFF)
 
+# ── The C++ runtime: carried, not required ─────────────────────────────────
+#
+# Every object in this project is built with a toolchain the machine it runs on
+# does not have. MN5's system libstdc++.so.6 tops out at GLIBCXX_3.4.29;
+# gcc/13.2.0 builds ours against 3.4.30–3.4.32. So `./pcomm list` in a login
+# shell has always died with
+#   /lib64/libstdc++.so.6: version `GLIBCXX_3.4.30' not found
+# and every case, script and check has had to `module load gcc/13.2.0` first.
+# That is not a papercut: it is what made the provider pre-flight (`4e8d9bf`)
+# report all 23 cases as build holes — it could not run the launcher, and the
+# launcher's failure code is indistinguishable from "provider .so missing".
+#
+# Measured on MN5 before this was turned on:
+#   pcomm, engine, ibverbs/mlx5dv/ucx/ucx_deep/nccl   GLIBCXX_3.4.30–3.4.32
+#   gpumem (gcc-11.4 host), cupti                     GLIBCXX_3.4.29   (fine)
+#   libduckdb.so (vendor prebuilt)                    GLIBCXX_3.4.22   (fine)
+# So the dependency is entirely ours, and DuckDB — the thing that looked like
+# the heavy dependency — was never the problem.
+#
+# -static-libstdc++ ONLY, never -static-libgcc. GCC's manual is explicit that a
+# library which throws or catches across a shared-object boundary must share one
+# unwinder, and providers are .so files whose exceptions the engine may catch.
+# The system libgcc_s.so.1 offers GCC_7.0.0 against our GCC_4.2.0, so keeping it
+# dynamic costs nothing.
+#
+# --exclude-libs,ALL keeps the static runtime PRIVATE, and this was measured
+# rather than assumed, because the engine is LD_PRELOADed into other people's
+# processes and a second libstdc++ implementation in the global scope is exactly
+# the "load-bearing luck" engine_abi.h refuses to rely on. Exported symbols,
+# dynamic build vs static: 1999 vs 1998, with ZERO symbols exported by the
+# static build that the dynamic one did not already export. The interposition
+# surface is unchanged.
+#
+# Skipped for compilers that do not take the switch — nvc++ ("Unknown switch:
+# -static-libstdc++"), which is what the gpumem tree configures with. That tree
+# needs nothing here: its provider is built by the NVBit-mandated gcc-11.4 host
+# and asks for 3.4.29, which every host already has.
+option(PCOMM_STATIC_CXXLIB "Carry libstdc++ in the binaries instead of requiring it" ON)
+if(PCOMM_STATIC_CXXLIB AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
+  # LINK_LANGUAGE:CXX excludes CUDA-linked targets: the device link runs through
+  # nvcc, which does not take these either.
+  # Spelled -Wl, rather than CMake's LINKER: prefix on purpose: the guard above
+  # already restricts this to GNU/Clang drivers, and LINKER: inside a generator
+  # expression is one indirection too many to be obvious.
+  add_link_options("$<$<LINK_LANGUAGE:CXX>:-static-libstdc++>"
+                   "$<$<LINK_LANGUAGE:CXX>:-Wl,--exclude-libs,ALL>")
+elseif(PCOMM_STATIC_CXXLIB)
+  message(STATUS "pcomm: PCOMM_STATIC_CXXLIB ignored — ${CMAKE_CXX_COMPILER_ID} "
+                 "does not accept -static-libstdc++; this build will need its "
+                 "toolchain's libstdc++ at run time")
+endif()
+
 # Parquet + SQL in pcomm-read, via DuckDB. OFF by default and that default is
 # load-bearing, not caution: MN5 has no network and no cmake outside `module
 # load` (verified 2026-08-09), and every suite case runs `pcomm-read --csv`
@@ -30,6 +82,36 @@ option(PCOMM_CUPTI "Build the CUPTI kernel-timing backend (needs libcupti)" OFF)
 # depends on. Parquet is produced where the UI runs, which is not the cluster.
 # Fetch the library with tools/get_duckdb.sh, then configure with -DPCOMM_DUCKDB=ON.
 option(PCOMM_DUCKDB "Build pcomm-read with DuckDB (--parquet, --sql)" OFF)
+
+# Static DuckDB, from the vendor's own `static-libs-linux-amd64.zip`. The
+# ergonomic difference is the whole point: with it, `pcomm` is ONE file that
+# runs anywhere — measured, a probe linked this way needs only libc, libm and
+# ld-linux, and answers a query under `env -i`. With the shared library the
+# binary carries an RPATH into whichever directory .tools/duckdb happened to be,
+# so copying or installing it breaks the derived layer in a way that reads as
+# "this build has no DuckDB".
+#
+# Not the default: the archives are 130 MB unpacked (30 MB as the published
+# zip), against 70 MB for the .so, and every relink of `pcomm` pays ~3 s to
+# pull them in. That is a fine trade on the cluster, where the alternative is
+# pushing a shared library and hoping it is found, and a poor one on a
+# workstation that rebuilds the launcher fifty times a day.
+option(PCOMM_DUCKDB_STATIC "Link DuckDB statically (tools/get_duckdb.sh --static)" OFF)
+
+# The web UI, which is a DuckDB consumer but not the same decision.
+#
+# It used to BE the same decision — entering pcomm-ui whenever PCOMM_DUCKDB was
+# on — and that coupling is why MN5 needs two untracked artifacts instead of
+# one: pcomm-ui refuses to configure without a built `ui/dist`, so a cluster
+# that has libduckdb but no frontend bundle cannot have Parquet or `pcomm sql`
+# either. run_on_mn5.sh carries a paragraph about pushing both, and when either
+# is missing the whole derived layer goes dark — which is how the suite's
+# derived-layer assertions ended up unable to run on the very board they exist
+# to protect (PLAN-20260904-1900, L1's first deviation).
+#
+# Defaults to following PCOMM_DUCKDB so existing invocations are unchanged.
+option(PCOMM_UI "Build the `pcomm ui` server (needs DuckDB and a built ui/dist)"
+       ${PCOMM_DUCKDB})
 
 # ── Install layout ─────────────────────────────────────────────────────────
 # Deliberately a literal lib/, not GNUInstallDirs' LIBDIR: on RHEL-likes that
@@ -98,9 +180,13 @@ endif()
 # pcomm-read and pcomm-ui are OBJECT libraries, and pcomm/ names both targets.
 add_subdirectory(pcomm-read)
 # The UI is a DuckDB consumer by definition — serving a capture is querying it —
-# so it exists only in a DuckDB build. On MN5 this subdirectory is never entered,
-# and `pcomm ui` reports that this build has no such verb.
-if(PCOMM_DUCKDB)
+# so it cannot exist without one. It is now its own option (see PCOMM_UI above):
+# on MN5 this subdirectory is never entered, DuckDB or not, and `pcomm ui`
+# reports that this build has no such verb.
+if(PCOMM_UI AND NOT PCOMM_DUCKDB)
+  message(FATAL_ERROR "PCOMM_UI=ON needs PCOMM_DUCKDB=ON — serving a capture is querying it")
+endif()
+if(PCOMM_UI)
   add_subdirectory(pcomm-ui)
 endif()
 add_subdirectory(pcomm)

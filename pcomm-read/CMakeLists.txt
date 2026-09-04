@@ -33,11 +33,27 @@ target_link_libraries(pcomm_read PUBLIC pcomm::pcomm)
 # configure-time error naming the script that fetches it, not a link failure
 # fifty lines into someone else's output.
 if(PCOMM_DUCKDB)
-  set(_duckdb_dir "${CMAKE_SOURCE_DIR}/.tools/duckdb")
-  if(NOT EXISTS "${_duckdb_dir}/duckdb.h" OR NOT EXISTS "${_duckdb_dir}/libduckdb.so")
-    message(FATAL_ERROR
-      "PCOMM_DUCKDB=ON but no libduckdb at ${_duckdb_dir}.\n"
-      "  run tools/get_duckdb.sh (needs network — not available on MN5)")
+  # Two shapes of the same dependency. The shared one is a single .so beside the
+  # headers; the static one is the vendor's archive set — libduckdb_static.a
+  # plus eighteen extension and third-party archives, all of which must be on
+  # the link line, inside one --start-group because they reference each other.
+  if(PCOMM_DUCKDB_STATIC)
+    set(_duckdb_dir "${CMAKE_SOURCE_DIR}/.tools/duckdb-static")
+    file(GLOB _duckdb_archives "${_duckdb_dir}/*.a")
+    if(NOT EXISTS "${_duckdb_dir}/duckdb.h" OR NOT _duckdb_archives)
+      message(FATAL_ERROR
+        "PCOMM_DUCKDB_STATIC=ON but no archives at ${_duckdb_dir}.\n"
+        "  run tools/get_duckdb.sh --static (needs network — not available on MN5)")
+    endif()
+    list(LENGTH _duckdb_archives _duckdb_n)
+    message(STATUS "pcomm: DuckDB linked statically (${_duckdb_n} archives from ${_duckdb_dir})")
+  else()
+    set(_duckdb_dir "${CMAKE_SOURCE_DIR}/.tools/duckdb")
+    if(NOT EXISTS "${_duckdb_dir}/duckdb.h" OR NOT EXISTS "${_duckdb_dir}/libduckdb.so")
+      message(FATAL_ERROR
+        "PCOMM_DUCKDB=ON but no libduckdb at ${_duckdb_dir}.\n"
+        "  run tools/get_duckdb.sh (needs network — not available on MN5)")
+    endif()
   endif()
   # Raw column tables, generated from the record declarations at build time.
   # Generated rather than committed so it cannot go stale, and generated only
@@ -82,7 +98,17 @@ if(PCOMM_DUCKDB)
 
   target_compile_definitions(pcomm_read PUBLIC PCOMM_HAVE_DUCKDB=1)
   target_include_directories(pcomm_read PUBLIC "${_duckdb_dir}" "${CMAKE_CURRENT_BINARY_DIR}")
-  target_link_libraries(pcomm_read PUBLIC "${_duckdb_dir}/libduckdb.so")
+  if(PCOMM_DUCKDB_STATIC)
+    # --start-group because the archives are mutually referential (the parquet
+    # extension calls back into the core, which calls the compression libs);
+    # without it the order would have to be guessed and would break on the next
+    # DuckDB release. -ldl/-lpthread/-lm are DuckDB's own system dependencies,
+    # which the shared library used to satisfy for us.
+    target_link_libraries(pcomm_read PUBLIC
+      -Wl,--start-group ${_duckdb_archives} -Wl,--end-group ${CMAKE_DL_LIBS} pthread m)
+  else()
+    target_link_libraries(pcomm_read PUBLIC "${_duckdb_dir}/libduckdb.so")
+  endif()
 endif()
 
 # Installation, rpath and the BUILD_RPATH that keeps ./build/pcomm/pcomm runnable
