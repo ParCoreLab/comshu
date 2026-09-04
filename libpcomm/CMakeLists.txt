@@ -236,8 +236,64 @@ endif()
 # claim that motivated the whole schema — "other languages can read captures" —
 # was never once exercised until this ran. Needs no flatc and no network: the
 # bindings and the FlatBuffers Python runtime are both committed.
-if(PCOMM_BUILD_TESTS AND Python3_Interpreter_FOUND
-   AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-44578115)
-  add_test(NAME schema_python_reader
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/read_pcs.py)
+#
+# THE INTERPRETER IS PROBED, NOT ASSUMED, and the reason is a bug worth knowing.
+# The committed FlatBuffers runtime decides whether numpy is available like this
+# (third_party/flatbuffers/python/flatbuffers/compat.py:56):
+#
+#     numpy_exists = importlib.machinery.PathFinder.find_spec("numpy") is not None
+#     if numpy_exists: import numpy
+#
+# find_spec answers "can this be RESOLVED", and the next line requires it to be
+# IMPORTABLE. Those come apart exactly when a numpy built for one Python sits on
+# another's path: du04 carries numpy 1.21.5 in /usr/lib/python3/dist-packages,
+# find_spec finds it under python3.12, the import raises
+# ModuleNotFoundError: numpy.core._multiarray_umath, and it propagates out of
+# `import flatbuffers`. An ABSENT numpy is handled correctly; a broken-but-
+# present one is not. Resolution is not invocation, one layer down and in
+# somebody else's code.
+#
+# So this ran red on du04 for so long that 31/32 became the machine's "known
+# good" state — which is how a real failure would have hidden. The script itself
+# was never at fault: it passes there under python3.10, and on FreeBSD under
+# 3.12 with numpy 2.4.6.
+#
+# Probe = "numpy is absent, or numpy imports". Nothing else the reader needs can
+# be broken this way; everything else it imports is committed in-tree.
+if(PCOMM_BUILD_TESTS AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-44578115)
+  # ONE string, not two. `set(x "a" "b")` makes a cmake LIST, and a list reaches
+  # `-c` semicolon-joined — which is not Python, so every candidate fails the
+  # probe and the test quietly stops existing. Caught because the loud branch
+  # below fired and ctest went from 32 tests to 31; a silent skip would have
+  # read as a clean board.
+  set(_pcomm_py_probe
+      "import importlib.util,sys; sys.exit(0) if importlib.util.find_spec('numpy') is None else __import__('numpy')")
+  set(_pcomm_py "")
+  # The interpreter cmake picked comes first; the rest are a fallback for hosts
+  # where it is the broken one. Not a wide search — if none of these work the
+  # test is not registered and says so.
+  foreach(_cand ${Python3_EXECUTABLE} python3.13 python3.12 python3.11 python3.10 python3)
+    if(_pcomm_py OR NOT _cand)
+      continue()
+    endif()
+    execute_process(COMMAND ${_cand} -c "${_pcomm_py_probe}"
+                    RESULT_VARIABLE _rc OUTPUT_QUIET ERROR_QUIET)
+    if(_rc EQUAL 0)
+      set(_pcomm_py "${_cand}")
+    endif()
+  endforeach()
+
+  if(_pcomm_py)
+    add_test(NAME schema_python_reader
+             COMMAND ${_pcomm_py} ${CMAKE_SOURCE_DIR}/tools/read_pcs.py)
+  else()
+    # LOUD, because a test that silently stops existing is the failure this
+    # project keeps finding in its own boards. Say which check failed and how to
+    # fix it, rather than leaving a gap in the numbering.
+    message(STATUS
+      "pcomm: schema_python_reader NOT REGISTERED — no interpreter found whose "
+      "numpy either imports or is absent (a numpy built for another Python on "
+      "this one's path breaks the committed flatbuffers runtime). The capture "
+      "format is then UNTESTED from Python in this build.")
+  endif()
 endif()
