@@ -72,14 +72,45 @@ $SSH "$REMOTE" true 2>/dev/null || {
 #
 # So the commit is printed with every board, a dirty tree is called out, and
 # PCOMM_EXPECT_COMMIT lets a caller demand the tree it meant to test.
-src_commit="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+#
+# THAT CHECK IS ABOUT THE LOCAL CHECKOUT AND NOTHING ELSE — it compares the tree
+# this script is reading to the tree the caller meant, and says nothing about
+# the binaries that will actually produce the capture. The second half is below:
+# the same id is stamped into the build and re-checked inside every case, by
+# suite/asserts/build_is_the_boards_commit.sql, against what the capture itself
+# reports having been built from.
+#
+# `--short=12` matches cmake/write_build_id.cmake exactly. A caller's expected
+# value may be any length, so that comparison stays prefix-tolerant; the one
+# that reaches the assertion never is.
+src_commit="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 src_dirty="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | head -1)"
 echo "== source $src_commit${src_dirty:+  (DIRTY — this board is not attributable to a commit)}"
-if [ -n "${PCOMM_EXPECT_COMMIT:-}" ] && [ "$src_commit" != "$PCOMM_EXPECT_COMMIT" ]; then
+if [ -n "${PCOMM_EXPECT_COMMIT:-}" ] &&
+   [ "${src_commit#$PCOMM_EXPECT_COMMIT}" = "$src_commit" ] &&
+   [ "${PCOMM_EXPECT_COMMIT#$src_commit}" = "$PCOMM_EXPECT_COMMIT" ]; then
   echo "run_on_a100.sh: tree is at $src_commit, expected $PCOMM_EXPECT_COMMIT." >&2
   echo "  If this checkout is fed by syncthing, the files may still be arriving." >&2
   exit 1
 fi
+
+# The id the BUILD will stamp and the capture will be checked against. Tracked
+# changes only, matching write_build_id.cmake's `--untracked-files=no`, so both
+# sides agree on what dirty means; `$src_dirty` above is the looser human
+# warning and includes untracked files.
+#
+# It has to be handed over explicitly because the sync below excludes `.git`:
+# the remote holds a perfect copy of the source and no repository at all, so
+# every build there has been stamping `commit=unknown` — on the one host where a
+# hand-copied .so has already caused a false refutation. write_build_id.cmake
+# has had the $PCOMM_COMMIT door for exactly this since it was written, and
+# nothing walked through it.
+build_commit="$src_commit"
+git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || build_commit="$src_commit-dirty"
+# Overrides whatever form the caller passed above: the assertion matches the
+# stamped id exactly, so what reaches it must be the id this script computed,
+# not a 7-character abbreviation of it that would fail against every capture.
+export PCOMM_EXPECT_COMMIT="$build_commit"
 
 # ---- sync -----------------------------------------------------------------
 # rsync rather than the git round-trip run_on_mn5.sh uses: there is no bare repo
@@ -98,7 +129,7 @@ if [ "$do_build" -eq 1 ]; then
   # the runner went on to execute cases against the previous binary. That is
   # finding 14 of the round-2 studies, word for word, and it was still here in
   # this file after being fixed in wait_and_run_mn5.sh.
-  rsh "set -o pipefail; cd $RDIR &&
+  rsh "set -o pipefail; export PCOMM_COMMIT=$build_commit; cd $RDIR &&
        cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_MLX5DV=ON >/dev/null &&
        cmake --build build -j 2>&1 | tail -3" || {
     echo "run_on_a100.sh: build failed" >&2; exit 1; }
@@ -115,6 +146,7 @@ for c in $(rsh "ls $RDIR/tests/hpc/cases" | grep -E "^(${cases_filter// /|})" );
        export PCOMM_OUT_ROOT=$RDIR/results &&
        export PCOMM_PROVIDER_PATH=$RDIR/build/providers/mlx5dv &&
        export PCOMM=$RDIR/build/pcomm/pcomm &&
+       export PCOMM_EXPECT_COMMIT=$build_commit &&
        bash tests/hpc/cases/$c/job.sbatch 2>&1 | tail -40"
 done
 

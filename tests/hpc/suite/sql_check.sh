@@ -282,6 +282,43 @@ case "$params_sql" in
 esac
 sql "$params_sql"
 
+# ------------------------------------------------------------ provenance -----
+# What the RUNNER says this board is about — as opposed to `params`, which is
+# what the WORKLOAD was asked to do. Two tables because they are two different
+# kinds of claim, and because `params` is INTEGER-only by construction: a commit
+# id typed as INTEGER would be a lie about the column, and `CAST('a7a9f7d' AS
+# INTEGER)` is 0 in sqlite rather than an error, so the lie would be silent.
+#
+# Every capture already records the build that produced it (Invocation.build:
+# commit, dirty flag, build type, engine ABI, schema hash) and nothing ever
+# compared it to anything. That gap has produced four false findings — a stale
+# .so that invented a DuckDB planner bug (see link_sql.hpp `edge_sizes`), a
+# two-hour-stale hand-copied provider that nearly refuted a correct change
+# (Invocation exists because of it), a mixed syncthing tree that judged a fixed
+# provider by a stale assertion (run_on_a100.sh's header), and a gate that went
+# green over a backend it had never compiled. This table is the other half of
+# the comparison.
+#
+# ZERO ROWS WHEN THE RUNNER SAID NOTHING, deliberately. An assertion naming
+# `-- requires: provenance` then reports [skip], not [ok]: a hand-run case has
+# no commit to be checked against, and "checked, and the build is right" must
+# not print the same word as "nobody said which build this should be". That is
+# this suite's most common defect with its own heading in README.md — the
+# vacuous pass — and it would be especially sharp here, because a capture with
+# no provenance is exactly the state the check exists to refuse.
+prov_commit="${PCOMM_EXPECT_COMMIT:-}"
+# Checked by VALUE, like workload_params above and for the same reason: this
+# string is spliced into SQL. A commit id is hex, plus write_build_id.cmake's
+# `-dirty` suffix; anything else is a runner passing something that is not a
+# commit, which must fail loudly rather than produce a broken assertion.
+case "$prov_commit" in
+  *[!a-zA-Z0-9._-]*) echo "$case_name: PCOMM_EXPECT_COMMIT is not a commit id: $prov_commit" >&2; exit 2 ;;
+esac
+sql "CREATE TABLE provenance (expect_commit TEXT);"
+if [ -n "$prov_commit" ]; then
+  sql "INSERT INTO provenance VALUES ('$prov_commit');"
+fi
+
 # A rank appears in whichever tables the capture happens to have, so the
 # cross-cutting "did every rank record anything" assertion needs one place to
 # look. Built from the imported tables that actually carry a rank column.
@@ -350,6 +387,11 @@ PY
 # environmental reason silently passing every check that found nothing to
 # contradict. meta.json lists what the workload must have produced.
 echo "  -- assertions (derived from the workload; empty result = pass)"
+# Say whether the provenance checks are armed, once, on every board. Without
+# this line an unset PCOMM_EXPECT_COMMIT is visible only as a [skip] among
+# twenty others, and a check that silently stopped running is the thing this
+# whole mechanism exists to prevent.
+echo "     provenance: ${prov_commit:-<unset> — nothing claims a commit, so the build checks SKIP}"
 expect_tables="$(python3 - "$meta" <<'PY'
 import json, sys
 print(" ".join(json.load(open(sys.argv[1])).get("expect_tables", [])))
@@ -413,6 +455,16 @@ print(", ".join(("NULL" if w.get(c) is None else str(int(w[c]))) + " AS " + c fo
 PY
 )"
 
+# `provenance` on the derived path, with the same zero-rows-means-unarmed shape
+# the sqlite table above has. Nothing needs it there yet — an assertion is only
+# re-run against Parquet when it names a table the CSV export lacks — but the
+# derived layer is where the next provenance check lives (comparing
+# `run_provenance.images` mtimes against the engine's), and a synthetic table
+# that exists on one engine and not the other is a trap that surfaces as
+# "no such table" three weeks later.
+if [ -n "$prov_commit" ]; then pq_prov="SELECT '$prov_commit' AS expect_commit"
+else                          pq_prov="SELECT '' AS expect_commit WHERE 1=0"; fi
+
 # ranks_seen, rebuilt over the Parquet tables that carry a rank column. Same
 # definition as the sqlite one — "a rank appears in whichever tables the capture
 # happens to have" — over a different table set.
@@ -440,12 +492,13 @@ run_assert_pq() {
     esac
   done
   an=$((an+1))
-  spliced="$(PQ_VALUES="$pq_prelude_values" PQ_RANKS="$pq_rank_union" python3 - "$q" <<'PY'
+  spliced="$(PQ_VALUES="$pq_prelude_values" PQ_RANKS="$pq_rank_union" PQ_PROV="$pq_prov" python3 - "$q" <<'PY'
 import os, re, sys
 body = open(sys.argv[1]).read()
 # Strip leading comments and blank lines so the WITH/SELECT is the first token.
 body = re.sub(r'(?m)^\s*--.*$', '', body).strip().rstrip(';')
-ctes = 'params AS (SELECT %s), ranks_seen AS (%s)' % (os.environ['PQ_VALUES'], os.environ['PQ_RANKS'])
+ctes = 'params AS (SELECT %s), ranks_seen AS (%s), provenance AS (%s)' % (
+    os.environ['PQ_VALUES'], os.environ['PQ_RANKS'], os.environ['PQ_PROV'])
 m = re.match(r'(?is)^with\s+recursive\s+', body)
 if m:
     print('WITH RECURSIVE %s, %s' % (ctes, body[m.end():]))

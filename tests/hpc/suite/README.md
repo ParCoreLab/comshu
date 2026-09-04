@@ -68,9 +68,24 @@ Supporting machinery, all in `meta.json`:
   `[skip]` when the capture has no such table or the workload no such
   parameter, so `suite/asserts/*.sql` can be genuinely cross-cutting.
 
+And one table that is *not* from `meta.json`:
+
+- `provenance(expect_commit)` — what the RUNNER says this board is about,
+  materialised from `$PCOMM_EXPECT_COMMIT`. `params` is the workload's claim;
+  this is the run's. It has **zero rows when no runner named a commit**, so
+  `-- requires: provenance` makes a hand-run report `[skip]` rather than a
+  vacuous `[ok]` — see the vacuous-pass section below, which applies with
+  unusual force here: a capture of unknown provenance is exactly the state the
+  check exists to refuse. `run_on_mn5.sh` and `run_on_a100.sh` both set it, and
+  every board prints whether it is armed.
+
 `suite/asserts/` holds the checks worth running everywhere: `owner_in_range`
 (every `mem_dev` names a GPU that exists), `completions_succeed`,
-`sends_have_payload`, `ranks_complete`.
+`sends_have_payload`, `ranks_complete`, and `build_is_the_boards_commit` — the
+one assertion about the *tool* rather than the workload, comparing
+`invocation.build` against the commit the runner claims. Four false findings
+have come from a capture produced by something other than the tree under test;
+that file's header lists them.
 
 ## How correctness is verified
 

@@ -127,6 +127,58 @@ wait_job() {
   done
 }
 
+# --- 0.5 what commit is this board about? -----------------------------------
+# The board is about to make a claim — "these cases pass" — and the claim is
+# worthless without a version attached. This script has always KNOWN the version
+# (it pushes HEAD and prints branch@head) and never told the run, so nothing
+# downstream could check that the binaries it measured came from that tree.
+# `--no-build` in particular has meant "the binaries are from whenever, the
+# source is from now", silently. Exported below as PCOMM_EXPECT_COMMIT, which
+# sql_check.sh turns into the one-row `provenance` table that
+# asserts/build_is_the_boards_commit.sql compares against Invocation.build.
+#
+# `--short=12` because that is what cmake/write_build_id.cmake stamps, and the
+# assertion matches the id exactly. `rev-parse --short` (7) is a different
+# string and would fail against every capture — the near-miss is the point of
+# spelling the length here rather than inheriting a default.
+expect_commit=$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null) || expect_commit=""
+
+# PCOMM_COMMIT, which write_build_id.cmake prefers over asking git, is set ONLY
+# on the --rsync path, and the asymmetry is deliberate.
+#
+# On the git path the remote tree is a clone reset to the pushed commit, so the
+# remote's own git is the honest answer: if someone has edited the deploy tree
+# by hand it stamps `-dirty` and the assertion catches it. Handing it a commit
+# from this end would overwrite that evidence with an assumption.
+#
+# On the --rsync path there is nothing to ask. rsync excludes `.git`, so the
+# remote keeps whatever `.git` an earlier git-path sync left — a repository
+# describing an OLDER tree than the files beside it. Left alone, the build
+# stamps that stale commit, and reports it clean. That is worse than "unknown":
+# a confident wrong answer, which is the failure write_build_id.cmake's own
+# header describes.
+build_commit=""
+if [ -n "$expect_commit" ] && [ "$use_rsync" -eq 1 ]; then
+  # Tracked changes only, matching write_build_id.cmake's
+  # `--untracked-files=no`, so the two sides agree on what "dirty" means.
+  git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || expect_commit="$expect_commit-dirty"
+  build_commit="$expect_commit"
+fi
+BUILD_ID_ENV="export PCOMM_COMMIT=$build_commit;"
+# Rides `--export` into the job, which is where sql_check.sh reads it. Appended
+# conditionally rather than always: `PCOMM_EXPECT_COMMIT=` with an empty value
+# would arrive as an empty string, which sql_check.sh reads as "nobody said" —
+# the same outcome, by a longer route that looks like a claim.
+EXPECT_EXPORT=""
+[ -n "$expect_commit" ] && EXPECT_EXPORT=",PCOMM_EXPECT_COMMIT=$expect_commit"
+if [ "$check_only" -eq 0 ]; then
+  if [ -n "$expect_commit" ]; then
+    say "this board is about $expect_commit"
+  else
+    echo "  (no git here — the board will name no commit and the build assertions will skip)" >&2
+  fi
+fi
+
 # --- 1. sync ----------------------------------------------------------------
 # Over git, not rsync: the remote tree is a clone of the bare repo at
 # $PCOMM_BARE, so what the suite runs is always a named commit. That matters
@@ -172,8 +224,20 @@ if [ "$check_only" -eq 0 ]; then
       || { echo "push to $PCOMM_REMOTE_GIT failed" >&2; exit 1; }
     # Hard reset, not merge: the remote tree is a deploy target, never edited
     # there. Untracked build dirs survive (they are gitignored).
-    rsh "cd $RDIR && git fetch --quiet origin && git reset --quiet --hard origin/$branch && git rev-parse --short HEAD" \
+    rhead=$(rsh "cd $RDIR && git fetch --quiet origin && git reset --quiet --hard origin/$branch && git rev-parse --short=12 HEAD" | tr -d '[:space:]') \
       || { echo "remote pull failed — is $RDIR a clone of $PCOMM_BARE?" >&2; exit 1; }
+    # CHECKED, not merely printed. The push and the reset are two operations and
+    # a board is only attributable to a commit if both landed; a reset that
+    # silently did not move leaves every later step — build, run, assert —
+    # answering for the wrong tree, which is the whole family of defect
+    # asserts/build_is_the_boards_commit.sql exists for. This is the same
+    # comparison, made before the queue wait instead of after it.
+    echo "  remote HEAD: $rhead"
+    if [ -n "$expect_commit" ] && [ "$rhead" != "$expect_commit" ]; then
+      echo "run_on_mn5: remote tree is at ${rhead:-?}, this board claims $expect_commit." >&2
+      echo "  the push or the reset did not land; re-run, or check $RDIR by hand." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -273,7 +337,7 @@ if [ "$do_build" -eq 1 ]; then
   # naming all three missing pieces. Skipping loudly is fine; skipping silently,
   # which is what happened above, is not.
   say "build tools + ibverbs provider + cupti backend (gcc-13.2, DuckDB=$DUCK_ON)"
-  rsh "module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
+  rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
        export CUDA_HOME=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7/cuda/12.9 &&
        cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_CUPTI=ON -DPCOMM_DUCKDB=$DUCK_ON >/dev/null &&
        bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
@@ -305,7 +369,7 @@ if [ "$do_build" -eq 1 ]; then
   # sets NVHPC_ROOT to that same ACC path from either side — there is no GPP
   # copy to point at. If the fallback gcc is used the step says so, because
   # NVBit is a prebuilt object and the host compiler is not a free choice.
-  rsh "for g in gcc/11.4.0 gcc/12.3.0; do module load \$g >/dev/null 2>&1 && { GCCMOD=\$g; break; }; done;
+  rsh "$BUILD_ID_ENV for g in gcc/11.4.0 gcc/12.3.0; do module load \$g >/dev/null 2>&1 && { GCCMOD=\$g; break; }; done;
        [ -n \"\${GCCMOD:-}\" ] || { echo \"no usable gcc module for the NVBit host compiler\" >&2; exit 1; };
        [ \"\$GCCMOD\" = gcc/11.4.0 ] || echo \"  (gcc/11.4.0 not in this module tree; using \$GCCMOD)\" >&2;
        module load nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1 || { echo \"module load nvidia-hpc-sdk/25.7 cmake FAILED\" >&2; exit 1; }; cd $RDIR &&
@@ -347,7 +411,7 @@ if [ "$do_build" -eq 1 ]; then
   # local gate runs on the self transport and proves the record layer; rc_mlx5,
   # HW tag matching and rendezvous are only reachable here.
   say "build ucx + ucx_deep providers (UCP doors and the UCT ops table, gcc-13.2)"
-  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
+  rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        UCX=\$(pcomm_find_ucx) &&
        echo \"  ucx: \$UCX\" &&
@@ -372,7 +436,7 @@ if [ "$do_build" -eq 1 ]; then
   #
   # gcc-13.2 like ucx and for the same reason: the engine's libstdc++.
   say "build nccl provider (PROFAPI doors, gcc-13.2)"
-  rsh "module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
+  rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        echo \"  nccl: \$NCCL_HOME\" &&
        cmake -B build-nccl -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&
@@ -443,7 +507,7 @@ if [ "$check_only" -eq 0 ] && [ "$combined" -eq 1 ]; then
   # about. Case 05 alone is ~7.5 min; everything else together is under two.
   case " $CASES " in *" 05_"*) tlimit="00:40:00" ;; *) tlimit="00:15:00" ;; esac
   say "submit + wait: one allocation for [$CASES]"
-  JID=$(rsh "cd $RDIR && sbatch --parsable --time=$tlimit --export=ALL,PCOMM_ROOT=$PROOT,PCOMM_OUT_ROOT=$OUT_ROOT,PCOMM_CASES_FILE=$OUT_ROOT/.run-cases tests/hpc/suite/all_in_one.sbatch" \
+  JID=$(rsh "cd $RDIR && sbatch --parsable --time=$tlimit --export=ALL,PCOMM_ROOT=$PROOT,PCOMM_OUT_ROOT=$OUT_ROOT,PCOMM_CASES_FILE=$OUT_ROOT/.run-cases$EXPECT_EXPORT tests/hpc/suite/all_in_one.sbatch" \
         | tr -d '[:space:]') && JID="${JID%%;*}" && [ -n "$JID" ] \
     || { echo "  !! submit FAILED" >&2
          for c in $CASES; do printf '%s %s\n' "$c" SUBMIT_FAILED >> "$MANIFEST_LOCAL"; done
@@ -464,7 +528,7 @@ elif [ "$check_only" -eq 0 ]; then
     # PCOMM_ROOT/PCOMM_OUT_ROOT go through --export so the job honours the same
     # PCOMM_REMOTE_DIR / PCOMM_OUT_ROOT this driver was given, instead of
     # falling back to common.sh's $HOME defaults.
-    if ! jid=$(rsh "cd $RDIR && sbatch --parsable --export=ALL,PCOMM_ROOT=$PROOT,PCOMM_OUT_ROOT=$OUT_ROOT tests/hpc/cases/$c/job.sbatch"); then
+    if ! jid=$(rsh "cd $RDIR && sbatch --parsable --export=ALL,PCOMM_ROOT=$PROOT,PCOMM_OUT_ROOT=$OUT_ROOT$EXPECT_EXPORT tests/hpc/cases/$c/job.sbatch"); then
       echo "  !! submit FAILED: $c" >&2
       # Record it anyway: a case missing from the manifest would fall back to
       # newest-wins in `check` and could inherit an older run's PASS.
