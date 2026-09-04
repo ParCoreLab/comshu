@@ -162,6 +162,47 @@ if [ -n "$short" ]; then
   exit 2
 fi
 
+# PRE-FLIGHT 2: does this BUILD contain every provider the selected cases need?
+#
+# THE BOARD WAS GREEN OVER CODE IT HAD NEVER COMPILED. Job 45405085 reported
+# SUITE GREEN while cases 23 and 24 skipped on "this build has no
+# libcupti_trace.so" — run_on_mn5.sh configured four build trees and none passed
+# -DPCOMM_CUPTI=ON, so the merge gate had never built the backend the change was
+# about. One skip line among twenty-four, and the top line said GREEN.
+#
+# A case that skips because THIS HOST cannot run it (no PeerMappingOverride, no
+# peermem) is honest: the hardware is the limit and no build can fix it. A case
+# that skips because THIS BUILD lacks its provider is a hole in the gate wearing
+# a skip's clothing. The two look identical on the board and must not.
+#
+# ASKS THE LAUNCHER, rather than mapping provider names to .so names here. That
+# mapping lives in pcomm/run.cpp's registry and a copy of it kept in step by
+# hand is a copy kept in step by nobody — the same argument common.sh makes for
+# globbing the provider path instead of listing it. `run --dry-run` resolves
+# exactly what a real run would and exits 0 built / 1 declared-but-missing /
+# 2 unknown name.
+#
+# HARD ERROR for the same reason the allocation check above is one.
+missing=""
+for c in $CASES; do
+  m="$CASES_DIR/$c/meta.json"
+  [ -f "$m" ] || continue
+  provs=$(python3 -c 'import json,sys
+try: print(",".join(json.load(open(sys.argv[1])).get("providers",[])))
+except Exception: print("")' "$m" 2>/dev/null)
+  [ -n "$provs" ] || continue
+  if ! "$PCOMM" run --dry-run -p "$provs" -- /bin/true >/dev/null 2>&1; then
+    missing="$missing $c(-p $provs)"
+  fi
+done
+if [ -n "$missing" ]; then
+  echo "!! this build cannot supply the providers these cases declare:$missing" >&2
+  echo "!! that is a GATE HOLE, not a skip — the board would go green over code" >&2
+  echo "!! it never built. Fix the cmake flags in run_on_mn5.sh, or drop the" >&2
+  echo "!! cases from --cases if they are genuinely out of scope for this build." >&2
+  exit 2
+fi
+
 for c in $CASES; do
   job="$CASES_DIR/$c/job.sbatch"
   if [ ! -f "$job" ]; then
