@@ -38,7 +38,7 @@ inline constexpr std::uint16_t kStreamFormatVersion = 1;
 // collapsed, so prose edits do not churn it but any declaration change does.
 // tools/schema_check.py recomputes this and fails the build when it drifts —
 // keeping it correct is not left to whoever edits the schema remembering to.
-inline constexpr std::uint64_t kSchemaHash = 0xEB965978ECA282FCull;
+inline constexpr std::uint64_t kSchemaHash = 0x024C07869755921Dull;
 
 // Layout is fixed by pcomm.fbs. The padding is explicit and zero-initialised
 // for the same reason core/time.hpp spells its padding out: an implicit hole
@@ -100,7 +100,7 @@ inline const char* blob_header_error(const BlobHeader& h, std::uint64_t actual_b
 // the fields say what the file claims to be, and this says whether the claim
 // is one this build can honour. Returns nullptr when it is.
 inline const char* stream_header_error(const StreamHeader& h, core::RecordTypeId expected_type,
-                                       std::uint32_t expected_stride,
+                                       std::uint32_t    expected_stride,
                                        core::RecordKind expected_kind) {
     if (h.magic != kStreamMagic)
         return "not a pcomm stream (bad magic) — a pre-format-1 capture has no "

@@ -78,8 +78,17 @@ export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
 # harmless — the launcher searches the path and reports what it cannot find —
 # putting build scaffolding in a search path is how a search path stops being
 # readable. The name is the one the launcher looks for.
+#
+# gpu-backends/ IS SEARCHED TOO, and it has to be. `pcomm list` and
+# `pcomm run -p` do not distinguish a provider from a backend — `cupti` is a
+# registry row in pcomm/run.cpp exactly as `ibverbs` is, and the launcher looks
+# for its library on this one path — but the source tree does: libcupti_trace.so
+# builds under gpu-backends/, not providers/, because it captures no transport.
+# Globbing only providers/ therefore reproduced the ucx_deep failure recorded
+# above, for a directory rather than for a name: the library builds correctly and
+# `pcomm run -p cupti` refuses the run because it cannot find it.
 _pcomm_provider_path=""
-for _pdir in "$PCOMM_BUILD"/providers/*/; do
+for _pdir in "$PCOMM_BUILD"/providers/*/ "$PCOMM_BUILD"/gpu-backends/*/; do
   [ -d "$_pdir" ] || continue            # unmatched glob, or no providers built
   # NOT `set --`: this file is SOURCED, and rewriting the caller's positional
   # parameters to test a glob would break the first job script that uses "$1".

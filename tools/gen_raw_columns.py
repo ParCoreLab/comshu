@@ -55,7 +55,14 @@ SCALARS = {
 
 # Enums land as their underlying uint8. Decoded to names in SQL, not here —
 # that mapping is semantic and belongs with the derived tables.
-ENUMS = {"TimeKind", "MemOp", "MemSpace", "EdgePredicate", "RecordKind"}
+#
+# CLOSED BY CONSTRUCTION, like RENAMES below: `flatten` hard-errors on a type it
+# does not recognise rather than dropping the column, so a record that gains an
+# enum this set does not know fails the generator loudly instead of producing a
+# table that looks complete. That is why adding CudaMemcpy's three enums here is
+# a required step and not a courtesy.
+ENUMS = {"TimeKind", "MemOp", "MemSpace", "EdgePredicate", "RecordKind",
+         "MemcpyKind", "MemResidency", "CopySource"}
 
 
 def flatten(fields, structs, prefix, expr):

@@ -243,6 +243,48 @@ void pcomm_engine_record_kernel(std::uint64_t t0, std::uint64_t t1, std::uint16_
                });
 }
 
+// --- host-initiated copies --------------------------------------------------
+//
+// The engine owns CudaMemcpy (534) and, exactly as with GpuKernel, measures
+// nothing: the instruments live behind vendor headers this file may not
+// include. See engine_abi.h.
+//
+// No interning at all, deliberately, which is why this is shorter than
+// record_kernel: every field is a number. A copy has no name — CUPTI reports no
+// symbol and no address for one (the activity records carry neither) — so there
+// is nothing here that could need the dictionary, and the record can therefore
+// be written from any thread at any point in the run without the teardown
+// ordering Invocation has to worry about.
+void pcomm_engine_record_memcpy(std::uint64_t t0, std::uint64_t t1, std::uint16_t domain,
+                                std::uint64_t bytes, std::uint64_t correlation,
+                                std::uint64_t stream, std::uint16_t src_device,
+                                std::uint16_t dst_device, std::uint16_t ctx_device,
+                                std::uint8_t kind, std::uint8_t src_space, std::uint8_t dst_space,
+                                std::uint8_t source, std::uint8_t async) {
+    auto& tracer = pcomm::Tracer::instance();
+    if (!tracer.has_recorder())
+        return;
+    // Interval, always, for record_kernel's reason: [a, b] is the transfer's
+    // window, and a source holding only one instant must say so through
+    // `source` rather than by collapsing b onto a.
+    tracer.recorder().record(pcomm::core::Temporal::interval({domain, t0}, {domain, t1}),
+                             pcomm::core::records::CudaMemcpy{
+                                 {},
+                                 {},
+                                 correlation,
+                                 bytes,
+                                 stream,
+                                 src_device,
+                                 dst_device,
+                                 ctx_device,
+                                 static_cast<pcomm::core::MemcpyKind>(kind),
+                                 static_cast<pcomm::core::MemResidency>(src_space),
+                                 static_cast<pcomm::core::MemResidency>(dst_space),
+                                 static_cast<pcomm::core::CopySource>(source),
+                                 async,
+                             });
+}
+
 void pcomm_engine_clock_anchor(std::uint16_t domain, std::uint64_t local_ticks,
                                std::uint64_t wall_ns) {
     auto& tracer = pcomm::Tracer::instance();

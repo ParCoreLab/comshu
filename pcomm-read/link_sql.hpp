@@ -387,6 +387,30 @@ UNION ALL
     SELECT rank, 'gpu_kernel',     temporal_a_domain, temporal_kind,
            temporal_a_ticks, temporal_b_ticks,
            device, NULL::BIGINT      FROM gpu_kernel WHERE source <> 2
+UNION ALL
+    -- The copy engines, beside the SMs and the NIC. This is the lane that shows
+    -- a rank blocked in a synchronous cudaMemcpy while its GPU sits idle — a
+    -- gap that every other lane in this union renders as silence.
+    --
+    -- `ep` is the DESTINATION device, not the source, and the choice matters
+    -- because `ep` is what the timeline draws as a sub-lane: a copy is work
+    -- arriving somewhere, so grouping by where the bytes landed puts an H2D and
+    -- the kernel that consumes it on the same row. A host destination (D2H)
+    -- carries the record's 65535, which is a lane of its own and reads
+    -- correctly as "the host".
+    --
+    -- source = 1 (HostApi) is EXCLUDED, exactly as source = 2 is excluded from
+    -- the kernel lane above and for the same reason: those rows would be the API
+    -- call, which for an ASYNC copy is submission and trails execution by
+    -- milliseconds. NOTHING EMITS THEM TODAY — the filter is written before its
+    -- first row exists rather than after, which is the choice _nvlink_sends
+    -- makes for its Load branch. It is also why there is no
+    -- link_health.memcpy_rows_submission_only companion yet: a rubric row that
+    -- cannot fire on any capture that can currently be taken is dead weight, and
+    -- it lands with its producer.
+    SELECT rank, 'cuda_memcpy',    temporal_a_domain, temporal_kind,
+           temporal_a_ticks, temporal_b_ticks,
+           dst_device, bytes::BIGINT FROM cuda_memcpy WHERE source <> 1
 )sql"},
 
     // (lid, qp_num) -> the rank that owns it. `claimants` is kept rather than
@@ -938,6 +962,16 @@ WITH strong AS (
     SELECT DISTINCT rank, device     AS device FROM gpu_kernel WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
+    UNION
+    -- The device whose CONTEXT issued a copy. A context belongs to the process
+    -- that made it current, so this is evidence of the same class as
+    -- gpu_kernel.device — and it is the ONLY part of a copy row that is.
+    -- src_device and dst_device are deliberately absent: a peer copy names one
+    -- device the rank owns and one it does not, and nothing on the row says
+    -- which, so admitting either would make a rank a claimant of every GPU it
+    -- ever touched. They are admitted to _device_key, which translates ordinals
+    -- and decides no ownership.
+    SELECT DISTINCT rank, ctx_device AS device FROM cuda_memcpy WHERE ctx_device <> 65535
 ),
 weak AS (
     SELECT DISTINCT rank, device FROM ucx_tag_send WHERE device <> 65535
@@ -996,6 +1030,16 @@ FROM (
     UNION SELECT DISTINCT rank, device         FROM gpu_kernel WHERE device <> 65535
     UNION SELECT DISTINCT rank, cuda_dev::USMALLINT FROM nccl_comm WHERE cuda_dev >= 0
     UNION SELECT DISTINCT rank, ordinal        FROM gpu_device
+    -- Both ends of a copy, INCLUDING the far end of a peer copy. This view is a
+    -- key-space translation and nothing else — it says "ordinal N on rank R
+    -- means this physical card" — so admitting an ordinal the rank does not own
+    -- is correct here and is exactly what makes the far end of a peer copy
+    -- resolvable at all. `mem_device FROM gpu_access` is already admitted on the
+    -- same argument. Ownership is decided in _device_owner, which admits
+    -- neither.
+    UNION SELECT DISTINCT rank, src_device     FROM cuda_memcpy WHERE src_device <> 65535
+    UNION SELECT DISTINCT rank, dst_device     FROM cuda_memcpy WHERE dst_device <> 65535
+    UNION SELECT DISTINCT rank, ctx_device     FROM cuda_memcpy WHERE ctx_device <> 65535
 ) r
 LEFT JOIN gpu_device g ON g.rank = r.rank AND g.ordinal = r.device
 )sql"},
@@ -1036,6 +1080,21 @@ FROM (
     SELECT DISTINCT rank, device     AS device FROM gpu_kernel WHERE device <> 65535
     UNION
     SELECT DISTINCT rank, cuda_dev::USMALLINT AS device FROM nccl_comm WHERE cuda_dev >= 0
+    UNION
+    -- The copy's CONTEXT device, exactly as in _rank_device above and for the
+    -- sharper version of the same reason: this view decides OWNERSHIP, so a
+    -- wrong entry does not leave a hole, it hands another rank's traffic to the
+    -- wrong owner. A context is the issuing process's; a peer copy's endpoints
+    -- are not.
+    --
+    -- MEASURED, not argued (du04, four MPI ranks, one GPU each, cudaMemcpyPeer
+    -- round a CUDA-IPC ring): without this branch the capture had NO ownership
+    -- evidence at all — no mem_object (cudaMalloc is not hooked), no gpu_access
+    -- (gpumem cannot share a process with CUPTI), no gpu_kernel (that workload
+    -- launches none), no nccl_comm — and the whole ring collapsed to a single
+    -- `-1 -> -1` edge with unresolved_device_copy = 400, over 400 records whose
+    -- device-space matrix was perfect.
+    SELECT DISTINCT rank, ctx_device AS device FROM cuda_memcpy WHERE ctx_device <> 65535
 ) d
 JOIN _node n ON n.rank = d.rank
 JOIN _device_key k ON k.rank = d.rank AND k.device = d.device
@@ -1084,6 +1143,75 @@ LEFT JOIN _node n         ON n.rank = g.rank
 LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
 LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
 WHERE g.run_device <> g.mem_device
+GROUP BY 1, 2, 3
+)sql"},
+
+    // Copy-engine traffic as rank-space edges.
+    //
+    // THE EDGE TEST IS THE DEVICE PAIR, NOT `kind`, and that is the one design
+    // decision in this lane. `cuda_memcpy.kind` is what the API was ASKED for;
+    // `src_device <> dst_device` is what the hardware DID. They can disagree in
+    // both directions: a cudaMemcpy(..., cudaMemcpyDeviceToDevice) between
+    // buffers on two different GPUs under unified addressing is a cross-device
+    // transfer spelled as a local one, and CUPTI may report it either as
+    // MEMCPY2/PtoP (two ordinals, correctly an edge) or as MEMCPY/DTOD (one
+    // ordinal, correctly not one, because that is all the instrument saw).
+    // Keying on the ordinals is right under both, and keying on `kind` is wrong
+    // under at least one.
+    //
+    // 65535 is the record's kUnknownDevice — a HOST end. A staging copy is not
+    // rank->rank traffic and must not be an edge: excluding it here is what
+    // keeps comm_edges a communication matrix rather than a memory-traffic one.
+    // H2D/D2H are not lost, they are in cuda_memcpy and on the timeline.
+    //
+    // Direction is the record's own, with no op-style inversion: unlike a peer
+    // LOAD in _nvlink_sends, a copy already names a source and a destination.
+    //
+    // The unit is BYTES and a message is a whole transfer, so unlike the nvlink
+    // lane this one is directly comparable with the verbs lane — a 64 MiB peer
+    // copy is one row of 67108864, not 16.7 M four-byte accesses.
+    {"_memcpy_edges", R"sql(
+CREATE OR REPLACE VIEW _memcpy_edges AS
+SELECT coalesce(os.rank, -1)  AS src_rank,
+       coalesce(od.rank, -1)  AS dst_rank,
+       count(*)::BIGINT       AS sends,
+       sum(c.bytes)::BIGINT   AS bytes
+FROM cuda_memcpy c
+LEFT JOIN _node n          ON n.rank = c.rank
+LEFT JOIN _device_key   ks ON ks.rank = c.rank AND ks.device = c.src_device
+LEFT JOIN _device_key   kd ON kd.rank = c.rank AND kd.device = c.dst_device
+LEFT JOIN _device_owner os ON os.node = n.node AND os.dev_key = ks.dev_key
+LEFT JOIN _device_owner od ON od.node = n.node AND od.dev_key = kd.dev_key
+WHERE c.src_device <> 65535 AND c.dst_device <> 65535
+  AND c.src_device <> c.dst_device
+GROUP BY 1, 2
+)sql"},
+
+    // The copy lane by size class. Duplicated from the view above rather than
+    // derived from it, for the reason _sends_sized gives: comm_edges is not
+    // rewritten to feed edge_sizes, so each lane needs both spellings, and
+    // tests/comm_edges_rule.sh asserts the roll-up is exact — which is what
+    // turns the duplication from a drift hazard into a checked invariant.
+    //
+    // `size_class` here is REAL BYTES, unlike the nvlink lane where it is one
+    // access's width. A copy's size distribution is a distribution of message
+    // sizes, which is the question edge_sizes exists to answer.
+    {"_memcpy_edges_sized", R"sql(
+CREATE OR REPLACE VIEW _memcpy_edges_sized AS
+SELECT coalesce(os.rank, -1)  AS src_rank,
+       coalesce(od.rank, -1)  AS dst_rank,
+       CASE WHEN c.bytes > 0 THEN (1::BIGINT << CAST(floor(log2(c.bytes)) AS INTEGER))
+            ELSE 0 END        AS size_class,
+       count(*)::BIGINT       AS sends,
+       sum(c.bytes)::BIGINT   AS bytes
+FROM cuda_memcpy c
+LEFT JOIN _node n          ON n.rank = c.rank
+LEFT JOIN _device_key   ks ON ks.rank = c.rank AND ks.device = c.src_device
+LEFT JOIN _device_key   kd ON kd.rank = c.rank AND kd.device = c.dst_device
+LEFT JOIN _device_owner os ON os.node = n.node AND os.dev_key = ks.dev_key
+LEFT JOIN _device_owner od ON od.node = n.node AND od.dev_key = kd.dev_key
+WHERE c.src_device <> 65535 AND c.dst_device <> 65535
+  AND c.src_device <> c.dst_device
 GROUP BY 1, 2, 3
 )sql"},
 
@@ -1706,7 +1834,28 @@ SELECT * FROM (VALUES
     ('EdgePredicate', 3, 'MapsToQp'),
     ('KernelSource', 0, 'Cupti'),
     ('KernelSource', 1, 'NvbitGlobaltimer'),
-    ('KernelSource', 2, 'HostSubmit')
+    ('KernelSource', 2, 'HostSubmit'),
+    ('MemcpyKind', 0, 'Unknown'),
+    ('MemcpyKind', 1, 'HostToDevice'),
+    ('MemcpyKind', 2, 'DeviceToHost'),
+    ('MemcpyKind', 3, 'DeviceToDevice'),
+    ('MemcpyKind', 4, 'HostToHost'),
+    ('MemcpyKind', 5, 'PeerToPeer'),
+    ('MemcpyKind', 6, 'HostToArray'),
+    ('MemcpyKind', 7, 'ArrayToHost'),
+    ('MemcpyKind', 8, 'ArrayToArray'),
+    ('MemcpyKind', 9, 'ArrayToDevice'),
+    ('MemcpyKind', 10, 'DeviceToArray'),
+    ('MemResidency', 0, 'Unknown'),
+    ('MemResidency', 1, 'Pageable'),
+    ('MemResidency', 2, 'Pinned'),
+    ('MemResidency', 3, 'Device'),
+    ('MemResidency', 4, 'Array'),
+    ('MemResidency', 5, 'Managed'),
+    ('MemResidency', 6, 'DeviceStatic'),
+    ('MemResidency', 7, 'ManagedStatic'),
+    ('CopySource', 0, 'Cupti'),
+    ('CopySource', 1, 'HostApi')
 ) AS v(vocab, value, name)
 )sql"},
 
@@ -2028,6 +2177,23 @@ FROM (
     SELECT src_rank, dst_rank, 'nvlink', 'accesses', sends, bytes
     FROM _nvlink_sends
   UNION ALL
+    -- Copy-engine traffic between two GPUs. Its own transport value rather than
+    -- folded into 'nvlink', even when NVLink is the wire that carries it,
+    -- because `transport` here names THE PLANE THAT WAS OBSERVED and these two
+    -- are not the same measurement: 'nvlink' is instrumented load/store
+    -- instructions from kernels NVBit was told to instrument, a lower bound from
+    -- a sampling-shaped filter; this is whole transfers reported by the copy
+    -- engine, exact and complete. Summing them would double-count nothing (they
+    -- are disjoint mechanisms) but WOULD merge a lower bound with an exact
+    -- count, which is the category error `unit` exists to prevent.
+    --
+    -- The two also cannot appear in one capture today: 'nvlink' needs gpumem,
+    -- this needs CUPTI, and NVBit owns the subscriber. link_health's
+    -- memcpy_capture_unavailable is what says so on the runs where this lane is
+    -- absent for that reason rather than for want of traffic.
+    SELECT src_rank, dst_rank, 'cudamemcpy', 'bytes', sends, bytes
+    FROM _memcpy_edges
+  UNION ALL
     -- The UCX lane. `unit` is 'datatype-units', not 'messages', because
     -- UcxTagSend.count is a UCP datatype count and only equals bytes for a
     -- contiguous 8-bit datatype. Its own transport value, so the verbs/devx
@@ -2129,6 +2295,9 @@ FROM (
   UNION ALL
     SELECT src_rank, dst_rank, 'nvlink', 'accesses', size_class, sends, bytes
     FROM _nvlink_sends_sized
+  UNION ALL
+    SELECT src_rank, dst_rank, 'cudamemcpy', 'bytes', size_class, sends, bytes
+    FROM _memcpy_edges_sized
   UNION ALL
     SELECT CASE WHEN s.inbound THEN coalesce(p.peer_rank, -1) ELSE s.rank END,
            CASE WHEN s.inbound THEN s.rank ELSE coalesce(p.peer_rank, -1) END,
@@ -2510,6 +2679,63 @@ SELECT 'unresolved_nvlink',
        coalesce(sum(sends), 0)::BIGINT,
        'NVLink accesses whose peer rank is unknown — this capture records no node identity'
 FROM _nvlink_sends WHERE src_rank = -1 OR dst_rank = -1
+UNION ALL
+-- Copy-engine peer traffic counted separately again, on unresolved_nvlink's
+-- argument arriving on a fourth key. It fails where that one does — no node
+-- identity, or no _device_owner entry for a device key — but it can ALSO fail
+-- where that one cannot: a peer copy names a device the rank does not own, so
+-- the far end resolves only if some rank on that node produced ownership
+-- evidence for it. A single-process program that drives four GPUs but only ever
+-- allocates and copies (no kernels, no mem_object) can leave a device with no
+-- owner at all, and every byte it moved would then be an edge to -1.
+--
+-- Without this row a capture whose ENTIRE copy matrix collapsed to -1 reports a
+-- clean bill of health, which is the exact failure unresolved_nvlink was added
+-- for.
+SELECT 'unresolved_device_copy',
+       'defect',
+       coalesce(sum(sends), 0)::BIGINT,
+       'peer copies whose src or dst rank is unknown — no node identity, or no rank claims that device'
+FROM _memcpy_edges WHERE src_rank = -1 OR dst_rank = -1
+UNION ALL
+-- THE ABSENT-VERSUS-EMPTY ROW, and it is the one this whole lane most needs.
+--
+-- A capture with no cuda_memcpy rows has three completely different causes and
+-- until now they were byte-identical downstream:
+--   1. the workload performed no copies;
+--   2. the build had no CUPTI backend, or PCOMM_COPY_CAPTURE=0;
+--   3. gpumem was selected, so `pcomm run` set PCOMM_CUPTI_ALLOWED=0 and the
+--      backend correctly declined the subscriber NVBit owns.
+-- (3) is not a fault — running `-p gpumem` is a legitimate choice, which is why
+-- this is a `note` and not a `defect` — but presenting an empty copy table for
+-- it is exactly the "an absent provider and a broken one look identical
+-- downstream" failure this tree keeps paying for (the IBGDA plan, case 08).
+--
+-- Read from Invocation's `env`, which can answer it because the launcher SETS
+-- PCOMM_CUPTI_ALLOWED before exec and Invocation's allowlist keeps every PCOMM_*
+-- variable. No new record and no new plumbing: the capture already knew, and
+-- nothing was asking it.
+--
+-- Joined to the raw `invocation` stream through _intern_name rather than read
+-- from run_provenance, which is the same column one layer up. A kTables entry
+-- cannot reference another kTables entry — they are COPYed to Parquet, never
+-- registered as relations — which is the constraint _peer_of_qp was extracted
+-- for. The `texts = 1` guard is run_provenance's and is load-bearing for the
+-- same reason: a REPLAYED capture loads two passes as rank 0 with independent
+-- dictionaries, so one handle can name two strings and an unguarded join would
+-- count the rank twice.
+--
+-- Counts RANKS, not copies, so the number reads as "this many ranks could not
+-- have recorded a copy" rather than as a count of anything missing — nobody can
+-- know how many copies were missed, and inventing an estimate would be worse
+-- than the silence it replaced.
+SELECT 'memcpy_capture_unavailable',
+       'note',
+       coalesce(count(*), 0)::BIGINT,
+       'ranks where CUPTI was refused (gpumem owns the subscriber) — the copy lane is ABSENT here, not empty'
+FROM invocation i
+JOIN _intern_name e ON e.rank = i.rank AND e.domain = 2 AND e.handle = i.env
+WHERE e.texts = 1 AND e.text LIKE '%PCOMM_CUPTI_ALLOWED=0%'
 UNION ALL
 -- UCX counted separately again, and for a third distinct reason: its peer join
 -- runs on an address PREFIX HASH, not on a queue pair or a node, so it fails in

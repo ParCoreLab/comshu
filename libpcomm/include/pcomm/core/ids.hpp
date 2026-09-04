@@ -45,11 +45,21 @@ enum class RecordKind : std::uint8_t {
 namespace id_range {
 inline constexpr RecordTypeId ibverbs_lo = 100, ibverbs_hi = 199;
 inline constexpr RecordTypeId mlx5dv_lo = 200, mlx5dv_hi = 299;
+// RESERVED AND STILL EMPTY, and by now that is a decision rather than a
+// backlog item. Two records whose only instrument is CUPTI have looked at this
+// range and gone to the internal range instead: GpuKernel (530) and CudaMemcpy
+// (534). Both for one reason — a range names WHO OWNS the ids in it, and
+// "cupti" would make a capture's answer to "do you know when kernels ran / what
+// was copied" read as "only if you ran CUPTI", which is false for GpuKernel
+// (NVBit measures it too) and would become false for CudaMemcpy the moment the
+// host-API door lands, since interposing cudaMemcpy* needs no subscriber at
+// all. Kept rather than deleted: ranges are stable ids and shrinking the map
+// buys nothing.
 inline constexpr RecordTypeId cupti_lo = 300, cupti_hi = 399;
 inline constexpr RecordTypeId libfabric_lo = 400, libfabric_hi = 499;
 inline constexpr RecordTypeId internal_lo = 500, internal_hi = 599;
 inline constexpr RecordTypeId ucx_lo = 600, ucx_hi = 699;
-inline constexpr RecordTypeId gpumem_lo = 700, gpumem_hi = 799;      // Snoopie engine
+inline constexpr RecordTypeId gpumem_lo = 700, gpumem_hi = 799;  // Snoopie engine
 // providers/ucx_deep — UCX's TRANSPORT layer. Reserved for "ucTrace" and used
 // for something better than reimplementing UCT internals: uct/api/uct.h
 // declares every UCT data operation as an inline over

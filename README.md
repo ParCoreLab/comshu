@@ -206,9 +206,32 @@ One entry per layer; the build refuses a missing one:
 3. A case in `libpcomm/tests/schema_conformance.cpp`.
 4. A `Table<>` specialization + `TableRecords` entry in `pcomm-read/main.cpp`
    (the compiler demands both or neither).
+5. A row in `tools/gen_figures.py`'s `FAMILIES` **and** a box in the family
+   figure it belongs to (ctest `figures_current`).
 
 `tools/schema_check.py` runs at build time and cross-checks 1-3; it also holds
 `tools/read_pcs.py`'s enum-name tables equal to the reader's.
+
+**If the record carries an `enum class` field**, three more, each of which fails
+loudly rather than silently — that is why they are listed rather than left to be
+discovered:
+
+- the enum in `pcomm.fbs` too, with **identical member names and values**
+  (`schema_check.py` compares the bodies);
+- a `PCOMM_SCHEMA_ENUM` line per enumerator in `schema_conformance.cpp`, plus
+  its `_MAX` in the count assertion — a reordered enumerator changes no size and
+  no offset, so nothing else can see it;
+- rows in `link_sql.hpp`'s `vocabulary` table, and the enum's name in
+  `tools/gen_raw_columns.py`'s `ENUMS` set. That set is closed by construction:
+  an unknown type is a generator error, never a dropped column.
+
+One thing the checklist cannot tell you, and it decides how the record is read:
+**`export --csv` may print an enum as a name while `--parquet` always writes the
+number.** `gpu_access.op` does (`Store` vs `1`), and the consequence is that no
+single SQL assertion can name that column — `tests/hpc/suite/sql_check.sh` runs
+assertions against Parquet when there is one and against CSV+sqlite when there
+is not. A new record should print the number in both (`cuda_memcpy` does) and
+leave the names to the `vocabulary` table.
 
 ## Adding a provider
 

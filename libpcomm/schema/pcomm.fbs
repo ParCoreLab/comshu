@@ -59,6 +59,42 @@ enum MemOp : uint8 { Load = 0, Store = 1, Atomic = 2, Prefetch = 3 }
 
 enum MemSpace : uint8 { Global = 0, Local = 1, Shared = 2 }
 
+// What a CudaMemcpy moved, as the API was ASKED for it. See core/vocab.hpp for
+// why this is deliberately not the edge test — a DeviceToDevice copy under
+// unified addressing can cross a device boundary, so the derived layer keys on
+// src_device <> dst_device and never on this.
+enum MemcpyKind : uint8 {
+  Unknown = 0,
+  HostToDevice = 1,
+  DeviceToHost = 2,
+  DeviceToDevice = 3,
+  HostToHost = 4,
+  PeerToPeer = 5,
+  HostToArray = 6,
+  ArrayToHost = 7,
+  ArrayToArray = 8,
+  ArrayToDevice = 9,
+  DeviceToArray = 10,
+}
+
+// What kind of allocation one end of a copy is. NOT MemSpace above, which is an
+// instruction's SASS address space; this is the allocation class, and Pageable
+// vs Pinned is the reason it is recorded at all.
+enum MemResidency : uint8 {
+  Unknown = 0,
+  Pageable = 1,
+  Pinned = 2,
+  Device = 3,
+  Array = 4,
+  Managed = 5,
+  DeviceStatic = 6,
+  ManagedStatic = 7,
+}
+
+// Which instrument produced a CudaMemcpy's [a, b]. HostApi has no producer yet;
+// see core/vocab.hpp for why it is declared before it exists.
+enum CopySource : uint8 { Cupti = 0, HostApi = 1 }
+
 // Predicates for Edge records.
 enum EdgePredicate : uint8 {
   TouchedObject = 0,     // access -> mem object
@@ -325,6 +361,51 @@ struct GpuKernel {
   block_y:uint16;
   block_z:uint16;
   source:uint8;        // KernelSource: which instrument produced [a, b]
+}
+
+// type 534, Event. One host-initiated memory COPY, [a, b] on the copy engine.
+//
+// The record for traffic no other stream in a capture can see: a copy engine
+// retires no instruction (so gpumem/NVBit is structurally blind to it), posts no
+// work request, and calls into neither UCX nor NCCL. cudaMemcpyPeer between two
+// GPUs is COMMUNICATION and had no lane until this existed.
+//
+// In the internal range beside GpuKernel and not in the reserved cupti 300s, for
+// GpuKernel's reason applied one step further out: a second instrument for this
+// fact (interposing cudaMemcpy*/cuMemcpy*) needs no CUPTI subscriber and is
+// exactly what would work under gpumem, where CUPTI is refused. `source` says
+// which produced [a, b].
+//
+// NO ADDRESSES, and that is the door's limit rather than a choice:
+// CUpti_ActivityMemcpy6 and CUpti_ActivityMemcpyPtoP4 have no pointer-valued
+// field at all. So object_access cannot place this traffic. See
+// core/records.hpp.
+//
+// `ctx_device` is CUPTI's own `deviceId` — whose CONTEXT the copy was issued in,
+// reported on the peer record too. It is the ONLY sound ownership evidence a
+// copy carries: a peer copy names one device the rank owns and one it does not,
+// and nothing on the row says which. Measured on du04 — four MPI ranks
+// cudaMemcpyPeer'ing round an IPC ring produced a perfect device-space matrix
+// and a comm_edges of one `-1 -> -1` edge, because no other record in that
+// capture said which rank drove which GPU. See core/records.hpp.
+//
+// src_device/dst_device are 65535 (kUnknownDevice) for a host end, and CARRY THE
+// SAME ORDINAL on both sides of a non-peer copy — CUPTI's non-peer record has
+// one deviceId. That is what makes `src_device <> dst_device` a sound edge test:
+// a row claims two devices only when CUPTI reported two.
+struct CudaMemcpy {
+  temporal:Temporal;
+  correlation:uint64;  // CUPTI correlationId — GpuKernel/GpuAccess's id space
+  bytes:uint64;
+  stream:uint64;       // stream ORDINAL, as GpuKernel.stream
+  src_device:uint16;   // 65535 = host memory
+  dst_device:uint16;
+  ctx_device:uint16;   // whose CONTEXT issued it — the ownership field
+  kind:MemcpyKind;         // what the API was asked for
+  src_space:MemResidency;  // pageable / pinned / device / managed ...
+  dst_space:MemResidency;
+  source:CopySource;   // which instrument produced [a, b]
+  async:uint8;         // 1 = issued through an asynchronous entry point
 }
 
 // type 590, Artifact. Clock-domain calibration anchor.

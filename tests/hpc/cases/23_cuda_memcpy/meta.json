@@ -1,0 +1,33 @@
+{
+  "case": "23_cuda_memcpy",
+  "providers": [
+    "cupti"
+  ],
+  "platform": "a100",
+  "topology": "1 node x 4 A100-SXM4-40GB, NVLink between all pairs, ONE process driving all four",
+  "golden": "none yet, by design — see why_no_goldens",
+  "why": "the only case whose entire communication is host-initiated copies. Every other case's traffic is either an instruction a kernel executed (gpumem), a work request on a queue pair (ib/ibgda), or a library call (ucx/nccl). A copy-engine transfer is none of those: it retires no instruction, so NVBit is structurally blind to it — pcomm/run.cpp says exactly that in the gpumem registry row — and it posts no work request. cudaMemcpyPeer between two GPUs is nevertheless communication, bytes over NVLink, and before cuda_memcpy (534) a capture of this workload was an EMPTY communication matrix with a clean link_health.",
+  "why_no_goldens": "the suite's rule is that a golden is committed only after the same query is byte-identical across two independent runs, and only once an assertion exists beside it. The assertions here are all derived from the workload's own parameters, so a golden would add a regression net over queries that are already fully specified — worth having, not worth committing before the determinism gate has been run twice. The volume numbers are provably repeatable (every copy is synchronous and counted in copybench.cu); the tick columns are not, and any golden must aggregate them away.",
+  "platform_note": "du04, no scheduler. The #SBATCH lines in job.sbatch are comments to a plain bash run, the same property suite/all_in_one.sbatch relies on. MareNostrum 5 has nothing extra to say about this case: peer copies are intra-node by construction, so a multi-node allocation would measure the same thing at the cost of a queue slot. An H100 confirmation run is worth one slot only if the A100 result raises a question about how CUPTI classifies the phase-5 probe.",
+  "conflict_note": "this case CANNOT be combined with gpumem in one process, and that is a property of CUDA rather than of pcomm: CUPTI permits one subscriber per process and NVBit takes it. `pcomm run -p cupti,gpumem` drops cupti and says so on stderr. What the capture then says for itself is link_health.memcpy_capture_unavailable, which reads PCOMM_CUPTI_ALLOWED out of the invocation's captured environment — so a copy table that is absent for that reason is distinguishable from a copy engine that was idle. That row is exercised by tests/comm_edges_rule.sh, which can construct the situation without a GPU.",
+  "workload": {
+    "ranks": 1,
+    "nodes": 1,
+    "gpus": 4,
+    "iters": 200,
+    "msg_bytes": 4194304,
+    "uva_bytes": 2097152
+  },
+  "workload_params": [
+    "uva_bytes"
+  ],
+  "workload_note": "`copybench 200 4194304 4`. Every count in the assertions is DERIVED from these four numbers in SQL rather than listed: h2d and d2h are iters*gpus copies each, the same-device phase is iters, and the peer phase is iters*gpus*(gpus-1) — 2400 copies of 4 MiB, 10066329600 bytes. uva_bytes is msg_bytes/2 and belongs to phase 5 alone, which exists so that every assertion about phase 4 can exclude it by size no matter how CUPTI classified it. Nothing here is read off a capture; copybench.cu prints the same numbers from the same arithmetic at the end of every run, which is the cross-check.",
+  "oracle_note": "The one number that cannot pass vacuously is total_copies: it is a bare count(*) against an arithmetic expression over params, so an empty table fails it, a partial capture fails it, and a capture with extra rows fails it. The volume assertions are HAVING clauses with no GROUP BY, which is the same shape — the aggregate group exists even over zero rows, so count(*) = 0 is compared and the assertion fires. The two that CAN pass vacuously (kind_is_named, intervals_are_windows) are guarded by expect_tables and by total_copies, and say so in their own headers.",
+  "open_question": "Phase 5 issues a cudaMemcpy(..., cudaMemcpyDeviceToDevice) between buffers on two DIFFERENT devices — a cross-device transfer spelled as a local one, which unified addressing permits. CUPTI may report it as CUPTI_ACTIVITY_KIND_MEMCPY2 (two ordinals) or as CUPTI_ACTIVITY_KIND_MEMCPY with copyKind DTOD (one ordinal). No capture in the corpus contained the case. The derived layer keys its edge on `src_device <> dst_device` and never on `kind` precisely so that it is right under either answer; this case is where the answer gets measured. It is deliberately NOT asserted — an assertion here would be a golden, since the claim would be whatever CUPTI happened to do.",
+  "expect_tables": [
+    "cuda_memcpy",
+    "node_identity",
+    "clock_anchor"
+  ],
+  "no_gpu_device_note": "gpu_device (528) is deliberately NOT expected here, and the reason is a property of the CUPTI door rather than of this case. GpuDevice is emitted from the arena-flush path — never at start (the driver may not be loaded) and never at finalize (it answers CUDA_ERROR_DEINITIALIZED by then, job 45302619) — so it needs a record buffer to FILL while the process is alive. Under CUPTI that does not happen for a workload of this size: CUPTI hands its activity records over in 8 MB buffers, ~80k memcpy records to a buffer, so a run producing 4400 of them delivers ALL of them in one on_buffer_complete call from cuptiActivityFlushAll at teardown. The engine's 4096-record arena then fills for the first time inside the destructor, which is exactly the moment the driver has stopped answering. Measured: 4400 copies, no 528 stream; libcuda.so.580.95.05 IS mapped in the process, so this is not a missing driver. The derived layer degrades correctly — _device_key falls back to its 'O' ordinal keys, which its own comment describes as the legitimate shape of a capture whose buffers never flushed in-run — and copy_peers_resolve passes, so ownership still closes. Written up rather than fixed: it is pre-existing engine behaviour that this case is simply the first to meet."
+}

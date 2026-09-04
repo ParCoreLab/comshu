@@ -50,6 +50,8 @@ struct PeerMapping;
 
 struct GpuKernel;
 
+struct CudaMemcpy;
+
 struct ClockAnchor;
 
 struct CaptureStatus;
@@ -298,6 +300,141 @@ inline const char *EnumNameMemSpace(MemSpace e) {
   if (::flatbuffers::IsOutRange(e, MemSpace_Global, MemSpace_Shared)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesMemSpace()[index];
+}
+
+enum MemcpyKind : uint8_t {
+  MemcpyKind_Unknown = 0,
+  MemcpyKind_HostToDevice = 1,
+  MemcpyKind_DeviceToHost = 2,
+  MemcpyKind_DeviceToDevice = 3,
+  MemcpyKind_HostToHost = 4,
+  MemcpyKind_PeerToPeer = 5,
+  MemcpyKind_HostToArray = 6,
+  MemcpyKind_ArrayToHost = 7,
+  MemcpyKind_ArrayToArray = 8,
+  MemcpyKind_ArrayToDevice = 9,
+  MemcpyKind_DeviceToArray = 10,
+  MemcpyKind_MIN = MemcpyKind_Unknown,
+  MemcpyKind_MAX = MemcpyKind_DeviceToArray
+};
+
+inline const MemcpyKind (&EnumValuesMemcpyKind())[11] {
+  static const MemcpyKind values[] = {
+    MemcpyKind_Unknown,
+    MemcpyKind_HostToDevice,
+    MemcpyKind_DeviceToHost,
+    MemcpyKind_DeviceToDevice,
+    MemcpyKind_HostToHost,
+    MemcpyKind_PeerToPeer,
+    MemcpyKind_HostToArray,
+    MemcpyKind_ArrayToHost,
+    MemcpyKind_ArrayToArray,
+    MemcpyKind_ArrayToDevice,
+    MemcpyKind_DeviceToArray
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesMemcpyKind() {
+  static const char * const names[12] = {
+    "Unknown",
+    "HostToDevice",
+    "DeviceToHost",
+    "DeviceToDevice",
+    "HostToHost",
+    "PeerToPeer",
+    "HostToArray",
+    "ArrayToHost",
+    "ArrayToArray",
+    "ArrayToDevice",
+    "DeviceToArray",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameMemcpyKind(MemcpyKind e) {
+  if (::flatbuffers::IsOutRange(e, MemcpyKind_Unknown, MemcpyKind_DeviceToArray)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesMemcpyKind()[index];
+}
+
+enum MemResidency : uint8_t {
+  MemResidency_Unknown = 0,
+  MemResidency_Pageable = 1,
+  MemResidency_Pinned = 2,
+  MemResidency_Device = 3,
+  MemResidency_Array = 4,
+  MemResidency_Managed = 5,
+  MemResidency_DeviceStatic = 6,
+  MemResidency_ManagedStatic = 7,
+  MemResidency_MIN = MemResidency_Unknown,
+  MemResidency_MAX = MemResidency_ManagedStatic
+};
+
+inline const MemResidency (&EnumValuesMemResidency())[8] {
+  static const MemResidency values[] = {
+    MemResidency_Unknown,
+    MemResidency_Pageable,
+    MemResidency_Pinned,
+    MemResidency_Device,
+    MemResidency_Array,
+    MemResidency_Managed,
+    MemResidency_DeviceStatic,
+    MemResidency_ManagedStatic
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesMemResidency() {
+  static const char * const names[9] = {
+    "Unknown",
+    "Pageable",
+    "Pinned",
+    "Device",
+    "Array",
+    "Managed",
+    "DeviceStatic",
+    "ManagedStatic",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameMemResidency(MemResidency e) {
+  if (::flatbuffers::IsOutRange(e, MemResidency_Unknown, MemResidency_ManagedStatic)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesMemResidency()[index];
+}
+
+enum CopySource : uint8_t {
+  CopySource_Cupti = 0,
+  CopySource_HostApi = 1,
+  CopySource_MIN = CopySource_Cupti,
+  CopySource_MAX = CopySource_HostApi
+};
+
+inline const CopySource (&EnumValuesCopySource())[2] {
+  static const CopySource values[] = {
+    CopySource_Cupti,
+    CopySource_HostApi
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesCopySource() {
+  static const char * const names[3] = {
+    "Cupti",
+    "HostApi",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameCopySource(CopySource e) {
+  if (::flatbuffers::IsOutRange(e, CopySource_Cupti, CopySource_HostApi)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesCopySource()[index];
 }
 
 enum EdgePredicate : uint8_t {
@@ -1183,6 +1320,98 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuKernel FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(GpuKernel, 96);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) CudaMemcpy FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t correlation_;
+  uint64_t bytes_;
+  uint64_t stream_;
+  uint16_t src_device_;
+  uint16_t dst_device_;
+  uint16_t ctx_device_;
+  uint8_t kind_;
+  uint8_t src_space_;
+  uint8_t dst_space_;
+  uint8_t source_;
+  uint8_t async_;
+  int8_t padding0__;  int32_t padding1__;
+
+ public:
+  CudaMemcpy()
+      : temporal_(),
+        correlation_(0),
+        bytes_(0),
+        stream_(0),
+        src_device_(0),
+        dst_device_(0),
+        ctx_device_(0),
+        kind_(0),
+        src_space_(0),
+        dst_space_(0),
+        source_(0),
+        async_(0),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  CudaMemcpy(const pcomm::fb::Temporal &_temporal, uint64_t _correlation, uint64_t _bytes, uint64_t _stream, uint16_t _src_device, uint16_t _dst_device, uint16_t _ctx_device, pcomm::fb::MemcpyKind _kind, pcomm::fb::MemResidency _src_space, pcomm::fb::MemResidency _dst_space, pcomm::fb::CopySource _source, uint8_t _async)
+      : temporal_(_temporal),
+        correlation_(::flatbuffers::EndianScalar(_correlation)),
+        bytes_(::flatbuffers::EndianScalar(_bytes)),
+        stream_(::flatbuffers::EndianScalar(_stream)),
+        src_device_(::flatbuffers::EndianScalar(_src_device)),
+        dst_device_(::flatbuffers::EndianScalar(_dst_device)),
+        ctx_device_(::flatbuffers::EndianScalar(_ctx_device)),
+        kind_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_kind))),
+        src_space_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_src_space))),
+        dst_space_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_dst_space))),
+        source_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_source))),
+        async_(::flatbuffers::EndianScalar(_async)),
+        padding0__(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t correlation() const {
+    return ::flatbuffers::EndianScalar(correlation_);
+  }
+  uint64_t bytes() const {
+    return ::flatbuffers::EndianScalar(bytes_);
+  }
+  uint64_t stream() const {
+    return ::flatbuffers::EndianScalar(stream_);
+  }
+  uint16_t src_device() const {
+    return ::flatbuffers::EndianScalar(src_device_);
+  }
+  uint16_t dst_device() const {
+    return ::flatbuffers::EndianScalar(dst_device_);
+  }
+  uint16_t ctx_device() const {
+    return ::flatbuffers::EndianScalar(ctx_device_);
+  }
+  pcomm::fb::MemcpyKind kind() const {
+    return static_cast<pcomm::fb::MemcpyKind>(::flatbuffers::EndianScalar(kind_));
+  }
+  pcomm::fb::MemResidency src_space() const {
+    return static_cast<pcomm::fb::MemResidency>(::flatbuffers::EndianScalar(src_space_));
+  }
+  pcomm::fb::MemResidency dst_space() const {
+    return static_cast<pcomm::fb::MemResidency>(::flatbuffers::EndianScalar(dst_space_));
+  }
+  pcomm::fb::CopySource source() const {
+    return static_cast<pcomm::fb::CopySource>(::flatbuffers::EndianScalar(source_));
+  }
+  uint8_t async() const {
+    return ::flatbuffers::EndianScalar(async_);
+  }
+};
+FLATBUFFERS_STRUCT_END(CudaMemcpy, 88);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) ClockAnchor FLATBUFFERS_FINAL_CLASS {
  private:

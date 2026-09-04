@@ -49,6 +49,7 @@ PCOMM_SCHEMA_MATCH(cr::GpuDevice, fb::GpuDevice);
 PCOMM_SCHEMA_MATCH(cr::Invocation, fb::Invocation);
 PCOMM_SCHEMA_MATCH(cr::PeerMapping, fb::PeerMapping);
 PCOMM_SCHEMA_MATCH(cr::GpuKernel, fb::GpuKernel);
+PCOMM_SCHEMA_MATCH(cr::CudaMemcpy, fb::CudaMemcpy);
 PCOMM_SCHEMA_MATCH(cr::ClockAnchor, fb::ClockAnchor);
 PCOMM_SCHEMA_MATCH(cr::CaptureStatus, fb::CaptureStatus);
 PCOMM_SCHEMA_MATCH(cr::InternKey, fb::InternKey);
@@ -153,6 +154,30 @@ PCOMM_SCHEMA_ENUM(pcomm::core::MemSpace::Global, fb::MemSpace_Global);
 PCOMM_SCHEMA_ENUM(pcomm::core::MemSpace::Local, fb::MemSpace_Local);
 PCOMM_SCHEMA_ENUM(pcomm::core::MemSpace::Shared, fb::MemSpace_Shared);
 
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::Unknown, fb::MemcpyKind_Unknown);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::HostToDevice, fb::MemcpyKind_HostToDevice);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::DeviceToHost, fb::MemcpyKind_DeviceToHost);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::DeviceToDevice, fb::MemcpyKind_DeviceToDevice);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::HostToHost, fb::MemcpyKind_HostToHost);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::PeerToPeer, fb::MemcpyKind_PeerToPeer);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::HostToArray, fb::MemcpyKind_HostToArray);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::ArrayToHost, fb::MemcpyKind_ArrayToHost);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::ArrayToArray, fb::MemcpyKind_ArrayToArray);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::ArrayToDevice, fb::MemcpyKind_ArrayToDevice);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemcpyKind::DeviceToArray, fb::MemcpyKind_DeviceToArray);
+
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::Unknown, fb::MemResidency_Unknown);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::Pageable, fb::MemResidency_Pageable);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::Pinned, fb::MemResidency_Pinned);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::Device, fb::MemResidency_Device);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::Array, fb::MemResidency_Array);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::Managed, fb::MemResidency_Managed);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::DeviceStatic, fb::MemResidency_DeviceStatic);
+PCOMM_SCHEMA_ENUM(pcomm::core::MemResidency::ManagedStatic, fb::MemResidency_ManagedStatic);
+
+PCOMM_SCHEMA_ENUM(pcomm::core::CopySource::Cupti, fb::CopySource_Cupti);
+PCOMM_SCHEMA_ENUM(pcomm::core::CopySource::HostApi, fb::CopySource_HostApi);
+
 PCOMM_SCHEMA_ENUM(pcomm::core::EdgePredicate::TouchedObject, fb::EdgePredicate_TouchedObject);
 PCOMM_SCHEMA_ENUM(pcomm::core::EdgePredicate::MapsToSourceLine, fb::EdgePredicate_MapsToSourceLine);
 PCOMM_SCHEMA_ENUM(pcomm::core::EdgePredicate::ResidesOn, fb::EdgePredicate_ResidesOn);
@@ -163,7 +188,8 @@ PCOMM_SCHEMA_ENUM(pcomm::core::EdgePredicate::MapsToQp, fb::EdgePredicate_MapsTo
 // tools/schema_check.py compares the C++ enum bodies against the .fbs, so a new
 // value on either side has to be added here deliberately.
 static_assert(fb::TimeKind_MAX == 4 && fb::MemOp_MAX == 3 && fb::MemSpace_MAX == 2 &&
-                  fb::EdgePredicate_MAX == 3 && fb::RecordKind_MAX == 3,
+                  fb::EdgePredicate_MAX == 3 && fb::RecordKind_MAX == 3 &&
+                  fb::MemcpyKind_MAX == 10 && fb::MemResidency_MAX == 7 && fb::CopySource_MAX == 1,
               "an enum gained a value in pcomm.fbs — add the matching C++ "
               "enumerator assertion above and update this count");
 
@@ -773,6 +799,35 @@ int main() {
                         0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, 0x12345678u, 0x11111111u,
                         0x22222222u, 0x33333333u, 0x4444, 0x5555, 0x6666, 0x7777, 1);
         expect_identical("GpuKernel", &c, &f, sizeof(c));
+    }
+    {
+        // Every field distinct and non-zero, for GpuKernel's reason: this
+        // struct ends in three uint16s and five uint8s before a five-byte tail
+        // hole, which is the exact shape where a reordering keeps the size and
+        // changes every meaning. src_device and dst_device in particular are
+        // adjacent, same-typed and semantically opposite — transposing them
+        // would reverse every edge in comm_edges while comparing equal across
+        // any fixture that used the same value twice.
+        Stamped<cr::CudaMemcpy> c{};
+        c.temporal = pcomm::core::Temporal::interval({0, 0x3000}, {0, 0x4000});
+        c.payload.correlation = 0x1122334455667788ull;
+        c.payload.bytes = 0x99AABBCCDDEEFF00ull;
+        c.payload.stream = 0x0102030405060708ull;
+        c.payload.src_device = 0x1234;
+        c.payload.dst_device = 0x5678;
+        c.payload.ctx_device = 0x9ABC;
+        c.payload.kind = pcomm::core::MemcpyKind::PeerToPeer;
+        c.payload.src_space = pcomm::core::MemResidency::Device;
+        c.payload.dst_space = pcomm::core::MemResidency::Managed;
+        c.payload.source = pcomm::core::CopySource::HostApi;
+        c.payload.async = 1;
+        fb::CudaMemcpy f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(0, 0x3000),
+                                      fb::TimePoint(0, 0x4000), 0),
+                         0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, 0x0102030405060708ull,
+                         0x1234, 0x5678, 0x9ABC, fb::MemcpyKind_PeerToPeer,
+                         fb::MemResidency_Device, fb::MemResidency_Managed,
+                         fb::CopySource_HostApi, 1);
+        expect_identical("CudaMemcpy", &c, &f, sizeof(c));
     }
     {
         Stamped<cr::ClockAnchor> c{};

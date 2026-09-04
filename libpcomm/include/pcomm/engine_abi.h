@@ -173,6 +173,49 @@ void pcomm_engine_record_kernel(uint64_t t0, uint64_t t1, uint16_t domain, const
                                 uint64_t correlation, uint64_t stream, uint16_t device,
                                 uint8_t source, const uint32_t* grid, const uint16_t* block);
 
+/* Record one host-initiated memory COPY. See core/records.hpp CudaMemcpy (534).
+ *
+ * The engine's record for the same reason GpuKernel is: the fact is "this
+ * process moved bytes with a copy engine", which is not a property of any
+ * transport provider and not a property of CUPTI either — the second
+ * instrument for it (interposing the cudaMemcpy and cuMemcpy entry point
+ * families) needs no subscriber at all, and is specifically the one that would
+ * work under gpumem, where CUPTI is refused. The measurement arrives from
+ * whichever backend could take it; the engine owns the identity and the stream.
+ *
+ * `t0`/`t1` are raw ticks in `domain`, unconverted, exactly as
+ * pcomm_engine_record_kernel takes them, and the caller must have anchored that
+ * domain or pcomm-read drops the rows into link_health.timeline_unanchored.
+ *
+ * `src_device`/`dst_device` are 0xFFFF (core::kUnknownDevice) for a host end.
+ * A caller with only ONE device ordinal — which is every non-peer CUPTI activity
+ * record — must put that same ordinal on BOTH device ends of a device-to-device
+ * copy rather than inventing a second one, because the derived layer's edge test
+ * is `src_device <> dst_device` and it has to mean "CUPTI reported two devices".
+ *
+ * `ctx_device` is the device whose CONTEXT issued the copy, and it is the field
+ * the derived layer takes as ownership evidence — neither src_device nor
+ * dst_device can serve, because a peer copy names one device the rank owns and
+ * one it does not and the row cannot say which. A caller with no context
+ * ordinal must pass 0xFFFF rather than repeating one of the endpoints.
+ *
+ * `kind`, `src_space`, `dst_space`, `source` are core::MemcpyKind,
+ * core::MemResidency (twice) and core::CopySource. `async` is 1 when the copy
+ * was issued through an asynchronous entry point.
+ *
+ * ADDED WITHOUT BUMPING PCOMM_ENGINE_ABI_VERSION, on pcomm_engine_note_qp's
+ * precedent and its reasoning: the version is checked for EQUALITY at declare,
+ * so a bump would reject every provider this addition does not break, while a
+ * backend compiled against this header has a DT_NEEDED on the engine and is
+ * linked -Wl,--no-undefined, so an older engine refuses the load with
+ * `undefined symbol: pcomm_engine_record_memcpy` rather than mis-accounting
+ * anything. */
+void pcomm_engine_record_memcpy(uint64_t t0, uint64_t t1, uint16_t domain, uint64_t bytes,
+                                uint64_t correlation, uint64_t stream, uint16_t src_device,
+                                uint16_t dst_device, uint16_t ctx_device, uint8_t kind,
+                                uint8_t src_space, uint8_t dst_space, uint8_t source,
+                                uint8_t async);
+
 /* Record a clock anchor for a non-default domain: (local_ticks, wall_ns)
  * sampled at the same moment. Two per domain per run — start and end — is what
  * pcomm-read's per-(rank, domain) fit needs to recover offset AND rate.

@@ -48,6 +48,8 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,1,0,100,0,0,0,111
 2,1,0,100,0,0,0,222
 3,1,0,100,0,0,0,222
+5,1,0,100,0,0,0,333
+6,1,0,100,0,0,0,333
 CSV
 
 # _device_owner is fed from mem_object AND gpu_access.run_device. Rank 3 has no
@@ -219,6 +221,134 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 4,3,0,3000,0,3100,0,1,1,4104,0,7,1,0,0,1,0
 CSV
 
+# --- the copy-engine lane ---------------------------------------------------
+#
+# cuda_memcpy (534) is the only record for traffic no instrument in any other
+# family can see, and its edge rule is unlike every other lane's, so it needs a
+# fixture of its own rather than a row added to one above.
+#
+# THE RULE UNDER TEST: **a copy is an edge iff both device ordinals are known
+# and they differ.** Not `kind = PeerToPeer`. `kind` is what the API was ASKED
+# for and the ordinals are what the hardware DID, and rows 7 and 8 below are the
+# two ways those disagree — a cudaMemcpyPeer whose two arguments name the same
+# GPU (kind says peer, nothing crossed) and a cudaMemcpy(DeviceToDevice) between
+# buffers on two different GPUs under unified addressing (kind says local, bytes
+# crossed). A lane keyed on `kind` gets both of them wrong, in opposite
+# directions, and no capture in the corpus contains either — which is exactly
+# why they are written here.
+#
+# 65535 is kUnknownDevice, i.e. a HOST end. Rows 4-6 are H2D, D2H and a
+# same-device D2D: real copies, real bytes, and NOT rank->rank traffic. They
+# carry 4096 so that a leak trips the `bytes >= 999` canary the verbs lane
+# already asserts, rather than hiding inside a plausible total.
+#
+#   1,2  rank 0, dev 0 -> dev 1, 100 and 200 B    -> 0>1, 2 sends, 300 B
+#   3    rank 1, dev 1 -> dev 0, 50 B             -> 1>0
+#   4    rank 0, host  -> dev 0, 4096 B  (H2D)    -> NOT an edge
+#   5    rank 0, dev 0 -> host,  4096 B  (D2H)    -> NOT an edge
+#   6    rank 0, dev 0 -> dev 0, 4096 B  (D2D)    -> NOT an edge, one device
+#   7    rank 1, dev 1 -> dev 1, 8888 B, kind=5   -> NOT an edge, DESPITE kind
+#   8    rank 3, dev 1 -> dev 0, 32 B,   kind=3   -> IS an edge, DESPITE kind
+#   9    rank 2, dev 0 -> dev 1, 64 B             -> 2>3 on node 222, not 2>1
+#  10,11 rank 4, dev 0 -> dev 1, 7 B x2           -> no node: BOTH ends -1
+#  12    rank 5, dev 0 -> dev 1, 16 B, ctx 0      -> 5>6, on node 333
+#  13    rank 6, dev 1 -> dev 0, 24 B, ctx 1      -> 6>5
+#
+# ROWS 12 AND 13 ARE THE OWNERSHIP TEST, and ranks 5 and 6 exist for nothing
+# else. They are on a third node with NO mem_object row, NO gpu_access and NO
+# gpu_kernel — a peer copy is the only thing they do — so the ONLY thing that can
+# say which of them drives which GPU is `ctx_device`, the device whose context
+# issued the copy. Without that column this pair resolves to `-1 -> -1`, which is
+# exactly what four MPI ranks on du04 produced before it existed: a perfect
+# device-space matrix and a comm_edges of one unresolved edge. src_device and
+# dst_device cannot substitute — a peer copy names one device the rank owns and
+# one it does not, and the row does not say which.
+#
+# Row 10/11 resolves to -1 on BOTH sides, which is unlike the nvlink lane's
+# unresolved rows (there the actor's own rank is known because the access ran on
+# its SM). A peer copy names two devices and the issuing rank need not own
+# either, so when the node is unknown neither end can be named. That is the
+# honest answer and unresolved_device_copy is what counts it.
+#
+# kind: 1 HostToDevice, 2 DeviceToHost, 3 DeviceToDevice, 5 PeerToPeer.
+# src_space/dst_space: 2 Pinned, 3 Device. source: 0 Cupti.
+cat > "$WORK/cuda_memcpy.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,correlation,bytes,stream,src_device,dst_device,ctx_device,kind,src_space,dst_space,source,async
+0,2,0,4000,0,4010,0,1,100,7,0,1,0,5,3,3,0,1
+0,2,0,4020,0,4030,0,2,200,7,0,1,0,5,3,3,0,1
+1,2,0,4040,0,4050,0,3,50,7,1,0,1,5,3,3,0,1
+0,2,0,4060,0,4070,0,4,4096,7,65535,0,0,1,2,3,0,0
+0,2,0,4080,0,4090,0,5,4096,7,0,65535,0,2,3,2,0,0
+0,2,0,4100,0,4110,0,6,4096,7,0,0,0,3,3,3,0,1
+1,2,0,4120,0,4130,0,7,8888,7,1,1,1,5,3,3,0,1
+3,2,0,4140,0,4150,0,8,32,7,1,0,1,3,3,3,0,1
+2,2,0,4160,0,4170,0,9,64,7,0,1,0,5,3,3,0,1
+4,2,0,4180,0,4190,0,10,7,7,0,1,0,5,3,3,0,1
+4,2,0,4200,0,4210,0,11,7,7,0,1,0,5,3,3,0,1
+5,2,0,4220,0,4230,0,12,16,7,0,1,0,5,3,3,0,1
+6,2,0,4240,0,4250,0,13,24,7,1,0,1,5,3,3,0,1
+CSV
+
+# Two anchors per rank, so timeline_span has a line to carry ticks onto the wall
+# clock with. Added for the copy lane's sake and it is not incidental: without a
+# clock_anchor row EVERY lane of timeline_span is empty, so a timeline assertion
+# written against this fixture would have passed vacuously at zero rows. That is
+# the defect tests/hpc/suite/README.md gives its own heading to, and it fired
+# here on the first run of these very checks.
+#
+# 1 ns/tick and identical on every rank: this fixture is not about the clock fit,
+# and a per-rank slope would only make the expected values arithmetic nobody can
+# check by eye.
+cat > "$WORK/clock_anchor.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,domain,local_ticks,wall_ns,mono_ns
+0,1,0,1000,0,0,0,0,1000,1000000000,500
+0,1,0,9000,0,0,0,0,9000,1000008000,8500
+1,1,0,1000,0,0,0,0,1000,1000000000,500
+1,1,0,9000,0,0,0,0,9000,1000008000,8500
+2,1,0,1000,0,0,0,0,1000,1000000000,500
+2,1,0,9000,0,0,0,0,9000,1000008000,8500
+3,1,0,1000,0,0,0,0,1000,1000000000,500
+3,1,0,9000,0,0,0,0,9000,1000008000,8500
+4,1,0,1000,0,0,0,0,1000,1000000000,500
+4,1,0,9000,0,0,0,0,9000,1000008000,8500
+5,1,0,1000,0,0,0,0,1000,1000000000,500
+5,1,0,9000,0,0,0,0,9000,1000008000,8500
+6,1,0,1000,0,0,0,0,1000,1000000000,500
+6,1,0,9000,0,0,0,0,9000,1000008000,8500
+CSV
+
+# --- "the copy lane is absent, not empty" -----------------------------------
+#
+# link_health.memcpy_capture_unavailable reads PCOMM_CUPTI_ALLOWED out of
+# Invocation's captured environment, because that is the one place a capture
+# records that the launcher refused CUPTI to protect a gpumem run. Two ranks,
+# one with it cleared and one with it set, so the row is proved to count the
+# refused rank and only that one — a count that fired on both would be
+# indistinguishable from `count(*) FROM invocation`.
+#
+# handle 2 is `env` in both rows and resolves per rank, which is the point of
+# _intern_name's (rank, domain, handle) key: the same handle names different
+# text on different ranks.
+cat > "$WORK/invocation.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,argv,env,providers,build,images,pid
+0,0,0,0,0,0,0,1,2,3,4,5,1001
+1,0,0,0,0,0,0,1,2,3,4,5,1002
+CSV
+
+cat > "$WORK/intern_text.csv" <<'CSV'
+rank,domain,handle,text
+0,2,1,./app
+0,2,2,PCOMM_CUPTI_ALLOWED=0
+0,2,3,gpumem
+0,2,4,build
+0,2,5,images
+1,2,1,./app
+1,2,2,PCOMM_CUPTI_ALLOWED=1
+1,2,3,ibverbs
+1,2,4,build
+1,2,5,images
+CSV
+
 "$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
@@ -250,7 +380,7 @@ expect() {  # <label> <sql> <expected>
 # filter adds 999 bytes to some edge.
 expect "the matrix" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||transport||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges" \
-    "1>3:devx:2:400 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 3>-1:verbs:5:536"
+    "-1>-1:cudamemcpy:2:14 0>1:cudamemcpy:2:300 1>0:cudamemcpy:1:50 2>3:cudamemcpy:1:64 3>2:cudamemcpy:1:32 5>6:cudamemcpy:1:16 6>5:cudamemcpy:1:24 1>3:devx:2:400 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 3>-1:verbs:5:536"
 
 # Stated again as the invariant rather than as a value, because it is the clause
 # no capture in the corpus can exercise: a Load moves bytes FROM the peer, so the
@@ -290,7 +420,7 @@ expect "a local access is not an edge" \
 # The planes stay distinguishable even though the matrix does not branch.
 expect "every transport survives into the table" \
     "SELECT string_agg(DISTINCT transport, ',' ORDER BY transport) FROM comm_edges" \
-    "devx,nvlink,ucx,verbs"
+    "cudamemcpy,devx,nvlink,ucx,verbs"
 
 # NVLink is counted in ACCESSES, verbs in MESSAGES, UCX in DATATYPE UNITS.
 # Summing them would be a category error, and the unit column is what stops a
@@ -298,7 +428,75 @@ expect "every transport survives into the table" \
 # for a contiguous 8-bit datatype, which the capture does not record.
 expect "the unit says which is which" \
     "SELECT string_agg(DISTINCT transport||'='||unit, ',' ORDER BY transport||'='||unit) FROM comm_edges" \
-    "devx=messages,nvlink=accesses,ucx=datatype-units,verbs=messages"
+    "cudamemcpy=bytes,devx=messages,nvlink=accesses,ucx=datatype-units,verbs=messages"
+
+# --- the copy lane, one clause at a time ------------------------------------
+#
+# THE CLAUSE NO OTHER LANE HAS. `kind` is the API's claim and the ordinals are
+# the hardware's, and these two rows are the only place either disagreement is
+# exercised. 8888 is chosen so that leaking row 7 into the matrix is unmissable
+# — it would also trip the `bytes >= 999` canary above, which is the point of
+# picking it rather than a plausible number.
+expect "a peer-KIND copy that never left the device is not an edge" \
+    "SELECT count(*) FROM comm_edges WHERE transport = 'cudamemcpy' AND bytes >= 8888" "0"
+
+# The inverse, and the one that would be a SILENT hole rather than a loud
+# addition: a cudaMemcpy(..., DeviceToDevice) between buffers on two different
+# GPUs under unified addressing moves bytes across a device boundary while
+# calling itself local. Keyed on `kind` this edge disappears entirely.
+expect "a local-KIND copy across two devices IS an edge" \
+    "SELECT sends||':'||bytes FROM comm_edges
+      WHERE transport = 'cudamemcpy' AND src_rank = 3 AND dst_rank = 2" "1:32"
+
+# H2D, D2H and same-device D2D are real copies and real bytes, and none of them
+# is rank->rank traffic. Three rows of 4096 that must not appear anywhere in the
+# matrix; the sum over the whole lane is stated so a leak of any ONE of them
+# fails rather than only a leak of all three.
+expect "host staging and same-device copies are not edges" \
+    "SELECT coalesce(sum(bytes), 0) FROM comm_edges WHERE transport = 'cudamemcpy'" "500"
+
+# THE OWNERSHIP COLUMN, on the one pair of ranks that has nothing else. Ranks 5
+# and 6 have a node and a peer copy each and no mem_object, no gpu_access and no
+# gpu_kernel — so this edge exists only if `ctx_device` is admitted as evidence
+# of which rank drives which GPU. Stated as the two-edge string rather than as a
+# count, because dropping the column gives `-1 -> -1` and a count would still be
+# 2.
+expect "a rank's own device is learned from the copy's context" \
+    "SELECT string_agg(src_rank||'>'||dst_rank||':'||bytes, ' ' ORDER BY src_rank)
+     FROM comm_edges WHERE transport = 'cudamemcpy' AND (src_rank >= 5 OR dst_rank >= 5)" \
+    "5>6:16 6>5:24"
+
+# Rank 2 and rank 1 both own a 'device 1'. A copy on node 222 must land on
+# node 222, exactly as the nvlink lane's does — the device ordinal is only an
+# identity with its node.
+expect "copy device ordinals are scoped by node" \
+    "SELECT dst_rank FROM comm_edges
+      WHERE transport = 'cudamemcpy' AND src_rank = 2" "3"
+
+# Both ends unresolvable, counted rather than dropped or guessed. Rank 4 has
+# peer-copy traffic and no node identity, which is the pure-CUDA capture's
+# shape: no LID to derive a node from and no NVSHMEM to name a peer.
+expect "copies with no resolvable node are counted" \
+    "SELECT n FROM link_health WHERE finding = 'unresolved_device_copy'" "2"
+
+# THE ABSENT-VERSUS-EMPTY ROW. Rank 0's capture was taken with the launcher
+# holding CUPTI back for gpumem, rank 1's was not. Counting both would make the
+# row `count(*) FROM invocation` wearing a costume.
+expect "a capture that could not record copies says so" \
+    "SELECT n FROM link_health WHERE finding = 'memcpy_capture_unavailable'" "1"
+
+# The copy lane on the shared timeline, including the rows that are NOT edges:
+# a D2H is not communication but it is absolutely a thing that happened at a
+# time, and dropping it from the timeline would leave a rank looking idle while
+# it was blocked in a copy. Eleven rows in, eleven rows out.
+expect "every copy reaches the timeline, edge or not" \
+    "SELECT count(*) FROM timeline_span WHERE stream = 'cuda_memcpy'" "13"
+
+# ... and it carries bytes, which is what makes the lane readable as work
+# rather than as a bare mark.
+# 4096*3 + 8888 + 300 + 50 + 64 + 32 + 14 + 16 + 24 = 21676.
+expect "the timeline copy lane carries the bytes" \
+    "SELECT sum(bytes) FROM timeline_span WHERE stream = 'cuda_memcpy'" "21676"
 
 # --- the UCX lane, one clause at a time -------------------------------------
 #
@@ -380,6 +578,16 @@ expect "a rank pair's message sizes are separable" \
     "SELECT string_agg(size_class||':'||sends, ' ' ORDER BY size_class)
      FROM edge_sizes WHERE transport = 'verbs' AND src_rank = 3" \
     "8:3 256:2"
+
+# The same, on the copy lane, where `size_class` means something different and
+# better: real transfer bytes, not one access's width as on nvlink. Rank 0's two
+# peer copies are 100 and 200 B, so the edge comm_edges reports as `2 sends, 300
+# bytes` splits into two classes — which is the question that made this table
+# exist, asked of the newest lane.
+expect "a copy edge's transfer sizes are separable" \
+    "SELECT string_agg(size_class||':'||sends||':'||bytes, ' ' ORDER BY size_class)
+     FROM edge_sizes WHERE transport = 'cudamemcpy' AND src_rank = 0 AND dst_rank = 1" \
+    "64:1:100 128:1:200"
 
 # A zero-length operation is class 0 and is KEPT. Dropping it would make `sends`
 # here disagree with comm_edges, which the roll-up above would catch — this

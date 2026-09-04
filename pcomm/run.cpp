@@ -73,7 +73,11 @@ const std::vector<Provider>& registry() {
         // and the record namespace — `p2p` was the short name for a while and
         // it misdescribes the provider twice. It does not capture DMA: NVBit
         // rewrites SASS, so a copy-engine cudaMemcpy executes no instruction
-        // and is invisible here. And peer-ness is a FILTER setting, not the
+        // and is invisible here. `cupti` captures those (cuda_memcpy, 534) but
+        // NOT IN THE SAME PROCESS, because NVBit owns the subscriber — which is
+        // why link_health carries memcpy_capture_unavailable rather than letting
+        // an empty copy table read as an idle copy engine.
+        // And peer-ness is a FILTER setting, not the
         // subject — the engine instruments every load/store and RemoteFilter
         // (providers/gpumem/engine.hpp) is what keeps only mem_dev != run_dev.
         // Naming the provider after its default filter is how someone concludes
@@ -113,7 +117,8 @@ const std::vector<Provider>& registry() {
          {"kernel", "kernels", "cupti"},
          /*exclusive*/ false,
          /*built*/ true,
-         "GPU kernel execution windows — when each kernel actually ran",
+         "GPU kernel execution and memory copies — when each kernel ran, and "
+         "every cudaMemcpy the copy engine performed",
          "device"},
         {"ucx",
          "libucx_trace.so",

@@ -1,4 +1,15 @@
-// libcupti_trace.so — kernel execution windows, from CUPTI's activity API.
+// libcupti_trace.so — kernel execution windows and host-initiated memory
+// copies, from CUPTI's activity API.
+//
+// The copy half (CUDA_MEMCPY / MEMCPY2 -> CudaMemcpy, 534) was added because it
+// is traffic NOTHING ELSE IN THIS TREE CAN SEE. A copy engine retires no
+// instruction, so NVBit is structurally blind to it (pcomm/run.cpp says so in
+// the gpumem row); it posts no work request, so ibverbs and mlx5dv are blind to
+// it; it calls into neither UCX nor NCCL. And cudaMemcpyPeer between two GPUs
+// is communication — it is bytes over NVLink or PCIe — so a workload built on
+// it produced an empty comm_edges. This file is the only door that is inside
+// the driver, which is also why it is the one that survives a statically linked
+// cudart. See plans/PLAN-20260903-1828.
 //
 // A backend rather than part of the engine, for the reason stated at the top of
 // libpcomm/src/engine.cpp: the engine is L0-L2 core and nothing there may pull
@@ -76,9 +87,16 @@ constexpr std::size_t kBufAlign = 8;
 
 std::atomic<bool>     g_on{false};
 std::atomic<uint64_t> g_kernels{0};
+std::atomic<uint64_t> g_copies{0};
+std::atomic<uint64_t> g_peer_copies{0};
 std::atomic<uint64_t> g_dropped{0};
 std::once_flag        g_once;
 bool                  g_verbose = false;
+// Whether the two memcpy activity kinds were enabled. Recorded rather than
+// inferred from g_on: the copy kinds are enabled AFTER the kernel kind and
+// either can fail on its own, so "kernel timing is on" does not imply "copies
+// are captured" and the teardown line must be able to say which.
+bool g_copies_on = false;
 
 uint64_t wall_ns() {
     timespec t{};
@@ -182,6 +200,150 @@ void CUPTIAPI on_buffer_request(uint8_t** buf, size_t* size, size_t* max_records
     *max_records = 0;  // fill by size, not by count
 }
 
+// ── memcpy activity, translated ─────────────────────────────────────────────
+//
+// CUPTI's vocabulary -> ours. Written as switches rather than as a table
+// indexed by the CUPTI value, because the two numberings agreeing today is a
+// coincidence and a table would silently mistranslate the day one of them
+// gains a value in the middle.
+uint8_t copy_kind(uint8_t cupti_kind) {
+    using K = pcomm::core::MemcpyKind;
+    switch (cupti_kind) {
+        case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
+            return static_cast<uint8_t>(K::HostToDevice);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOH:
+            return static_cast<uint8_t>(K::DeviceToHost);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOD:
+            return static_cast<uint8_t>(K::DeviceToDevice);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_HTOH:
+            return static_cast<uint8_t>(K::HostToHost);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_PTOP:
+            return static_cast<uint8_t>(K::PeerToPeer);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_HTOA:
+            return static_cast<uint8_t>(K::HostToArray);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOH:
+            return static_cast<uint8_t>(K::ArrayToHost);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOA:
+            return static_cast<uint8_t>(K::ArrayToArray);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOD:
+            return static_cast<uint8_t>(K::ArrayToDevice);
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOA:
+            return static_cast<uint8_t>(K::DeviceToArray);
+        default:
+            return static_cast<uint8_t>(K::Unknown);
+    }
+}
+
+uint8_t residency(uint8_t cupti_mem_kind) {
+    using R = pcomm::core::MemResidency;
+    switch (cupti_mem_kind) {
+        case CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE:
+            return static_cast<uint8_t>(R::Pageable);
+        case CUPTI_ACTIVITY_MEMORY_KIND_PINNED:
+            return static_cast<uint8_t>(R::Pinned);
+        case CUPTI_ACTIVITY_MEMORY_KIND_DEVICE:
+            return static_cast<uint8_t>(R::Device);
+        case CUPTI_ACTIVITY_MEMORY_KIND_ARRAY:
+            return static_cast<uint8_t>(R::Array);
+        case CUPTI_ACTIVITY_MEMORY_KIND_MANAGED:
+            return static_cast<uint8_t>(R::Managed);
+        case CUPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC:
+            return static_cast<uint8_t>(R::DeviceStatic);
+        case CUPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC:
+            return static_cast<uint8_t>(R::ManagedStatic);
+        default:
+            return static_cast<uint8_t>(R::Unknown);
+    }
+}
+
+// Which END of a copy is on a device, from the copyKind alone.
+//
+// This is what turns CUPTI's ONE deviceId on a non-peer record into the record's
+// two device fields without inventing anything. A host end gets
+// kUnknownDevice — not 0, which is a real GPU — and a device end gets the
+// context's ordinal. Both device ends of a DTOD therefore carry the SAME
+// ordinal, which is precisely what makes `src_device <> dst_device` mean "CUPTI
+// reported two devices" downstream rather than "we guessed".
+//
+// An ARRAY end counts as a device end: a CUDA array lives in device memory, and
+// `src_space`/`dst_space` is where the Array-ness is recorded.
+bool src_is_device(uint8_t cupti_kind) {
+    switch (cupti_kind) {
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOH:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOD:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOA:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOH:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOA:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOD:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_PTOP:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool dst_is_device(uint8_t cupti_kind) {
+    switch (cupti_kind) {
+        case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOD:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_HTOA:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOA:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_ATOD:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_DTOA:
+        case CUPTI_ACTIVITY_MEMCPY_KIND_PTOP:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// CUpti_ActivityMemcpy5 / PtoP3, NOT the newest versions the installed header
+// declares (6 / 4 on CUDA 13.0). Deliberate: only the FRONT of each struct is
+// read — through correlationId — and that prefix is byte-identical in every
+// version from 3 upward, while the older names are declared by
+// cupti_activity_deprecated.h in new toolkits and by cupti_activity.h in old
+// ones. So one spelling compiles against both, and the fields it touches cannot
+// move. (The existing kernel path names CUpti_ActivityKernel9 on a header whose
+// newest is 10, for the same reason.)
+void record_memcpy(const CUpti_ActivityMemcpy5* m) {
+    const uint16_t dev = static_cast<uint16_t>(m->deviceId);
+    const uint16_t none = pcomm::core::kUnknownDevice;
+    pcomm_engine_record_memcpy(m->start, m->end, g_domain, m->bytes, m->correlationId, m->streamId,
+                               src_is_device(m->copyKind) ? dev : none,
+                               dst_is_device(m->copyKind) ? dev : none,
+                               // On a non-peer record the context device IS the
+                               // one device, so ctx_device repeats it. Repeating
+                               // is right here and would be WRONG below, where
+                               // CUPTI reports all three separately.
+                               dev, copy_kind(m->copyKind),
+                               residency(m->srcKind), residency(m->dstKind),
+                               static_cast<uint8_t>(pcomm::core::CopySource::Cupti),
+                               (m->flags & CUPTI_ACTIVITY_FLAG_MEMCPY_ASYNC) ? 1 : 0);
+    g_copies.fetch_add(1, std::memory_order_relaxed);
+}
+
+// The peer record, and the only place in a capture where two device ordinals
+// arrive together on one row. This is the record that makes cudaMemcpyPeer a
+// comm_edges edge at all.
+void record_memcpy_peer(const CUpti_ActivityMemcpyPtoP3* m) {
+    pcomm_engine_record_memcpy(m->start, m->end, g_domain, m->bytes, m->correlationId, m->streamId,
+                               static_cast<uint16_t>(m->srcDeviceId),
+                               static_cast<uint16_t>(m->dstDeviceId),
+                               // `deviceId`, NOT srcDeviceId: CUPTI reports all
+                               // three on this record, and this one pairs with
+                               // `contextId` — the context the copy was issued
+                               // in, which belongs to the process that made it
+                               // current. That is what makes it ownership
+                               // evidence when the two endpoints are not.
+                               static_cast<uint16_t>(m->deviceId), copy_kind(m->copyKind),
+                               residency(m->srcKind), residency(m->dstKind),
+                               static_cast<uint8_t>(pcomm::core::CopySource::Cupti),
+                               (m->flags & CUPTI_ACTIVITY_FLAG_MEMCPY_ASYNC) ? 1 : 0);
+    g_copies.fetch_add(1, std::memory_order_relaxed);
+    if (m->srcDeviceId != m->dstDeviceId)
+        g_peer_copies.fetch_add(1, std::memory_order_relaxed);
+}
+
 void CUPTIAPI on_buffer_complete(CUcontext, uint32_t, uint8_t* buf, size_t, size_t valid) {
     if (!buf)
         return;
@@ -192,6 +354,19 @@ void CUPTIAPI on_buffer_complete(CUcontext, uint32_t, uint8_t* buf, size_t, size
     // call drain_thread() themselves — the same path NVBit's receive thread and
     // NCCL's proxy threads already rely on.
     while (cuptiActivityGetNextRecord(buf, valid, &rec) == CUPTI_SUCCESS) {
+        // MEMCPY and MEMCPY2 are separate kinds with separate layouts, and the
+        // split is CUPTI's rather than ours: the peer record is the only one
+        // that carries TWO device ordinals, which is the whole reason a copy can
+        // become an edge. Handled before the kernel branch so the `continue`
+        // below stays the single "not a record we asked for" exit.
+        if (rec->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
+            record_memcpy(reinterpret_cast<CUpti_ActivityMemcpy5*>(rec));
+            continue;
+        }
+        if (rec->kind == CUPTI_ACTIVITY_KIND_MEMCPY2) {
+            record_memcpy_peer(reinterpret_cast<CUpti_ActivityMemcpyPtoP3*>(rec));
+            continue;
+        }
         if (rec->kind != CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)
             continue;
         auto*          k = reinterpret_cast<CUpti_ActivityKernel9*>(rec);
@@ -269,12 +444,63 @@ void enable_once() {
         return;
     }
 
+    // ── host-initiated copies ───────────────────────────────────────────────
+    //
+    // AFTER the kernel kind and after the subscriber is already ours, which is
+    // what keeps this out of the NVBit conflict entirely: a process where NVBit
+    // owns the subscriber returned above and never reaches here. Nothing in
+    // pcomm/run.cpp's build_passes() changes.
+    //
+    // Two kinds, not one. CUPTI_ACTIVITY_KIND_MEMCPY covers H2D/D2H/D2D/H2H and
+    // reports ONE device; CUPTI_ACTIVITY_KIND_MEMCPY2 is peer-to-peer and is the
+    // only record in the API that names both ends. Enabling only the first would
+    // capture staging traffic and miss every byte that is actually
+    // communication — which is the failure this whole backend change exists to
+    // fix, so it is worth stating that it is two calls and both must succeed.
+    //
+    // ENABLED BY DEFAULT, and PCOMM_COPY_CAPTURE=0 is the opt-out. Same
+    // asymmetry core/vocab.hpp argues for TraceMode: the copy stream is small
+    // (one record per transfer, against ~1050 kernels/s/rank already accepted at
+    // +0.65 %), overhead can be paid again, and a capture that silently omitted
+    // the only lane its workload used cannot be taken again once the allocation
+    // is gone.
+    //
+    // Read from the environment HERE and not through engine_abi.h on purpose.
+    // pcomm_engine_kernel_timing_wanted() is in the ABI because TWO backends
+    // consult it and had to agree; this question has exactly one possible
+    // consumer, and putting it in the ABI would imply a coordination that does
+    // not exist. If a second copy instrument ever lands (the host-API door), it
+    // moves — that is the same rule, applied when it becomes true.
+    const char* copy_off = std::getenv("PCOMM_COPY_CAPTURE");
+    if (copy_off && (*copy_off == '0' || *copy_off == 'n' || *copy_off == 'N')) {
+        if (g_verbose)
+            std::fprintf(stderr, "[pcomm/cupti] copy capture off (PCOMM_COPY_CAPTURE=0)\n");
+    } else {
+        const CUptiResult r1 = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
+        const CUptiResult r2 = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY2);
+        g_copies_on = (r1 == CUPTI_SUCCESS && r2 == CUPTI_SUCCESS);
+        if (!g_copies_on)
+            // Loud, not swallowed, and for the reason the kernel path above is:
+            // a capture with no cuda_memcpy rows and no explanation is
+            // indistinguishable from a workload that copied nothing, and the
+            // peer half is indistinguishable from a workload with no peer
+            // traffic. Naming which of the two calls failed matters because they
+            // fail for different reasons — MEMCPY2 is the one an old CUPTI or a
+            // restricted profiling mode is likelier to refuse.
+            std::fprintf(stderr,
+                         "[pcomm/cupti] copy capture UNAVAILABLE: memcpy=%s memcpy2=%s\n"
+                         "              cuda_memcpy rows will be absent or "
+                         "peer-blind; kernel timing is unaffected.\n",
+                         cupti_err(r1), cupti_err(r2));
+    }
+
     emit_anchor();
     g_on.store(true, std::memory_order_release);
     if (g_verbose)
-        std::fprintf(stderr, "[pcomm/cupti] kernel timing on (domain %u, %s timebase)\n",
+        std::fprintf(stderr, "[pcomm/cupti] kernel timing on (domain %u, %s timebase), copies %s\n",
                      unsigned{g_domain},
-                     g_domain == pcomm::core::kDomainHostTsc ? "host TSC" : "CUPTI wall");
+                     g_domain == pcomm::core::kDomainHostTsc ? "host TSC" : "CUPTI wall",
+                     g_copies_on ? "on" : "off");
 }
 
 const char* g_armed_by = nullptr;
@@ -375,9 +601,17 @@ __attribute__((destructor)) void pcomm_cupti_fini() {
     // Tracer::finalize() through the registry.
     pcomm_engine_drain_thread();
     if (g_verbose || g_dropped.load())
-        std::fprintf(stderr, "[pcomm/cupti] kernels=%llu dropped=%llu armed_by=%s\n",
-                     (unsigned long long)g_kernels.load(), (unsigned long long)g_dropped.load(),
-                     g_armed_by ? g_armed_by : "(never)");
+        // `peer` is broken out of `copies` rather than left to be counted in
+        // SQL: it is the number that says whether this run had any GPU-to-GPU
+        // traffic at all, and a zero there beside a non-zero `copies` is the
+        // difference between "the workload only staged through the host" and
+        // "the peer activity kind was refused".
+        std::fprintf(stderr,
+                     "[pcomm/cupti] kernels=%llu copies=%llu peer=%llu dropped=%llu "
+                     "armed_by=%s copies_on=%d\n",
+                     (unsigned long long)g_kernels.load(), (unsigned long long)g_copies.load(),
+                     (unsigned long long)g_peer_copies.load(), (unsigned long long)g_dropped.load(),
+                     g_armed_by ? g_armed_by : "(never)", g_copies_on ? 1 : 0);
     pcomm_engine_release();
 }
 

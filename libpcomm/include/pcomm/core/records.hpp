@@ -400,6 +400,107 @@ PCOMM_RECORD(GpuKernel, RecordKind::Event, 530, "gpu_kernel") {
     std::uint8_t  source;  // KernelSource — which instrument produced [a, b]
 };
 
+// EVENT — one host-initiated memory COPY, [start, end] on the copy engine.
+//
+// THE HOLE THIS FILLS, and it is not a bookkeeping one. `pcomm/run.cpp`'s
+// registry says of gpumem: "It does not capture DMA: NVBit rewrites SASS, so a
+// copy-engine cudaMemcpy executes no instruction and is invisible here." That
+// is true of every provider in this tree, not only of gpumem — a copy engine
+// retires no instruction on any SM, posts no work request on any queue pair,
+// and calls into neither UCX nor NCCL. So until this record a cudaMemcpy
+// appeared in NO table at all.
+//
+// And a peer copy IS COMMUNICATION. cudaMemcpyPeer moves bytes between two
+// GPUs over NVLink or PCIe; it is what a hand-rolled halo exchange or a
+// model-parallel weight shuffle is built out of, and it resolves to a rank->rank
+// edge exactly as an ib_post_send does. A workload whose entire inter-GPU
+// traffic is cudaMemcpyPeerAsync used to produce an EMPTY comm_edges and a
+// clean link_health.
+//
+// Id 534, in the internal range beside GpuKernel (530), and NOT in
+// id_range::cupti_lo = 300 which is still reserved and still unused. GpuKernel
+// declined that range because "it names an INSTRUMENT, and this record has two
+// of them"; this record has one instrument today, so the letter of that
+// argument does not apply and its substance does: "does this capture know X"
+// must not answer "only if you ran CUPTI". A second instrument for this fact is
+// already named — interposing cudaMemcpy*/cuMemcpy* needs no CUPTI subscriber
+// and is specifically what would work under gpumem, where CUPTI is refused —
+// and numbering the record in the CUPTI range would force that follow-up either
+// to emit from a range whose name is a lie or to mint a second family for one
+// fact. See plans/PLAN-20260903-1828.
+//
+// **The interval is EXECUTION, from the copy engine.** `source` is what says
+// so, for KernelSource's reason: a HostApi row would be the API call, which is
+// a real bound for a synchronous copy and submission — milliseconds early — for
+// an async one. Two different claims, and a consumer has to be able to tell.
+//
+// WHAT THIS RECORD STRUCTURALLY CANNOT CARRY, stated here because the absence
+// is a design fact and not an oversight: **addresses**. Neither
+// CUpti_ActivityMemcpy6 nor CUpti_ActivityMemcpyPtoP4 has a pointer-valued
+// field of any kind — the peer record's identity fields are srcDeviceId,
+// srcContextId, dstDeviceId, dstContextId and nothing else. So a copy cannot be
+// placed inside a mem_object at either end, and object_access does not see this
+// traffic. That is the concrete thing an API-interposition source would unlock,
+// since the pointers are its arguments.
+PCOMM_RECORD(CudaMemcpy, RecordKind::Event, 534, "cuda_memcpy") {
+    // CUPTI's correlationId, and it is the SAME id space GpuKernel.correlation
+    // and GpuAccess.launch live in — one join key across three records rather
+    // than three private ones. 0 when the source cannot supply one.
+    std::uint64_t correlation;
+    std::uint64_t bytes;
+    // The stream ORDINAL, not a CUstream, matching GpuKernel.stream: CUPTI
+    // reports the ordinal and a timeline lane wants the ordinal anyway.
+    std::uint64_t stream;
+    // kUnknownDevice — NOT 0 — when that end of the copy is host memory. 0 is a
+    // real GPU, and a plausible value standing in for a missing one is the
+    // failure family this tree keeps hitting; see core/vocab.hpp.
+    //
+    // For a NON-peer copy both ends that are on a device carry the same
+    // ordinal, because CUPTI's non-peer record has exactly one deviceId. That
+    // is what makes `src_device <> dst_device` a sound edge test rather than an
+    // optimistic one: a row can only claim two devices when CUPTI reported two.
+    DeviceId src_device;
+    DeviceId dst_device;
+    // Which device's CONTEXT the copy was issued in — CUPTI's own `deviceId`,
+    // which it reports on the peer record too, beside srcDeviceId/dstDeviceId.
+    //
+    // THIS IS THE OWNERSHIP FIELD, and it is the difference between a copy
+    // matrix in rank space and one that resolves to nothing. Measured on du04:
+    // four MPI ranks, one GPU each, cudaMemcpyPeer'ing round a ring through CUDA
+    // IPC. The 400 records were perfect in DEVICE space — rank 0 says 0->1,
+    // rank 1 says 1->2, and so on — and comm_edges collapsed the whole ring to a
+    // single `-1 -> -1` edge with unresolved_device_copy = 400, because NOTHING
+    // in that capture said which rank drove which GPU. The evidence
+    // _device_owner accepts is mem_object (cudaMalloc is deliberately not
+    // hooked), gpu_access.run_device (needs gpumem, which cannot share a process
+    // with CUPTI), gpu_kernel.device (that workload launches no kernels) and
+    // nccl_comm (no NCCL). A pure-peer-copy program supplies none of them.
+    //
+    // NEITHER src_device NOR dst_device CAN SUBSTITUTE, which is why this is a
+    // field rather than an inference. A peer copy names one device the rank owns
+    // and one it does not, and the record does not say which is which:
+    // cudaMemcpyPeer(dst, dstDev, src, srcDev, n) is equally legal pulling from
+    // a peer as pushing to one. Guessing would put another rank's traffic under
+    // the wrong owner — the failure _device_owner's own comment refuses buffer
+    // residency for.
+    //
+    // A context, by contrast, belongs to the process that made it current. So
+    // this is admitted as strong ownership evidence for every copy row, while
+    // src_device/dst_device are admitted only to _device_key, which translates
+    // ordinals and decides nothing.
+    DeviceId     ctx_device;
+    MemcpyKind   kind;       // what the API was asked for
+    MemResidency src_space;  // what kind of allocation the bytes came from
+    MemResidency dst_space;  // ... and landed in
+    CopySource   source;     // which instrument produced [a, b]
+    // 1 when the copy was issued through an asynchronous entry point. A fact
+    // about the API, not about the engine: an async copy and a sync one look
+    // identical from the copy engine, and the difference is whether the calling
+    // thread was blocked — which is exactly the thing a timeline reader wants
+    // and cannot otherwise recover.
+    std::uint8_t async;
+};
+
 PCOMM_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {
     DomainId      domain;
     Ticks         local_ticks;  // domain clock (TSC / GPU globaltimer)

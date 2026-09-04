@@ -128,7 +128,7 @@ FIGS = {}
 
 # ---------------------------------------------------------------- fig: engine
 b = []
-b.append(band(8, 392, 844, 100, "int", "intern dictionary — every Handle in every record, in every family, resolves here"))
+b.append(band(8, 478, 844, 100, "int", "intern dictionary — every Handle in every record, in every family, resolves here"))
 b.append(box(300, 40, "gpu_access", 700, "EVT", "pc · object · address · launch", "gpu"))
 b.append(box(10, 40, "mem_object", 520, "ENT", "id · range · device", "int"))
 b.append(box(590, 40, "gpu_kernel", 530, "EVT", "correlation · stream · name", "int"))
@@ -146,23 +146,29 @@ b.append(box(300, 316, "invocation", 532, "ART", "argv · env · build · images
 # intern band — it is the one engine record with no Handle field, because the
 # dictionary is already written by the time it is emitted.
 b.append(box(590, 316, "capture_status", 592, "ART", "records_lost · streams_open", "int"))
-b.append(box(150, 422, "intern_key", 510, "ART", "key → handle · domain", "int"))
-b.append(box(450, 422, "intern_string", 512, "ART", "offset · length → blob", "int"))
+# The one record in the model for traffic no instrument in any other family
+# can see: a copy engine retires no instruction, so gpumem is structurally
+# blind to it, and it posts no work request. No arrow into the intern band,
+# like capture_status — CUPTI reports neither a name nor an address for a
+# copy, so there is no Handle field to resolve.
+b.append(box(590, 402, "cuda_memcpy", 534, "EVT", "bytes \u00b7 src_dev \u2192 dst_dev", "int"))
+b.append(box(150, 508, "intern_key", 510, "ART", "key → handle · domain", "int"))
+b.append(box(450, 508, "intern_string", 512, "ART", "offset · length → blob", "int"))
 b.append(path("M300 63 H245", "object → id", 272, 32))
 b.append(path("M530 63 H585", "launch → correlation", 558, 32))
 b.append(path("M415 86 V140", "pc", 423, 116, anchor="start"))
 b.append(path("M125 145 V90", "peer addr → owner base", 133, 122, anchor="start"))
-b.append(path("M415 276 V386", None))
-b.append(path("M705 276 V296 H835 V386", None))
+b.append(path("M415 276 V472", None))
+b.append(path("M705 276 V296 H835 V472", None))
 # node_identity -> gpu_device, and the arrow is the whole point of the record:
 # gpu_device names a card by PCI address, which is unique on ONE machine. The
 # node_hash above it is what makes that name unique across the capture.
 b.append(path("M125 276 V312", "ordinals and PCI addresses are node-local", 133, 298, anchor="start"))
-b.append(path("M125 362 V386", None))
-b.append(note(10, 510, "entity_close is one shared type for every provider: subject is the interned handle the OPEN record carried,", cls="fnote"))
-b.append(note(10, 524, "and opener is that record's type_id. A close naming a subject nothing opened is not a bug in the close hook —", cls="fnote"))
-b.append(note(10, 538, "it is evidence of a creation door that is not hooked, and it is counted rather than suppressed.", cls="fnote"))
-FIGS["engine"] = svg(860, 552, "".join(b),
+b.append(path("M125 362 V472", None))
+b.append(note(10, 596, "entity_close is one shared type for every provider: subject is the interned handle the OPEN record carried,", cls="fnote"))
+b.append(note(10, 610, "and opener is that record's type_id. A close naming a subject nothing opened is not a bug in the close hook —", cls="fnote"))
+b.append(note(10, 624, "it is evidence of a creation door that is not hooked, and it is counted rather than suppressed.", cls="fnote"))
+FIGS["engine"] = svg(860, 638, "".join(b),
     "The engine's records in the 500 range and the gpumem provider's in the 700 range, with the intern dictionary every handle resolves through")
 
 # ---------------------------------------------------------------- fig: ibverbs
@@ -604,6 +610,7 @@ INT = [
  ("gpu_device", 528, "Artifact", "One visible GPU, named by PCI address. What a device ordinal actually points at, so two ranks that both say 'device 0' can be told apart."),
  ("invocation", 532, "Artifact", "What the TRACER was asked to do — argv, the captured environment, the providers that loaded, the build, and which .so files were actually mapped."),
  ("gpu_kernel", 530, "Event", "One kernel's EXECUTION window. Never submission: the two are ~800x the kernel's own duration apart."),
+ ("cuda_memcpy", 534, "Event", "One host-initiated memory copy, on the copy engine. The only record for traffic no other family can see: a copy engine retires no instruction and posts no work request, and cudaMemcpyPeer between two GPUs is communication."),
  ("clock_anchor", 590, "Artifact", "A clock-domain calibration anchor. Two per rank per domain, which is exactly what a line needs."),
  ("capture_status", 592, "Artifact", "Whether this rank's capture is COMPLETE. Written only by a normal finalize, so a rank in clock_anchor with no row here started and did not finish — absence says what no counter can."),
 ]
@@ -667,7 +674,10 @@ PAGE_FIGURES = [
  ("06-engine-records", "The engine's records, and gpumem's",
   "Records every provider needs and none owns. <code>mem_object</code> sits here rather than in gpumem's range "
   "because any provider holding an address may emit one; <code>gpu_kernel</code> sits here because the fact has "
-  "two possible instruments and a capture must know it under either.",
+  "two possible instruments and a capture must know it under either, and <code>cuda_memcpy</code> for the same "
+  "reason one step further out \u2014 interposing the copy API needs no CUPTI subscriber at all.",
+  "<code>cuda_memcpy</code> has no arrow into the dictionary because it has no Handle field: CUPTI reports neither "
+  "a name nor an address for a copy, which is also why <code>object_access</code> cannot place this traffic. "
   "The three arrows out of <code>gpu_access</code> are the whole of its attribution: an object, a kernel launch, "
   "and a source line. <code>launch</code> is a join key and not a time \u2014 the producer records the key and the "
   "reader does the join."),

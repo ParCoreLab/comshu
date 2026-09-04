@@ -358,6 +358,48 @@ template<> struct Table<GpuKernel> {
     }
 };
 
+// One row per host-initiated memory copy. The only lane in a capture that sees
+// copy-engine traffic at all — see core/records.hpp CudaMemcpy for why nothing
+// else can.
+//
+// **THE ENUM COLUMNS ARE NUMBERS HERE, NOT NAMES, AND THAT IS DELIBERATE.**
+// `gpu_access.op` prints `Store` while the Parquet raw table (generated from the
+// same struct by tools/gen_raw_columns.py) holds `1`, so no single SQL assertion
+// can name it — and tests/hpc/suite/sql_check.sh runs assertions against the
+// PARQUET export when one exists and falls back to CSV+sqlite when it does not.
+// An assertion about copies has to work under both engines, so the two exports
+// must agree, and agreeing on the number is the only option: the generator
+// cannot emit a name without being told semantics it explicitly refuses to
+// claim. The names live in the `vocabulary` derived table, joinable from either.
+//
+// `src_device`/`dst_device` print 65535 for a host end. Not blank and not 0 —
+// 0 is a real GPU, and the sentinel is the record's, not the printer's. They are
+// SPELLED EXACTLY AS THE STRUCT FIELDS, which is the second half of the same
+// argument: gen_raw_columns.py names Parquet columns after the C++ fields
+// mechanically, so any shortening here — `src_dev` was the first spelling —
+// makes the CSV and the Parquet disagree about one column's name. That is the
+// nccl_comm.rank defect the generator's RENAMES table exists to correct, and it
+// is cheaper not to create it. Measured on du04: an assertion written against
+// `src_dev` ran clean under sqlite and failed under DuckDB with
+// `Referenced column "src_dev" not found`, on the same capture.
+template<> struct Table<CudaMemcpy> {
+    static constexpr const char* name = "cuda_memcpy";
+    static constexpr const char* cols = "ticks,end_ticks,domain,correlation,stream,bytes,"
+                                        "kind,src_device,dst_device,ctx_device,"
+                                        "src_space,dst_space,source,async";
+    static void row(std::FILE* f, const Stamped<CudaMemcpy>& s, const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%llu,%u,%llu,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
+                     s.temporal.a.domain, (unsigned long long)s.payload.correlation,
+                     (unsigned long long)s.payload.stream, (unsigned long long)s.payload.bytes,
+                     unsigned(static_cast<std::uint8_t>(s.payload.kind)), s.payload.src_device,
+                     s.payload.dst_device, s.payload.ctx_device,
+                     unsigned(static_cast<std::uint8_t>(s.payload.src_space)),
+                     unsigned(static_cast<std::uint8_t>(s.payload.dst_space)),
+                     unsigned(static_cast<std::uint8_t>(s.payload.source)), s.payload.async);
+    }
+};
+
 template<> struct Table<ClockAnchor> {
     static constexpr const char* name = "clock_anchor";
     static constexpr const char* cols = "domain,local_ticks,wall_ns,mono_ns";
@@ -1521,8 +1563,8 @@ template<> struct Table<ncr::NcclProxyOp> {
 
 // known_types() is a set, and --types sorts by id.
 using TableRecords =
-    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, SourceLine, NodeIdentity, GpuDevice,
-               Invocation, PeerMapping,
+    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, CudaMemcpy, SourceLine, NodeIdentity,
+               GpuDevice, Invocation, PeerMapping,
                ClockAnchor, CaptureStatus, Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue,
                ibr::IbModifyQp,
                ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,

@@ -84,6 +84,79 @@ enum class TraceMode : std::uint8_t {
     Full = 2,
 };
 
+// What a CudaMemcpy moved, and between which two kinds of memory. The neutral
+// spelling of CUpti_ActivityMemcpyKind; providers translate.
+//
+// PeerToPeer and DeviceToDevice are DIFFERENT VALUES AND NEITHER IS THE EDGE
+// TEST. This vocabulary describes the API that was called — which is a claim
+// about intent — while whether bytes crossed a device boundary is a fact about
+// `src_device` and `dst_device`, and the two can disagree. A
+// cudaMemcpy(dst_on_gpu1, src_on_gpu0, DeviceToDevice) under unified
+// addressing is a cross-device transfer spelled as a local one. So the derived
+// layer keys its edge on `src_device <> dst_device` and never on this enum,
+// and this enum is kept because "what did the program call" is still worth
+// recording — it is the difference between a workload that knows it is doing
+// peer traffic and one that does not.
+//
+// The five Array values are the CUDA-array (texture/surface) copies. Kept
+// one-for-one rather than collapsed into a single `Array` bucket: collapsing
+// would lose the direction, and a direction that was recorded and then thrown
+// away is worse than one that was never available.
+enum class MemcpyKind : std::uint8_t {
+    Unknown = 0,
+    HostToDevice = 1,
+    DeviceToHost = 2,
+    DeviceToDevice = 3,  // one device to ITSELF, as the API was called
+    HostToHost = 4,
+    PeerToPeer = 5,  // two devices, as the API was called
+    HostToArray = 6,
+    ArrayToHost = 7,
+    ArrayToArray = 8,
+    ArrayToDevice = 9,
+    DeviceToArray = 10,
+};
+
+// Where one end of a copy's bytes live. The neutral spelling of
+// CUpti_ActivityMemoryKind.
+//
+// NOT MemSpace, which is a different question with a confusingly similar name:
+// that one is the SASS address space of an instruction (global/local/shared)
+// and answers "which memory did this thread address". This one answers "what
+// kind of allocation is this end of the transfer", and the distinction that
+// makes it worth recording is Pageable vs Pinned — a host buffer that is not
+// page-locked forces the driver to stage the copy through its own bounce
+// buffer, which is a factor-of-several bandwidth fact that no other record in
+// a capture can state.
+enum class MemResidency : std::uint8_t {
+    Unknown = 0,
+    Pageable = 1,
+    Pinned = 2,
+    Device = 3,
+    Array = 4,
+    Managed = 5,
+    DeviceStatic = 6,
+    ManagedStatic = 7,
+};
+
+// Where a CudaMemcpy's [start, end] came from. KernelSource's argument, on a
+// second measurement: it has to be recorded rather than inferred because the
+// instruments do not measure the same quantity.
+//
+//   Cupti    the COPY ENGINE's execution window, from CUPTI's activity API.
+//            The only source that exists today, and the only one that names
+//            both device ordinals of a peer copy (CUpti_ActivityMemcpyPtoP4
+//            carries srcDeviceId/dstDeviceId; the API arguments do not, they
+//            carry pointers).
+//   HostApi  the API call. For a synchronous cudaMemcpy that is a genuine
+//            bound — the call blocks until the transfer completes — and for
+//            cudaMemcpyAsync it is SUBMISSION, which trails execution the same
+//            9-13 ms a kernel launch does. NO PRODUCER YET. It is declared now
+//            because the interval's MEANING depends on it, so a consumer that
+//            filters on it (see _tl_raw) is written before the row it has to
+//            exclude exists rather than after — the same choice _nvlink_sends
+//            made for its Load branch.
+enum class CopySource : std::uint8_t { Cupti = 0, HostApi = 1 };
+
 enum class MemOp : std::uint8_t { Load, Store, Atomic, Prefetch };
 
 enum class MemSpace : std::uint8_t { Global, Local, Shared };
