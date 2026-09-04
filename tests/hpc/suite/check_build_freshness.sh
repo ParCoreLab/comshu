@@ -30,6 +30,14 @@
 # read from the tree at run time, and refusing them would make the guard fire on
 # exactly the iteration loop it is meant to protect.
 #
+# ONE OPERATIONAL WRINKLE, measured while mutation-testing this on 2026-09-04:
+# `git reset --hard` re-checks-out any file whose stat data has drifted — a bare
+# `touch` on the deploy tree is enough — and stamps it with today's mtime even
+# though the content never changed. So poking a source file on the remote costs
+# one rebuild before `--no-build` is allowed again. That is the guard behaving
+# correctly on a tree that genuinely has a source newer than its build; it is
+# noted here so the next person does not read it as a bug.
+#
 # THE GRACE ARGUMENT IS ABOUT TWO CLOCKS, not about leniency. On the git path
 # every mtime here is minted by the remote itself — `git reset --hard` touches
 # the files it changes, the build follows on the same host — so the comparison

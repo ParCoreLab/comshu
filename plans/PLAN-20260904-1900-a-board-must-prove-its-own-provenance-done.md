@@ -1,7 +1,8 @@
 # PLAN — a board must prove its own provenance
 
 - **Created:** 2026-09-04 19:00 +03
-- **Status:** L1 landed (`d14354a`), validated on MN5. L2 and L3 outstanding.
+- **Status:** done. L1 `d14354a`, L2 + L3 `ccfaafa`, all three mutation-tested
+  on MN5. Residuals listed under "What is left".
 - **Related:** `records.hpp` `Invocation` (532, the `images` scar),
   `link_sql.hpp` `run_provenance`, the retraction in `link_sql.hpp` `edge_sizes`,
   `run_on_a100.sh`'s provenance header, `all_in_one.sbatch`'s two pre-flights.
@@ -197,18 +198,80 @@ want of `GLIBCXX_3.4.30` and exits **1**, the same code the launcher uses for
 That is this plan's argument in a third form: a gate that cannot run and a gate
 that ran clean must not look the same.
 
+## What L2 and L3 turned out to be (2026-09-04, `ccfaafa`)
+
+**L2 — `asserts/images_are_no_older_than_the_engine.sql`.** As designed, on the
+CSV path for the same reason L1 is (MN5 has no DuckDB). The threshold was
+measured off job 45426015 rather than guessed: in a full four-tree build every
+provider is *newer* than the engine — ibverbs and cupti by 1 s (same cmake
+invocation), gpumem 20 s, ucx 29 s, nccl 35 s, because the side trees build
+after `build/` and their libraries are copied in. Nothing legitimate lands
+older, so 60 s clears the intra-build spread with room to spare.
+
+Three vacuity companions, not one, because the input can be empty three ways:
+no images at all, images without the engine among them, and the `<path> ? ?`
+the engine writes when a mapped object's file has vanished. That last is
+unknown provenance by definition — and it would have parsed as mtime 0 and
+reported an image 56 years stale had it not been handled.
+
+**L3 — `suite/check_build_freshness.sh`, called by both drivers before they
+submit.** One deviation, and it is the difference between a guard that survives
+and one that gets routed around. The plan said "compare the mtime of every
+built artifact against the newest tracked source". That over-fires: providers
+are separate targets, so editing `providers/ucx/*.cpp` legitimately leaves
+`libibverbs_trace.so` at yesterday's mtime, and a guard demanding a full
+rebuild per edit is one people delete. The claim is narrowed to *something in
+`build/` is at least as new as the newest compiled input*, and only compiled
+inputs count — a commit touching `.sql` assertions or docs must not force a
+rebuild. The three layers then divide the question cleanly:
+
+| | asks |
+|---|---|
+| L3 | did you build at all since editing a compiled file? |
+| L2 | were the objects that actually loaded built together? |
+| L1 | is what ran the commit this board claims? |
+
+The grace argument is about two clocks, not leniency: the git path mints every
+mtime on one host (grace 0), while `--rsync` and `run_on_a100.sh` carry this
+workstation's timestamps into a build stamped by the cluster's (grace 120).
+
+### Validated by mutation, on the cluster
+
+- **Green with both armed:** job 45426571 — SUITE GREEN, 19 PASS, and both
+  `build_is_the_boards_commit` and `images_are_no_older_than_the_engine` `[ok]`
+  on all 19.
+- **L2 fires where L1 structurally cannot:** job 45426911 — the ibverbs
+  provider aged 3 h under an engine of the right commit. `build_is_the_boards_commit`
+  `[ok]`, `images_are_no_older_than_the_engine` red naming the file and 10800 s.
+  That is incident 2 above, reproduced and caught.
+- **L3 both ways on the real tree:** passes at baseline; ignores a touched
+  `.sql`; refuses on a touched `.cpp`, naming the file and both timestamps;
+  passes again once rebuilt. The refusal also fired for real in the driver
+  (`run_on_mn5.sh --no-build`) before any submit.
+- L2's five failure shapes were mutation-tested against a **real** capture
+  (ucx_deep, job 45426015) rather than a fixture.
+
+One operational wrinkle worth knowing: `git reset --hard` re-checks-out any
+file whose stat data has drifted — a bare `touch` on the deploy tree is enough —
+and stamps it with today's mtime though the content never changed. Poking a
+source file on the remote therefore costs one rebuild before `--no-build` is
+allowed again. Recorded in the script's header so it does not read as a bug.
+
 ## What is left
 
-- **L2 and L3 as written below.** L3's preventive half is blocked on something
-  small: no binary exposes its build id. `pcomm_build_id.h` is private to the
-  engine target and the CLI has no `--version`, so a runner cannot ask "which
-  commit is this build" without producing a capture first.
 - **Nothing forces a runner to arm the check.** Both drivers export
   `PCOMM_EXPECT_COMMIT`, and a board whose export silently stopped working would
   report `[skip]` on every case and still go green. The `provenance:` line makes
   it visible; nothing makes it required. A run-level assertion — "no case may
   skip this one" — needs `result.json` to name skipped assertions, which it does
   not today.
+- **No binary can be asked which commit it is.** `pcomm_build_id.h` is private
+  to the engine target and the CLI has no `--version`, so every check above has
+  to go through a capture. A `pcomm --version` would let L3 compare the build's
+  commit to the tree's directly, instead of inferring staleness from mtimes.
+- **Two blind windows, both stated rather than hidden.** L3's rsync grace is
+  120 s, and on the rsync path L1 cannot help inside it (the id is
+  `<sha>-dirty` before and after an edit). L2's threshold is 60 s.
 
 ## Open questions
 
