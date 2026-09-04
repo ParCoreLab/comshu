@@ -20,7 +20,8 @@
     "ib_modify_qp",
     "ib_post_send",
     "ib_poll_cq",
-    "comm_edges"
+    "comm_edges",
+    "gpu_device"
   ],
   "entity_close_note": "CLOSED 2026-08-07 (MN5 job 44372679). Root cause was never a registration door: object-ops hooks are installed INSIDE an ibv_context, and UCX opens contexts through a door this provider does not interpose, so ibv_reg_dm_mr's trampoline was never installed on them while ibv_dereg_mr — a preload hook, context-independent — still fired. Hence closes naming regions nothing opened. Job 44369505 proved it: every unmatched close carried installed=NO. Fixed by installing a context on first sight through ANY door rather than only at ibv_open_device, with ibv_close_device hooked so a recycled context pointer is not mistaken for one already patched — omitting that lifecycle silently cost case 02 two of its eight ranks. Case 02 now records 504 device_memory regions that were entirely absent before, with sends unchanged at 26880. Six registration hypotheses died before one that followed the object instead of the symbol; see plans/PLAN-20260806-2320-dlvsym-interposer-not-observed."
 }

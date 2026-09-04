@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "pcomm/core/records.hpp"
+#include "pcomm/engine_abi.h"  // pcomm_engine_note_cuda_live — see prof_init
 #include "pcomm/helpers/timestamp.hpp"
 #include "pcomm/rec/intern_table.hpp"
 #include "pcomm/rec/recorder.hpp"
@@ -364,6 +365,15 @@ static int prof_init(void** context, int* eActivationMask, const char* commName,
     auto* pc = new (std::nothrow) ProfComm{commHash};
     if (context)
         *context = pc;
+
+    // NCCL is BUILDING a communicator right now, so the CUDA driver is live —
+    // and this door reaches a capture the interposer's one cannot. NCCL dlopens
+    // this library for the plugin even when it was never LD_PRELOADed, so on a
+    // `-p ib` run of a NCCL application the plugin fires while ncclCommInitRank
+    // is not interposed at all: measured on du04, that capture carried 912/914
+    // rows and no 900. That is exactly 02_nccl_internode, which captures a CUDA
+    // workload with -p ib and has never had a gpu_device row.
+    ::pcomm_engine_note_cuda_live("nccl_prof_init");
 
     // An Artifact: the communicator exists and NCCL calls it this. The temporal
     // is an instant rather than an interval because init is a point in the
