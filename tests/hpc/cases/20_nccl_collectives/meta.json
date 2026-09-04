@@ -24,7 +24,8 @@
     "nccl_collective",
     "nccl_p2p",
     "nccl_group",
-    "entity_close"
+    "entity_close",
+    "gpu_device"
   ],
   "not_covered": "nccl_window and nccl_dev_comm stay empty here: they are the device-initiated path (ncclCommWindowRegister / ncclDevCommCreate), which needs a kernel using the NCCL device API. That is the GPU-initiated case, and it is separate work. The two tables are absent rather than empty in this capture, which is the honest state — nothing in this workload opens those doors."
 }

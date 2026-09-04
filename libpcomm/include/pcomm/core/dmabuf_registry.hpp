@@ -144,11 +144,18 @@ inline CuResult get_proc_address(const char* symbol, void** pfn, int driver_vers
     // in core, entering it proves the driver answers, and a statically linked
     // cudart — nvcc's default — reaches the driver through cuGetProcAddress,
     // which is the very reason the memcpy work chose CUPTI over interposition.
-    // The inference was wrong. Armed from the engine and probed per door on
-    // du04 (case 23, PCOMM_TRACE_HOOKS=1), cuGetProcAddress recorded ZERO
-    // entries across the whole run, while cupti_buffer_request fired first and
-    // succeeded. Resolution is not invocation — the trap PCOMM_TRACE_HOOKS
-    // exists for, and it caught this proposal rather than confirming it.
+    // The inference was wrong, and it was measured TWICE with the call wired in
+    // and PCOMM_TRACE_HOOKS=1 on du04, in both contexts where the door can be
+    // armed:
+    //
+    //   copybench, -p cupti, door armed from Tracer::start   0 entries
+    //   nccl_collectives, -p ib, door armed by ibverbs       0 entries
+    //
+    // Both captures were real and non-empty; the second carries ib_device,
+    // invocation, capture_status and NCCL's own 912/914 rows. cupti_buffer_request
+    // and nccl_comm_init each fired first in their own capture and succeeded.
+    // Resolution is not invocation — the trap PCOMM_TRACE_HOOKS exists for, and
+    // it caught this proposal instead of confirming it.
     if (rc == 0 && symbol && pfn && *pfn &&
         std::strcmp(symbol, "cuMemGetHandleForAddressRange") == 0) {
         real_get_handle() = reinterpret_cast<PfnMemGetHandle>(*pfn);

@@ -114,6 +114,14 @@ static void record_comm(ncclComm_t comm, std::uint64_t comm_hash, std::uint64_t 
     pncclCommUserRank(comm, &rank);
     pncclCommCount(comm, &nranks);
     pncclCommCuDevice(comm, &dev);
+    // NCCL cannot have built this communicator without a live CUDA context, and
+    // has just named the device it sits on — so the driver answers here. That
+    // matters because an nccl-only capture has no other moment: it loads no
+    // CUPTI, and its host-API records are far too few to fill a record buffer
+    // while the process is alive, which is the proxy gpu_device used to depend
+    // on. Measured on job 45406132: nccl_internode and nccl_collectives carried
+    // no gpu_device at all. See pcomm_engine_note_cuda_live.
+    ::pcomm_engine_note_cuda_live("nccl_comm_init");
     rec().record(span(begin, end),
                  rr::NcclComm{{}, {}, h(comm), comm_hash, nccl_hash, rank, nranks, dev, 0});
 }
