@@ -192,6 +192,14 @@ void emit_anchor() {
 }
 
 void CUPTIAPI on_buffer_request(uint8_t** buf, size_t* size, size_t* max_records) {
+    // CUPTI is asking for somewhere to put activity, which it only does with a
+    // live context — so the driver answers here, and this is the one moment a
+    // CUPTI-only capture reliably gets while the application is alive. Its
+    // sibling on_buffer_complete is NOT such a moment: cuptiActivityFlushAll
+    // runs from this backend's destructor, by which point the driver returns
+    // CUDA_ERROR_DEINITIALIZED. That asymmetry is why a CUPTI capture could
+    // never satisfy the old arena-flush proxy at any record count.
+    ::pcomm_engine_note_cuda_live("cupti_buffer_request");
     void* p = nullptr;
     if (posix_memalign(&p, kBufAlign, kBufSize) != 0)
         p = nullptr;

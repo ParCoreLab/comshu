@@ -27,7 +27,8 @@
   "expect_tables": [
     "cuda_memcpy",
     "node_identity",
-    "clock_anchor"
+    "clock_anchor",
+    "gpu_device"
   ],
   "no_gpu_device_note": "gpu_device (528) is deliberately NOT expected here, and the reason is a property of the CUPTI door rather than of this case. GpuDevice is emitted from the arena-flush path — never at start (the driver may not be loaded) and never at finalize (it answers CUDA_ERROR_DEINITIALIZED by then, job 45302619) — so it needs a record buffer to FILL while the process is alive. Under CUPTI that does not happen for a workload of this size: CUPTI hands its activity records over in 8 MB buffers, ~80k memcpy records to a buffer, so a run producing 4400 of them delivers ALL of them in one on_buffer_complete call from cuptiActivityFlushAll at teardown. The engine's 4096-record arena then fills for the first time inside the destructor, which is exactly the moment the driver has stopped answering. Measured: 4400 copies, no 528 stream; libcuda.so.580.95.05 IS mapped in the process, so this is not a missing driver. The derived layer degrades correctly — _device_key falls back to its 'O' ordinal keys, which its own comment describes as the legitimate shape of a capture whose buffers never flushed in-run — and copy_peers_resolve passes, so ownership still closes. Written up rather than fixed: it is pre-existing engine behaviour that this case is simply the first to meet."
 }

@@ -138,6 +138,17 @@ inline CuResult get_proc_address(const char* symbol, void** pfn, int driver_vers
         return 1 /* CUDA_ERROR_INVALID_VALUE */;
 
     const CuResult rc = real(symbol, pfn, driver_version, flags);
+    // NO pcomm_engine_note_cuda_live() HERE, and the absence is a measurement.
+    //
+    // This door looked like the principled place to report CUDA liveness: it is
+    // in core, entering it proves the driver answers, and a statically linked
+    // cudart — nvcc's default — reaches the driver through cuGetProcAddress,
+    // which is the very reason the memcpy work chose CUPTI over interposition.
+    // The inference was wrong. Armed from the engine and probed per door on
+    // du04 (case 23, PCOMM_TRACE_HOOKS=1), cuGetProcAddress recorded ZERO
+    // entries across the whole run, while cupti_buffer_request fired first and
+    // succeeded. Resolution is not invocation — the trap PCOMM_TRACE_HOOKS
+    // exists for, and it caught this proposal rather than confirming it.
     if (rc == 0 && symbol && pfn && *pfn &&
         std::strcmp(symbol, "cuMemGetHandleForAddressRange") == 0) {
         real_get_handle() = reinterpret_cast<PfnMemGetHandle>(*pfn);

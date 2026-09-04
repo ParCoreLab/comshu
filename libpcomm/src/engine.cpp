@@ -372,6 +372,10 @@ pcomm_arena* pcomm_engine_arena(std::uint16_t type_id, std::uint8_t kind, std::u
     return &it->second->pub;
 }
 
+void pcomm_engine_note_cuda_live(const char* door) {
+    pcomm::Tracer::instance().maybe_emit_gpu_devices(door ? door : "unnamed");
+}
+
 void pcomm_engine_arena_flush(pcomm_arena* arena) {
     if (arena && arena->_owner)
         static_cast<pcomm::Arena*>(arena->_owner)->drain();

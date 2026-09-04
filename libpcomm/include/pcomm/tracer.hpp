@@ -90,6 +90,16 @@ public:
         m_recorder = std::make_unique<rec::Recorder<>>(*m_sink);
         install_fork_handler();
         ::pcomm_install_signal_handlers();
+        // NOT core::dmabuf::install() here, though it was tried and the argument
+        // for it still reads well: that door lives in core but is installed only
+        // by ibverbs and mlx5dv, so a `-p cupti` or `-p nccl` run has no
+        // interposer on cuGetProcAddress at all — the record centralised, the
+        // door that says WHEN to write it not. Arming it from here was measured
+        // on du04 and bought nothing: cuGetProcAddress was entered zero times in
+        // case 23. Installing an interposer that never fires would change the
+        // dlsym chain for every capture in exchange for no evidence, so it is
+        // left to the two providers that have a use for it. See
+        // core/dmabuf_registry.hpp get_proc_address for the measurement.
         // Backstop: with refcounted stop(), a provider that never stops (a
         // vendor teardown path that skips our dtor) would otherwise hold the
         // count above zero and the capture would never be flushed at all.
@@ -271,12 +281,31 @@ public:
     // Retried until it succeeds rather than attempted once, because "CUDA is
     // not loaded yet" and "there is no CUDA here" are indistinguishable at any
     // single moment and only the first of them changes.
-    void maybe_emit_gpu_devices() {
-        if (m_gpu_devices_done.load(std::memory_order_relaxed))
-            return;
-        if (!m_recorder)
+    // `door` names the call site, and it exists because this question is about
+    // INVOCATION and not resolution — the same distinction PCOMM_TRACE_HOOKS was
+    // added for on the preload path, which does not cover this one. Which doors
+    // are ENTERED while the driver still answers is not derivable from reading
+    // the tree; it was measured, per door, and the answer decided the call sites
+    // below.
+    void maybe_emit_gpu_devices(const char* door = "arena_flush") {
+        // The probe runs BEFORE the early-outs, on purpose. Printing only when
+        // work is attempted cannot distinguish "this door never fired" from
+        // "this door fired second, after another had already succeeded" — and
+        // that is exactly the question that decides whether a call site earns
+        // its place. Measured, per door, with `first=` naming the one that won.
+        static const bool trace = [] {
+            const char* v = std::getenv("PCOMM_TRACE_HOOKS");
+            return v && v[0] == '1';
+        }();
+        const bool already = m_gpu_devices_done.load(std::memory_order_relaxed);
+        if (trace)
+            std::fprintf(stderr, "[pcomm/gpudev] door=%s already=%d\n", door, already ? 1 : 0);
+        if (already || !m_recorder)
             return;
         emit_gpu_devices();
+        if (trace)
+            std::fprintf(stderr, "[pcomm/gpudev] door=%s FIRST emitted=%d\n", door,
+                         m_gpu_devices_done.load(std::memory_order_relaxed) ? 1 : 0);
     }
 
 

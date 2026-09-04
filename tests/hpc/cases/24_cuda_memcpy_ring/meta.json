@@ -11,5 +11,5 @@
   "workload": { "ranks": 4, "nodes": 1, "gpus": 4, "iters": 100, "msg_bytes": 1048576 },
   "workload_note": "`mpirun -np 4 ipcring 100 1048576`. Rank r opens rank (r+1)%ranks's allocation with cudaIpcOpenMemHandle and issues `iters` cudaMemcpyPeer calls into it, from its own device to the peer's. Every count in the assertions is derived from `ranks`, `iters` and `msg_bytes`; nothing is read off a capture. No CUDA_VISIBLE_DEVICES pinning, because cudaMemcpyPeer needs the peer's ordinal to be meaningful in the calling process — which is also the configuration where _device_owner has real work to do.",
   "oracle_note": "ring_matrix is the load-bearing assertion and cannot pass vacuously: it builds the expected ring from params with a recursive CTE and LEFT JOINs the capture onto it, so a MISSING edge is an offending row, not an absent one. The suite's usual empty-means-pass shape would go green on a capture with no copies at all.",
-  "expect_tables": ["cuda_memcpy", "node_identity", "clock_anchor"]
+  "expect_tables": ["cuda_memcpy", "node_identity", "clock_anchor", "gpu_device"]
 }

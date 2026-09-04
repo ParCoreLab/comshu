@@ -216,6 +216,31 @@ void pcomm_engine_record_memcpy(uint64_t t0, uint64_t t1, uint16_t domain, uint6
                                 uint8_t src_space, uint8_t dst_space, uint8_t source,
                                 uint8_t async);
 
+/* Report that the CUDA driver is initialised and ANSWERING, right now.
+ *
+ * The caller asserts liveness; the engine decides what to do with it. Today that
+ * is GpuDevice (528), which can only be enumerated in a window the engine cannot
+ * find on its own: not at start (the application may not have loaded CUDA yet)
+ * and not at finalize (the driver returns CUDA_ERROR_DEINITIALIZED while libcuda
+ * stays mapped, so every symbol still resolves and the enumeration silently
+ * yields nothing — job 45302619).
+ *
+ * Until now the engine approximated that window with "a record buffer filled",
+ * which is a VOLUME proxy for a LIVENESS question and is wrong in both
+ * directions. Measured on MN5 job 45406132: ten of twenty-one captures carry no
+ * gpu_device at all, including ib_pingpong (20 sends) and both cuda_memcpy
+ * cases — while node_identity, which is written at start, is present in all
+ * twenty-one. A CUPTI-only capture cannot satisfy the proxy at any record count,
+ * because CUPTI delivers its activity in batches at teardown.
+ *
+ * `door` names the call site for PCOMM_TRACE_HOOKS=1 and is otherwise unused.
+ * Idempotent and cheap: one relaxed atomic load once the work is done, so a
+ * caller may put it on a hot path without measuring first.
+ *
+ * ADDED WITHOUT BUMPING PCOMM_ENGINE_ABI_VERSION, on pcomm_engine_record_memcpy's
+ * precedent and for its reasons. */
+void pcomm_engine_note_cuda_live(const char* door);
+
 /* Record a clock anchor for a non-default domain: (local_ticks, wall_ns)
  * sampled at the same moment. Two per domain per run — start and end — is what
  * pcomm-read's per-(rank, domain) fit needs to recover offset AND rate.
