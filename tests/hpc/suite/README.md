@@ -81,11 +81,27 @@ And one table that is *not* from `meta.json`:
 
 `suite/asserts/` holds the checks worth running everywhere: `owner_in_range`
 (every `mem_dev` names a GPU that exists), `completions_succeed`,
-`sends_have_payload`, `ranks_complete`, and `build_is_the_boards_commit` — the
-one assertion about the *tool* rather than the workload, comparing
-`invocation.build` against the commit the runner claims. Four false findings
-have come from a capture produced by something other than the tree under test;
-that file's header lists them.
+`sends_have_payload`, `ranks_complete`.
+
+### The two assertions about the tool rather than the workload
+
+Four false findings have come from a capture produced by something other than
+the tree under test — a stale `.so` that invented a planner bug, a hand-copied
+provider that nearly refuted a correct change, a syncthing-mixed tree, a gate
+green over uncompiled code. Each assertion's header names them. They divide the
+question three ways and none of them subsumes another:
+
+| | asks |
+|---|---|
+| `build_is_the_boards_commit` | is what ran the commit this board claims? (`invocation.build` vs `$PCOMM_EXPECT_COMMIT`) |
+| `images_are_no_older_than_the_engine` | were the objects that actually loaded built together? (`invocation.images` mtimes, 60 s threshold measured off job 45426015) |
+| `suite/check_build_freshness.sh` | did you build at all since editing a compiled file? — preventive, run by both drivers before they submit |
+
+The build id is compiled into the *engine*, so a stale provider linked against
+it reports the engine's commit quite happily: only the image mtimes see that.
+A stale engine under fresh providers is the reverse, and only the commit sees
+that. The freshness script is the only one of the three that answers before the
+queue wait rather than after it.
 
 ## How correctness is verified
 

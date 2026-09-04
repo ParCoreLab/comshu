@@ -452,6 +452,33 @@ if [ "$do_build" -eq 1 ]; then
          exit 1; }
 fi
 
+# --- 2.5 refuse a build older than its source -------------------------------
+# The preventive layer (L3 of PLAN-20260904-1900). The two assertions on the
+# board are detective — they answer after the queue wait, the run and the check.
+# This one answers before the submit, and it is what makes `--no-build` mean
+# "do not rebuild if nothing changed" rather than "trust me".
+#
+# It runs even when we DID build, and that is not redundant: a build step whose
+# target was skipped, or that copied a stale library into build/providers/, ends
+# here with an artifact older than the source it claims to be. This file already
+# carries a `touch` workaround for exactly that on the CUDA target.
+#
+# Only compiled inputs count — see the script. A commit that touches assertions,
+# meta.json or documentation must not force a rebuild, or the guard becomes the
+# thing people route around.
+if [ "$check_only" -eq 0 ]; then
+  say "build freshness"
+  # 120 s of grace under --rsync only: those mtimes are minted by THIS machine's
+  # clock and compared against artifacts stamped by the cluster's. The git path
+  # has one clock and needs none.
+  fresh_grace=0
+  [ "$use_rsync" -eq 1 ] && fresh_grace=120
+  rsh "bash $PROOT/tests/hpc/suite/check_build_freshness.sh $PROOT $PROOT/build $fresh_grace" \
+    || { echo "run_on_mn5: refusing to submit — the board would answer for an older tree." >&2
+         exit 1; }
+  echo "  build is at least as new as every compiled source"
+fi
+
 # --- 3. run the cases --------------------------------------------------------
 # Default: one allocation, all cases inside it. acc_debug allows one *submitted*
 # job at a time, which is why a job per case cost a queue wait per case.

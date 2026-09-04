@@ -135,6 +135,20 @@ if [ "$do_build" -eq 1 ]; then
     echo "run_on_a100.sh: build failed" >&2; exit 1; }
 fi
 
+# ---- is the build newer than the source it claims to be? -------------------
+# L3 of PLAN-20260904-1900, and this runner needs it more than MN5 does: there
+# is no commit here to be attributable to, `--no-build` is the normal way to
+# iterate, and the checkout this rsyncs from is fed by syncthing — which is how
+# a provider `.cpp` once ran against the `.sql` from a different commit.
+#
+# 120 s of grace because the mtimes being compared come from two clocks: rsync
+# preserves this workstation's timestamps, the build is stamped by du04's.
+rsh "bash $RDIR/tests/hpc/suite/check_build_freshness.sh $RDIR $RDIR/build 120" || {
+  echo "run_on_a100.sh: refusing to run cases against a build older than the tree." >&2
+  echo "  drop --no-build. (Only compiled files count — assertions and docs do not" >&2
+  echo "  trip this.)" >&2
+  exit 1; }
+
 # ---- run ------------------------------------------------------------------
 # No scheduler here, so a case's job.sbatch is executed directly — which works
 # because #SBATCH lines are comments to bash, the same property all_in_one.sbatch
