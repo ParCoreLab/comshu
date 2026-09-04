@@ -183,18 +183,64 @@ fi
 # 2 unknown name.
 #
 # HARD ERROR for the same reason the allocation check above is one.
-missing=""
-for c in $CASES; do
-  m="$CASES_DIR/$c/meta.json"
-  [ -f "$m" ] || continue
-  provs=$(python3 -c 'import json,sys
+#
+# IT HAS TO BE ABLE TO RUN THE LAUNCHER, and the first version of this check
+# never made sure it could. It ran `"$PCOMM" run --dry-run` in this file's own
+# shell, where `$PCOMM` does not exist: it is common.sh's to define, and every
+# case's job.sbatch sources common.sh while this file never did. So the check
+# ran `"" run --dry-run`, `2>/dev/null` swallowed "command not found" together
+# with every real diagnostic, and ALL 23 cases were reported as build holes on a
+# build that had just compiled every one of them (job 45425560, the first board
+# after the check landed). The suite produced no board at all.
+#
+# `. common.sh` alone is still not enough, which is the more interesting half.
+# The launcher is a C++20 binary built with gcc/13.2.0 and the system
+# libstdc++.so.6 has no GLIBCXX_3.4.30, so without `pcomm_load_runtime` it dies
+# in ld.so — exiting 1, which is indistinguishable from "the provider .so is not
+# there". A rc-only check cannot tell a launcher that cannot start from a
+# provider that was not built.
+#
+# So: A POSITIVE CONTROL FIRST. `pcomm list` uses the binary and no provider, so
+# it separates "this pre-flight is broken" from any verdict about the build. A
+# gate that cannot start must say so, not vote no.
+#
+# One subshell for the whole loop: common.sh's MODULEPATH swap and `module
+# purge` belong to a case's environment, not to this driver's, and each case
+# does that for itself. The subshell prints either BROKEN + a reason, or the
+# list of cases whose providers this build cannot supply.
+preflight=$( . "$PCOMM_ROOT/tests/hpc/suite/common.sh" >/dev/null 2>&1
+  pcomm_load_runtime >/dev/null 2>&1
+  if [ ! -x "${PCOMM:-}" ]; then echo "BROKEN no launcher at ${PCOMM:-<unset>}"; exit 0; fi
+  if ! "$PCOMM" list >/dev/null 2>&1; then
+    echo "BROKEN \`$PCOMM list\` failed: $("$PCOMM" list 2>&1 | head -1)"; exit 0
+  fi
+  for c in $CASES; do
+    m="$CASES_DIR/$c/meta.json"
+    [ -f "$m" ] || continue
+    provs=$(python3 -c 'import json,sys
 try: print(",".join(json.load(open(sys.argv[1])).get("providers",[])))
 except Exception: print("")' "$m" 2>/dev/null)
-  [ -n "$provs" ] || continue
-  if ! "$PCOMM" run --dry-run -p "$provs" -- /bin/true >/dev/null 2>&1; then
-    missing="$missing $c(-p $provs)"
-  fi
-done
+    [ -n "$provs" ] || continue
+    "$PCOMM" run --dry-run -p "$provs" -- /bin/true >/dev/null 2>&1
+    rc=$?
+    # 0 planned, 1 a declared provider whose .so is not there, 2 a name the
+    # registry does not know. Anything else is this check failing rather than
+    # the build, and collapsing "I could not ask" into "the answer is no" is
+    # exactly what turned one unset variable into 23 false build holes.
+    case $rc in
+      0) ;;
+      1|2) printf ' %s(-p %s)' "$c" "$provs" ;;
+      *)   echo "BROKEN \`pcomm run --dry-run -p $provs\` exited $rc for $c"; exit 0 ;;
+    esac
+  done )
+case "$preflight" in
+  BROKEN*)
+    echo "!! provider pre-flight could not run: ${preflight#BROKEN }" >&2
+    echo "!! that is not a verdict about the build — refusing to judge the board" >&2
+    echo "!! on a check that cannot start." >&2
+    exit 2 ;;
+esac
+missing="$preflight"
 if [ -n "$missing" ]; then
   echo "!! this build cannot supply the providers these cases declare:$missing" >&2
   echo "!! that is a GATE HOLE, not a skip — the board would go green over code" >&2
