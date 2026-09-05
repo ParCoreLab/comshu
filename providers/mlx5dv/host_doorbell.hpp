@@ -49,6 +49,7 @@
 // this one.
 
 #include <atomic>
+#include <utility>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -104,6 +105,11 @@ struct State {
     std::atomic<std::uint32_t>                uars_unarmed{0};  // failed open
 };
 
+// One-shot flags so an inconclusive probe reports once rather than once per UAR
+// (a run can allocate a hundred).
+inline bool g_said_unresolved = false;
+inline bool g_said_inconclusive = false;
+
 inline State& state() {
     static State s;
     return s;
@@ -142,7 +148,15 @@ inline bool debug_on() {
 // wrong in this direction is an empty table; in the other, it is a run that
 // took a different code path because it was being watched.
 inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
-    static int cached = -1;  // -1 unknown, 0 GPU mapping works, 1 it is refused
+    // Only a DEFINITIVE answer is cached. A probe that could not run is not
+    // evidence about the platform, and caching it as one is what made the first
+    // real case-12 run leave all 96 UARs unarmed: the transport allocates its
+    // UARs before it has a current CUDA context, cuMemHostRegister returned
+    // CUDA_ERROR_INVALID_CONTEXT (201) on the very first one, and every UAR
+    // after it inherited that non-answer. Retrying costs one driver call per
+    // UAR until the question becomes answerable, which it does as soon as the
+    // application has a context.
+    static int cached = -1;  // -1 not yet answered, 0 mapping works, 1 refused
     if (cached >= 0)
         return cached == 1;
 
@@ -152,11 +166,12 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
     auto* unreg = reinterpret_cast<hijack::PfnHostUnregister>(
         export_table::real("cuMemHostUnregister"));
     if (!reg || !unreg) {
-        std::fprintf(stderr,
-                     "[pcomm] host doorbell: cannot resolve the CUDA driver, so whether this "
-                     "platform maps a NIC doorbell page into the GPU is unknown. NOT arming — "
-                     "an unproven platform is left alone.\n");
-        cached = 0;
+        // Not cached: libcuda may simply not be loaded yet.
+        if (!std::exchange(g_said_unresolved, true))
+            std::fprintf(stderr,
+                         "[pcomm] host doorbell: cannot resolve the CUDA driver yet, so whether "
+                         "this platform maps a NIC doorbell page into the GPU is unknown. NOT "
+                         "arming this UAR; will ask again on the next one.\n");
         return false;
     }
 
@@ -193,12 +208,19 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
     // one the transport will register — and must not be read as evidence about
     // the platform. Fail closed.
     if (rc != hijack::kCudaErrorNotPermitted) {
-        std::fprintf(stderr,
-                     "[pcomm] host doorbell: probing the doorbell page failed with rc=%d, which "
-                     "is not the refusal this guard looks for (%d, NOT_PERMITTED). That says "
-                     "the probe is wrong, not that the platform refuses. NOT arming.\n",
-                     rc, hijack::kCudaErrorNotPermitted);
-        cached = 0;
+        // Also not cached, and for the same reason: this says the probe could
+        // not be made, not that the platform answered. CUDA_ERROR_INVALID_CONTEXT
+        // (201) is the common one — no context is current on the thread that
+        // allocated this UAR — and it resolves itself once the application makes
+        // one, so the next UAR gets a real answer.
+        if (!std::exchange(g_said_inconclusive, true))
+            std::fprintf(stderr,
+                         "[pcomm] host doorbell: probing the doorbell page failed with rc=%d, "
+                         "which is not the refusal this guard looks for (%d, NOT_PERMITTED) — "
+                         "201 means no CUDA context was current yet. That says the probe could "
+                         "not be made, not that the platform refuses. NOT arming this UAR; will "
+                         "ask again on the next one.\n",
+                         rc, hijack::kCudaErrorNotPermitted);
         return false;
     }
 
