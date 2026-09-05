@@ -40,7 +40,44 @@ there. In the same job the GPU hijack correctly reports it cannot engage
 ("DEVX allocated 1 UAR(s) and NONE was mapped into the GPU"), so both mechanisms
 name the platform correctly from opposite sides.
 
-## Still open: the host path has never captured a doorbell
+## The host path captures, on MN5 — job 45449988
+
+Two nodes, `shmem_put_bw`, NVSHMEM's own log confirming
+`NIC handler will be CPU with gdrcopy backend`:
+
+```
+rank 0: uars_armed=4 doorbells=355 sends=7232 (unknown_op=0 truncated=0) wqes_lapped=0
+rank 1: uars_armed=4 doorbells=31  sends=29   (unknown_op=0 truncated=0) wqes_lapped=0
+```
+
+7,202 `rdma_write` rows decoded `full` (addresses, keys, lengths) and 59
+`atomic_masked_cs` marked `partial` — the remote address read, the local
+descriptor left alone behind operand segments this decoder does not model. Zero
+unknown opcodes, zero truncated, zero lapped. ~20 WQEs per doorbell, consistent
+with NVSHMEM batching the doorbell above the register.
+
+This is the first GPU-initiated data plane pcomm has ever captured on MN5.
+
+### What it took, and the two mistakes worth keeping
+
+**The sinks were installed for one mode.** Job 45449944 armed 4 UARs and decoded
+381 doorbells and wrote **nothing** — no stream 212, no 214 — because
+`hijack::set_sinks` was still guarded by `hijack::enabled()` alone. The decoder
+incremented its counters, found a null sink and returned, so the shutdown line
+claimed hundreds of doorbells over an empty capture. Four call sites had been
+widened to cover both modes and that one was missed.
+
+**The bootstrap hunt cost four jobs to two confusions.** NVSHMEM has two
+variables — `NVSHMEM_BOOTSTRAP` (PMI | MPI | SHMEM | UID) and
+`NVSHMEM_BOOTSTRAP_PMI` (PMI | PMI-2 | PMIX) — and `PMI2` is not legal in the
+first. It says so plainly ("Missing init flags for bootstrap PMI2") and then
+reports errno 7, which prints as *No such file or directory*. That sent this
+after imaginary missing plugins twice, including a written-down claim that the
+SDK shipped the PMIx bootstrap only as `.so.3`. It does not: the unsuffixed
+files are all there, and that claim came from reading a `head -8` truncation as
+a fact. Read the log, not the symptom.
+
+## Superseded: the earlier bootstrap dead end
 
 Arming is proven; **decoding is not**. `mn5_cpu_assisted.sbatch` is the run that
 would prove it — two nodes, `NVSHMEM_IBGDA_NIC_HANDLER=cpu`, a real

@@ -54,18 +54,26 @@ echo "== nodes: $SLURM_JOB_NODELIST =="
 echo "== app: $APP =="
 ls -l "$APP" || { echo "NO APP — perftest missing from this SDK"; exit 1; }
 
-# Bootstrap: the SDK's perftest binaries ask for PMI 1.0, which SLURM's pmi2
-# plugin rejects outright ("unsupported PMI version: 1.0" — it killed the first
-# attempt and left srun hanging). This SLURM offers pmix_v4, so use PMIx on both
-# sides and say so to NVSHMEM explicitly rather than letting it guess.
-export NVSHMEM_BOOTSTRAP=PMIX
-# ...and name the plugin file explicitly. This SDK ships the PMIx bootstrap only
-# as nvshmem_bootstrap_pmix.so.3, while NVSHMEM dlopens the UNSUFFIXED name — so
-# the default lookup fails with ENOENT and surfaces as "non-zero status: 7 ...
-# aborting due to error in nvshmemi_init_thread", which looks like a transport
-# problem and is a missing symlink.
-export NVSHMEM_BOOTSTRAP_PMIX_PLUGIN=nvshmem_bootstrap_pmix.so.3
-srun --mpi=pmix -n 2 "$PCOMM" run -p mlx5dv --enable-host-doorbell \
+# Bootstrap. Two variables, and confusing them is what cost four jobs:
+#
+#   NVSHMEM_BOOTSTRAP      WHICH bootstrap (PMI | MPI | SHMEM | UID)
+#   NVSHMEM_BOOTSTRAP_PMI  which PMI VARIANT (PMI | PMI-2 | PMIX)
+#
+# "PMI2" is not a legal value for the first one, and NVSHMEM says so exactly:
+# "Missing init flags for bootstrap PMI2. Retry with nvshmemx_init_attr and
+# non-zero flags" — then reports errno 7, which reads as "No such file or
+# directory" and sent this hunt after imaginary missing plugins twice. The
+# plugins were never missing.
+#
+# Plain nvshmem_init() (what the SDK perftest binaries call) selects the PMI
+# family by default; the variant is the second variable. SLURM here runs the
+# pmi2 plugin, so ask for PMI-2 — matching the paper's own MN5 harness
+# (Dissecting-IBGDA-Experiments, branch mechanism-v3, run_e7_mn5.sh:
+# `srun --mpi=pmi2 -N2 -n2 --ntasks-per-node=1 --gpus-per-task=1 --overlap`).
+export NVSHMEM_BOOTSTRAP=PMI
+export NVSHMEM_BOOTSTRAP_PMI=PMI-2
+srun --mpi=pmi2 -n 2 --gpus-per-task=1 --overlap --export=ALL \
+     "$PCOMM" run -p mlx5dv --enable-host-doorbell \
      -o "$OUT" -- "$APP" 2>&1
 rc=$?
 echo "== run rc=$rc =="

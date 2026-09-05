@@ -357,7 +357,14 @@ Profiler::Profiler() {
     // path. The exported interposers pass through untouched unless enabled; here
     // we only announce it, because from an enabled run the timing is a
     // measurement of the instrumented system, not the application.
-    if (hijack::enabled()) {
+    // BOTH doorbell mechanisms share this decoder, so BOTH need its sinks. That
+    // is not a tidiness point: with the sinks installed only for the GPU hijack,
+    // a host-doorbell run decoded 381 doorbells on MN5 (job 45449944) and wrote
+    // ZERO rows — on_doorbell incremented its counters, found a null sink, and
+    // returned. The capture had no stream 212 and no 214 while the shutdown line
+    // claimed hundreds of doorbells, which is the one contradiction this
+    // provider must never ship.
+    if (hijack::enabled() || hostdb::enabled()) {
         // The decode runs on the repeater thread and emits through these sinks,
         // because the Recorder and intern tables live here in the provider. The
         // doorbell's uar handle interns h(uar_ptr) — the same handle the Mlx5Uar
@@ -373,6 +380,13 @@ Profiler::Profiler() {
                 rec().record(rr::Mlx5DeviceSend{{}, {}, laddr, raddr, qp_num, wqe_idx, lkey, rkey,
                                                 length, dest_dct, opcode, decode});
             });
+    }
+
+    // ...but the CUDA export-table patcher is the GPU path's alone. The host
+    // path must not install it: patching the driver is how the GPU hijack sees
+    // the UAR mapping, and there is no such mapping in the mode the host path
+    // exists for.
+    if (hijack::enabled()) {
         hijack::install();
         std::fprintf(stderr, "[pcomm] doorbell hijack ENABLED — this run sits in the data "
                              "path and its timing is perturbed; do not draw latency "
