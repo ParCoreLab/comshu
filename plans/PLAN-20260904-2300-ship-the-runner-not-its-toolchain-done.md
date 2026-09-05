@@ -108,25 +108,64 @@ Board 45427910: SUITE GREEN, 19 PASS, across NCCL, UCX/MPI, NVSHMEM, CUDA and
 IB cases — i.e. the static runtime survives being preloaded into every C++
 application the suite has.
 
+## Round two: the providers go inside (`f023eb8`)
+
+**The bundle was missing four of seven providers**, and no install rule can fix
+that: `cmake --install` carries the targets of the tree it was given, and three
+of this project's four trees exist precisely because they cannot be one tree.
+The full set exists only as the copies `run_on_mn5.sh` makes into
+`build/providers/`.
+
+So the launcher carries them. `pcomm bake -o <new> <binary> <libs...>` appends
+the libraries past the end of the ELF image, with a table and a 40-byte footer;
+`pcomm bake --list` says what a binary carries; `pcomm list` says it too.
+
+- **Appended rather than an ELF section.** `objcopy --add-section` is tidier and
+  `readelf` can list it, but a non-allocated section is exactly what `strip`
+  deletes — a payload that vanishes when someone strips a binary is worse than
+  one that is obviously there.
+- **Unpacked into a cache named by the archive's CONTENT hash.** Two builds can
+  never share a cached copy. Given four false findings from stale binaries, a
+  cache keyed on anything weaker would have been the fifth.
+- **Write-to-temp + rename**, because sixteen ranks on a node unpack at once and
+  a half-written library must never be dlopen'd.
+- **Baked copies are the LAST resort** — `PCOMM_PROVIDER_PATH`, the binary's own
+  directory, `../lib/pcomm`, then the payload. A baked launcher inside a build
+  tree behaves exactly as it did before, which is what makes it safe for the
+  cluster runner to bake in place at the end of every build.
+- **The engine is baked too, and needs it most**: without it a run continues with
+  a warning and captures far less (dlsym is the engine's), so a single-file
+  launcher that could not find its engine would produce a quiet wrong answer.
+
+Verified on MN5 with the real payload, with `build/libpcomm`, `build/providers`
+and `build/gpu-backends` all renamed away so only the binary could answer:
+
+    $ /tmp/onefile-real/pcomm --version
+    commit=f023eb872525 type=RelWithDebInfo abi=3 schema=0x024C07869755921D
+    $ env -i PATH=/usr/bin:/bin /tmp/onefile-real/pcomm run -p ib,cupti -o … -- /bin/true
+    # unpacked: libpcomm_engine.so, libibverbs_trace.so, libcupti_trace.so
+
+127 MB for the one file: a 91 MB launcher (static DuckDB) plus 36 MB of
+`--strip-debug`'d providers. Stripping debug info leaves both symbol tables
+alone, so interposition and NVBit are untouched.
+
+**`CMAKE_BUILD_TYPE=RelWithDebInfo` on both cluster runners.** Board 45441332 is
+green with it, and every capture now reports `type=RelWithDebInfo` instead of
+`type=unset`. Do NOT read the per-case timings as a measurement of the change:
+total job time moved 14:57 → 13:28, but individual cases moved both ways (01:
+113→40 s, 21: 118→62 s, but 15: 38→209 s and 19: 10→25 s), which is node and
+network variance dominating. A real overhead comparison needs a controlled
+experiment, not two board runs.
+
 ## What is left
 
-- **The bundle is missing four providers.** `cmake --install` installs the
-  targets of the tree it is given: engine, ibverbs, mlx5dv, cupti. gpumem, ucx,
-  ucx_deep and nccl are built in separate trees (the toolchain split is
-  permanent — NVBit forces gcc-11.4, UCX needs the HPC-X tree) and
-  `run_on_mn5.sh` *copies* their `.so` into `build/providers/`. A copied file is
-  not an install target, so the bundle silently has fewer providers than the
-  build tree it came from. Fixing it means either installing whatever is present
-  under `build/providers/` or teaching the side trees to install into a shared
-  prefix.
-- **`CMAKE_BUILD_TYPE` is empty on the cluster**, measured:
-  `CXX_FLAGS = -fPIC -std=gnu++20`. No `-O`, no `-g`. Every provider, the engine
-  and the launcher on every board are **unoptimised**, which is why the build id
-  reads `type=unset`. This is worth its own decision rather than a quiet flag
-  flip: the overhead numbers recorded in several plans (the UCT `+39 ns`, the
-  intern-cache work) were measured against `-O0` code, and turning on
-  optimisation changes timing in the cases that are about timing (08's race, 15
-  skew).
 - **`run_on_a100.sh` builds with the defaults**, so it gets the static runtime
-  for free but not static DuckDB (it has no `.tools/duckdb-static`, and the a100
-  path rsyncs the tree without `.tools`).
+  and RelWithDebInfo but not static DuckDB (no `.tools/duckdb-static` there —
+  the a100 path rsyncs the tree without `.tools`) and does not bake.
+- **Nothing rebakes on `--no-build`.** The baked payload is refreshed only by a
+  build step, so a launcher baked yesterday and run today carries yesterday's
+  providers — invisible unless the disk copies are gone. The provenance layers
+  see it (the unpacked images carry their own mtimes), but only once it runs.
+- **The overhead baseline moved.** Numbers recorded against `-O0` boards (the
+  UCT `+39 ns`, the intern-cache work) are no longer comparable to what this
+  board produces.
