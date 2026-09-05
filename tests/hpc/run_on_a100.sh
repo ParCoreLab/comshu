@@ -118,8 +118,27 @@ export PCOMM_EXPECT_COMMIT="$build_commit"
 # once produced a false failure on MN5 that took a re-run to explain.
 echo "== sync -> $REMOTE:$RDIR"
 rsh "mkdir -p $RDIR" || exit 1
-rsync -az --delete --exclude build --exclude 'build-*' --exclude .git \
+rsync -az --delete --exclude build --exclude 'build-*' --exclude .git --exclude .tools \
       -e "$SSH" "$REPO_ROOT/" "$REMOTE:$RDIR/" || exit 1
+
+# .tools is excluded above (it is 130 MB of archives and `--delete` would fight
+# with anything already there), so DuckDB goes over as its own step and only
+# when it is missing. It is what gives this host `--parquet` and `pcomm sql`,
+# and therefore the derived-layer assertions — on the one machine that can run
+# IBGDA at all, which is the only place several of them can ever be exercised.
+DUCK_STATIC_LOCAL="$REPO_ROOT/.tools/duckdb-static"
+DUCK_STATIC=OFF
+if ls "$DUCK_STATIC_LOCAL"/*.a >/dev/null 2>&1; then
+  if ! rsh "ls $RDIR/.tools/duckdb-static/*.a >/dev/null 2>&1"; then
+    echo "== ship the DuckDB archive set (one time, ~130 MB)"
+    rsh "mkdir -p $RDIR/.tools/duckdb-static"
+    rsync -az -e "$SSH" "$DUCK_STATIC_LOCAL"/ "$REMOTE:$RDIR/.tools/duckdb-static/" \
+      || echo "  (push failed — building without DuckDB)" >&2
+  fi
+  rsh "ls $RDIR/.tools/duckdb-static/*.a >/dev/null 2>&1" && DUCK_STATIC=ON
+else
+  echo "  (no local .tools/duckdb-static — run tools/get_duckdb.sh --static)" >&2
+fi
 
 # ---- build ----------------------------------------------------------------
 if [ "$do_build" -eq 1 ]; then
@@ -130,7 +149,7 @@ if [ "$do_build" -eq 1 ]; then
   # finding 14 of the round-2 studies, word for word, and it was still here in
   # this file after being fixed in wait_and_run_mn5.sh.
   rsh "set -o pipefail; export PCOMM_COMMIT=$build_commit; cd $RDIR &&
-       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_MLX5DV=ON >/dev/null &&
+       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_STATIC -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
        cmake --build build -j 2>&1 | tail -3" || {
     echo "run_on_a100.sh: build failed" >&2; exit 1; }
 fi
@@ -149,6 +168,14 @@ rsh "bash $RDIR/tests/hpc/suite/check_build_freshness.sh $RDIR $RDIR/build 120" 
   echo "  trip this.)" >&2
   exit 1; }
 
+# ---- the launcher carries the providers ------------------------------------
+# After the freshness check and never before: baking rewrites the launcher, and
+# a step that touched the newest artifact on every run would make that check
+# vacuous. A no-op when the payload already matches what was built.
+echo "== provider payload"
+rsh "cd $RDIR && bash tests/hpc/suite/bake_providers.sh $RDIR/build" || {
+  echo "run_on_a100.sh: could not bake the providers into the launcher." >&2; exit 1; }
+
 # ---- run ------------------------------------------------------------------
 # No scheduler here, so a case's job.sbatch is executed directly — which works
 # because #SBATCH lines are comments to bash, the same property all_in_one.sbatch
@@ -161,6 +188,7 @@ for c in $(rsh "ls $RDIR/tests/hpc/cases" | grep -E "^(${cases_filter// /|})" );
        export PCOMM_PROVIDER_PATH=$RDIR/build/providers/mlx5dv &&
        export PCOMM=$RDIR/build/pcomm/pcomm &&
        export PCOMM_EXPECT_COMMIT=$build_commit &&
+       export PCOMM_PREFER_BAKED=1 &&
        bash tests/hpc/cases/$c/job.sbatch 2>&1 | tail -40"
 done
 

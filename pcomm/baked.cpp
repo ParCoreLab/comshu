@@ -257,10 +257,93 @@ std::string materialize(const std::string& name) {
     return out.string();
 }
 
+namespace {
+
+// FNV-1a over a whole file, the same way bake_main hashes what it writes — so a
+// disk copy and a carried copy can be compared without unpacking anything.
+bool hash_file(const std::string& path, unsigned long long& out, unsigned long long& size) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f)
+        return false;
+    std::vector<char>  buf(1 << 20);
+    unsigned long long h = 1469598103934665603ull;
+    std::size_t        n;
+    size = 0;
+    while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) {
+        h = fnv(buf.data(), n, h);
+        size += n;
+    }
+    std::fclose(f);
+    out = h;
+    return true;
+}
+
+// `pcomm bake --check <binary> <libs...>` — does the binary already carry
+// exactly these files, byte for byte?
+//
+// THIS IS THE REBAKE TRIGGER, and it exists because baking happens at the end
+// of a build while `--no-build` runs skip the whole block: a launcher baked
+// yesterday would go on carrying yesterday's providers, and nothing on disk
+// would look wrong because the disk copies are the ones a build tree actually
+// loads. The payload is only consulted when the disk copies are gone — i.e. on
+// the machine you copied the single file to, which is the worst place to
+// discover it is a day stale.
+//
+// Compares hashes rather than mtimes on purpose. Every provider here is copied
+// between build trees, so mtimes say when the copy happened and nothing about
+// what is in it; this is the one place in the tree where the content is cheap
+// to hash and therefore worth hashing.
+int check_main(const char* host, const std::vector<std::string>& inputs) {
+    std::vector<Entry> es;
+    parse(host, es);
+    int problems = 0;
+    for (const auto& in : inputs) {
+        const std::string  name = fs::path(in).filename().string();
+        unsigned long long h = 0, size = 0;
+        if (!hash_file(in, h, size)) {
+            std::fprintf(stderr, "pcomm bake --check: cannot read %s\n", in.c_str());
+            ++problems;
+            continue;
+        }
+        const Entry* e = nullptr;
+        for (const auto& c : es)
+            if (c.name == name)
+                e = &c;
+        if (!e) {
+            std::printf("  not carried : %s\n", name.c_str());
+            ++problems;
+        } else if (e->size != size || e->hash != h) {
+            std::printf("  stale       : %s (carries %llu bytes %016llx, disk has %llu %016llx)\n",
+                        name.c_str(), e->size, e->hash, size, h);
+            ++problems;
+        }
+    }
+    // Carried but not offered: a provider that was dropped from the build would
+    // otherwise live on inside the binary, which is the same lie in reverse.
+    for (const auto& c : es) {
+        bool offered = false;
+        for (const auto& in : inputs)
+            offered |= fs::path(in).filename().string() == c.name;
+        if (!offered) {
+            std::printf("  extra       : %s is carried but was not offered\n", c.name.c_str());
+            ++problems;
+        }
+    }
+    if (problems == 0) {
+        std::printf("%s already carries these %zu file(s)\n", host, inputs.size());
+        return 0;
+    }
+    std::printf("%s: %d difference(s) — rebake\n", host, problems);
+    return 1;
+}
+
+}  // namespace
+
 int bake_main(int argc, char** argv) {
     const char* out_path = nullptr;
     const char* host = nullptr;
     bool        list_only = false;
+    bool        check_only = false;
     std::vector<std::string> inputs;
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
@@ -268,6 +351,8 @@ int bake_main(int argc, char** argv) {
             out_path = argv[++i];
         else if (a == "--list")
             list_only = true;
+        else if (a == "--check")
+            check_only = true;
         else if (a == "-h" || a == "--help") {
             host = nullptr;
             break;
@@ -296,10 +381,19 @@ int bake_main(int argc, char** argv) {
         return 0;
     }
 
+    if (check_only) {
+        if (!host || inputs.empty()) {
+            std::fputs("usage: pcomm bake --check <binary> <library.so>...\n", stderr);
+            return 2;
+        }
+        return check_main(host, inputs);
+    }
+
     if (!host || inputs.empty() || !out_path) {
         std::fputs(
             "usage: pcomm bake -o <new binary> <host binary> <library.so>...\n"
             "       pcomm bake --list [binary]\n"
+            "       pcomm bake --check <binary> <library.so>...   (0 = payload is current)\n"
             "\n"
             "  Copies <host binary> to <new binary> with the libraries appended, so the\n"
             "  result carries its own providers and needs nothing beside it. The launcher\n"

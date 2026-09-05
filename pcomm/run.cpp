@@ -187,7 +187,28 @@ void     init_exe_dir() {
 // launcher binary (the build tree), then in ../lib/pcomm relative to it (an
 // installed tree). The last root is what lets an installed `pcomm` find its
 // providers with no environment at all: bin/pcomm -> lib/pcomm/*.so.
+// Use what the binary carries even when a copy exists on disk.
+//
+// Baked copies are normally the LAST resort (below), which is right for a
+// developer in a build tree but leaves the payload untested: the board would
+// load the .so files beside it and never touch the thing a shipped binary
+// depends on entirely. The suite runners set this, so every case on every board
+// exercises the unpack-and-preload path — and a payload that fails to load is
+// then a red board rather than a surprise on someone else's cluster.
+//
+// It is safe to prefer because the runner verifies the payload first
+// (suite/bake_providers.sh: `pcomm bake --check` by content hash, rebaking when
+// it differs), so "what is inside" and "what was built" are the same bytes.
+// Without that check this switch would be a way to run yesterday's providers.
+bool prefer_baked() {
+    const char* e = std::getenv("PCOMM_PREFER_BAKED");
+    return e && *e && std::strcmp(e, "0") != 0;
+}
+
 std::string find_so(const Provider& p) {
+    if (prefer_baked())
+        if (std::string unpacked = pcomm::baked::materialize(p.so); !unpacked.empty())
+            return unpacked;
     std::vector<fs::path> roots;
     // PCOMM_PROVIDER_PATH is a colon-list (providers may build into separate
     // per-provider dirs), searched before the launcher's own directory.
@@ -272,6 +293,13 @@ void list_providers() {
 // dladdr on itself: the authoritative answer, not a search that has to be kept
 // in step with the build and install layouts.
 std::string engine_so_path() {
+    // The engine follows the providers: preferring a baked provider while the
+    // engine came off disk would mix two builds inside one process, which is
+    // the exact shape images_are_no_older_than_the_engine exists to catch.
+    if (prefer_baked())
+        if (std::string unpacked = pcomm::baked::materialize("libpcomm_engine.so");
+            !unpacked.empty())
+            return unpacked;
     // $ORIGIN/../lib/pcomm (installed) and the build tree both come from this
     // binary's RUNPATH, so a bare soname is the right thing to ask for.
     void* h = dlopen("libpcomm_engine.so", RTLD_LAZY | RTLD_LOCAL);

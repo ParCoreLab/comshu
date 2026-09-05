@@ -171,6 +171,19 @@ BUILD_ID_ENV="export PCOMM_COMMIT=$build_commit;"
 # the same outcome, by a longer route that looks like a claim.
 EXPECT_EXPORT=""
 [ -n "$expect_commit" ] && EXPECT_EXPORT=",PCOMM_EXPECT_COMMIT=$expect_commit"
+
+# Every case loads its providers OUT OF THE LAUNCHER, not off disk.
+#
+# Otherwise the payload is the one thing on this board nobody tests: the cases
+# would load the .so files sitting beside them and the unpack-and-preload path —
+# the whole of what a shipped single binary does — would be exercised only by
+# hand, once, by whoever wrote it. Now a payload that fails to load is a red
+# board here rather than a surprise on someone else's cluster.
+#
+# Safe because step 2.6 verifies the payload against the build by content hash
+# and rebakes when they differ; without that this would be a way to run
+# yesterday's providers on today's board.
+EXPECT_EXPORT="$EXPECT_EXPORT,PCOMM_PREFER_BAKED=1"
 if [ "$check_only" -eq 0 ]; then
   if [ -n "$expect_commit" ]; then
     say "this board is about $expect_commit"
@@ -467,32 +480,6 @@ if [ "$do_build" -eq 1 ]; then
          echo "  finds no target. Re-run with --clean." >&2
          exit 1; }
 
-  # --- bake the providers into the launcher ---------------------------------
-  #
-  # LAST, because it is the only step that needs all four trees to have
-  # finished. `cmake --install` can only ever carry the targets of the tree it
-  # was given, and three of these four trees exist precisely because they cannot
-  # be one tree — so the copies in build/providers/ are the only place the full
-  # set exists. Baking is what turns that directory into one file.
-  #
-  # Stripped copies, not the originals: RelWithDebInfo keeps DWARF, which is
-  # most of a provider's size and none of its behaviour. --strip-debug leaves
-  # both symbol tables alone, so interposition and NVBit are untouched.
-  #
-  # The result REPLACES build/pcomm/pcomm, and the suite is unaffected by that:
-  # baked copies are the last resort in find_so, so every case here still loads
-  # the .so files sitting on disk beside it. What the bake buys is a binary you
-  # can scp off the cluster and run.
-  say "bake the providers into the launcher"
-  rsh "module load gcc/13.2.0 >/dev/null 2>&1; cd $RDIR &&
-       rm -rf build/.bake && mkdir -p build/.bake &&
-       cp build/libpcomm/libpcomm_engine.so build/providers/*/*.so build/gpu-backends/*/*.so build/.bake/ 2>/dev/null;
-       strip --strip-debug build/.bake/*.so 2>/dev/null;
-       ./build/pcomm/pcomm bake -o build/.bake/pcomm build/pcomm/pcomm build/.bake/*.so &&
-       mv build/.bake/pcomm build/pcomm/pcomm &&
-       ./build/pcomm/pcomm bake --list | tail -2" \
-    || { echo 'bake FAILED — the board can still run; the single-file binary cannot be built' >&2
-         exit 1; }
 fi
 
 # --- 2.5 refuse a build older than its source -------------------------------
@@ -520,6 +507,21 @@ if [ "$check_only" -eq 0 ]; then
     || { echo "run_on_mn5: refusing to submit — the board would answer for an older tree." >&2
          exit 1; }
   echo "  build is at least as new as every compiled source"
+
+  # --- 2.6 the launcher carries what this build produced --------------------
+  # AFTER the freshness check, never before: baking rewrites the launcher, and
+  # a step that touched the newest artifact on every run would make the check
+  # above vacuous. It is a no-op when the payload already matches, so a
+  # --no-build run neither rebakes nor moves any mtime — see the script.
+  #
+  # Run on every board rather than only after a build, because the payload's
+  # staleness is invisible where the board runs (the disk copies win there) and
+  # only shows up on the machine someone copied the single file to.
+  say "provider payload"
+  rsh "module load gcc/13.2.0 >/dev/null 2>&1; cd $PROOT && bash tests/hpc/suite/bake_providers.sh $PROOT/build" \
+    || { echo "run_on_mn5: could not bake the providers into the launcher." >&2
+         echo "  the board can still run; the single-file binary cannot be built." >&2
+         exit 1; }
 fi
 
 # --- 3. run the cases --------------------------------------------------------
