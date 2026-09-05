@@ -157,7 +157,13 @@ mpi "$OUT" "$DOORBELL_FLAG" > "$OUT.app" 2>"$OUT.err"; rc=$?
 # host that can map the doorbell page into the GPU. If that refusal fires we
 # chose the wrong arm, and the empty capture that follows would otherwise be
 # asserted as a decode failure. Catch it here where the cause is still legible.
-if [ "$ARM" = host ] && grep -q "NOT arming" "$OUT.err" 2>/dev/null; then
+# Match the ONE branch that means "wrong arm". The guard declines three ways and
+# all three say "NOT arming", so grepping that caught the benign one too: a probe
+# made before the application had a CUDA context reports rc=201 and retries, and
+# a run that went on to arm 4 UARs and decode 31 sends was still failed by this
+# check (MN5 job 45463226). Only "DOES map" means the platform supports GPU
+# submission and this arm was the wrong choice.
+if [ "$ARM" = host ] && grep -q "DOES map the NIC doorbell page" "$OUT.err" 2>/dev/null; then
   fail "host arm refused to arm — this host supports GPU submission, so arm=gpu was correct"
 fi
 
