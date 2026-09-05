@@ -46,11 +46,38 @@ fail() {
 
 # ---- prerequisites (identical to case 09) ---------------------------------
 [ -d /sys/class/infiniband ] || skip "no InfiniBand device on this host"
+
+# ---- which doorbell mechanism can this host use? --------------------------
+#
+# This used to SKIP whenever the driver had no PeerMappingOverride=1, which made
+# the case permanently dead on MN5 — the cluster every other HPC case runs on.
+# That was right when the GPU hijack was the only mechanism: without a BAR page
+# mapped into the GPU there is no GPU doorbell store to intercept.
+#
+# It is no longer the only mechanism. Where the driver refuses that mapping,
+# NVSHMEM runs CPU-assisted IBGDA — the GPU still builds every WQE in a
+# GPU-resident send queue and advances a producer index, and a HOST thread rings
+# the doorbell — and --enable-host-doorbell watches that instead. Same decoder,
+# same records, same assertions; only the writer differs.
+#
+# So the prerequisite check now SELECTS an arm rather than giving up, and skips
+# only where neither can work. Measured 2026-09-05: du04 takes the gpu arm
+# (job on a100), MN5 the host arm (job 45449988, 7,232 sends decoded). See
+# tests/hpc/probes/uar_doorbell_mode/ for the probe that answers this in a
+# minute on any new cluster.
 have_peermem=0
 lsmod 2>/dev/null | grep -qE "nvidia_peermem|nv_peer_mem" && have_peermem=1
-grep -q "PeerMappingOverride=1" /proc/driver/nvidia/params 2>/dev/null || \
-  skip "NVIDIA driver has no PeerMappingOverride=1 — IBGDA cannot map the UAR to the GPU"
-[ "$have_peermem" = "1" ] || skip "no nvidia_peermem/nv_peer_mem module loaded"
+if grep -q "PeerMappingOverride=1" /proc/driver/nvidia/params 2>/dev/null && \
+   [ "$have_peermem" = "1" ]; then
+  ARM=gpu
+  HANDLER=gpu
+  DOORBELL_FLAG=--enable-doorbell-hijack
+else
+  ARM=host
+  HANDLER=cpu
+  DOORBELL_FLAG=--enable-host-doorbell
+fi
+echo "=== 12_ibgda_doorbell : arm=$ARM (NIC handler $HANDLER, $DOORBELL_FLAG) ==="
 
 MPIRUN="${PCOMM_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
@@ -75,7 +102,7 @@ export NVSHMEM_BOOTSTRAP=MPI
 export NVSHMEM_DISABLE_P2P=1
 export NVSHMEM_REMOTE_TRANSPORT=ibgda
 export NVSHMEM_IB_ENABLE_IBGDA=1
-export NVSHMEM_IBGDA_NIC_HANDLER=gpu
+export NVSHMEM_IBGDA_NIC_HANDLER="$HANDLER"
 export NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE=gpumem
 
 ELEMS=1024 ITERS=20
@@ -101,8 +128,16 @@ if [ $rc_ctrl -ne 0 ]; then
 fi
 
 # ---- hijack run: hijack ON ------------------------------------------------
-mpi "$OUT" --enable-doorbell-hijack > "$OUT.app" 2>"$OUT.err"; rc=$?
-[ $rc -eq 0 ] || fail "hijacked run did not complete (rc=$rc; 124 = timed out)"
+mpi "$OUT" "$DOORBELL_FLAG" > "$OUT.app" 2>"$OUT.err"; rc=$?
+[ $rc -eq 0 ] || fail "instrumented run did not complete (rc=$rc; 124 = timed out)"
+
+# The host arm proves the platform before it swaps anything, and refuses on a
+# host that can map the doorbell page into the GPU. If that refusal fires we
+# chose the wrong arm, and the empty capture that follows would otherwise be
+# asserted as a decode failure. Catch it here where the cause is still legible.
+if [ "$ARM" = host ] && grep -q "NOT arming" "$OUT.err" 2>/dev/null; then
+  fail "host arm refused to arm — this host supports GPU submission, so arm=gpu was correct"
+fi
 
 # ---- negative control -----------------------------------------------------
 # A passive run must produce NO doorbell/send streams: those ids (212/214) are
