@@ -157,15 +157,49 @@ total job time moved 14:57 → 13:28, but individual cases moved both ways (01:
 network variance dominating. A real overhead comparison needs a controlled
 experiment, not two board runs.
 
+## Round three: both gaps closed (`252038b`)
+
+**The payload is now checked on every run, not written once per build.**
+`pcomm bake --check <binary> <libs...>` answers "does it carry exactly these,
+byte for byte", and `suite/bake_providers.sh` rebakes only when the answer is
+no. Three properties, each load-bearing:
+
+- **By content, not mtime.** Providers are *copied* between build trees, so
+  their mtimes describe the copy and not what is in it.
+- **The no-op path does not touch the launcher's mtime**, and the step runs
+  AFTER `check_build_freshness.sh` — a bake that rewrote the newest artifact on
+  every run would quietly make L3 vacuous.
+- Verified on MN5: bake, then a no-op second call, then a genuinely different
+  library reported as `stale` (and a carried-but-not-offered entry as `extra`)
+  with a rebake. Appending junk past the end of an ELF is correctly *not* a
+  change, because the check compares the stripped bytes that actually get baked.
+
+**The board loads from the payload.** `PCOMM_PREFER_BAKED=1` rides into every
+case on both runners. Job 45443714, the full 24-case board, is green with every
+provider unpacked from the binary — engine, ibverbs, mlx5dv, gpumem, ucx,
+ucx_deep, nccl and cupti, all 21 captures naming
+`/scratch/tmp/<jobid>/pcomm-baked-<tag>/…` in their `images`. SLURM's own
+per-job `$TMPDIR` is node-local and cleaned when the job ends, and honouring it
+came for free.
+
+That was the point: unpack-and-preload is the whole of what a shipped single
+binary does, and it used to be exercised once, by hand, by whoever wrote it.
+It is only safe to prefer because of the check above.
+
+**`run_on_a100.sh` has the rest of it now** — static DuckDB (pushed once; the
+sync excludes `.tools`), `PCOMM_UI=OFF`, the bake step and `PCOMM_PREFER_BAKED`.
+du04's board came back green with `commit=252038bfbdba type=RelWithDebInfo`
+where it used to stamp `commit=unknown type=unset`, its providers unpacked from
+the binary, and — for the first time — a **derived layer**: `export --parquet`
+and `link` now run on the one host that can execute IBGDA.
+
 ## What is left
 
-- **`run_on_a100.sh` builds with the defaults**, so it gets the static runtime
-  and RelWithDebInfo but not static DuckDB (no `.tools/duckdb-static` there —
-  the a100 path rsyncs the tree without `.tools`) and does not bake.
-- **Nothing rebakes on `--no-build`.** The baked payload is refreshed only by a
-  build step, so a launcher baked yesterday and run today carries yesterday's
-  providers — invisible unless the disk copies are gone. The provenance layers
-  see it (the unpacked images carry their own mtimes), but only once it runs.
 - **The overhead baseline moved.** Numbers recorded against `-O0` boards (the
-  UCT `+39 ns`, the intern-cache work) are no longer comparable to what this
-  board produces.
+  UCT `+39 ns`, the intern-cache work) are no longer comparable to what these
+  boards produce.
+- **Per-case wall times on the board are not a measurement.** Between two
+  otherwise identical runs, cases moved by up to 5× in both directions. Whatever
+  that is — node placement, fabric, the shared filesystem — it is larger than
+  most effects anyone would want to measure there, and it deserves its own
+  investigation before any timing claim is made from a board.
