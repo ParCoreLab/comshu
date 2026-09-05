@@ -77,47 +77,38 @@ SDK shipped the PMIx bootstrap only as `.so.3`. It does not: the unsuffixed
 files are all there, and that claim came from reading a `head -8` truncation as
 a fact. Read the log, not the symptom.
 
-## The DC address vector — half proven, half still not (job 45452104)
+## The DC address vector — measured, with the width on the row (job 45462619)
 
-`mn5_dc_av.sbatch` runs three legs on one node pair. Results, rank 0:
+`mn5_dc_av.sbatch`, three legs, one node pair. Since `Mlx5DeviceSend.av_ds`
+landed, the capture states the AV width instead of leaving it to be inferred:
 
-| leg | config | rows | dest_dct | decode |
+| leg | config | rdma_write | `av_ds` | `dest_dct` |
 |---|---|---|---|---|
-| `rc` | default (2 RC/PE) | 7,202 write + 59 atomic | `0x000000` | full / partial |
-| `dc_half` | `NUM_RC_PER_PE=0` | 7,202 write + 61 atomic | **`0x006d3e`, `0x006d3f`** | full / partial |
-| `dc_full` | + `IB_FORCE_GRH=1` | 7,202 write + 61 atomic | `0x006d55` | full / partial |
+| `rc` | default (2 RC/PE) | 7,202 `full` | **0** (no AV) | `0x000000` |
+| `dc_half` | `NUM_RC_PER_PE=0` | 7,202 `full` | **1** (compact, 16 B) | `0x0090f9` |
+| `dc_full` | + `IB_FORCE_GRH=1` | 7,202 `full` | **1** — *still compact* | `0x009110` |
 
-**DC and the destination DCT are proven.** `dest_dct` is populated and varies
-across peers, `decode=full`, and the rdma_write length histogram is identical to
-the RC leg (480 rows each at 4 KiB…128 KiB). That last point is the real check:
-the length field sits *after* the address vector, so a mis-derived AV width would
-shift it and the histograms would not match. They do.
+**Proven: RC and compact-AV DC.** `dest_dct` is populated and varies across
+peers, every rdma_write decodes `full`, and the length histogram is identical to
+the RC leg (480 rows each at 4 KiB…128 KiB) — the check that matters, since
+`length` sits after the AV and a mis-derived width would shift it.
 
-**The full-AV path is STILL unexercised, and `dc_full` did not test it.**
-Comparing the WQE index strides gives it away — `dc_half` and `dc_full` are
-byte-identical in layout:
+**Still unexecuted: the full AV (`av_ds=3`).** `NVSHMEM_IB_FORCE_GRH=1` does not
+flip `support_half_av_seg` in the NVSHMEM this cluster runs. Worth noting that
+that build is the CUDA 12.9 SDK one (`r12.9/main_nvshmem` in its own log), not
+the 3.7.2 source this repo vendors under `reference/` — so source read there does
+not necessarily describe the binary running here.
 
-```
-rc       1 2 3 6 9 12 15 18 21 22 23 24
-dc_half  1 4 5 8 9 12 15 18 21 24 27 30
-dc_full  1 4 5 8 9 12 15 18 21 24 27 30      <- same as dc_half
-```
+The difference from job 45452104 is the point of the field. Then, the only way
+to notice `dc_full` had not run was archaeology on WQE index strides (`ds=6`
+occupies two WQEBBs, `ds=4` one). Now the capture says `av_ds=1` and there is
+nothing to infer.
 
-`ds=6` occupies two WQEBBs where `ds=4` occupies one, so a real full-AV leg
-would advance its producer index twice as fast. It does not. `NVSHMEM_IB_FORCE_GRH=1`
-did not change `support_half_av_seg` in this build, so the ds=6 branch — the one
-that motivated the whole fix, and the one RoCE always takes — has now been
-written, reviewed and shipped without ever executing.
-
-### The next step, and why it is not another guess
-
-Twice this session a wrong belief about the platform survived because the
-capture could not contradict it. The fix is the same one applied to `decode`:
-**record the address-vector width on the row.** Then any capture answers "was
-this half or full AV" directly, `dc_full` stops being a leg whose success is
-indistinguishable from its non-execution, and a RoCE capture proves the branch
-the moment one exists. Deriving the width per WQE was right; not recording what
-was derived is what left this hole.
+**How the ds=6 branch actually gets proven:** a RoCE port takes it
+unconditionally (`lid == 0` ⇒ `support_half_av_seg = false`), so the paper's
+P-RoCE platform — B200 + CX-7 RoCEv2 — produces it by default. Until such a
+capture exists the branch stays unexercised, and now that is a fact stated by
+every capture rather than a caveat in a commit message.
 
 ## Superseded: the bootstrap dead end, and what was wrong about it
 
