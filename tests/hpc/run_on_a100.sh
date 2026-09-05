@@ -130,7 +130,7 @@ if [ "$do_build" -eq 1 ]; then
   # finding 14 of the round-2 studies, word for word, and it was still here in
   # this file after being fixed in wait_and_run_mn5.sh.
   rsh "set -o pipefail; export PCOMM_COMMIT=$build_commit; cd $RDIR &&
-       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_MLX5DV=ON >/dev/null &&
+       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_MLX5DV=ON >/dev/null &&
        cmake --build build -j 2>&1 | tail -3" || {
     echo "run_on_a100.sh: build failed" >&2; exit 1; }
 fi

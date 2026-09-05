@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "baked.hpp"
 #include "cli.hpp"
 
 namespace fs = std::filesystem;
@@ -209,6 +210,12 @@ std::string find_so(const Provider& p) {
     for (const auto& root : roots)
         if (fs::exists(root / p.so))
             return (root / p.so).string();
+    // Nothing on disk — is it inside this binary? Baked copies are the LAST
+    // resort, deliberately: a baked launcher sitting in a build tree then
+    // behaves exactly as it did before, and what you built is what you test.
+    // The fallback is what makes a single copied file work anywhere.
+    if (std::string unpacked = pcomm::baked::materialize(p.so); !unpacked.empty())
+        return unpacked;
     std::fprintf(stderr, "pcomm: %s provider library not found (%s)\n", p.aliases[0].c_str(), p.so);
     if (!p.built)
         std::fprintf(stderr, "       (%s is planned, not yet built — see `pcomm list`)\n",
@@ -237,6 +244,18 @@ void list_providers() {
     std::puts("Providers that must own the runtime run in their own pass: pcomm "
               "re-runs");
     std::puts("the workload once each and merges the passes under one -o directory.");
+
+    // What this binary CARRIES, which is a different question from what it can
+    // name. A launcher copied off a cluster answers the first with its own
+    // contents and the second from a registry that lists providers it may not
+    // have; printing only the registry is how "why does -p ucx say not found"
+    // becomes a puzzle.
+    if (const auto& carried = pcomm::baked::contents(); !carried.empty()) {
+        std::printf("\nBaked into this binary (used when nothing is found on disk):\n ");
+        for (const auto& e : carried)
+            std::printf(" %s", e.name.c_str());
+        std::puts("");
+    }
 }
 
 // The engine's own absolute path, for the LD_PRELOAD chain.
@@ -256,6 +275,17 @@ std::string engine_so_path() {
     // $ORIGIN/../lib/pcomm (installed) and the build tree both come from this
     // binary's RUNPATH, so a bare soname is the right thing to ask for.
     void* h = dlopen("libpcomm_engine.so", RTLD_LAZY | RTLD_LOCAL);
+    // Not on any search path — unpack the baked copy and open THAT, by absolute
+    // path. The engine matters more than a provider here: without it the run
+    // continues with a warning and captures far less than it should (dlsym is
+    // the engine's, and anything the target resolves at run time goes
+    // uncaptured), so a single-file launcher that could not find its engine
+    // would produce a quiet, wrong answer rather than an error.
+    if (!h) {
+        const std::string unpacked = pcomm::baked::materialize("libpcomm_engine.so");
+        if (!unpacked.empty())
+            h = dlopen(unpacked.c_str(), RTLD_LAZY | RTLD_LOCAL);
+    }
     if (!h)
         return {};
     using PathFn = const char* (*)();

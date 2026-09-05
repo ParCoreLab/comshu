@@ -8,6 +8,7 @@
 #include <cstring>
 #include <string_view>
 
+#include "baked.hpp"
 #include "cli.hpp"
 #include "pcomm/engine_abi.h"
 #include "pcomm/rec/stream_header.hpp"
@@ -36,6 +37,8 @@ constexpr Verb kVerbs[] = {
     {"link", "<export>", "derive the rank-space tables over an export", PCOMM_HAVE_DUCKDB},
     {"sql", "<export> \"<query>\"", "query an export directly", PCOMM_HAVE_DUCKDB},
     {"types", "", "type-id -> table name, for this build", true},
+    {"bake", "-o <new binary> <binary> <lib.so>...", "carry the providers inside the launcher",
+     true},
     {"ui", "<capture|export> [--port N]", "serve the capture as a page (127.0.0.1)", PCOMM_HAVE_UI},
 };
 
@@ -97,6 +100,8 @@ int main(int argc, char** argv) {
 
     if (cmd == "run" || cmd == "list")
         return pcomm::cli::run_main(sub_argc, sub_argv);
+    if (cmd == "bake")
+        return pcomm::baked::bake_main(sub_argc, sub_argv);
     if (cmd == "read" || cmd == "dump" || cmd == "export" || cmd == "link" || cmd == "sql" ||
         cmd == "types")
         return pcomm::cli::read_main(sub_argc, sub_argv);

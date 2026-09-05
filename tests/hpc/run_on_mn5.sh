@@ -355,7 +355,7 @@ if [ "$do_build" -eq 1 ]; then
   say "build tools + ibverbs provider + cupti backend (gcc-13.2, DuckDB=$DUCK_ON/$DUCK_KIND)"
   rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
        export CUDA_HOME=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7/cuda/12.9 &&
-       cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_CUPTI=ON -DPCOMM_DUCKDB=$DUCK_ON -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
+       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_CUPTI=ON -DPCOMM_DUCKDB=$DUCK_ON -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
        bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2
          echo "  if the output above mentions variables that require the cache to be" >&2
@@ -390,7 +390,7 @@ if [ "$do_build" -eq 1 ]; then
        [ \"\$GCCMOD\" = gcc/11.4.0 ] || echo \"  (gcc/11.4.0 not in this module tree; using \$GCCMOD)\" >&2;
        module load nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1 || { echo \"module load nvidia-hpc-sdk/25.7 cmake FAILED\" >&2; exit 1; }; cd $RDIR &&
        SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
-       cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
+       cmake -B build-gpumem -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
        touch gpu-backends/nvbit/nvbit_backend.cu gpu-backends/nvbit/inject_funcs.cu providers/gpumem/gpumem_provider.cpp &&
        bout=\$(cmake --build build-gpumem --target gpumem_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/gpumem &&
@@ -431,7 +431,7 @@ if [ "$do_build" -eq 1 ]; then
        . tests/hpc/suite/common.sh &&
        UCX=\$(pcomm_find_ucx) &&
        echo \"  ucx: \$UCX\" &&
-       cmake -B build-ucx -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
+       cmake -B build-ucx -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
        bout=\$(cmake --build build-ucx --target ucx_trace ucx_deep_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/ucx build/providers/ucx_deep &&
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
@@ -455,7 +455,7 @@ if [ "$do_build" -eq 1 ]; then
   rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        echo \"  nccl: \$NCCL_HOME\" &&
-       cmake -B build-nccl -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&
+       cmake -B build-nccl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&
        bout=\$(cmake --build build-nccl --target nccl_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/nccl &&
        cp build-nccl/providers/nccl/libnccl_trace.so build/providers/nccl/ &&
@@ -465,6 +465,33 @@ if [ "$do_build" -eq 1 ]; then
          echo "  deleted, a previous configure picked a different compiler (nvc++ via" >&2
          echo "  nvidia-hpc-sdk). cmake resets the cache mid-build and that invocation" >&2
          echo "  finds no target. Re-run with --clean." >&2
+         exit 1; }
+
+  # --- bake the providers into the launcher ---------------------------------
+  #
+  # LAST, because it is the only step that needs all four trees to have
+  # finished. `cmake --install` can only ever carry the targets of the tree it
+  # was given, and three of these four trees exist precisely because they cannot
+  # be one tree — so the copies in build/providers/ are the only place the full
+  # set exists. Baking is what turns that directory into one file.
+  #
+  # Stripped copies, not the originals: RelWithDebInfo keeps DWARF, which is
+  # most of a provider's size and none of its behaviour. --strip-debug leaves
+  # both symbol tables alone, so interposition and NVBit are untouched.
+  #
+  # The result REPLACES build/pcomm/pcomm, and the suite is unaffected by that:
+  # baked copies are the last resort in find_so, so every case here still loads
+  # the .so files sitting on disk beside it. What the bake buys is a binary you
+  # can scp off the cluster and run.
+  say "bake the providers into the launcher"
+  rsh "module load gcc/13.2.0 >/dev/null 2>&1; cd $RDIR &&
+       rm -rf build/.bake && mkdir -p build/.bake &&
+       cp build/libpcomm/libpcomm_engine.so build/providers/*/*.so build/gpu-backends/*/*.so build/.bake/ 2>/dev/null;
+       strip --strip-debug build/.bake/*.so 2>/dev/null;
+       ./build/pcomm/pcomm bake -o build/.bake/pcomm build/pcomm/pcomm build/.bake/*.so &&
+       mv build/.bake/pcomm build/pcomm/pcomm &&
+       ./build/pcomm/pcomm bake --list | tail -2" \
+    || { echo 'bake FAILED — the board can still run; the single-file binary cannot be built' >&2
          exit 1; }
 fi
 

@@ -2,7 +2,7 @@
 # launcher; the reading half and the UI arrive as OBJECT libraries from their own
 # directories (added before this one in the root CMakeLists, so both targets
 # exist by the time they are named here).
-add_executable(pcomm_launcher main.cpp run.cpp)
+add_executable(pcomm_launcher main.cpp run.cpp baked.cpp)
 set_target_properties(pcomm_launcher PROPERTIES OUTPUT_NAME "pcomm")
 target_link_libraries(pcomm_launcher PRIVATE pcomm::pcomm pcomm_read)
 
