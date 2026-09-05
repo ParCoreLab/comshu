@@ -77,6 +77,48 @@ SDK shipped the PMIx bootstrap only as `.so.3`. It does not: the unsuffixed
 files are all there, and that claim came from reading a `head -8` truncation as
 a fact. Read the log, not the symptom.
 
+## The DC address vector — half proven, half still not (job 45452104)
+
+`mn5_dc_av.sbatch` runs three legs on one node pair. Results, rank 0:
+
+| leg | config | rows | dest_dct | decode |
+|---|---|---|---|---|
+| `rc` | default (2 RC/PE) | 7,202 write + 59 atomic | `0x000000` | full / partial |
+| `dc_half` | `NUM_RC_PER_PE=0` | 7,202 write + 61 atomic | **`0x006d3e`, `0x006d3f`** | full / partial |
+| `dc_full` | + `IB_FORCE_GRH=1` | 7,202 write + 61 atomic | `0x006d55` | full / partial |
+
+**DC and the destination DCT are proven.** `dest_dct` is populated and varies
+across peers, `decode=full`, and the rdma_write length histogram is identical to
+the RC leg (480 rows each at 4 KiB…128 KiB). That last point is the real check:
+the length field sits *after* the address vector, so a mis-derived AV width would
+shift it and the histograms would not match. They do.
+
+**The full-AV path is STILL unexercised, and `dc_full` did not test it.**
+Comparing the WQE index strides gives it away — `dc_half` and `dc_full` are
+byte-identical in layout:
+
+```
+rc       1 2 3 6 9 12 15 18 21 22 23 24
+dc_half  1 4 5 8 9 12 15 18 21 24 27 30
+dc_full  1 4 5 8 9 12 15 18 21 24 27 30      <- same as dc_half
+```
+
+`ds=6` occupies two WQEBBs where `ds=4` occupies one, so a real full-AV leg
+would advance its producer index twice as fast. It does not. `NVSHMEM_IB_FORCE_GRH=1`
+did not change `support_half_av_seg` in this build, so the ds=6 branch — the one
+that motivated the whole fix, and the one RoCE always takes — has now been
+written, reviewed and shipped without ever executing.
+
+### The next step, and why it is not another guess
+
+Twice this session a wrong belief about the platform survived because the
+capture could not contradict it. The fix is the same one applied to `decode`:
+**record the address-vector width on the row.** Then any capture answers "was
+this half or full AV" directly, `dc_full` stops being a leg whose success is
+indistinguishable from its non-execution, and a RoCE capture proves the branch
+the moment one exists. Deriving the width per WQE was right; not recording what
+was derived is what left this hole.
+
 ## Superseded: the bootstrap dead end, and what was wrong about it
 
 Kept because the wrong turns are the useful part. Four jobs before 45449988:
