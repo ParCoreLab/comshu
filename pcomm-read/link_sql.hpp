@@ -321,6 +321,10 @@ UNION ALL
            temporal_a_ticks, temporal_b_ticks,
            qp_num, byte_len::BIGINT   FROM ib_recv_cqe
 UNION ALL
+    -- Every WQE the decoder emitted, unfiltered: a DUMP (ordering) and an
+    -- opcode this build cannot lay out are both things the queue pair did at a
+    -- time, which is exactly what a timeline is for. `_sends` below is where
+    -- they are excluded, because that lane counts TRAFFIC.
     SELECT rank, 'mlx5_device_send', temporal_a_domain, temporal_kind,
            temporal_a_ticks, temporal_b_ticks,
            qp_num, length::BIGINT     FROM mlx5_device_send
@@ -1224,9 +1228,17 @@ SELECT rank, qp_num, 'verbs' AS transport,
        count(*) AS sends, sum(length)::BIGINT AS bytes
 FROM ib_post_send GROUP BY rank, qp_num
 UNION ALL
+-- Not every mlx5_device_send row is traffic. The WQE decoder emits a row for
+-- every work request that is not padding, which since the opcode table was
+-- fixed includes NVSHMEM's DUMP (0x23 = 35: its ordering WQE, which names no
+-- peer and moves no payload) and any opcode this build cannot lay out
+-- (decode = 3, where length is 0 because nothing was read, not because nothing
+-- was sent). Both belong in the raw table and on the timeline; counting them
+-- here would add zero-byte "messages" to edges they never addressed. Atomics
+-- (decode = 1) do name a peer and stay.
 SELECT rank, qp_num, 'devx' AS transport,
        count(*) AS sends, sum(length)::BIGINT AS bytes
-FROM mlx5_device_send GROUP BY rank, qp_num
+FROM mlx5_device_send WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num
 )sql"},
 
     // The same traffic, one more group-by deep: by SIZE CLASS.
@@ -1269,7 +1281,10 @@ SELECT rank, qp_num, 'devx' AS transport,
        CASE WHEN length > 0 THEN (1::BIGINT << CAST(floor(log2(length)) AS INTEGER))
             ELSE 0 END AS size_class,
        count(*) AS sends, sum(length)::BIGINT AS bytes
-FROM mlx5_device_send GROUP BY rank, qp_num, size_class
+-- Same exclusion as _sends, and it has to be the same one: the suite asserts
+-- that edge_sizes rolls up EXACTLY to comm_edges, so a row counted in one lane
+-- and not the other is a failed invariant rather than a quiet discrepancy.
+FROM mlx5_device_send WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, size_class
 )sql"},
 
     // (rank, qp_num) -> the rank on the other end. Extracted from `endpoint`,

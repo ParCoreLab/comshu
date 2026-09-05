@@ -60,7 +60,8 @@ namespace mlx5::hijack {
 using DoorbellSink = void (*)(void* uar_ptr, std::uint32_t qp_num, std::uint32_t prod_idx);
 using DeviceSendSink = void (*)(std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                                 std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr,
-                                std::uint32_t rkey, std::uint32_t length);
+                                std::uint32_t rkey, std::uint32_t length, std::uint32_t dest_dct,
+                                std::uint8_t decode);
 
 // What the WQE copy-out needs to read a send queue: its GPU address and shape.
 // Registered by the provider from the DEVX CREATE_QP decode, which is the only
@@ -189,6 +190,8 @@ struct State {
     std::atomic<std::uint64_t> num_fake_accesses{0};
     std::atomic<std::uint64_t> doorbells_decoded{0};
     std::atomic<std::uint64_t> sends_emitted{0};
+    std::atomic<std::uint64_t> sends_unknown_op{0};  // rows whose opcode this build cannot lay out
+    std::atomic<std::uint64_t> sends_truncated{0};   // rows whose ds did not cover their segments
     std::atomic<std::uint64_t> wqes_lapped{0};  // WQEBBs the GPU overwrote before we copied
     std::atomic<std::uint32_t> uars_hijacked{0};
     std::atomic<std::uint32_t> uars_unwatched{0};
@@ -253,15 +256,84 @@ inline void* resolve2(std::initializer_list<const char*> names) {
 
 inline constexpr std::uint32_t kWqebb = 64;
 inline constexpr std::uint32_t kProdMask = 0xFFFF;
+inline constexpr std::uint32_t kExtendedAv = 0x80000000u;  // MLX5_EXTENDED_UD_AV
+inline constexpr std::uint32_t kInlineSeg = 0x80000000u;   // MLX5_INLINE_SEG
+inline constexpr std::uint8_t  kServiceTypeDci = 0x5;
 inline std::uint32_t           prod_diff(std::uint32_t end, std::uint32_t start) {
     return (end - start) & kProdMask;
 }
-inline bool opcode_has_raddr(std::uint8_t op) {
-    // RDMA_WRITE, RDMA_READ, ATOMIC_CS/FA, ATOMIC_MASKED_CS/FA
-    return op == 0x08 || op == 0x10 || op == 0x11 || op == 0x12 || op == 0x14 || op == 0x15;
-}
-inline bool opcode_has_data(std::uint8_t op) {
-    return op == 0x08 || op == 0x0a || op == 0x10;  // RDMA_WRITE, SEND, RDMA_READ
+
+// mlx5 send opcodes whose segment layout this decoder knows. Values from
+// rdma-core `providers/mlx5/mlx5dv.h`; DUMP is NVSHMEM's own and appears in no
+// rdma-core header (`IBGDA_MLX5_OPCODE_DUMP` in ibgda_device.cuh).
+enum : std::uint8_t {
+    kOpNop = 0x00,
+    kOpRdmaWrite = 0x08,
+    kOpRdmaWriteImm = 0x09,
+    kOpSend = 0x0a,
+    kOpSendImm = 0x0b,
+    kOpRdmaRead = 0x10,
+    kOpAtomicCs = 0x11,
+    kOpAtomicFa = 0x12,
+    kOpAtomicMaskedCs = 0x14,
+    kOpAtomicMaskedFa = 0x15,
+    kOpDump = 0x23,
+};
+
+// How much of a WQE the decode actually read, carried on the row.
+//
+// "We read every field" and "we met a WQE whose layout this build does not
+// know" must not look the same in the capture. That is the same rule
+// Mlx5DevxCmd.decoded already applies to undecoded DEVX commands, and it is the
+// rule the old parser broke: an unrecognised opcode was skipped in silence,
+// justified by a comment about NOP padding that is true only of opcode 0x00.
+// NVSHMEM emits DUMP (0x23) on its ordering path and both masked-atomic
+// opcodes; none of the three were in the old tables, so all three vanished.
+enum : std::uint8_t {
+    kDecodeFull = 0,       // every segment the opcode names was located and read
+    kDecodePartial = 1,    // remote address read, local descriptor not (atomics)
+    kDecodeTruncated = 2,  // ds is too small for the opcode's own segments
+    kDecodeUnknownOp = 3,  // opcode not in the table above; only ids are meaningful
+};
+
+// Which segments an opcode carries, in the order mlx5 packs them:
+//   ctrl · [address vector] · [remote address] · [atomic operands] · [data|inline]
+struct OpShape {
+    bool known{false};
+    bool addressed{false};  // takes an address vector when the QP is a DCI
+    bool raddr{false};      // carries a remote-address segment
+    bool data{false};       // carries a local data or inline segment we can read
+};
+
+inline OpShape op_shape(std::uint8_t op) {
+    switch (op) {
+        case kOpRdmaWrite:
+        case kOpRdmaWriteImm:
+        case kOpRdmaRead:
+            return {true, true, true, true};
+        case kOpSend:
+        case kOpSendImm:
+            return {true, true, false, true};
+        case kOpAtomicCs:
+        case kOpAtomicFa:
+        case kOpAtomicMaskedCs:
+        case kOpAtomicMaskedFa:
+            // The operand segments sit between the remote address and the local
+            // result descriptor, and their width varies with operand size and
+            // whether the operation is masked. Everything before them is at a
+            // known offset and is read; the data segment after them is not, so
+            // these rows are Partial rather than guessed at.
+            return {true, true, true, false};
+        case kOpDump:
+            // NVSHMEM's ordering WQE (`ibgda_write_dump_wqe`): ctrl + data,
+            // ds = 2, and NO address vector even on a DCI. It moves no payload
+            // to a peer, but it is how the ordering the transport pays for
+            // reaches the wire, so it is recorded and left distinguishable by
+            // opcode rather than dropped.
+            return {true, false, false, true};
+        default:
+            return {};
+    }
 }
 
 // Copy the WQEBBs in [start, end) out of the send queue into `dst`, handling the
@@ -295,66 +367,129 @@ inline CuResult copy_wqes(std::uint8_t* dst, const QpInfo& qp, std::uint32_t sta
 inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32_t end,
                        std::uint32_t qpn, const QpInfo& qp, DeviceSendSink sink) {
     const std::uint32_t total = prod_diff(end, start);
-    const bool          is_dci = qp.service_type == 0x5;
+    const bool          is_dci = qp.service_type == kServiceTypeDci;
     std::uint32_t       i = 0, prod = start;
 
     while (i < total) {
         const std::uint8_t* wqe = buf + static_cast<std::size_t>(i) * kWqebb;
         const std::uint32_t qpn_ds = be32toh(*reinterpret_cast<const std::uint32_t*>(wqe + 4));
         const std::uint32_t ds = qpn_ds & 0xFF;
-        if ((qpn_ds >> 8) != qpn || ds == 0) {  // NOP or another QP's slot
+        if ((qpn_ds >> 8) != qpn || ds == 0) {  // another QP's slot, or an empty one
             ++i;
             prod = (prod + 1) & kProdMask;
             continue;
         }
-        const std::uint8_t  opcode = be32toh(*reinterpret_cast<const std::uint32_t*>(wqe)) & 0xFF;
-        const std::uint32_t wqebbs = (ds + 3) >> 2;
+        const std::uint8_t opcode = be32toh(*reinterpret_cast<const std::uint32_t*>(wqe)) & 0xFF;
 
-        const bool has_raddr = opcode_has_raddr(opcode);
-        const bool has_data = opcode_has_data(opcode);
+        // Advance by what the WQE claims, but never read past what was copied:
+        // the buffer holds one ring, and a WQE at the end of the delta can claim
+        // WQEBBs the copy did not cover.
+        std::uint32_t wqebbs = (ds + 3) >> 2;
+        if (i + wqebbs > total)
+            wqebbs = total - i;
+        const std::uint32_t readable_ds = wqebbs * 4;  // DS the copy actually holds
+
+        if (opcode == kOpNop) {  // fencing and alignment filler, not an operation
+            i += wqebbs;
+            prod = (prod + wqebbs) & kProdMask;
+            continue;
+        }
+
+        const OpShape shape = op_shape(opcode);
+        std::uint8_t  decode = shape.known ? kDecodeFull : kDecodeUnknownOp;
 
         std::uint64_t raddr = 0, laddr = 0;
-        std::uint32_t rkey = 0, lkey = 0, length = 0;
+        std::uint32_t rkey = 0, lkey = 0, length = 0, dest_dct = 0;
 
-        // Segment positions, from the FRONT: ctrl(1 DS) · av · raddr(1 DS) ·
-        // data|inline (ibgda_device.cuh). The address-vector segment is a HALF AV
-        // (1 DS) on this system — confirmed by ds==4 for a simple pointer write
-        // (ctrl+halfav+raddr+data) — so av_ds is 1 for DCI, 0 for RC. Locating by
-        // ds from the END is wrong: NVSHMEM's warp-combine path INLINES the
-        // payload (up to 128 B) into a segment that runs to the end of the WQE, so
-        // the last DS is inline payload, not a descriptor. If support_half_av_seg
-        // is ever false this av_ds becomes 3 (full AV, ds==6) — one place to fix.
-        const std::uint32_t av_ds = is_dci ? 1u : 0u;
-        const std::uint32_t raddr_ds = 1u + av_ds;
-        const std::uint32_t op_ds = 2u + av_ds;  // data seg, inline header, or atomic seg
-        auto                seg_at = [&](std::uint32_t which_ds) {
+        auto seg_at = [&](std::uint32_t which_ds) {
             return wqe + static_cast<std::size_t>(which_ds) * 16;
         };
-        if (has_raddr && ds > raddr_ds) {
-            const std::uint8_t* r = seg_at(raddr_ds);
-            raddr = be64toh(*reinterpret_cast<const std::uint64_t*>(r));
-            rkey = be32toh(*reinterpret_cast<const std::uint32_t*>(r + 8));
-        }
-        if (has_data && ds > op_ds) {
-            const std::uint8_t* d = seg_at(op_ds);
-            const std::uint32_t bc = be32toh(*reinterpret_cast<const std::uint32_t*>(d));
-            length = bc & 0x7FFFFFFF;
-            // MLX5_INLINE_SEG (bit 31): the payload is inline and there is no
-            // local descriptor — laddr/lkey stay 0. Otherwise it is a pointer
-            // data segment carrying byte_count, lkey, addr.
-            if ((bc & 0x80000000u) == 0) {
-                lkey = be32toh(*reinterpret_cast<const std::uint32_t*>(d + 4));
-                laddr = be64toh(*reinterpret_cast<const std::uint64_t*>(d + 8));
+        auto have = [&](std::uint32_t which_ds, std::uint32_t n_ds) {
+            return which_ds + n_ds <= ds && which_ds + n_ds <= readable_ds;
+        };
+
+        // --- the address vector, and its width, which is not a constant ------
+        //
+        // A DC WQE carries an address vector; an RC WQE does not. Its WIDTH is
+        // the part that must be read rather than assumed. NVSHMEM uses a 16-byte
+        // compact AV (1 DS, ds=4 for a pointer write) when the port allows it and
+        // a 48-byte full AV (3 DS, ds=6) when it does not — and it does not on
+        // every RoCE port (lid == 0), every GRH-only IB port, when IB_FORCE_GRH
+        // is set, when the LID-only AH is rejected, and on any HCA without
+        // compact-AV support. All five branches are `support_half_av_seg = false`
+        // in ibgda.cpp; the old parser assumed the compact form unconditionally,
+        // which on any of them read raddr, rkey, lkey, laddr and length 32 bytes
+        // early and emitted a row that was wrong rather than absent.
+        //
+        // The WQE says which form it is, so nothing needs to be plumbed in from
+        // the transport. `dqp_dct` sits at AV offset 8 in BOTH forms —
+        // ibgda_half_av_seg_t and struct mlx5_wqe_av share their first 16 bytes
+        // (be64 key, be32 dqp_dct, stat_rate_sl, fl_mlid, be16 rlid) — and its
+        // top bit is MLX5_EXTENDED_UD_AV, set only for the full form. NVSHMEM
+        // says so on the compact struct itself: "The ext flag (in dqp_dct) must
+        // be set to disable."
+        //
+        // The low 24 bits are the destination DCT. Reading them is what makes a
+        // DC capture answer who a send went to; without it the whole transport
+        // records traffic with no peer.
+        std::uint32_t av_ds = 0;
+        if (is_dci && shape.addressed) {
+            if (!have(1, 1)) {
+                decode = kDecodeTruncated;
+            } else {
+                const std::uint32_t dqp_dct =
+                    be32toh(*reinterpret_cast<const std::uint32_t*>(seg_at(1) + 8));
+                av_ds = (dqp_dct & kExtendedAv) ? 3u : 1u;
+                dest_dct = dqp_dct & 0x00FFFFFFu;
+                if (!have(1, av_ds))
+                    decode = kDecodeTruncated;
             }
         }
 
-        // Emit only actual operations — those that move data or name a remote
-        // address (RDMA/atomic). NVSHMEM interleaves NOP WQEs (opcode 0x00) for
-        // fencing and alignment; those carry no address and are not sends, so
-        // recording them would inflate the send count with empty rows.
-        if ((has_data || has_raddr) && sink) {
-            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length);
+        const std::uint32_t raddr_ds = 1u + av_ds;
+        if (decode != kDecodeTruncated && shape.raddr) {
+            if (!have(raddr_ds, 1)) {
+                decode = kDecodeTruncated;
+            } else {
+                const std::uint8_t* r = seg_at(raddr_ds);
+                raddr = be64toh(*reinterpret_cast<const std::uint64_t*>(r));
+                rkey = be32toh(*reinterpret_cast<const std::uint32_t*>(r + 8));
+            }
+        }
+
+        const std::uint32_t data_ds = raddr_ds + (shape.raddr ? 1u : 0u);
+        if (decode != kDecodeTruncated && shape.data) {
+            if (!have(data_ds, 1)) {
+                decode = kDecodeTruncated;
+            } else {
+                const std::uint8_t* d = seg_at(data_ds);
+                const std::uint32_t bc = be32toh(*reinterpret_cast<const std::uint32_t*>(d));
+                length = bc & ~kInlineSeg;
+                // MLX5_INLINE_SEG (bit 31): the payload is inline and there is no
+                // local descriptor — laddr/lkey stay 0. Otherwise it is a pointer
+                // data segment carrying byte_count, lkey, addr.
+                if ((bc & kInlineSeg) == 0) {
+                    lkey = be32toh(*reinterpret_cast<const std::uint32_t*>(d + 4));
+                    laddr = be64toh(*reinterpret_cast<const std::uint64_t*>(d + 8));
+                }
+            }
+        } else if (decode == kDecodeFull && shape.known && !shape.data) {
+            // An atomic: the remote address is read, the local result descriptor
+            // sits past operand segments whose width this decoder does not model.
+            decode = kDecodePartial;
+        }
+
+        // Every WQE that is not padding gets a row, including one carrying an
+        // opcode this build does not know. An unrecognised opcode is the version
+        // boundary this provider is most likely to hit, and a capture that
+        // quietly omits it is indistinguishable from a run that did not send.
+        if (sink) {
+            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, decode);
             state().sends_emitted.fetch_add(1, std::memory_order_relaxed);
+            if (decode == kDecodeUnknownOp)
+                state().sends_unknown_op.fetch_add(1, std::memory_order_relaxed);
+            else if (decode == kDecodeTruncated)
+                state().sends_truncated.fetch_add(1, std::memory_order_relaxed);
         }
 
         i += wqebbs;
@@ -672,15 +807,60 @@ inline void report_and_shutdown(int rank) {
 
     std::fprintf(stderr,
                  "[pcomm rank %d] doorbell hijack: uars_hijacked=%u unwatched=%u "
-                 "fake_accesses=%llu doorbells=%llu sends=%llu wqes_lapped=%llu | "
+                 "fake_accesses=%llu doorbells=%llu sends=%llu (unknown_op=%llu truncated=%llu) "
+                 "wqes_lapped=%llu | "
                  "remembered_uars=%u register_calls=%u getdevptr_calls=%u unregister_calls=%u%s\n",
                  rank, s.uars_hijacked.load(), s.uars_unwatched.load(),
                  static_cast<unsigned long long>(s.num_fake_accesses.load()),
                  static_cast<unsigned long long>(s.doorbells_decoded.load()),
                  static_cast<unsigned long long>(s.sends_emitted.load()),
+                 static_cast<unsigned long long>(s.sends_unknown_op.load()),
+                 static_cast<unsigned long long>(s.sends_truncated.load()),
                  static_cast<unsigned long long>(s.wqes_lapped.load()), s.remembered_uars.load(),
                  s.register_calls.load(), s.getdevptr_calls.load(), s.unregister_calls.load(),
                  repeater::wait_is_spin() ? " (PAUSE spin — no WAITPKG/MWAITX)" : "");
+
+    // ...and then say what those counters MEAN, because the most likely outcome
+    // on a production cluster is an empty data plane that looks like a bug.
+    //
+    // The hijack hangs off one event: the transport mapping a NIC BAR page into
+    // the GPU's address space (cuMemHostRegister of the UAR, then
+    // cuMemHostGetDevicePointer). Many production clusters do not permit that —
+    // the open kernel module has no PeerMappingOverride, and cudaHostRegister on
+    // the UAR returns cudaErrorNotPermitted. MN5 is one of them. NVSHMEM then
+    // falls back to CPU-assisted IBGDA (NVSHMEM_IBGDA_NIC_HANDLER=cpu /
+    // cpu_host_memory, `use_async_postsend` on the device) AT EXIT CODE 0: the
+    // GPU still builds every WQE in GPU memory and advances a producer index,
+    // but a HOST thread rings the doorbell. There is no GPU store to a UAR to
+    // intercept, so mlx5_device_send is empty — and empty for a platform reason,
+    // not because the run sent nothing and not because the hijack broke.
+    //
+    // Distinguishing those three is the whole point of this provider, so it is
+    // stated here rather than left to whoever reads the empty table.
+    const bool     uars_exist = s.remembered_uars.load() > 0;
+    const unsigned watched = s.uars_hijacked.load();
+    const unsigned unwatched = s.uars_unwatched.load();
+    if (uars_exist && watched == 0 && unwatched == 0) {
+        std::fprintf(stderr,
+                     "[pcomm rank %d] doorbell hijack: DEVX allocated %u UAR(s) and NONE was "
+                     "mapped into the GPU — the doorbell writer on this run is NOT the GPU. "
+                     "This is CPU-assisted IBGDA or a host-submitted path, not a capture "
+                     "failure; mlx5_device_send will be empty and no hijack can fill it. "
+                     "Check the transport's own log for its NIC handler.\n",
+                     rank, s.remembered_uars.load());
+    } else if (watched > 0 && s.num_fake_accesses.load() == 0) {
+        std::fprintf(stderr,
+                     "[pcomm rank %d] doorbell hijack: %u UAR(s) swapped and never rung — the "
+                     "GPU issued no doorbell through them.\n",
+                     rank, watched);
+    }
+    if (unwatched > 0) {
+        std::fprintf(stderr,
+                     "[pcomm rank %d] doorbell hijack: %u UAR(s) FAILED OPEN — the application "
+                     "got the real doorbell page and their sends are absent from this "
+                     "capture.\n",
+                     rank, unwatched);
+    }
 }
 
 }  // namespace mlx5::hijack

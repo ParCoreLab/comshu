@@ -737,7 +737,9 @@ struct Mlx5DeviceSend {
   lkey:uint32;
   rkey:uint32;
   length:uint32;
+  dest_dct:uint32;  // DC target from the address vector; 0 on RC
   opcode:uint8;
+  decode:uint8;     // SendDecode: 0 full, 1 partial, 2 truncated, 3 unknown opcode
 }
 
 // --- ucx/UCP provider records (600-699) -----------------------------------

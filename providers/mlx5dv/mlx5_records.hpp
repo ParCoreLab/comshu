@@ -163,6 +163,18 @@ PCOMM_RECORD(Mlx5Doorbell, RecordKind::Event, 212, "mlx5_doorbell") {
 // same shape (opcode, local, remote, length) so a reader can union the two: on
 // an IBGDA run the ib_post_send table is empty and this is the only send record
 // there is.
+// How much of the WQE the decode read. On the row because "every field was
+// read" and "this build does not know this opcode's layout" must not look the
+// same in the capture — the rule Mlx5DevxCmd.decoded already applies one layer
+// up. See `op_shape` in uar_hijack.hpp for what each opcode carries.
+enum class SendDecode : std::uint8_t {
+    Full = 0,       // every segment the opcode names was located and read
+    Partial = 1,    // remote address read; local descriptor past unmodelled
+                    // atomic operand segments, so laddr/lkey/length are 0
+    Truncated = 2,  // ds did not cover the opcode's own segments
+    UnknownOp = 3,  // opcode not in the layout table; only ids are meaningful
+};
+
 PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     std::uint64_t laddr;  // local address (data segment)
     std::uint64_t raddr;  // remote address (RDMA segment), 0 if none
@@ -171,7 +183,15 @@ PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     std::uint32_t lkey;
     std::uint32_t rkey;    // remote key, 0 if no RDMA segment
     std::uint32_t length;  // bytes this WQE moves
+    // The destination DCT of a DC send, from the low 24 bits of the address
+    // vector's dqp_dct. 0 on RC, where the peer is a property of the queue pair
+    // and Mlx5DevxQpConnect already carries it. Without this a DC capture
+    // records traffic with no peer at all, which is most of what a
+    // communication profiler is for — NVSHMEM shipped DC-only through its 2.x
+    // line and still supports it.
+    std::uint32_t dest_dct;
     std::uint8_t  opcode;  // mlx5 WQE opcode (0x08 RDMA_WRITE, 0x0a SEND, …)
+    std::uint8_t  decode;  // SendDecode
 };
 
 }  // namespace pcomm::providers::mlx5dv::records

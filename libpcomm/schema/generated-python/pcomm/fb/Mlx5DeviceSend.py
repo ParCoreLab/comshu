@@ -11,7 +11,7 @@ class Mlx5DeviceSend(object):
 
     @classmethod
     def SizeOf(cls):
-        return 88
+        return 96
 
     # Mlx5DeviceSend
     def Init(self, buf, pos):
@@ -37,12 +37,18 @@ class Mlx5DeviceSend(object):
     # Mlx5DeviceSend
     def Length(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # Mlx5DeviceSend
-    def Opcode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    def DestDct(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    # Mlx5DeviceSend
+    def Opcode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    # Mlx5DeviceSend
+    def Decode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(89))
 
-def CreateMlx5DeviceSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, laddr, raddr, qpNum, wqeIdx, lkey, rkey, length, opcode):
-    builder.Prep(8, 88)
-    builder.Pad(3)
+def CreateMlx5DeviceSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, laddr, raddr, qpNum, wqeIdx, lkey, rkey, length, destDct, opcode, decode):
+    builder.Prep(8, 96)
+    builder.Pad(6)
+    builder.PrependUint8(decode)
     builder.PrependUint8(opcode)
+    builder.PrependUint32(destDct)
     builder.PrependUint32(length)
     builder.PrependUint32(rkey)
     builder.PrependUint32(lkey)

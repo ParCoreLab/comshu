@@ -1169,10 +1169,13 @@ int main() {
         c.payload.lkey = 0xABCD;
         c.payload.rkey = 0xDCBA;
         c.payload.length = 4096;
+        c.payload.dest_dct = 0x00A5A5;
         c.payload.opcode = 0x08;
+        c.payload.decode = 0x01;
         fb::Mlx5DeviceSend f(
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
-            0x7F0011220000ull, 0x7F0099880000ull, 0x1EFF9, 0x0080, 0xABCD, 0xDCBA, 4096, 0x08);
+            0x7F0011220000ull, 0x7F0099880000ull, 0x1EFF9, 0x0080, 0xABCD, 0xDCBA, 4096, 0x00A5A5,
+            0x08, 0x01);
         expect_identical("Mlx5DeviceSend", &c, &f, sizeof(c));
     }
     {  // InternKey / InternString: the dictionary every Handle depends on.

@@ -2924,8 +2924,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   uint32_t lkey_;
   uint32_t rkey_;
   uint32_t length_;
+  uint32_t dest_dct_;
   uint8_t opcode_;
-  int8_t padding0__;  int16_t padding1__;
+  uint8_t decode_;
+  int16_t padding0__;  int32_t padding1__;
 
  public:
   Mlx5DeviceSend()
@@ -2937,13 +2939,15 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         lkey_(0),
         rkey_(0),
         length_(0),
+        dest_dct_(0),
         opcode_(0),
+        decode_(0),
         padding0__(0),
         padding1__(0) {
     (void)padding0__;
     (void)padding1__;
   }
-  Mlx5DeviceSend(const pcomm::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint8_t _opcode)
+  Mlx5DeviceSend(const pcomm::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint32_t _dest_dct, uint8_t _opcode, uint8_t _decode)
       : temporal_(_temporal),
         laddr_(::flatbuffers::EndianScalar(_laddr)),
         raddr_(::flatbuffers::EndianScalar(_raddr)),
@@ -2952,7 +2956,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         lkey_(::flatbuffers::EndianScalar(_lkey)),
         rkey_(::flatbuffers::EndianScalar(_rkey)),
         length_(::flatbuffers::EndianScalar(_length)),
+        dest_dct_(::flatbuffers::EndianScalar(_dest_dct)),
         opcode_(::flatbuffers::EndianScalar(_opcode)),
+        decode_(::flatbuffers::EndianScalar(_decode)),
         padding0__(0),
         padding1__(0) {
     (void)padding0__;
@@ -2982,11 +2988,17 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   uint32_t length() const {
     return ::flatbuffers::EndianScalar(length_);
   }
+  uint32_t dest_dct() const {
+    return ::flatbuffers::EndianScalar(dest_dct_);
+  }
   uint8_t opcode() const {
     return ::flatbuffers::EndianScalar(opcode_);
   }
+  uint8_t decode() const {
+    return ::flatbuffers::EndianScalar(decode_);
+  }
 };
-FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 88);
+FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 96);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxContext FLATBUFFERS_FINAL_CLASS {
  private:
