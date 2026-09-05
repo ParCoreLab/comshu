@@ -25,14 +25,45 @@ Portable|Mapped|IoMemory)` — and reports one of three things:
 | `driver refuses … NOT_PERMITTED` | no PeerMappingOverride; CPU-assisted only | `--enable-host-doorbell` |
 | `not the refusal this guard looks for` / `cannot resolve the CUDA driver` | unproven | neither — it fails closed |
 
-Measured 2026-09-05 on **du04**: `DOES map`, so du04 is the GPU-hijack platform
-and the host path correctly refuses to arm there. **MN5 is expected to answer
-`NOT_PERMITTED`** — its open kernel module has no `PeerMappingOverride`, which is
-what forces `NVSHMEM_IBGDA_NIC_HANDLER=cpu` there and is the whole reason the
-host path exists. **That has not been run yet**; it is the first thing to do with
-an MN5 allocation, because it is the one claim in
+Both platforms measured 2026-09-05, and they answer opposite:
+
+| Host | Answer | `uars_armed` | Reading |
+|---|---|---|---|
+| **du04** (A100, driver 580) | `DOES map` | 0 | GPU submission works → `--enable-doorbell-hijack` |
+| **MN5** `as01r4b07` (H100, driver 595.71.05, `Dual MIT/GPL`) | `NOT_PERMITTED` | **1** | open kernel module, no PeerMappingOverride → host path |
+
+Job `45446991`. This retires the one claim in
 `plans/PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-todo.md`
-that is inferred from someone else's run notes rather than measured by us.
+that was inferred from the experiments repo's env notes rather than measured
+here: MN5 cannot do GPU-submitted IBGDA, and the host path arms there and only
+there. In the same job the GPU hijack correctly reports it cannot engage
+("DEVX allocated 1 UAR(s) and NONE was mapped into the GPU"), so both mechanisms
+name the platform correctly from opposite sides.
+
+## Still open: the host path has never captured a doorbell
+
+Arming is proven; **decoding is not**. `mn5_cpu_assisted.sbatch` is the run that
+would prove it — two nodes, `NVSHMEM_IBGDA_NIC_HANDLER=cpu`, a real
+`shmem_put_bw` — and it is blocked on NVSHMEM bootstrap on MN5, not on anything
+in pcomm. Three attempts, each failing further along:
+
+1. `45447084` — `libcudart.so.12` not on `LD_LIBRARY_PATH`; the SDK's perftest
+   binaries need the SDK's own CUDA tree. Fixed.
+2. `45447108` — `srun --mpi=pmi2` + the SDK's PMI-1 client:
+   `mpi/pmi2: unsupported PMI version: 1.0`. SLURM killed the ranks and left
+   srun hanging. Switched to `--mpi=pmix` (this SLURM has `pmix_v4`).
+3. `45447290`, `45447299` — NVSHMEM reaches `nvshmemi_init_thread` and aborts
+   with `non-zero status: 7` (ENOENT). This SDK ships the PMIx bootstrap only as
+   `nvshmem_bootstrap_pmix.so.3`; NVSHMEM dlopens the unsuffixed name.
+   `NVSHMEM_BOOTSTRAP_PMIX_PLUGIN=nvshmem_bootstrap_pmix.so.3` did not change
+   it, so either that is not the variable this version reads or the ENOENT is a
+   different file.
+
+Next thing to try, cheapest first: `strace -f -e openat` on one rank to see which
+file it actually wants; a symlinked `nvshmem_bootstrap_pmix.so` in a writable dir
+ahead on `LD_LIBRARY_PATH`; or sidestep PMIx entirely with
+`NVSHMEM_BOOTSTRAP=UID` (the SDK ships `nvshmem_bootstrap_uid.so`, unversioned)
+or `NVSHMEM_BOOTSTRAP=MPI` under the site impi. None of this touches pcomm.
 
 ## Why the probe is worth keeping
 
