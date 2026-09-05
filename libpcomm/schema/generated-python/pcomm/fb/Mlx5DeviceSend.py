@@ -42,10 +42,13 @@ class Mlx5DeviceSend(object):
     def Opcode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
     # Mlx5DeviceSend
     def Decode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(89))
+    # Mlx5DeviceSend
+    def AvDs(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(90))
 
-def CreateMlx5DeviceSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, laddr, raddr, qpNum, wqeIdx, lkey, rkey, length, destDct, opcode, decode):
+def CreateMlx5DeviceSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, laddr, raddr, qpNum, wqeIdx, lkey, rkey, length, destDct, opcode, decode, avDs):
     builder.Prep(8, 96)
-    builder.Pad(6)
+    builder.Pad(5)
+    builder.PrependUint8(avDs)
     builder.PrependUint8(decode)
     builder.PrependUint8(opcode)
     builder.PrependUint32(destDct)

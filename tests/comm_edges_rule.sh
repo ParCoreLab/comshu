@@ -109,11 +109,11 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 CSV
 
 cat > "$WORK/mlx5_device_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode
-1,2,0,2100,0,2110,0,8192,4096,30,0,3,7,200,0,8,0
-1,2,0,2200,0,2210,0,8192,4096,30,1,3,7,200,0,8,0
-1,2,0,2300,0,2310,0,8192,0,30,2,3,0,0,0,35,0
-1,2,0,2400,0,2410,0,0,0,30,3,0,0,0,0,200,3
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds
+1,2,0,2100,0,2110,0,8192,4096,30,0,3,7,200,0,8,0,0
+1,2,0,2200,0,2210,0,8192,4096,30,1,3,7,200,0,8,0,0
+1,2,0,2300,0,2310,0,8192,0,30,2,3,0,0,0,35,0,0
+1,2,0,2400,0,2410,0,0,0,30,3,0,0,0,0,200,3,0
 CSV
 
 # --- the UCX lane -----------------------------------------------------------

@@ -192,6 +192,15 @@ PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     std::uint32_t dest_dct;
     std::uint8_t  opcode;  // mlx5 WQE opcode (0x08 RDMA_WRITE, 0x0a SEND, …)
     std::uint8_t  decode;  // SendDecode
+    // Width of the address vector this WQE actually carried, in 16-byte
+    // descriptor units: 0 on RC (no AV), 1 for the compact 16-byte form, 3 for
+    // the full 48-byte form. DERIVED per WQE from MLX5_EXTENDED_UD_AV — and
+    // RECORDED because deriving it correctly and then not saying which was
+    // derived is what left the full-AV branch shipped and unexecuted. A run
+    // whose dc_full leg silently produced compact AVs was indistinguishable
+    // from one that never ran (MN5 job 45452104); with this on the row it is
+    // one query, on any capture, forever.
+    std::uint8_t av_ds;
 };
 
 }  // namespace pcomm::providers::mlx5dv::records

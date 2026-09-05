@@ -76,8 +76,11 @@ leg() {  # leg <name> <env assignments...>
   local f="$csv/mlx5_device_send.csv"
   [ -f "$f" ] || { echo "  NO mlx5_device_send.csv"; return; }
   echo "-- rows: $(( $(wc -l < "$f") - 1 )) --"
-  echo "-- opcode x decode x (dest_dct zero?) --"
-  tail -n +2 "$f" | awk -F, '{dct=($12=="0x000000")?"dct=0":"dct=SET"; print $6, $NF, dct}' \
+  echo "-- opcode x decode x av_ds x (dest_dct zero?) --"
+  # av_ds is THE column this leg exists for: 0 = no AV (RC), 1 = compact 16 B,
+  # 3 = full 48 B. Without it a dc_full leg that silently produced compact AVs
+  # looked exactly like one that worked (job 45452104).
+  tail -n +2 "$f" | awk -F, '{dct=($12=="0x000000")?"dct=0":"dct=SET"; print $6, $13, "av_ds="$NF, dct}' \
     | sort | uniq -c | sort -rn | head
   echo "-- three rdma_write rows verbatim --"
   head -1 "$f"

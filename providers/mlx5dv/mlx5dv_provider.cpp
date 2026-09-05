@@ -376,9 +376,10 @@ Profiler::Profiler() {
             },
             [](std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr, std::uint32_t rkey,
-               std::uint32_t length, std::uint32_t dest_dct, std::uint8_t decode) {
+               std::uint32_t length, std::uint32_t dest_dct, std::uint8_t decode,
+               std::uint8_t av_ds) {
                 rec().record(rr::Mlx5DeviceSend{{}, {}, laddr, raddr, qp_num, wqe_idx, lkey, rkey,
-                                                length, dest_dct, opcode, decode});
+                                                length, dest_dct, opcode, decode, av_ds});
             });
     }
 

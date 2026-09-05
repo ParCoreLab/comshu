@@ -61,7 +61,7 @@ using DoorbellSink = void (*)(void* uar_ptr, std::uint32_t qp_num, std::uint32_t
 using DeviceSendSink = void (*)(std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                                 std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr,
                                 std::uint32_t rkey, std::uint32_t length, std::uint32_t dest_dct,
-                                std::uint8_t decode);
+                                std::uint8_t decode, std::uint8_t av_ds);
 
 // What the WQE copy-out needs to read a send queue: its GPU address and shape.
 // Registered by the provider from the DEVX CREATE_QP decode, which is the only
@@ -517,7 +517,8 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
         // boundary this provider is most likely to hit, and a capture that
         // quietly omits it is indistinguishable from a run that did not send.
         if (sink) {
-            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, decode);
+            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, decode,
+                 static_cast<std::uint8_t>(av_ds));
             state().sends_emitted.fetch_add(1, std::memory_order_relaxed);
             if (decode == kDecodeUnknownOp)
                 state().sends_unknown_op.fetch_add(1, std::memory_order_relaxed);

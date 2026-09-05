@@ -740,6 +740,7 @@ struct Mlx5DeviceSend {
   dest_dct:uint32;  // DC target from the address vector; 0 on RC
   opcode:uint8;
   decode:uint8;     // SendDecode: 0 full, 1 partial, 2 truncated, 3 unknown opcode
+  av_ds:uint8;      // address-vector width in 16 B units: 0 none (RC), 1 compact, 3 full
 }
 
 // --- ucx/UCP provider records (600-699) -----------------------------------
