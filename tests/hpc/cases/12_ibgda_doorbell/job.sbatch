@@ -27,7 +27,6 @@ CTRL="${OUT}_ctrl"                        # the passive control
 # own mkdir, so the parent directory has to exist first.
 mkdir -p "$(dirname "$OUT")"
 
-export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBRARY_PATH:-}"
 
 skip() {
   echo "=== 12_ibgda_doorbell : SKIP ($1) ==="
@@ -104,6 +103,21 @@ if [ ! -x "$APP" ]; then
     -lnvshmem_host -lnvshmem_device -lcudart || fail "workload did not build"
   pcomm_load_runtime
 fi
+
+# AFTER the build block, not before it — the same line, for the same reason,
+# that case 04 documents at length. NVSHMEM_HOME globs to the NEWEST SDK (26.5
+# on MN5) while pcomm_load_build/pcomm_load_runtime `module load
+# nvidia-hpc-sdk/25.7`, and each of those PREPENDS 25.7's lib dir. Exported
+# before the build block, 26.5 goes first, the build block shoves 25.7 in front
+# of it, and the loader hands the binary a libnvshmem_host it was not linked
+# against: "undefined symbol: nvshmem_selected_device_transport, version
+# NVSHMEM", exit 127, no capture at all.
+#
+# This case had it at the top for its whole life and never paid, because it
+# SKIPped on every host where the two SDKs differ. Giving it a host arm made the
+# path live and it failed on the first run there (MN5 job 45463080), exactly as
+# case 04's comment predicts.
+export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBRARY_PATH:-}"
 
 # ---- force GPU-initiated IB (identical to case 09) ------------------------
 export NVSHMEM_BOOTSTRAP=MPI
