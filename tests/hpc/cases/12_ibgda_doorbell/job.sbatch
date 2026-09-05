@@ -79,6 +79,14 @@ else
 fi
 echo "=== 12_ibgda_doorbell : arm=$ARM (NIC handler $HANDLER, $DOORBELL_FLAG) ==="
 
+# Load the runtime BEFORE looking for a launcher, the way case 04 does. This
+# case only ever called pcomm_load_runtime inside the app-build branch below,
+# which runs after this check — so on any host where mpirun needs a module it
+# failed with "no mpirun on PATH" before it could load the module that provides
+# one. That ordering bug was invisible for as long as this case SKIPped on every
+# such host, and surfaced the moment the host arm let it actually run (MN5 job
+# 45462870).
+pcomm_load_runtime
 MPIRUN="${PCOMM_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
