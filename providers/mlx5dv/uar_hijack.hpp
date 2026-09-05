@@ -80,7 +80,13 @@ using CuDevicePtr = unsigned long long;
 inline constexpr CuResult kCudaSuccess = 0;
 inline constexpr CuResult kCudaErrorInvalidValue = 1;
 
+inline constexpr unsigned    kMemHostRegisterPortable = 0x01;   // CU_MEMHOSTREGISTER_PORTABLE
 inline constexpr unsigned    kMemHostRegisterDeviceMap = 0x02;  // CU_MEMHOSTREGISTER_DEVICEMAP
+inline constexpr unsigned    kMemHostRegisterIoMemory = 0x04;   // CU_MEMHOSTREGISTER_IOMEMORY
+inline constexpr CuResult    kCudaErrorNotPermitted = 800;      // CUDA_ERROR_NOT_PERMITTED
+// What NVSHMEM registers of a doorbell page: 8 bytes at the (unaligned)
+// reg_addr, not a page — IBGDA_MLX5_NC_UAR_SIZE in its transport.
+inline constexpr std::size_t kDoorbellRegBytes = 8;
 inline constexpr unsigned    kMemHostAllocPortable = 0x01;      // CU_MEMHOSTALLOC_PORTABLE
 inline constexpr unsigned    kMemHostAllocDeviceMap = 0x02;     // CU_MEMHOSTALLOC_DEVICEMAP
 inline constexpr std::size_t kUarPageSize = 4096;
@@ -250,6 +256,33 @@ inline void* resolve2(std::initializer_list<const char*> names) {
         if (void* p = export_table::real(n))
             return p;
     return nullptr;
+}
+
+// Capture the application's CUDA context from a thread that has one, so the
+// repeater thread can bind to it and copy WQEs out of the send queue.
+//
+// The GPU hijack gets this for free at the swap: cuMemHostGetDevicePointer runs
+// on the application's own thread. The HOST doorbell path (host_doorbell.hpp)
+// never sees that call — there is no device mapping of the UAR in that mode —
+// so it calls this from the DEVX CREATE_QP decode instead, which the transport
+// issues from a thread that owns a context. Without it the copy-out has no
+// context to bind to, and the capture is doorbells with no sends beside them:
+// the shape a real decode failure has, which this provider refuses to produce
+// by accident.
+//
+// Idempotent, and it promotes libcuda to global scope first because in host mode
+// nothing has patched the driver export table, so `real()` must fall back to
+// dlsym and dlsym must be able to see the driver.
+inline void capture_gpu_ctx() {
+    auto& s = state();
+    if (s.gpu_ctx.load(std::memory_order_acquire))
+        return;
+    export_table::promote_libcuda();
+    if (auto* getcur = reinterpret_cast<PfnCtxGetCurrent>(export_table::real("cuCtxGetCurrent"))) {
+        void* ctx = nullptr;
+        if (getcur(&ctx) == kCudaSuccess && ctx)
+            s.gpu_ctx.store(ctx, std::memory_order_release);
+    }
 }
 
 // --- doorbell decode + WQE copy-out ----------------------------------------

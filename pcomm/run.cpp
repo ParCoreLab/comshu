@@ -341,9 +341,19 @@ void usage() {
                "      --dry-run      print the run plan without executing\n"
                "      --enable-doorbell-hijack\n"
                "                     capture the IBGDA data plane by redirecting the\n"
-               "                     GPU's doorbell page (ibgda provider). Sits IN the\n"
+               "                     GPU's doorbell page (mlx5dv provider). Sits IN the\n"
                "                     application's data path and PERTURBS its timing —\n"
                "                     never draw a latency conclusion from such a run.\n"
+               "                     Needs the NIC's BAR page mapped into the GPU.\n"
+               "      --enable-host-doorbell\n"
+               "                     the same data plane on a cluster that will NOT map\n"
+               "                     that page (no PeerMappingOverride), where the GPU\n"
+               "                     builds the WQEs and a HOST thread rings the\n"
+               "                     doorbell: CPU-assisted IBGDA. Watches the host\n"
+               "                     mapping instead. Mutually exclusive with the line\n"
+               "                     above — which one a run needs is a property of the\n"
+               "                     platform, and each says so at exit if it was the\n"
+               "                     wrong choice.\n"
                "  -h, --help         this message\n"
                "\n"
                "  e.g.  pcomm run -p ib -- ./app      # network only, single run\n"
@@ -371,6 +381,7 @@ int pcomm::cli::run_main(int argc, char** argv) {
     std::string        trace_mode;
     bool               verbose = false, dry_run = false;
     bool               doorbell_hijack = false;
+    bool               host_doorbell = false;
     std::vector<char*> target;
 
     auto add_selector = [&](std::string_view csv) {
@@ -417,6 +428,8 @@ int pcomm::cli::run_main(int argc, char** argv) {
             dry_run = true;
         else if (a == "--enable-doorbell-hijack")
             doorbell_hijack = true;
+        else if (a == "--enable-host-doorbell")
+            host_doorbell = true;
         else if (a == "--list") {
             list_providers();
             return 0;
@@ -591,6 +604,11 @@ int pcomm::cli::run_main(int argc, char** argv) {
         // that provider acts on it; harmless in a pass without it.
         if (doorbell_hijack)
             setenv("PCOMM_DOORBELL_HIJACK", "1", 1);
+        // Same provider, the other doorbell writer. The provider refuses to arm
+        // both, so passing both flags is a configuration error it reports rather
+        // than a mode it silently picks.
+        if (host_doorbell)
+            setenv("PCOMM_HOST_DOORBELL", "1", 1);
     };
 
     // ── Single pass: exec directly (no wrapper process left behind) ─────────

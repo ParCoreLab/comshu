@@ -42,6 +42,7 @@
 #include "mlx5_event_source.hpp"
 #include "pcomm/core/dmabuf_registry.hpp"
 #include "mlx5_records.hpp"
+#include "host_doorbell.hpp"
 #include "uar_hijack.hpp"
 
 namespace mlx5 {
@@ -299,9 +300,15 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
     // Hand the doorbell hijack this queue pair's send-queue GPU address, so its
     // repeater can copy WQEs out of it. The recorded sq_base above stays an
     // offset under dmabuf; the real GPU VA is wq.gpu_base + wq_offset.
-    if (hijack::enabled() && gpu_driven)
+    if ((hijack::enabled() || hostdb::enabled()) && gpu_driven) {
         hijack::register_qp(qp_num, wq.gpu_base + wq_offset, log_sq_size,
                             static_cast<std::uint8_t>(service_type));
+        // The host path has no UAR swap on an application thread, so this is
+        // where it captures the CUDA context its copy-out will bind to. Free
+        // for the GPU hijack, which already has one by now.
+        if (hostdb::enabled())
+            hijack::capture_gpu_ctx();
+    }
 }
 
 static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
@@ -414,8 +421,14 @@ Profiler::Profiler() {
             // The hijack only ever swaps a page that came from here — this is
             // the "never manufacture a capability" rule made concrete. The uar
             // pointer is kept so a doorbell row can join back to Mlx5Uar (h(out)).
-            if (hijack::enabled())
+            if (hijack::enabled() || hostdb::enabled())
                 hijack::remember_uar(out->reg_addr, out, out->page_id);
+            // ...and only then swap, so remember_uar keys on the register the
+            // NIC really owns and a doorbell row joins the Mlx5Uar recorded
+            // below. The record therefore carries the true reg_addr in both
+            // modes; the decoy is an instrument and never appears in a capture.
+            if (hostdb::enabled())
+                hostdb::arm(out);
             rec().record(pcomm::core::Temporal::none(),
                          rr::Mlx5Uar{{},
                                      {},
@@ -447,6 +460,8 @@ Profiler::Profiler() {
         // teardown cuMemHostUnregister does, in whichever order they arrive.
         if (hijack::enabled())
             hijack::teardown(uar->reg_addr);
+        if (hostdb::enabled())
+            hostdb::disarm(uar);
         rec().record(rec().now_instant(),
                      pcomm::core::records::EntityClose{{}, {}, h(uar), rr::Mlx5Uar::pcomm_type_id});
     });
@@ -590,6 +605,8 @@ static void __attribute__((constructor)) pcomm_mlx5dv_load() {
 static void __attribute__((destructor)) pcomm_mlx5dv_unload() {
     if (mlx5::hijack::enabled())
         mlx5::hijack::report_and_shutdown(pcomm::Config::from_env().rank);
+    if (mlx5::hostdb::enabled())
+        mlx5::hostdb::report_and_shutdown(pcomm::Config::from_env().rank);
     pcomm_engine_drain_thread();
     pcomm_engine_release();
 }
