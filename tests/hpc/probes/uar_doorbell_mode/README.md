@@ -77,30 +77,42 @@ SDK shipped the PMIx bootstrap only as `.so.3`. It does not: the unsuffixed
 files are all there, and that claim came from reading a `head -8` truncation as
 a fact. Read the log, not the symptom.
 
-## Superseded: the earlier bootstrap dead end
+## Superseded: the bootstrap dead end, and what was wrong about it
 
-Arming is proven; **decoding is not**. `mn5_cpu_assisted.sbatch` is the run that
-would prove it — two nodes, `NVSHMEM_IBGDA_NIC_HANDLER=cpu`, a real
-`shmem_put_bw` — and it is blocked on NVSHMEM bootstrap on MN5, not on anything
-in pcomm. Three attempts, each failing further along:
+Kept because the wrong turns are the useful part. Four jobs before 45449988:
 
 1. `45447084` — `libcudart.so.12` not on `LD_LIBRARY_PATH`; the SDK's perftest
-   binaries need the SDK's own CUDA tree. Fixed.
-2. `45447108` — `srun --mpi=pmi2` + the SDK's PMI-1 client:
+   binaries need the SDK's own CUDA tree. Real, fixed.
+2. `45447108` — `srun --mpi=pmi2` against the SDK client:
    `mpi/pmi2: unsupported PMI version: 1.0`. SLURM killed the ranks and left
-   srun hanging. Switched to `--mpi=pmix` (this SLURM has `pmix_v4`).
-3. `45447290`, `45447299` — NVSHMEM reaches `nvshmemi_init_thread` and aborts
-   with `non-zero status: 7` (ENOENT). This SDK ships the PMIx bootstrap only as
-   `nvshmem_bootstrap_pmix.so.3`; NVSHMEM dlopens the unsuffixed name.
-   `NVSHMEM_BOOTSTRAP_PMIX_PLUGIN=nvshmem_bootstrap_pmix.so.3` did not change
-   it, so either that is not the variable this version reads or the ENOENT is a
-   different file.
+   srun hanging. Real.
+3. `45447290`, `45447299`, `45449905` — NVSHMEM aborts in `nvshmemi_init_thread`
+   with `non-zero status: 7`.
 
-Next thing to try, cheapest first: `strace -f -e openat` on one rank to see which
-file it actually wants; a symlinked `nvshmem_bootstrap_pmix.so` in a writable dir
-ahead on `LD_LIBRARY_PATH`; or sidestep PMIx entirely with
-`NVSHMEM_BOOTSTRAP=UID` (the SDK ships `nvshmem_bootstrap_uid.so`, unversioned)
-or `NVSHMEM_BOOTSTRAP=MPI` under the site impi. None of this touches pcomm.
+> **The diagnosis written here for (3) was WRONG.** It said this SDK ships the
+> PMIx bootstrap only as `nvshmem_bootstrap_pmix.so.3` while NVSHMEM dlopens the
+> unsuffixed name. It does not — `nvshmem_bootstrap_{pmi,pmi2,pmix,mpi,uid}.so`
+> are all present, unsuffixed. That claim came from reading a `head -8`
+> truncation of the directory listing as a complete one, and it survived into
+> this file as fact for one commit.
+
+The actual cause, from NVSHMEM's own `NVSHMEM_DEBUG=INFO` log, which was on the
+whole time and being filtered out by an over-aggressive grep:
+
+```
+bootstrap.cpp:bootstrap_flag2mode:58: Missing init flags for bootstrap PMI2.
+                                      Retry with nvshmemx_init_attr and non-zero flags
+```
+
+`NVSHMEM_BOOTSTRAP` takes the bootstrap FAMILY (`PMI` | `MPI` | `SHMEM` | `UID`)
+and `NVSHMEM_BOOTSTRAP_PMI` takes the PMI VARIANT (`PMI` | `PMI-2` | `PMIX`).
+`PMI2` is not legal in the first. NVSHMEM then reports errno 7, which prints as
+*No such file or directory* and reads exactly like a missing plugin — which is
+what sent this after imaginary files, twice.
+
+`NVSHMEM_BOOTSTRAP=PMI` + `NVSHMEM_BOOTSTRAP_PMI=PMI-2` + `srun --mpi=pmi2` is
+what works, and matches the paper's own MN5 harness
+(Dissecting-IBGDA-Experiments, branch `mechanism-v3`, `run_e7_mn5.sh`).
 
 ## Why the probe is worth keeping
 
