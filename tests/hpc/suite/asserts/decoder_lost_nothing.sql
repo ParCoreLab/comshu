@@ -36,8 +36,10 @@ UNION ALL
 -- extending this list, so the assertion cannot silently accept a new claim.
 SELECT 'decoded=1 on an opcode the provider does not decode', rank, opcode, decoded
 FROM mlx5_devx_cmd
+-- 0x400 CREATE_CQ (the completion queue's identity and geometry; NOT its polls,
+-- which IBGDA takes with GPU loads that leave no trace at all),
 -- 0x500 CREATE_QP, 0x502 RST2INIT_QP (where a queue pair is bound to a port,
 -- hence where its source LID is learned), 0x503 INIT2RTR_QP (the remote
 -- endpoint). Extending the decoder means extending this list, which is the
 -- point: the assertion cannot silently accept a new claim.
-WHERE decoded = 1 AND opcode NOT IN ('0x500', '0x502', '0x503');
+WHERE decoded = 1 AND opcode NOT IN ('0x400', '0x500', '0x502', '0x503');
