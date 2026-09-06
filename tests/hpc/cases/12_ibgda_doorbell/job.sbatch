@@ -136,8 +136,27 @@ mpi() {  # mpi <out-dir> <extra pcomm args...>
     -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
     -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
     -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE \
-    "$PCOMM" run -p mlx5dv "$@" -o "$out" -- "$APP" "$ELEMS" "$ITERS"
+    "$PCOMM" run -p ib,mlx5dv "$@" -o "$out" -- "$APP" "$ELEMS" "$ITERS"
 }
+
+# ib is selected alongside mlx5dv, and not for its own sake.
+#
+# The engine emits an EntityClose for every ibv_destroy_qp whenever ANY
+# QP-recording provider is loaded, because from a void* it cannot tell a
+# creation door it failed to hook from a queue pair belonging to a provider the
+# user did not select (engine.cpp, pcomm_close_qp). On `-p mlx5dv` alone inside
+# an MPI process that is 198 closes with opener 102 and no opens to match, and
+# entity_close_accounted goes red on a capture that is actually correct — which
+# is exactly the noise that assertion must not produce, since its whole value is
+# being the cheapest detector of the NEXT missing door.
+#
+# Selecting ib removes the ambiguity at the source rather than suppressing the
+# row: every verbs queue pair MPI and UCX create now has its open recorded, so an
+# unmatched close means what it is supposed to mean again. It also turns this
+# case's central claim into something asserted instead of assumed — under IBGDA
+# there is no CPU data plane, so ib_post_send must be EMPTY while
+# mlx5_device_send is not, and with the ibverbs provider loaded that is now a
+# statement the capture can be checked against.
 
 # ---- control run: hijack OFF ----------------------------------------------
 mpi "$CTRL" > "$CTRL.app" 2>"$CTRL.err"; rc_ctrl=$?

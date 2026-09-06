@@ -1,6 +1,7 @@
 {
   "case": "12_ibgda_doorbell",
   "providers": [
+    "ibverbs",
     "mlx5dv"
   ],
   "platform": "a100",
@@ -29,5 +30,6 @@
     "mlx5_device_send"
   ],
   "oracle_note": "doorbell_engaged runs first and gates the rest: an empty doorbell table means the hijack did not engage, which is indistinguishable from a workload that rang no doorbells, so it is a failure and not a silent pass. The send-size and closure assertions are only meaningful once it holds.",
-  "arm_note": "Same workload, same records, same five assertions in both arms: only the agent that writes the doorbell differs, and the WQE decoder never needed to know which it was. The host arm proves the platform before swapping anything (it registers the doorbell page exactly as NVSHMEM would and arms only on NOT_PERMITTED), so choosing the wrong arm fails loudly here instead of producing an empty capture that reads like a decode failure."
+  "arm_note": "Same workload, same records, same five assertions in both arms: only the agent that writes the doorbell differs, and the WQE decoder never needed to know which it was. The host arm proves the platform before swapping anything (it registers the doorbell page exactly as NVSHMEM would and arms only on NOT_PERMITTED), so choosing the wrong arm fails loudly here instead of producing an empty capture that reads like a decode failure.",
+  "providers_note": "ib is selected with mlx5dv so that verbs queue pairs created by MPI/UCX in the same process have their opens recorded. The engine closes every destroyed QP whenever a QP-recording provider is loaded \u2014 it cannot tell an unhooked creation door from an unselected provider \u2014 so `-p mlx5dv` alone produced ~198 unmatched closes and turned entity_close_accounted into noise on a correct capture. It also makes 'ib_post_send is empty under IBGDA' an assertable claim rather than an assumed one."
 }
