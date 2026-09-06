@@ -26,6 +26,13 @@
 > the mode MN5 runs. Before building this, decide which path it is for, and note
 > that the host path's cost has cheaper fixes: stop synchronising per doorbell,
 > or read the send queue through a GDRCopy host mapping rather than a CUDA copy.
+> **BOTH HALVES NOW MEASURED (du04, 3 reps, same harness).** On the GPU hijack
+> path the forward is 16-45x — it costs 95-98% of throughput from 256 B to
+> 128 KiB, and the decode is noise beside it. So this plan is not merely still
+> valid for du04, it is strongly justified there and would recover 20-40x. What
+> the two measurements together say is that the forward and the copy-out trade
+> places between the paths, so build this for the GPU path and fix the copy-out
+> for the host path; neither fix helps the other.
 > See tests/hpc/probes/uar_doorbell_mode/README.md.
 
 ## Why this exists, in one paragraph

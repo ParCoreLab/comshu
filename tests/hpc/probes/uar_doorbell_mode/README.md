@@ -157,6 +157,53 @@ forward+decode" could not separate the two because they were wall-clock over a
 startup-dominated run. Scored on the application's steady-state numbers, they
 separate cleanly, and the answer is not the one those figures implied.
 
+## ...and on du04, where the forward is the whole cost instead (3 reps)
+
+`a100_overhead.sh`, the same four arms and benchmark on the GPU hijack path.
+Loopback (both PEs behind one HCA), so absolute GB/s is not comparable to MN5's
+— the ratios are the point. Arms engaged: `forward` 298 doorbells / **0 sends**,
+`full` 104 / 7,153.
+
+| bytes | passive/bare | **forward/bare** | full/bare |
+|---|---|---|---|
+| 512 | 1.011 | **0.023** | 0.022 |
+| 4 KiB | 0.987 | **0.032** | 0.020 |
+| 32 KiB | 1.001 | **0.035** | 0.034 |
+| 128 KiB | 0.988 | **0.062** | 0.060 |
+| 1 MiB | 1.001 | **0.384** | 0.331 |
+| 4 MiB | 1.000 | **0.540** | 0.518 |
+
+**The two doorbell paths cost opposite things, and neither is what the other
+would predict:**
+
+| | forward | decode on top | dominant cost |
+|---|---|---|---|
+| host path (MN5, CPU-assisted) | free (±3%) | up to 13% | the per-doorbell copy-out |
+| GPU path (du04, GPU-submitted) | **16–45× loss** | negligible beside it | the GPU → host → BAR round trip |
+
+On the GPU path the forward costs 95–98% of throughput from 256 B to 128 KiB,
+and the decode is noise on top of a path already destroyed by the round trip.
+On the host path the forward is a host→host store and costs nothing, so the
+copy-out is all that is left to pay for.
+
+**So PLAN-20260807-2344 is strongly justified — for exactly one of the two
+paths, the one it was written about.** An on-GPU repeater removes the forward:
+on du04 that is the entire cost and worth a 20–40× recovery; on MN5 it would
+change nothing measurable. The earlier annotation on that plan scoped this
+correctly but had only half the evidence; both halves are now measured.
+
+It also shows the published "+68% forward, +86% forward+decode" understated the
+steady-state cost by more than an order of magnitude, exactly as
+`uar_hijack.hpp` warned: those were wall-clock over a startup-dominated run.
+
+**One thing the counters give away that the ratios do not.** The `full` arm rang
+104 doorbells where `forward` rang 298, for the same workload and nearly the
+same send count (7,153 vs 7,232). A slower repeater means the GPU has more
+ready-but-unposted WQEs when it next checks, so it batches more per doorbell.
+The instrument therefore changes the *batching* it is measuring, not only the
+timing — which is worth remembering before reading WQEs-per-doorbell off a
+hijacked capture as a property of the application.
+
 ## Superseded: the bootstrap dead end, and what was wrong about it
 
 Kept because the wrong turns are the useful part. Four jobs before 45449988:
