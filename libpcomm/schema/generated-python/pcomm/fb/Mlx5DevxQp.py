@@ -11,7 +11,7 @@ class Mlx5DevxQp(object):
 
     @classmethod
     def SizeOf(cls):
-        return 80
+        return 88
 
     # Mlx5DevxQp
     def Init(self, buf, pos):
@@ -35,14 +35,19 @@ class Mlx5DevxQp(object):
     # Mlx5DevxQp
     def Device(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
     # Mlx5DevxQp
-    def ServiceType(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(78))
+    def CqnSnd(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # Mlx5DevxQp
-    def GpuDriven(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(79))
+    def ServiceType(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    # Mlx5DevxQp
+    def GpuDriven(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(85))
 
-def CreateMlx5DevxQp(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, obj, sqBase, qpNum, wqUmemId, logSqSize, device, serviceType, gpuDriven):
-    builder.Prep(8, 80)
+def CreateMlx5DevxQp(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, obj, sqBase, qpNum, wqUmemId, logSqSize, device, cqnSnd, serviceType, gpuDriven):
+    builder.Prep(8, 88)
+    builder.Pad(2)
     builder.PrependUint8(gpuDriven)
     builder.PrependUint8(serviceType)
+    builder.PrependUint32(cqnSnd)
+    builder.Pad(2)
     builder.PrependUint16(device)
     builder.PrependUint32(logSqSize)
     builder.PrependUint32(wqUmemId)

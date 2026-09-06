@@ -216,7 +216,9 @@ b.append(box(320, 130, "mlx5_devx_cmd", 204, "EVT", "obj · opcode · decoded", 
 b.append(box(320, 220, "mlx5_doorbell", 212, "EVT", "uar · qp_num · prod_idx", "mlx"))
 b.append(box(630, 40, "mlx5_devx_qp_connect", 208, "EVT", "qp_num · src_lid → dest_lid", "mlx"))
 b.append(box(630, 130, "mlx5_device_send", 214, "EVT", "qp_num · wqe_idx · laddr/raddr", "mlx"))
+b.append(box(630, 220, "mlx5_devx_cq", 216, "ENT", "obj · cqn · cq_base", "mlx"))
 b.append(box(10, 250, "mlx5_queue_pair", 210, "ENT", "qp · pd · qp_num", "mlx"))
+b.append(path("M630 243 H565 V63 H435", "cqn_snd → cqn", 560, 150, anchor="end"))
 b.append(path("M320 63 H245", "wq_umem_id → umem_id", 282, 32))
 b.append(path("M435 130 V86", "obj", 443, 116, anchor="start"))
 b.append(path("M320 243 H280 V153 H245", "uar", 276, 205, anchor="end"))
@@ -599,6 +601,7 @@ MLX = [
  ("mlx5_queue_pair", 210, "Entity", "An ordinary verbs QP reached through mlx5dv_create_qp. perftest creates its queue pairs this way and never calls ibv_create_qp."),
  ("mlx5_doorbell", 212, "Event", "The GPU rang a doorbell. Emitted even when the WQE cannot be read, so an undecodable doorbell is a visible row."),
  ("mlx5_device_send", 214, "Event", "A GPU-initiated send decoded from the WQE. Same shape as ib_post_send so a reader can union the two planes."),
+ ("mlx5_devx_cq", 216, "Entity", "A DEVX completion queue: its identity and geometry. Not its polls \u2014 IBGDA consumes a CQE with GPU loads and writes no CQ doorbell record, so a completion being taken leaves no trace to capture."),
 ]
 INT = [
  ("intern_key", 510, "Artifact", "handle \u2192 uint64 for the numeric domains. The dictionary behind every Handle."),

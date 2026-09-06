@@ -890,6 +890,20 @@ inline const char* mlx5_send_decode_name(std::uint8_t d) {
     }
 }
 
+template<> struct Table<mxr::Mlx5DevxCq> {
+    static constexpr const char* name = "mlx5_devx_cq";
+    static constexpr const char* cols =
+        "ticks,cqn,cq_base,umem_id,log_cq_size,dbr_umem_id,device,gpu_resident,cqe_bytes";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxCq>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,0x%llx,%u,%u,%u,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.cqn,
+                     (unsigned long long)s.payload.cq_base, s.payload.umem_id,
+                     s.payload.log_cq_size, s.payload.dbr_umem_id, s.payload.device,
+                     s.payload.gpu_resident, s.payload.cqe_size == 1 ? 128u : 64u);
+    }
+};
+
 template<> struct Table<mxr::Mlx5DeviceSend> {
     static constexpr const char* name = "mlx5_device_send";
     static constexpr const char* cols =
@@ -1603,7 +1617,7 @@ using TableRecords =
                ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
                ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort, mxr::Mlx5Umem, mxr::Mlx5Uar,
                mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair,
-               mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, ucr::UcxContext, ucr::UcxWorker,
+               mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, mxr::Mlx5DevxCq, ucr::UcxContext, ucr::UcxWorker,
                ucr::UcxEndpoint, ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend,
                ucr::UcxMemMap, ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic,
                ucr::UcxWorkerAddress, ucr::UcxEpConnection, ucr::UcxRkey, ucr::UcxRkeyPack,

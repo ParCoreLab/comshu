@@ -686,8 +686,28 @@ struct Mlx5DevxQp {
   wq_umem_id:uint32;   // joins to Mlx5Umem.umem_id
   log_sq_size:uint32;
   device:uint16;
+  cqn_snd:uint32;      // send CQ from qpc.cqn_snd; joins Mlx5DevxCq.cqn
   service_type:uint8;  // mlx5 transport service type (0x5 = DCI)
   gpu_driven:uint8;
+}
+
+// type 216, Entity. A DEVX completion queue: identity and geometry, not polls.
+// Under IBGDA the CQ is GPU-resident and consumed by ordinary GPU loads, which
+// leave no trace — ibgda_poll_cq ends in an atomicMax on a software consumer
+// index and writes no CQ doorbell record — so nothing here claims to observe a
+// completion being taken. What it gives is the queue a send can be joined to,
+// and how many of them a PE holds.
+struct Mlx5DevxCq {
+  temporal:Temporal;
+  obj:uint32;
+  cq_base:uint64;
+  cqn:uint32;
+  umem_id:uint32;
+  log_cq_size:uint32;
+  dbr_umem_id:uint32;
+  device:uint16;
+  gpu_resident:uint8;
+  cqe_size:uint8;
 }
 
 // type 208, Event. The ->RTR transition, carrying the remote endpoint. Same

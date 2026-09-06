@@ -30,6 +30,7 @@
 #include <infiniband/verbs.h>
 
 #include <mlx5/mlx5_ifc.h>
+#include <mlx5/mlx5_prm.h>
 
 #include "pcomm/core/ids.hpp"
 #include "pcomm/core/mem_attr.hpp"
@@ -257,6 +258,10 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
     const auto wq_offset = DEVX_GET64(create_qp_in, cmd_in, wq_umem_offset);
     const auto log_sq_size = DEVX_GET(qpc, qpc, log_sq_size);
     const auto service_type = DEVX_GET(qpc, qpc, st);
+    // The send completion queue, which this decode has always had in front of it
+    // and never read. It is what lets a captured send be joined to the queue the
+    // NIC will report it in.
+    const auto cqn_snd = DEVX_GET(qpc, qpc, cqn_snd);
 
     // Unlike SigmaTrace (Mlx5dv.cpp:82-87) this does NOT return early when the
     // WQ buffer is not GPU-resident. A CPU-side DEVX queue pair is still a
@@ -294,6 +299,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
                                 wq_umem_id,
                                 log_sq_size,
                                 known ? wq.device : kUnknownDevice,
+                                cqn_snd,
                                 static_cast<std::uint8_t>(service_type),
                                 static_cast<std::uint8_t>(gpu_driven ? 1 : 0)});
 
@@ -309,6 +315,45 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
         if (hostdb::enabled())
             hijack::capture_gpu_ctx();
     }
+}
+
+// The completion queue IBGDA polls, captured for its identity and geometry.
+//
+// It cannot capture a poll: `ibgda_poll_cq` reads the CQE with ordinary GPU
+// loads and finishes with an atomicMax on a SOFTWARE consumer index in GPU
+// memory. No doorbell record is written for a CQ on the device path — the only
+// dbrec IBGDA touches is qp->tx_wq.dbrec, on the send side — so a consumed
+// completion leaves no artifact anywhere a host interposer or the NIC can see.
+// This records what the CQ IS, and the honest limit is stated on the record.
+static void decode_create_cq(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd_out) {
+    const auto* cqc = DEVX_ADDR_OF(create_cq_in, const_cast<void*>(cmd_in), cq_context);
+
+    const auto cqn = DEVX_GET(create_cq_out, cmd_out, cqn);
+    const auto umem_id = DEVX_GET(create_cq_in, cmd_in, cq_umem_id);
+    const auto umem_offset = DEVX_GET64(create_cq_in, cmd_in, cq_umem_offset);
+    const auto log_cq_size = DEVX_GET(cqc, cqc, log_cq_size);
+    const auto dbr_umem_id = DEVX_GET(cqc, cqc, dbr_umem_id);
+    const auto cqe_sz = DEVX_GET(cqc, cqc, cqe_sz);
+
+    // Same rule as the queue pair: a CPU-side CQ is still a CQ and is still
+    // invisible to the ibverbs provider, so it is recorded either way and
+    // residency is a field rather than a filter.
+    UmemInfo   cq{};
+    const bool known = lookup_umem(umem_id, &cq);
+
+    rec().record(pcomm::core::Temporal::none(),
+                 rr::Mlx5DevxCq{{},
+                                {},
+                                h(obj),
+                                known ? cq.gpu_base + umem_offset : 0,
+                                cqn,
+                                umem_id,
+                                log_cq_size,
+                                dbr_umem_id,
+                                known ? cq.device : kUnknownDevice,
+                                static_cast<std::uint8_t>(
+                                    (known && cq.device != kUnknownDevice) ? 1 : 0),
+                                static_cast<std::uint8_t>(cqe_sz)});
 }
 
 static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
@@ -491,9 +536,12 @@ Profiler::Profiler() {
             g_obj_ctx[obj] = ctx;
         }
         const auto opcode = DEVX_GET(create_qp_in, cmd_in, opcode);
-        const bool decode = (opcode == MLX5_CMD_OP_CREATE_QP) && cmd_out;
-        if (decode)
+        const bool decode =
+            ((opcode == MLX5_CMD_OP_CREATE_QP) || (opcode == MLX5_CMD_OP_CREATE_CQ)) && cmd_out;
+        if (opcode == MLX5_CMD_OP_CREATE_QP && cmd_out)
             decode_create_qp(obj, cmd_in, cmd_out);
+        else if (opcode == MLX5_CMD_OP_CREATE_CQ && cmd_out)
+            decode_create_cq(obj, cmd_in, cmd_out);
         // Every command is recorded, decoded or not. An opcode this build does
         // not know is the version boundary most likely to move under us, and it
         // must be visible in the capture rather than absent from it.

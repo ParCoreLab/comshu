@@ -94,6 +94,8 @@ struct Mlx5DevxCmd;
 
 struct Mlx5DevxQp;
 
+struct Mlx5DevxCq;
+
 struct Mlx5DevxQpConnect;
 
 struct Mlx5QueuePair;
@@ -2692,8 +2694,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQp FLATBUFFERS_FINAL_CLASS {
   uint32_t wq_umem_id_;
   uint32_t log_sq_size_;
   uint16_t device_;
+  int16_t padding1__;
+  uint32_t cqn_snd_;
   uint8_t service_type_;
   uint8_t gpu_driven_;
+  int16_t padding2__;
 
  public:
   Mlx5DevxQp()
@@ -2705,11 +2710,16 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQp FLATBUFFERS_FINAL_CLASS {
         wq_umem_id_(0),
         log_sq_size_(0),
         device_(0),
+        padding1__(0),
+        cqn_snd_(0),
         service_type_(0),
-        gpu_driven_(0) {
+        gpu_driven_(0),
+        padding2__(0) {
     (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
   }
-  Mlx5DevxQp(const pcomm::fb::Temporal &_temporal, uint32_t _obj, uint64_t _sq_base, uint32_t _qp_num, uint32_t _wq_umem_id, uint32_t _log_sq_size, uint16_t _device, uint8_t _service_type, uint8_t _gpu_driven)
+  Mlx5DevxQp(const pcomm::fb::Temporal &_temporal, uint32_t _obj, uint64_t _sq_base, uint32_t _qp_num, uint32_t _wq_umem_id, uint32_t _log_sq_size, uint16_t _device, uint32_t _cqn_snd, uint8_t _service_type, uint8_t _gpu_driven)
       : temporal_(_temporal),
         obj_(::flatbuffers::EndianScalar(_obj)),
         padding0__(0),
@@ -2718,9 +2728,14 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQp FLATBUFFERS_FINAL_CLASS {
         wq_umem_id_(::flatbuffers::EndianScalar(_wq_umem_id)),
         log_sq_size_(::flatbuffers::EndianScalar(_log_sq_size)),
         device_(::flatbuffers::EndianScalar(_device)),
+        padding1__(0),
+        cqn_snd_(::flatbuffers::EndianScalar(_cqn_snd)),
         service_type_(::flatbuffers::EndianScalar(_service_type)),
-        gpu_driven_(::flatbuffers::EndianScalar(_gpu_driven)) {
+        gpu_driven_(::flatbuffers::EndianScalar(_gpu_driven)),
+        padding2__(0) {
     (void)padding0__;
+    (void)padding1__;
+    (void)padding2__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -2743,6 +2758,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQp FLATBUFFERS_FINAL_CLASS {
   uint16_t device() const {
     return ::flatbuffers::EndianScalar(device_);
   }
+  uint32_t cqn_snd() const {
+    return ::flatbuffers::EndianScalar(cqn_snd_);
+  }
   uint8_t service_type() const {
     return ::flatbuffers::EndianScalar(service_type_);
   }
@@ -2750,7 +2768,88 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQp FLATBUFFERS_FINAL_CLASS {
     return ::flatbuffers::EndianScalar(gpu_driven_);
   }
 };
-FLATBUFFERS_STRUCT_END(Mlx5DevxQp, 80);
+FLATBUFFERS_STRUCT_END(Mlx5DevxQp, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxCq FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t obj_;
+  int32_t padding0__;
+  uint64_t cq_base_;
+  uint32_t cqn_;
+  uint32_t umem_id_;
+  uint32_t log_cq_size_;
+  uint32_t dbr_umem_id_;
+  uint16_t device_;
+  uint8_t gpu_resident_;
+  uint8_t cqe_size_;
+  int32_t padding1__;
+
+ public:
+  Mlx5DevxCq()
+      : temporal_(),
+        obj_(0),
+        padding0__(0),
+        cq_base_(0),
+        cqn_(0),
+        umem_id_(0),
+        log_cq_size_(0),
+        dbr_umem_id_(0),
+        device_(0),
+        gpu_resident_(0),
+        cqe_size_(0),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  Mlx5DevxCq(const pcomm::fb::Temporal &_temporal, uint32_t _obj, uint64_t _cq_base, uint32_t _cqn, uint32_t _umem_id, uint32_t _log_cq_size, uint32_t _dbr_umem_id, uint16_t _device, uint8_t _gpu_resident, uint8_t _cqe_size)
+      : temporal_(_temporal),
+        obj_(::flatbuffers::EndianScalar(_obj)),
+        padding0__(0),
+        cq_base_(::flatbuffers::EndianScalar(_cq_base)),
+        cqn_(::flatbuffers::EndianScalar(_cqn)),
+        umem_id_(::flatbuffers::EndianScalar(_umem_id)),
+        log_cq_size_(::flatbuffers::EndianScalar(_log_cq_size)),
+        dbr_umem_id_(::flatbuffers::EndianScalar(_dbr_umem_id)),
+        device_(::flatbuffers::EndianScalar(_device)),
+        gpu_resident_(::flatbuffers::EndianScalar(_gpu_resident)),
+        cqe_size_(::flatbuffers::EndianScalar(_cqe_size)),
+        padding1__(0) {
+    (void)padding0__;
+    (void)padding1__;
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t obj() const {
+    return ::flatbuffers::EndianScalar(obj_);
+  }
+  uint64_t cq_base() const {
+    return ::flatbuffers::EndianScalar(cq_base_);
+  }
+  uint32_t cqn() const {
+    return ::flatbuffers::EndianScalar(cqn_);
+  }
+  uint32_t umem_id() const {
+    return ::flatbuffers::EndianScalar(umem_id_);
+  }
+  uint32_t log_cq_size() const {
+    return ::flatbuffers::EndianScalar(log_cq_size_);
+  }
+  uint32_t dbr_umem_id() const {
+    return ::flatbuffers::EndianScalar(dbr_umem_id_);
+  }
+  uint16_t device() const {
+    return ::flatbuffers::EndianScalar(device_);
+  }
+  uint8_t gpu_resident() const {
+    return ::flatbuffers::EndianScalar(gpu_resident_);
+  }
+  uint8_t cqe_size() const {
+    return ::flatbuffers::EndianScalar(cqe_size_);
+  }
+};
+FLATBUFFERS_STRUCT_END(Mlx5DevxCq, 88);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS {
  private:

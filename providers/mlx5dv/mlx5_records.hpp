@@ -101,8 +101,40 @@ PCOMM_RECORD(Mlx5DevxQp, RecordKind::Entity, 206, "mlx5_devx_qp") {
     std::uint32_t wq_umem_id;    // joins to Mlx5Umem.umem_id
     std::uint32_t log_sq_size;   // WQEs = 1 << log_sq_size
     DeviceId      device;        // owning GPU of the WQ buffer, or kUnknownDevice
+    // The send completion queue this queue pair reports into, from the create
+    // command's qpc.cqn_snd. It is the join that makes a completion attributable
+    // to a queue pair, and it was free all along — the field has been in every
+    // CREATE_QP command this provider already decodes.
+    std::uint32_t cqn_snd;
     std::uint8_t  service_type;  // mlx5 transport service type (0x5 = DCI)
     std::uint8_t  gpu_driven;    // 1 if the WQ buffer is GPU-resident
+};
+
+// ENTITY — a DEVX completion queue: where the NIC reports what it finished.
+//
+// The other half of the data plane, and the half pcomm has never had. Under
+// IBGDA the CQ is GPU-resident and polled by GPU threads with ordinary loads,
+// so a completion is consumed with no host call, no MMIO, and no NIC-visible
+// artifact — `ibgda_poll_cq` ends in an atomicMax on a software consumer index
+// and never writes a CQ doorbell record. There is nothing to interpose, and
+// this record does not pretend otherwise: it captures the CQ's IDENTITY and
+// GEOMETRY, not its polls.
+//
+// That is worth having on its own. It gives mlx5_doorbell and mlx5_device_send
+// a completion queue to join to through Mlx5DevxQp.cqn_snd; it says how many
+// CQs a PE holds, which is the input to the one cost law the mechanism has —
+// a completion that must cover every queue pair of a PE pays per queue pair;
+// and cq_base locates the ring for anything that later reads it in place.
+PCOMM_RECORD(Mlx5DevxCq, RecordKind::Entity, 216, "mlx5_devx_cq") {
+    Handle        obj;      // interned mlx5dv_devx_obj*
+    std::uint64_t cq_base;  // CQ umem address + cq_umem_offset
+    std::uint32_t cqn;      // what qpc.cqn_snd refers to it by
+    std::uint32_t umem_id;  // joins to Mlx5Umem.umem_id
+    std::uint32_t log_cq_size;   // CQEs = 1 << log_cq_size
+    std::uint32_t dbr_umem_id;   // the CQ's doorbell-record buffer
+    DeviceId      device;        // owning GPU of the CQ buffer, or kUnknownDevice
+    std::uint8_t  gpu_resident;  // 1 if the CQ buffer is GPU-resident
+    std::uint8_t  cqe_size;      // cqc.cqe_sz (0 = 64 B, 1 = 128 B)
 };
 
 // EVENT — the ->RTR transition of a DEVX queue pair, carrying the remote

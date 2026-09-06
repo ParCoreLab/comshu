@@ -5,6 +5,14 @@
 # DEVX_GET/DEVX_ADDR_OF accessors, which rdma-core does define. The
 # mlx5_ifc_*_bits structs those accessors compute offsets from are NOT shipped
 # by rdma-core, which is why third_party/mlx5 is vendored.
+#
+# TWO headers, because NVSHMEM splits them that way and both are its copies
+# verbatim: mlx5_ifc.h carries qpc/create_qp, and mlx5_prm.h carries cqc and
+# create_cq. Taking the CQ structs from NVSHMEM's own tree rather than writing
+# them out is deliberate — a bit-field layout transcribed by hand is decoded
+# silently wrong, which is the failure this provider spends most of its comments
+# on. Source: nvshmem/src/modules/transport/common/{mlx5_ifc,mlx5_prm}.h, the
+# same files ibgda.cpp itself builds its DEVX commands with.
 
 find_library(MLX5_LIB NAMES mlx5 REQUIRED)
 find_library(IBVERBS_LIB_FOR_MLX5 NAMES ibverbs REQUIRED)

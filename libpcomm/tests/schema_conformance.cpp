@@ -77,6 +77,7 @@ PCOMM_SCHEMA_MATCH(mr::Mlx5DevxQpConnect, fb::Mlx5DevxQpConnect);
 PCOMM_SCHEMA_MATCH(mr::Mlx5QueuePair, fb::Mlx5QueuePair);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Doorbell, fb::Mlx5Doorbell);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DeviceSend, fb::Mlx5DeviceSend);
+PCOMM_SCHEMA_MATCH(mr::Mlx5DevxCq, fb::Mlx5DevxCq);
 PCOMM_SCHEMA_MATCH(ur::UcxContext, fb::UcxContext);
 PCOMM_SCHEMA_MATCH(ur::UcxWorker, fb::UcxWorker);
 PCOMM_SCHEMA_MATCH(ur::UcxEndpoint, fb::UcxEndpoint);
@@ -1114,11 +1115,12 @@ int main() {
         c.payload.wq_umem_id = 0x2A;
         c.payload.log_sq_size = 10;
         c.payload.device = 2;
+        c.payload.cqn_snd = 0x0004D2;
         c.payload.service_type = 0x5;
         c.payload.gpu_driven = 1;
         fb::Mlx5DevxQp f(
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 44,
-            0x7FAB00000000, 0x1EFFD, 0x2A, 10, 2, 0x5, 1);
+            0x7FAB00000000, 0x1EFFD, 0x2A, 10, 2, 0x0004D2, 0x5, 1);
         expect_identical("Mlx5DevxQp", &c, &f, sizeof(c));
     }
     {
@@ -1178,6 +1180,23 @@ int main() {
             0x7F0011220000ull, 0x7F0099880000ull, 0x1EFF9, 0x0080, 0xABCD, 0xDCBA, 4096, 0x00A5A5,
             0x08, 0x01, 0x03);
         expect_identical("Mlx5DeviceSend", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5DevxCq> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.obj = 7;
+        c.payload.cq_base = 0x7F0044330000ull;
+        c.payload.cqn = 0x0004D2;
+        c.payload.umem_id = 0x0011;
+        c.payload.log_cq_size = 10;
+        c.payload.dbr_umem_id = 0x0012;
+        c.payload.device = 1;
+        c.payload.gpu_resident = 1;
+        c.payload.cqe_size = 0;
+        fb::Mlx5DevxCq f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            7, 0x7F0044330000ull, 0x0004D2, 0x0011, 10, 0x0012, 1, 1, 0);
+        expect_identical("Mlx5DevxCq", &c, &f, sizeof(c));
     }
     {  // InternKey / InternString: the dictionary every Handle depends on.
         Stamped<cr::InternKey> c{};
