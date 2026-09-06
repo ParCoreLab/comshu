@@ -110,6 +110,53 @@ P-RoCE platform — B200 + CX-7 RoCEv2 — produces it by default. Until such a
 capture exists the branch stays unexercised, and now that is a fact stated by
 every capture rather than a caveat in a commit message.
 
+## What it costs (job 45490908) — the forward is free, the copy-out is not
+
+`mn5_overhead.sbatch`: four arms, one allocation, one node pair, three
+interleaved repeats, scored on `shmem_put_bw`'s own steady-state bandwidth
+(GB/s, higher is better; the 24.3 plateau is ~97% of MN5's 200 Gb/s link).
+
+| bytes | bare | passive | forward | full | passive/bare | forward/bare | **full/bare** |
+|---|---|---|---|---|---|---|---|
+| 1 KiB | 0.10 | 0.10 | 0.09 | 0.08 | 1.004 | 0.958 | **0.880** |
+| 8 KiB | 0.71 | 0.71 | 0.72 | 0.62 | 1.001 | 1.019 | **0.883** |
+| 16 KiB | 1.40 | 1.41 | 1.43 | 1.21 | 1.006 | 1.025 | **0.867** |
+| 128 KiB | 11.08 | 10.76 | 11.05 | 9.93 | 0.972 | 0.997 | **0.897** |
+| 512 KiB | 21.52 | 21.57 | 21.58 | 20.87 | 1.002 | 1.003 | **0.970** |
+| 4 MiB | 24.28 | 24.29 | 24.28 | 24.13 | 1.000 | 1.000 | **0.994** |
+
+Sizes ≤256 B are omitted: their bandwidth rounds to 0.00–0.03 GB/s and the
+ratios there are noise, not measurement.
+
+Each arm engaged as intended, which the doorbell counters confirm rather than
+the ratios: `forward` recorded 444 doorbells and **0 sends**
+(`PCOMM_HIJACK_NO_DECODE` doing its job), `full` recorded 391 doorbells and
+7,232 sends, `passive` and `bare` neither.
+
+**The decomposition.** The ordinary control-plane interposers cost nothing
+measurable (passive/bare within ±3%, i.e. inside run-to-run noise). The decoy
+page and the repeater's forward *also* cost nothing measurable (forward/passive
+within the same band) — while carrying every doorbell the application rang. The
+entire cost is the per-doorbell `cuMemcpyDtoHAsync` + `cuStreamSynchronize`
+copy-out: up to **13% of bandwidth at 16 KiB**, fading to under 1% by 4 MiB as
+the wire saturates and a fixed per-doorbell cost amortises.
+
+**This inverts the premise the on-GPU repeater was planned on.**
+`PLAN-20260807-2344` justifies Stage 3 as removing "a host round trip per
+doorbell" — the forward. On the host path the forward is free and the copy-out
+is everything, so an on-GPU repeater would not move this number. The plan is not
+wrong: it was written about the GPU hijack on du04, where the forward really is
+GPU → host → BAR. But for the mode our largest cluster actually runs, the
+optimisation target is the copy-out, and the cheap fixes are not a persistent
+kernel — stop synchronising per doorbell, or read the send queue through a
+host mapping (GDRCopy is present on MN5) instead of a CUDA copy at all.
+
+This is also the first use of `PCOMM_HIJACK_NO_DECODE` for the question it was
+added to answer. Its own comment says the published "+68% forward / +86%
+forward+decode" could not separate the two because they were wall-clock over a
+startup-dominated run. Scored on the application's steady-state numbers, they
+separate cleanly, and the answer is not the one those figures implied.
+
 ## Superseded: the bootstrap dead end, and what was wrong about it
 
 Kept because the wrong turns are the useful part. Four jobs before 45449988:

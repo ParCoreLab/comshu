@@ -16,6 +16,18 @@
   `printf("UPDATING")`. The *design* is the reference; the *implementation* is
   not).
 
+> **MEASURED 2026-09-06, and it changes the justification for one of the two
+> paths.** On the HOST doorbell path (CPU-assisted IBGDA, MN5 job 45490908) the
+> forward is FREE — decoy page plus repeater within ±3% of an uninstrumented
+> run, i.e. inside noise — and the per-doorbell copy-out is the entire cost, up
+> to 13% of bandwidth at 16 KiB. An on-GPU repeater removes the forward, so it
+> would not move that number. This plan's premise still holds for the GPU hijack
+> on du04, where the forward genuinely is GPU → host → BAR; it does not hold for
+> the mode MN5 runs. Before building this, decide which path it is for, and note
+> that the host path's cost has cheaper fixes: stop synchronising per doorbell,
+> or read the send queue through a GDRCopy host mapping rather than a CUDA copy.
+> See tests/hpc/probes/uar_doorbell_mode/README.md.
+
 ## Why this exists, in one paragraph
 
 A GPU-initiated send is one GPU store to a NIC BAR page. The CPU repeater
