@@ -610,10 +610,21 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
     }
 
     std::lock_guard<std::mutex> lk(copy->mutex);
-    if (!copy->have_last) {  // first doorbell: nothing to copy, just anchor
-        copy->last_prod = prod_idx;
+    if (!copy->have_last) {
+        // A queue pair this provider saw CREATED starts with its producer index
+        // at zero, so the first doorbell announcing prod_idx = N is announcing
+        // WQEs [0, N). There is something to copy, and anchoring at prod_idx
+        // threw it away — one send per queue pair, silently, on every run since
+        // the decode was written. MN5 job 45497029 shows it exactly: every
+        // active QP reports doorbells = sends + 1, and no counter said so.
+        //
+        // Zero is the right anchor precisely because register_qp is called from
+        // the CREATE_QP decode, before the queue pair can have sent anything.
+        // If that ever stops holding, the delta > slots clamp below bounds the
+        // read to one ring and wqes_lapped records the loss, rather than letting
+        // a wrong anchor walk over stale bytes and emit rows decoded from them.
+        copy->last_prod = 0;
         copy->have_last = true;
-        return;
     }
     std::uint32_t       start = copy->last_prod;
     const std::uint32_t end = prod_idx;

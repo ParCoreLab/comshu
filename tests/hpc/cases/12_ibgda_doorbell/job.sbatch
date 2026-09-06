@@ -168,8 +168,26 @@ if [ $rc_ctrl -ne 0 ]; then
   fail "control run did not complete (rc=$rc_ctrl)"
 fi
 
-# ---- hijack run: hijack ON ------------------------------------------------
+# ---- hijack run: hijack ON, bracketed by the NIC's own counters -----------
+#
+# THE ONLY ORACLE OUTSIDE PCOMM THIS CASE HAS. Everything else it checks is
+# pcomm agreeing with pcomm: that no opcode was unknown, that no WQE was
+# truncated, that the payload size derives from the workload, that the
+# application's output is unchanged. All of those would still pass if the
+# decoder invented plausible rows out of the right-shaped bytes, which is
+# precisely the failure mode this provider has hit before and the reason
+# mlx5_device_send carries a `decode` column at all.
+#
+# The NIC counts what it actually put on the wire, and it does not consult us.
+# Snapshotting it around the instrumented run gives an independent upper bound.
+IBCTR="/sys/class/infiniband/${PCOMM_HCA:-mlx5_0}/ports/1/counters"
+wire_pkts_pre=$(cat "$IBCTR/port_xmit_packets" 2>/dev/null || echo "")
+wire_data_pre=$(cat "$IBCTR/port_xmit_data" 2>/dev/null || echo "")
+
 mpi "$OUT" "$DOORBELL_FLAG" > "$OUT.app" 2>"$OUT.err"; rc=$?
+
+wire_pkts_post=$(cat "$IBCTR/port_xmit_packets" 2>/dev/null || echo "")
+wire_data_post=$(cat "$IBCTR/port_xmit_data" 2>/dev/null || echo "")
 [ $rc -eq 0 ] || fail "instrumented run did not complete (rc=$rc; 124 = timed out)"
 
 # The host arm proves the platform before it swaps anything, and refuses on a
@@ -208,5 +226,39 @@ app_hij="$(grep -h 'put-ring' "$OUT.app" | sort)"
 # ---- assert the hijacked capture ------------------------------------------
 echo "=== captured streams (hijack) ==="; "$PCOMM" read "$OUT"
 "$PCOMM" export "$OUT" --csv "$OUT.csv"
+
+# ---- the wire check -------------------------------------------------------
+#
+# ONE-SIDED, and that is what makes it sound rather than merely plausible.
+# Other traffic shares this HCA — MPI's bootstrap, UCX, the other rank — and
+# every bit of it only ADDS to the counters. So "the NIC sent at least what we
+# decoded" cannot be broken by noise, while its negation ("we decoded more than
+# the NIC sent") has exactly one explanation: rows we made up. Under-reporting is
+# a different failure and has its own detector, wqes_lapped.
+#
+# port_xmit_data counts 4-byte lanes, hence the x4, and it includes headers and
+# ACKs, so wire bytes exceed payload bytes by construction. Rows that put no
+# payload on the wire are excluded on the same predicate _sends uses: DUMP is
+# ordering, and an undecodable opcode has length 0 because nothing was read, not
+# because nothing was sent.
+SENDCSV="$OUT.csv/mlx5_device_send.csv"
+if [ -n "$wire_pkts_pre" ] && [ -n "$wire_pkts_post" ] && [ -f "$SENDCSV" ]; then
+  d_pkts=$(( wire_pkts_post - wire_pkts_pre ))
+  d_bytes=$(( (wire_data_post - wire_data_pre) * 4 ))
+  read -r n_sends n_bytes <<<"$(awk -F, 'NR>1 && $NF!="unknown_op" && $6!="dump" \
+      { n++; b += $11 } END { print n+0, b+0 }' "$SENDCSV")"
+  echo "=== wire check: decoded ${n_sends} sends / ${n_bytes} B" \
+       "vs NIC ${d_pkts} packets / ${d_bytes} B ==="
+  if [ "$d_pkts" -le 0 ]; then
+    echo "  (counters did not advance — not asserting; is $IBCTR the HCA in use?)"
+  else
+    [ "$n_sends" -le "$d_pkts" ] || \
+      fail "decoded $n_sends sends but the NIC transmitted only $d_pkts packets"
+    [ "$n_bytes" -le "$d_bytes" ] || \
+      fail "decoded $n_bytes payload bytes but the NIC transmitted only $d_bytes"
+  fi
+else
+  echo "=== wire check: SKIPPED (counters unreadable or no send rows) ==="
+fi
 pcomm_derive "$OUT"
 bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
