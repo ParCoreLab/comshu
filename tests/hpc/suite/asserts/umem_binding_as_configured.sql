@@ -21,11 +21,55 @@
 -- The address check is the load-bearing half: under by_dmabuf a nonzero address
 -- would mean the provider is reporting an offset as if it were a pointer, which
 -- is the silent-wrong-value failure this suite keeps finding.
+-- SCOPED TO NIC BUFFERS THAT LIVE ON A GPU, and that is a sharpening rather
+-- than a relaxation.
+--
+-- The clause used to demand the configured binding of EVERY umem. That holds
+-- for GPU-submitted IBGDA, where every NIC buffer is GPU-resident. It is false
+-- by construction for CPU-assisted IBGDA, where the transport registers two
+-- populations and both are correct: the GPU-resident doorbell records and
+-- producer indices by dmabuf, and its own host-side control pages by address.
+-- Measured on MN5 (job 45476000): 30 umems of 8 B on devices 0 and 1 by_dmabuf,
+-- 422 of 4096 B with no device by_addr. Demanding one binding of all 452 failed
+-- a capture that was right.
+--
+-- What the assertion is FOR survives intact, because the original mistake it
+-- was built from — reading a by_dmabuf capture with by_addr expectations, and
+-- concluding "no NIC buffer is in GPU memory", i.e. that IBGDA never engaged —
+-- is about GPU buffers specifically. Those are still checked exactly as before.
+-- 65535 is kUnknownDevice (core/vocab.hpp).
 SELECT 'binding differs from the configured transport' AS problem,
        rank, umem_id, binding, addr
 FROM mlx5_umem
-WHERE binding != (CASE WHEN (SELECT umem_binding FROM params) = 1
+WHERE device != 65535
+  AND binding != (CASE WHEN (SELECT umem_binding FROM params) = 1
                        THEN 'by_dmabuf' ELSE 'by_addr' END)
+
+UNION ALL
+
+-- The other half of that split, and it closes the hole scoping would otherwise
+-- open. A buffer the NIC reaches by dmabuf was exported FROM a device, so one
+-- carrying no device means the descriptor was never resolved — which is
+-- precisely how a GPU-resident buffer would masquerade as a host one and slip
+-- past the clause above.
+SELECT 'by_dmabuf umem with no owning device (descriptor never resolved)',
+       rank, umem_id, binding, addr
+FROM mlx5_umem
+WHERE binding = 'by_dmabuf' AND device = 65535
+
+UNION ALL
+
+-- And the positive check, which no clause here ever made: SOME NIC buffer must
+-- be GPU-resident. Every clause in this file is a "nothing is wrong" statement,
+-- and a capture with zero umems satisfies all of them — so the exact conclusion
+-- this assertion exists to prevent, "IBGDA did not engage", was the one thing it
+-- could not catch. It is a statement about the run in both arms: GPU-submitted
+-- and CPU-assisted IBGDA alike build their work queues in GPU memory, and only
+-- who rings the doorbell differs.
+SELECT 'no NIC buffer is GPU-resident — the transport did not hand the GPU to '
+       'the NIC at all', rank, NULL, NULL, NULL
+FROM (SELECT DISTINCT rank FROM mlx5_umem)
+WHERE rank NOT IN (SELECT rank FROM mlx5_umem WHERE device != 65535)
 
 UNION ALL
 
