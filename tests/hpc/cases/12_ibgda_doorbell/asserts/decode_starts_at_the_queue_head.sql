@@ -31,9 +31,19 @@
 -- index and wraps. A queue pair that posts more than 65,536 WQEs can legitimately
 -- report a nonzero minimum, so this assertion belongs to a bounded workload —
 -- which case 12's is, at 20 iterations.
-SELECT s.rank, s.qp_num, min(s.wqe_idx) AS first_wqe_decoded, count(*) AS n_sends
+-- CAST is not decoration, and it goes INSIDE the min(). sql_check.sh loads
+-- these CSVs into sqlite, where every column is TEXT — the same point
+-- doorbell_sequence_complete.sql makes, and which the first version of this
+-- file ignored twice over. min() over TEXT is lexicographic, so a queue that
+-- posted 9 and 10 would report 10 as its smallest index; and `'0' != 0`
+-- compares TEXT against INTEGER, which sqlite's type affinity makes TRUE. The
+-- result was an assertion that fired on all four queue pairs of a capture that
+-- was correct — a false alarm on the very fix it was written to protect, which
+-- is worse than not having written it.
+SELECT s.rank, s.qp_num, min(CAST(s.wqe_idx AS INTEGER)) AS first_wqe_decoded,
+       count(*) AS n_sends
 FROM mlx5_device_send s
 JOIN mlx5_devx_qp q ON q.rank = s.rank AND q.qp_num = s.qp_num
-WHERE q.gpu_driven = 1
+WHERE CAST(q.gpu_driven AS INTEGER) = 1
 GROUP BY s.rank, s.qp_num
-HAVING min(s.wqe_idx) != 0
+HAVING min(CAST(s.wqe_idx AS INTEGER)) != 0
