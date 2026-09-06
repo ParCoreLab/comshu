@@ -794,13 +794,13 @@ template<> struct Table<mxr::Mlx5DevxCmd> {
 template<> struct Table<mxr::Mlx5DevxQp> {
     static constexpr const char* name = "mlx5_devx_qp";
     static constexpr const char* cols =
-        "ticks,obj,sq_base,qp_num,wq_umem_id,log_sq_size,device,service_type,gpu_driven";
+        "ticks,obj,sq_base,qp_num,wq_umem_id,log_sq_size,device,cqn_snd,service_type,gpu_driven";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxQp>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,0x%llx,%u,%u,%u,%u,0x%x,%u",
+        std::fprintf(f, "%llu,%u,0x%llx,%u,%u,%u,%u,%u,0x%x,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.obj,
                      (unsigned long long)s.payload.sq_base, s.payload.qp_num, s.payload.wq_umem_id,
-                     s.payload.log_sq_size, s.payload.device, s.payload.service_type,
-                     s.payload.gpu_driven);
+                     s.payload.log_sq_size, s.payload.device, s.payload.cqn_snd,
+                     s.payload.service_type, s.payload.gpu_driven);
     }
 };
 
