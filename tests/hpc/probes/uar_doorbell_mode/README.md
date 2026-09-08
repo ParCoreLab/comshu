@@ -93,7 +93,9 @@ peers, every rdma_write decodes `full`, and the length histogram is identical to
 the RC leg (480 rows each at 4 KiB…128 KiB) — the check that matters, since
 `length` sits after the AV and a mis-derived width would shift it.
 
-**Still unexecuted: the full AV (`av_ds=3`).** `NVSHMEM_IB_FORCE_GRH=1` does not
+**Unexecuted at the time: the full AV (`av_ds=3`).** Since job 45580050 it is
+not — see the next section, which also records why the conclusion drawn here was
+premature. `NVSHMEM_IB_FORCE_GRH=1` does not
 flip `support_half_av_seg` in the NVSHMEM this cluster runs. Worth noting that
 that build is the CUDA 12.9 SDK one (`r12.9/main_nvshmem` in its own log), not
 the 3.7.2 source this repo vendors under `reference/` — so source read there does
@@ -105,10 +107,57 @@ occupies two WQEBBs, `ds=4` one). Now the capture says `av_ds=1` and there is
 nothing to infer.
 
 **How the ds=6 branch actually gets proven:** a RoCE port takes it
-unconditionally (`lid == 0` ⇒ `support_half_av_seg = false`), so the paper's
-P-RoCE platform — B200 + CX-7 RoCEv2 — produces it by default. Until such a
-capture exists the branch stays unexercised, and now that is a fact stated by
-every capture rather than a caveat in a commit message.
+unconditionally (`lid == 0` ⇒ `support_half_av_seg = false`). That much was
+right. What followed it here — "so this needs the paper's P-RoCE platform, B200
++ CX-7 RoCEv2, and until such hardware exists the branch stays unexercised" —
+was wrong, and wrong in the cheapest possible way: nobody had run `ls
+/sys/class/infiniband`.
+
+## The full AV, on the cluster we already had (job 45580050)
+
+MN5's acc nodes carry **six** mlx5 devices, not the one every case had been
+using. Four are the 200 Gb/s NDR InfiniBand HCAs; `mlx5_2` is a 25 Gb/s
+**Ethernet** port with RoCE v2 GIDs at index 3 and 5, `lid=0x0`. It is the
+service NIC — three PCIe hops from the GPU (`SYS` in `nvidia-smi topo`), on a
+management subnet with no reason to have PFC configured — and none of that
+matters for exercising a decoder. `mn5_roce_av.sbatch` points `NVSHMEM_HCA_LIST`
+at it:
+
+| leg | device | GID | rdma_write | `av_ds` | `dest_dct` |
+|---|---|---|---|---|---|
+| `roce_rc` | `mlx5_2` | 3 (10.2/16) | 7,203 `full` | **0** (no AV) | `0x000000` |
+| `roce_dc` | `mlx5_2` | 3 (10.2/16) | 7,203 `full` | **3** — *the full 48 B AV* | set |
+| `roce_dc_vlan` | `mlx5_2` | 5 (VLAN 499) | 7,203 `full` | **3** | set |
+| `roce_dc_hostbuf` | `mlx5_2` | 3, `NIC_BUF_MEMTYPE=hostmem` | — | — | 652 doorbells, **0 sends** |
+
+**The ds=6 branch has now executed.** Twice, over two different GIDs on two
+different subnets, which is replication rather than a single lucky run. It ran
+at 2.87 GB/s — ~23 of the link's 25 Gb/s — so the transport really was on the
+Ethernet port and had not silently fallen back to an IB HCA, which is the way a
+probe like this produces a false positive.
+
+The evidence that the *decode* is right, not merely that the branch ran: the
+rdma_write length histogram is **identical to the IB legs** — 480 rows each at
+4 KiB, 8 KiB, 16 KiB, 32 KiB, 64 KiB, 128 KiB. `length` sits after the address
+vector, so a width off by 32 bytes shifts it into garbage. Same lengths across
+`av_ds` 0, 1 and 3 means all three offset computations agree with the wire.
+
+Two suite assertions now hold this in place, so the branch cannot regress
+quietly the way it was silently unexercised: `av_width_is_stable_per_qp` (the
+width is re-derived per WQE from bytes at a computed offset, so a drifting
+parser shows up as one queue pair reporting two widths) and
+`dc_send_names_its_destination` (the DCT and the ext bit come from the same 32
+bits, so a plausible width with a zero destination is a read from the wrong
+place).
+
+**`roce_dc_hostbuf` is an open loose end, recorded rather than explained.** With
+the NIC buffers asked for in host memory the run completed and moved data, the
+repeater saw 652 doorbells, and the decode emitted **zero** sends. That is the
+doorbell-without-WQE shape, and the likely cause is mundane — `hostmem` is
+probably not the token NVSHMEM wants, or the copy-out declines a send queue that
+is not GPU-resident, which would be correct behaviour. It is not on the path to
+anything the other three legs prove, and it is written down here so it is not
+rediscovered as a mystery.
 
 ## What it costs (job 45490908) — the forward is free, the copy-out is not
 
