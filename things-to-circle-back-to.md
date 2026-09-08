@@ -2,6 +2,37 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN (2026-09-08): `--enable-host-doorbell` hangs on a two-node mpirun run
+
+Under `mpirun` with `NVSHMEM_BOOTSTRAP=MPI`, a **two-node** run with
+`--enable-host-doorbell` initialises NVSHMEM, arms its UARs, prints the guard's
+usual "the driver refuses to map the NIC doorbell page" line — and then the
+application produces **no output at all** until the timeout. No error, no
+partial capture, no stack. Jobs 45584690 and 45584080, both `timeout 300`,
+both rc=124.
+
+**Every component works alone**, which is why this is filed rather than fixed:
+
+| what | where | result |
+|---|---|---|
+| the workload, bare, 2 nodes | job 45584872, four arms — no HCA list, forced `mlx5_0`, forced RoCE `mlx5_2`, and a 1-node control | all rc=0 |
+| the host doorbell, 2 nodes, **srun + PMI** bootstrap | probes 45462619, 45580050, 45582508 | 7,234 sends decoded |
+| the host doorbell, **1 node**, mpirun + MPI | case 12, every board | green |
+
+So it is the combination — two nodes AND mpirun/MPI AND the host doorbell — and
+nothing in the capture says why. The obvious suspicion is the repeater thread
+against OpenMPI's progress engine across a node boundary, since the PMI path
+differs mainly in who drives progress during init, but that is a hypothesis and
+has not been tested.
+
+Found while building case 25, which wanted the probes' two-node shape and could
+not have it. Case 25 runs on **one node** instead and says so in its header:
+the AV width follows from the port (`lid == 0` clears `support_half_av_seg`),
+not from whether the peer is remote, so one node exercises the same decoder
+branch. That is a workaround, and it means the two-node host-doorbell path has
+no case covering it — which is the part worth remembering, because the last
+uncovered path of this provider is where the first-doorbell bug lived for weeks.
+
 ## OPEN: `/query` rejects a query that begins with a comment
 
 `POST /query` decides a statement is a read by looking at its first token

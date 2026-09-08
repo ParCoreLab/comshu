@@ -5,7 +5,7 @@
     "mlx5dv"
   ],
   "platform": "mn5",
-  "topology": "2 nodes x1 H100 PE, NVSHMEM put-ring under IBGDA, run three times: RC over InfiniBand, DC over InfiniBand, DC over the node's Ethernet RoCE v2 port",
+  "topology": "1 node x2 H100 PEs, NVSHMEM put-ring under IBGDA, run three times: RC over InfiniBand, DC over InfiniBand, DC over the node's Ethernet RoCE v2 port",
   "golden": "none, by design — every stable quantity here is asserted, and everything else (qp_num, DCT, LID, umem_id, addresses) is assigned by the fabric or the allocator",
   "why": "the WQE decoder derives the address-vector width per WQE from MLX5_EXTENDED_UD_AV, and it has three outcomes: no AV (RC), the 16-byte compact form, and the 48-byte full form. Every field after the AV is read at an offset computed from that width, so a wrong width yields a confidently wrong row rather than an error. Two of the three widths ran on every board; the third had never run at all.",
   "history": "av_ds=3 was unexercised from the day the width derivation was written until 2026-09-08. The repo said it needed the paper's P-RoCE platform (B200 + CX-7 RoCEv2) — a conclusion reached without running `ls /sys/class/infiniband`. MN5's acc nodes carry six mlx5 devices and mlx5_2 is a 25 Gb/s Ethernet port with RoCE v2 GIDs and lid=0, which is exactly the case that clears support_half_av_seg. Job 45580050 produced the width, twice, over two GIDs on two subnets. This case exists so that proof is repeated on every board instead of living in a probe README.",
@@ -14,8 +14,8 @@
   "platform_note": "SKIPs where there is no ACTIVE Ethernet mlx5 port with a RoCE v2 GID. du04 has one device, mlx5_0, InfiniBand — the full AV is genuinely unreachable there, and a case that asserted only the first two widths would report coverage it does not have. The skip reason names the missing hardware rather than the missing result.",
   "workload": {
     "ranks": 2,
-    "nodes": 2,
-    "gpus": 1,
+    "nodes": 1,
+    "gpus": 2,
     "iters": 20,
     "elems": 1024,
     "elem_bytes": 4,
@@ -26,7 +26,7 @@
   "workload_params": [
     "expected_av_ds"
   ],
-  "workload_note": "`mpirun -np 2 --map-by ppr:1:node ... putget 1024 20`, the same binary cases 04/06/07/09/12 use, so the send shape is the one the rest of the board already understands. expected_av_ds is the oracle for the promoted capture: $OUT is the roce_dc leg, whose whole purpose is the 48-byte form, and stating the expected width as a param is what keeps full_av_was_produced an assertion rather than a golden that happens to match today's output.",
+  "workload_note": "`mpirun -np 2 --map-by ppr:2:node ... putget 1024 20`, the same binary cases 04/06/07/09/12 use, so the send shape is the one the rest of the board already understands. ONE NODE, which is case 12's shape and not the probes' two-node one: --enable-host-doorbell hangs under mpirun + the MPI bootstrap on two nodes (jobs 45584690, 45584080) while every piece works alone (job 45584872 ran the workload bare on two nodes four ways, all rc=0; the probes run the host doorbell on two nodes fine under srun + PMI). The AV width follows from the PORT, not from whether the peer is remote, so a loopback over the Ethernet port produces the full AV exactly as a two-node run does. See things-to-circle-back-to.md.",
   "expect_tables": [
     "mlx5_umem",
     "mlx5_devx_qp",

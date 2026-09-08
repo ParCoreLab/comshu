@@ -35,12 +35,34 @@
 # that quietly asserted only the first two would report coverage it does not
 # have. The skip reason names the missing hardware.
 #
+# ONE NODE, TWO PEs — case 12's shape, and not the two-node shape the probes
+# use. That is a workaround for a pcomm defect, and it is written down here
+# rather than left as an unexplained #SBATCH line.
+#
+# Under `mpirun` with the MPI bootstrap, `--enable-host-doorbell` hangs on a
+# TWO-NODE run: NVSHMEM initialises, the guard arms the UARs, and the
+# application then produces no output until the leg's timeout (jobs 45584690,
+# 45584080). Every piece works alone — job 45584872 ran the same workload bare
+# on two nodes, with and without NVSHMEM_HCA_LIST, and over the RoCE port, four
+# arms, all rc=0 — and the host doorbell itself runs fine on two nodes under
+# srun + the PMI bootstrap, which is what the probes use (jobs 45462619,
+# 45580050, 45582508). It is the combination that hangs, and it is not
+# understood.
+#
+# One node sidesteps it: case 12 runs mpirun + MPI + putget + --enable-host-
+# doorbell on one node every board, green. The AV width does not care — it
+# follows from the PORT (lid == 0 clears support_half_av_seg), not from whether
+# the peer is on another node — so a loopback over the Ethernet port produces
+# the full AV exactly as a two-node run does.
+#
+# See things-to-circle-back-to.md; this case is not the place to fix it, but it
+# must not be the place that quietly hides it either.
 #SBATCH --job-name=pcomm-25-av-widths
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
 #SBATCH --time=00:20:00
 #SBATCH --output=%x.%j.out
 
@@ -184,7 +206,7 @@ leg() {  # leg <name> <out-dir> <hca> <gid-or-empty> <extra NVSHMEM env...>
   ( export NVSHMEM_HCA_LIST="$hca:1"
     [ -n "$gid" ] && export NVSHMEM_IB_GID_INDEX="$gid"
     export "$@"
-    timeout 300 "$MPIRUN" -np 2 --map-by ppr:1:node ${PCOMM_MPIRUN_EXTRA:-} \
+    timeout 300 "$MPIRUN" -np 2 --map-by ppr:2:node ${PCOMM_MPIRUN_EXTRA:-} \
       -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
       -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
       -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
