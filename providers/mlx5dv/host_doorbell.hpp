@@ -298,36 +298,6 @@ inline void arm(mlx5dv_devx_uar* uar) {
                      (void*)uar, real, decoy);
 }
 
-// ARM ONLY WHAT IBGDA USES. This is not a refinement; it is the difference
-// between instrumenting a transport and breaking every other user of the NIC.
-//
-// arm() used to be called from the mlx5dv_devx_alloc_uar hook, on EVERY UAR the
-// process allocated. UCX allocates DEVX UARs too, for the RC transport MPI runs
-// on, and swapping one of those redirects UCX's doorbells onto a plain memory
-// page that a repeater forwards EIGHT BYTES of — while UCX rings BlueFlame,
-// writing whole 64-byte work-queue entries into alternating buffers within the
-// page. Its sends stop reaching the NIC.
-//
-// Measured, after three wrong theories (jobs 45586042, 45586440, 45587675): a
-// two-node run hung with the main thread inside MPI_Comm_dup, in NVSHMEM's own
-// bootstrap, under ucp_worker_progress polling an mlx5 completion queue that
-// would never complete. It never reached the workload at all. Four repeaters
-// were armed at a point where IBGDA had not yet created a single queue pair, so
-// all four UARs belonged to somebody else.
-//
-// It is invisible on one node, which is why case 12 has been green throughout:
-// intra-node MPI goes over shared memory and never touches an mlx5 UAR.
-//
-// So the arm point moved to the CREATE_QP decode, which is the first moment
-// anything knows a UAR belongs to a GPU-driven queue pair — and is still before
-// that queue pair can ring anything.
-inline void arm_for_page(std::uint32_t uar_page) {
-    if (void* uar = hijack::uar_for_page(uar_page))
-        arm(static_cast<mlx5dv_devx_uar*>(uar));
-    else if (debug_on())
-        std::fprintf(stderr, "[hostdb] no UAR remembered for page_id=%u — not arming\n", uar_page);
-}
-
 // Undo the swap. Restores reg_addr first so that anything still holding the UAR
 // sees the real register, then stops the repeater and releases the page — in
 // that order, because destroying a RepeaterHandle joins its thread and the page

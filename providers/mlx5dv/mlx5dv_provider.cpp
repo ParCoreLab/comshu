@@ -312,20 +312,8 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
         // The host path has no UAR swap on an application thread, so this is
         // where it captures the CUDA context its copy-out will bind to. Free
         // for the GPU hijack, which already has one by now.
-        if (hostdb::enabled()) {
+        if (hostdb::enabled())
             hijack::capture_gpu_ctx();
-            // AND THIS IS WHERE THE UAR IS ARMED — the first moment anything
-            // knows a UAR belongs to a GPU-driven queue pair, and still before
-            // that queue pair can ring it. Arming at alloc_uar instead swapped
-            // UCX's UARs too and broke MPI on any run where MPI used the NIC;
-            // see host_doorbell.hpp's arm_for_page.
-            //
-            // Scoped by `gpu_driven`, which is the same predicate register_qp
-            // uses: a UAR whose queue pair has no GPU-resident send queue has
-            // nothing this provider could decode anyway, so arming it would be
-            // all of the risk and none of the capture.
-            hostdb::arm_for_page(DEVX_GET(qpc, qpc, uar_page));
-        }
     }
 }
 
@@ -495,22 +483,12 @@ Profiler::Profiler() {
             // pointer is kept so a doorbell row can join back to Mlx5Uar (h(out)).
             if (hijack::enabled() || hostdb::enabled())
                 hijack::remember_uar(out->reg_addr, out, out->page_id);
-            // NO ARMING HERE. This used to call hostdb::arm(out) on every UAR
-            // the process allocated, which includes UCX's — and swapping one of
-            // those breaks MPI outright, because UCX rings BlueFlame (whole
-            // 64-byte WQEs, alternating buffers in the page) where the repeater
-            // watches and forwards eight bytes at offset 0. A two-node run then
-            // hangs inside MPI_Comm_dup in NVSHMEM's own bootstrap, before the
-            // workload starts; host_doorbell.hpp's arm_for_page has the stack
-            // and the three theories it took to get there.
-            //
-            // The arm moved to the CREATE_QP decode, the first moment anything
-            // knows a UAR belongs to a GPU-driven queue pair. remember_uar still
-            // runs here, and must: it is what makes that later lookup possible,
-            // and it keys on the register the NIC really owns so a doorbell row
-            // still joins the Mlx5Uar recorded below. The record carries the
-            // true reg_addr in both modes; the decoy is an instrument and never
-            // appears in a capture.
+            // ...and only then swap, so remember_uar keys on the register the
+            // NIC really owns and a doorbell row joins the Mlx5Uar recorded
+            // below. The record therefore carries the true reg_addr in both
+            // modes; the decoy is an instrument and never appears in a capture.
+            if (hostdb::enabled())
+                hostdb::arm(out);
             rec().record(pcomm::core::Temporal::none(),
                          rr::Mlx5Uar{{},
                                      {},
