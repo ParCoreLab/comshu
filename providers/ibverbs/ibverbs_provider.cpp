@@ -146,6 +146,26 @@ static std::uint32_t local_lid(ibv_qp* qp, const ibv_qp_attr* attr, int mask) {
 // Interval [call-start, call-end] from the hook engine's captured rdtsc stamps
 // (same clock domain as the recorder + clock anchors), so post_send/poll_cq
 // render as slices with real durations instead of instants.
+//
+// EVERY EVENT THIS PROVIDER EMITS USES THIS, and EntityClose was the last one
+// that did not. The trampoline reads rdtsc either side of the real call and
+// hands both to the post callback (CompositeHookManager.hpp), so a hook that
+// writes `auto...` and then calls now_instant() is throwing away a measured
+// timestamp to take a second, later one — and stamping it `Instant`, which
+// asserts a precision it does not have for something that spanned a call.
+//
+// The lag is small here, microseconds rather than the unbounded drain lag that
+// made the same mistake matter so much on the gpumem path. That is a reason to
+// call this a modest fix, not a reason to keep inventing a number when one was
+// measured: the destroy call has a duration, and now the record says what it
+// was instead of when we got round to writing it down.
+//
+// MemObject deliberately keeps now_instant(). It is an Entity whose stamp opens
+// a lifetime rather than describing a call, and gpumem and mlx5dv stamp it the
+// same way — changing it in one provider would make the three disagree about
+// what a MemObject's time means, which is worse than the thing being fixed.
+// Artifacts (IbQpSignalling) and the other entities keep Temporal::none(),
+// which is what TimeKind::None is for.
 static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
     return pcomm::core::Temporal::interval({0, t0}, {0, t1});
 }
@@ -674,11 +694,11 @@ Profiler::Profiler() {
     // ...and the device entity's lifetime ends with it. Without this every
     // ib_device row would be an entity opened and never closed, which is a case
     // suite/asserts/entity_close_accounted.sql reports by design.
-    this->register_post<close_device_tag>([](int ret, ibv_context* ctx, auto...) {
+    this->register_post<close_device_tag>([](int ret, ibv_context* ctx, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
-                                              {}, {}, h(ctx), rr::IbDevice::pcomm_type_id});
+        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
+                                       {}, {}, h(ctx), rr::IbDevice::pcomm_type_id});
         forget_context(ctx);
     });
 
@@ -774,11 +794,11 @@ Profiler::Profiler() {
     // destroy_cq -> the CQ's lifetime ended. Same success-only discipline as
     // dereg_mr and destroy_qp: a destroy that failed closed nothing, and
     // recording it would make a live CQ look freed.
-    this->register_post<destroy_cq_tag>([](int ret, ibv_cq* cq, auto...) {
+    this->register_post<destroy_cq_tag>([](int ret, ibv_cq* cq, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !cq)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
-                                              {}, {}, h(cq), rr::IbCompletionQueue::pcomm_type_id});
+        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
+                                       {}, {}, h(cq), rr::IbCompletionQueue::pcomm_type_id});
     });
 
     // create_ah -> the UD path's addressing object, and the only place in the
@@ -819,11 +839,11 @@ Profiler::Profiler() {
                                          a->is_global ? a->grh.traffic_class : std::uint8_t{0}});
     });
 
-    this->register_post<destroy_ah_tag>([](int ret, ibv_ah* ah, auto...) {
+    this->register_post<destroy_ah_tag>([](int ret, ibv_ah* ah, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !ah)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
-                                              {}, {}, h(ah), rr::IbAddressHandle::pcomm_type_id});
+        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
+                                       {}, {}, h(ah), rr::IbAddressHandle::pcomm_type_id});
     });
 
     // create_qp -> queue-pair endpoint entity.
@@ -950,11 +970,11 @@ Profiler::Profiler() {
     //
     // The subject is the same interned pointer the open record carries
     // (IbMemRegion h(mr), IbQueuePair h(qp)), so the join is exact.
-    this->register_post<dereg_mr_tag>([](int ret, ibv_mr* mr, auto...) {
+    this->register_post<dereg_mr_tag>([](int ret, ibv_mr* mr, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !mr)
             return;
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
-                                              {}, {}, h(mr), rr::IbMemRegion::pcomm_type_id});
+        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
+                                       {}, {}, h(mr), rr::IbMemRegion::pcomm_type_id});
     });
     // ibv_destroy_qp's close is emitted by the engine, not here — see ib_hooks.hpp
     // and src/engine.cpp. A QP created through mlx5dv_create_qp is destroyed
@@ -1216,10 +1236,10 @@ Profiler::Profiler() {
 
     // destroy_srq -> the entity's lifetime ended. Success only, like every other
     // close on this path.
-    this->register_post<destroy_srq_tag>([](int ret, ibv_srq* srq, auto...) {
+    this->register_post<destroy_srq_tag>([](int ret, ibv_srq* srq, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !srq)
             return;
-        rec().record(rec().now_instant(),
+        rec().record(span(t0, t1),
                      pcomm::core::records::EntityClose{
                          {}, {}, h(srq), rr::IbSharedRecvQueue::pcomm_type_id});
     });
