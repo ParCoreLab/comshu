@@ -2,6 +2,61 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN (2026-09-08): the host doorbell arms UARs it does not own, and breaks MPI
+
+**Root cause of the two-node hang below — diagnosed, not yet fixed.**
+
+`hostdb::arm()` is called from the `mlx5dv_devx_alloc_uar` hook, on **every** UAR
+the process allocates. UCX allocates DEVX UARs too, for the RC transport MPI runs
+on. Swapping one of those redirects UCX's doorbells onto a plain memory page
+whose repeater watches, and forwards, **eight bytes at offset 0** — while UCX
+rings **BlueFlame**: whole 64-byte work-queue entries, written into alternating
+buffers within the page. Its sends stop reaching the NIC.
+
+The stack (job 45587675) is unambiguous. The main thread sits in
+
+```
+main -> nvshmemi_init_thread -> nvshmemi_bootstrap -> bootstrap_loader_init
+     -> nvshmem_bootstrap_mpi.so -> PMPI_Comm_dup -> ompi_comm_nextcid
+     -> opal_progress -> mca_coll_ucc_progress -> ucc_tl_ucp_allreduce_knomial_progress
+     -> ucp_worker_progress -> uct_rc_mlx5_iface_progress -> uct_ib_mlx5_poll_cq
+```
+
+— hung in `MPI_Comm_dup` inside NVSHMEM's own bootstrap, polling an mlx5
+completion queue that will never complete. It never reaches the workload. Four
+repeaters were armed at a point where IBGDA had not created a single queue pair,
+so all four UARs belonged to somebody else.
+
+**Confirmed from both directions.** Arming any UAR hangs it; with arming disabled
+the whole matrix passes 7/7 (job 45587944).
+
+**Why no board ever caught it:** on one node, intra-node MPI goes over shared
+memory and never touches an mlx5 UAR. Case 12 is one node.
+
+**The obvious fix does not work, and the file says why.** Moving the arm to the
+CREATE_QP decode — the first moment anything knows a UAR is a GPU-driven queue
+pair's — turned case 12 red immediately (job 45587885, commit reverted).
+`host_doorbell.hpp` states it in its own header: *"Swapping cannot be deferred
+past that point either — NVSHMEM copies the pointer at allocation, so a later
+mutation would never be seen."* By CREATE_QP the transport has already read
+`reg_addr`; mutating it changes nothing and the capture is empty.
+
+**So the discrimination must happen AT ALLOC**, and the discriminator is already
+in the hook signature: the `flags` argument of `mlx5dv_devx_alloc_uar`.
+`host_doorbell.hpp` already notes that NVSHMEM asks for `NC_DEDICATED`. What UCX
+asks for has not been measured, and that measurement is the next step — log
+`flags` per UAR with `PCOMM_HOST_DOORBELL_DEBUG=1` on a two-node run and see
+whether the two stacks are separable by it. If they are not, the fallback is to
+attribute the caller (the return address's `dladdr` module), which is uglier and
+should not be reached for without evidence.
+
+**A second defect this exposed, and it is the more general one:** the repeater
+forwards 8 bytes from offset 0. That is right for a doorbell record write and
+wrong for BlueFlame, which is how mlx5 posts small/inline sends. Even once the
+UAR selection is fixed, a GPU-driven queue pair that uses BlueFlame would be
+truncated the same way. Nothing currently detects that — the sends would simply
+never arrive, which on the IBGDA path looks like a workload that did not send.
+
 ## OPEN (2026-09-08): `--enable-host-doorbell` hangs on a two-node mpirun run
 
 Under `mpirun` with `NVSHMEM_BOOTSTRAP=MPI`, a **two-node** run with
