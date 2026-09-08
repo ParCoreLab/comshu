@@ -212,6 +212,22 @@ inline State& state() {
     return s;
 }
 
+// The mlx5dv_devx_uar* a CREATE_QP's qpc.uar_page refers to, or null.
+//
+// The host doorbell needs this to arm the UARs IBGDA actually uses and no
+// others — see host_doorbell.hpp's arm_for_page. A linear scan because the map
+// holds one entry per UAR in the process (a handful), and it is walked once per
+// GPU-driven queue pair rather than per doorbell.
+inline void* uar_for_page(std::uint32_t page_id) {
+    auto&                       s = state();
+    std::lock_guard<std::mutex> lk(s.mutex);
+    for (const auto& [reg_addr, id] : s.uar_pages)
+        if (id == page_id)
+            if (auto it = s.uar_ptrs.find(reg_addr); it != s.uar_ptrs.end())
+                return it->second;
+    return nullptr;
+}
+
 inline void remember_uar(void* reg_addr, void* uar_ptr, std::uint32_t page_id) {
     if (!reg_addr)
         return;
