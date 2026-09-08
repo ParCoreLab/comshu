@@ -102,6 +102,22 @@ const char* memop_name(core::MemOp op) {
     return "?";
 }
 
+// Lower case, matching memop_name directly above rather than link_sql.hpp's
+// 'Global'/'Local'/'Shared'. The two exports already disagree on MemOp's casing
+// ('Load' there, "load" here), so there is no consistency to preserve across
+// them — only within a row, where `op` and `space` sit side by side.
+const char* memspace_name(core::MemSpace sp) {
+    switch (sp) {
+        case core::MemSpace::Global:
+            return "global";
+        case core::MemSpace::Local:
+            return "local";
+        case core::MemSpace::Shared:
+            return "shared";
+    }
+    return "?";
+}
+
 // Stable string names for the ibverbs enums, so CSV columns (and the goldens
 // that query them) read as physics — "send", "success", "rtr" — instead of
 // raw ABI integers, and stay put if the numeric encoding ever changes. Unknown
@@ -202,13 +218,15 @@ struct Table;  // no primary definition: an unspecialized use is a missing entry
 template<> struct Table<GpuAccess> {
     static constexpr const char* name = "gpu_access";
     static constexpr const char* cols =
-        "ticks_lo,ticks_hi,launch,pc,object,addr,size,op,run_dev,mem_dev,thread";
+        "ticks_lo,ticks_hi,launch,pc,object,addr,size,op,space,run_dev,mem_dev,thread";
     static void row(std::FILE* f, const Stamped<GpuAccess>& s, const rec::InternDictionary&) {
         std::fprintf(
-            f, "%llu,%llu,%llu,%u,%u,0x%llx,%u,%s,%u,%u,%u", (unsigned long long)s.temporal.a.ticks,
+            f, "%llu,%llu,%llu,%u,%u,0x%llx,%u,%s,%s,%u,%u,%u",
+            (unsigned long long)s.temporal.a.ticks,
             (unsigned long long)s.temporal.b.ticks, (unsigned long long)s.payload.launch,
             s.payload.pc, s.payload.object, (unsigned long long)s.payload.address, s.payload.size,
-            memop_name(s.payload.op), s.payload.run_device, s.payload.mem_device, s.payload.thread);
+            memop_name(s.payload.op), memspace_name(s.payload.space), s.payload.run_device,
+            s.payload.mem_device, s.payload.thread);
     }
 };
 
@@ -893,11 +911,11 @@ inline const char* mlx5_send_decode_name(std::uint8_t d) {
 template<> struct Table<mxr::Mlx5DevxCq> {
     static constexpr const char* name = "mlx5_devx_cq";
     static constexpr const char* cols =
-        "ticks,cqn,cq_base,umem_id,log_cq_size,dbr_umem_id,device,gpu_resident,cqe_bytes";
+        "ticks,obj,cqn,cq_base,umem_id,log_cq_size,dbr_umem_id,device,gpu_resident,cqe_bytes";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxCq>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,0x%llx,%u,%u,%u,%u,%u,%u",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.cqn,
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%u,%u,%u,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.obj, s.payload.cqn,
                      (unsigned long long)s.payload.cq_base, s.payload.umem_id,
                      s.payload.log_cq_size, s.payload.dbr_umem_id, s.payload.device,
                      s.payload.gpu_resident, s.payload.cqe_size == 1 ? 128u : 64u);

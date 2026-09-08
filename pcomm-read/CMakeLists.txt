@@ -29,6 +29,58 @@ list(REMOVE_DUPLICATES _provider_record_dirs)
 target_include_directories(pcomm_read PUBLIC ${_provider_record_dirs})
 target_link_libraries(pcomm_read PUBLIC pcomm::pcomm)
 
+# Every record field must reach `pcomm export --csv`, or say why it does not.
+#
+# Attached to the BUILD, like schema_check.py and for the same reason: the
+# mistake this catches is one of forgetting, and a check you have to remember to
+# run is no defence against forgetting. Mlx5DevxQp.cqn_snd was added to the
+# struct, to the .fbs and to the DuckDB tables (which are generated) and never
+# to the hand-written CSV writer, and every check in the tree stayed green while
+# the HPC suite — which reads CSV — could not see the field at all. Two more
+# turned up the moment anything looked: gpu_access.space and mlx5_devx_cq.obj.
+#
+# NOT gated on PCOMM_DUCKDB. The generated raw columns cannot drift, so the
+# configuration that has DuckDB is the one that needs this least; the cluster
+# build, which has neither DuckDB nor a reason to run ctest, is where the CSV is
+# the only export anyone reads.
+#
+# find_package again rather than relying on libpcomm's: Python3_Interpreter_FOUND
+# is a normal variable, so it is scoped to the directory that found it and is
+# simply undefined here. Guarding on it without this would skip the check
+# silently in every build — a disabled check that reports nothing, which is the
+# shape of failure this whole file is about.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  set(_csv_cols_stamp "${CMAKE_CURRENT_BINARY_DIR}/csv_columns.stamp")
+  add_custom_command(
+    OUTPUT "${_csv_cols_stamp}"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/check_csv_columns.py"
+            "${CMAKE_SOURCE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_csv_cols_stamp}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tools/check_csv_columns.py"
+            "${CMAKE_SOURCE_DIR}/tools/schema_check.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
+            # Globbed above rather than listed, so a provider that adds a record
+            # header re-runs this instead of being silently exempt — the same
+            # miss libpcomm/CMakeLists.txt records for mlx5_records.hpp.
+            ${_provider_record_hdrs}
+            "${CMAKE_SOURCE_DIR}/libpcomm/include/pcomm/core/records.hpp"
+            "${CMAKE_SOURCE_DIR}/libpcomm/include/pcomm/core/vocab.hpp"
+    COMMENT "Checking every record field reaches pcomm export --csv"
+    VERBATIM)
+  add_custom_target(pcomm_csv_columns_check ALL DEPENDS "${_csv_cols_stamp}")
+  add_dependencies(pcomm_read pcomm_csv_columns_check)
+  if(PCOMM_BUILD_TESTS)
+    add_test(NAME csv_columns
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/check_csv_columns.py"
+                     "${CMAKE_SOURCE_DIR}")
+  endif()
+else()
+  message(WARNING "no Python3: skipping the CSV column coverage check "
+                  "(tools/check_csv_columns.py) — a record field can exist in every "
+                  "export except --csv, which is the one the HPC suite reads")
+endif()
+
 # DuckDB, when asked for. Located rather than assumed: a missing library is a
 # configure-time error naming the script that fetches it, not a link failure
 # fifty lines into someone else's output.
