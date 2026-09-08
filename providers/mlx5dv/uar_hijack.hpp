@@ -336,6 +336,11 @@ struct OpShape {
     bool addressed{false};  // takes an address vector when the QP is a DCI
     bool raddr{false};      // carries a remote-address segment
     bool data{false};       // carries a local data or inline segment we can read
+    // An atomic puts operand segments between the remote address and the local
+    // result descriptor, so `data` cannot be found by counting forward from
+    // raddr the way every other opcode's is. It is found by counting BACK from
+    // the end instead — see kDataSegIsLast at the read site.
+    bool atomic{false};
 };
 
 inline OpShape op_shape(std::uint8_t op) {
@@ -351,12 +356,21 @@ inline OpShape op_shape(std::uint8_t op) {
         case kOpAtomicFa:
         case kOpAtomicMaskedCs:
         case kOpAtomicMaskedFa:
-            // The operand segments sit between the remote address and the local
-            // result descriptor, and their width varies with operand size and
-            // whether the operation is masked. Everything before them is at a
-            // known offset and is read; the data segment after them is not, so
-            // these rows are Partial rather than guessed at.
-            return {true, true, true, false};
+            // Operand segments sit between the remote address and the local
+            // result descriptor, and their count is not fixed. This used to give
+            // up there and emit Partial with length = 0, which was honest but
+            // meant every atomic contributed nothing to any byte total — and
+            // the wire check, which sums decoded lengths, silently counted
+            // atomic traffic as zero.
+            //
+            // It does not need the operand widths. The local data segment is
+            // the LAST segment of the work-queue entry, so it is at ds - 1 no
+            // matter how many operand segments precede it. NVSHMEM's
+            // ibgda_write_amo_wqe builds exactly that: ctrl + [AV] + raddr +
+            // atomic_seg_1 [+ atomic_seg_2] + data, with the second operand
+            // segment present only for an 8-byte MASKED_CS (`++ds`). Reading it
+            // from the end costs nothing and covers both.
+            return {true, true, true, true, /*atomic=*/true};
         case kOpDump:
             // NVSHMEM's ordering WQE (`ibgda_write_dump_wqe`): ctrl + data,
             // ds = 2, and NO address vector even on a DCI. It moves no payload
@@ -490,8 +504,29 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
             }
         }
 
-        const std::uint32_t data_ds = raddr_ds + (shape.raddr ? 1u : 0u);
-        if (decode != kDecodeTruncated && shape.data) {
+        // The local data segment: one past the remote address for an ordinary
+        // opcode, and the LAST segment for an atomic, whose operand segments sit
+        // in between at a width this decoder deliberately does not model.
+        std::uint32_t data_ds = raddr_ds + (shape.raddr ? 1u : 0u);
+        if (shape.atomic) {
+            // Guard the shape rather than trusting ds. `data_ds` currently points
+            // at the FIRST operand segment, so everything from there to the end
+            // is the operands plus the one data segment: 2 for a single-operand
+            // atomic, 3 for the 8-byte masked compare-swap that carries two.
+            //
+            // Anything else is a work-queue entry built by something whose layout
+            // this has not seen, and taking ds - 1 as its data segment would then
+            // be a confident guess at the wrong 16 bytes — the same mistake the
+            // address vector taught, where assuming one width read five fields
+            // 32 bytes early and emitted a row that was wrong rather than absent.
+            // Stay Partial and say so.
+            const std::uint32_t tail_ds = (ds > data_ds) ? ds - data_ds : 0u;
+            if (tail_ds < 2u || tail_ds > 3u)
+                decode = kDecodePartial;
+            else
+                data_ds = ds - 1u;
+        }
+        if (decode != kDecodeTruncated && decode != kDecodePartial && shape.data) {
             if (!have(data_ds, 1)) {
                 decode = kDecodeTruncated;
             } else {
@@ -506,11 +541,13 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
                     laddr = be64toh(*reinterpret_cast<const std::uint64_t*>(d + 8));
                 }
             }
-        } else if (decode == kDecodeFull && shape.known && !shape.data) {
-            // An atomic: the remote address is read, the local result descriptor
-            // sits past operand segments whose width this decoder does not model.
-            decode = kDecodePartial;
         }
+        // There used to be an `else if` here turning any known opcode with no
+        // readable data segment into Partial. It existed solely for the atomics,
+        // which now have one, and every remaining known opcode carries data — so
+        // it was unreachable. Removed rather than left as a comment-shaped guard:
+        // a branch that cannot run is not a safety net, it is a claim that
+        // something is handled.
 
         // Every WQE that is not padding gets a row, including one carrying an
         // opcode this build does not know. An unrecognised opcode is the version
