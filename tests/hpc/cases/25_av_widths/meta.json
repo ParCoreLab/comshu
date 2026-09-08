@@ -1,0 +1,36 @@
+{
+  "case": "25_av_widths",
+  "providers": [
+    "ib",
+    "mlx5dv"
+  ],
+  "platform": "mn5",
+  "topology": "2 nodes x1 H100 PE, NVSHMEM put-ring under IBGDA, run three times: RC over InfiniBand, DC over InfiniBand, DC over the node's Ethernet RoCE v2 port",
+  "golden": "none, by design — every stable quantity here is asserted, and everything else (qp_num, DCT, LID, umem_id, addresses) is assigned by the fabric or the allocator",
+  "why": "the WQE decoder derives the address-vector width per WQE from MLX5_EXTENDED_UD_AV, and it has three outcomes: no AV (RC), the 16-byte compact form, and the 48-byte full form. Every field after the AV is read at an offset computed from that width, so a wrong width yields a confidently wrong row rather than an error. Two of the three widths ran on every board; the third had never run at all.",
+  "history": "av_ds=3 was unexercised from the day the width derivation was written until 2026-09-08. The repo said it needed the paper's P-RoCE platform (B200 + CX-7 RoCEv2) — a conclusion reached without running `ls /sys/class/infiniband`. MN5's acc nodes carry six mlx5 devices and mlx5_2 is a 25 Gb/s Ethernet port with RoCE v2 GIDs and lid=0, which is exactly the case that clears support_half_av_seg. Job 45580050 produced the width, twice, over two GIDs on two subnets. This case exists so that proof is repeated on every board instead of living in a probe README.",
+  "oracle_note": "The load-bearing check is CROSS-LEG and lives in job.sbatch rather than in SQL, because no single capture can express it. `length` sits after the address vector, so a mis-derived width shifts it into an operand, a key or half an address — all plausible integers, none of which a per-capture assertion could call wrong. The workload is deterministic, so the three legs must agree exactly on the (length, count) histogram of their RDMA writes. Three different segment layouts arriving at identical byte counts is the statement that the offsets are right; each leg alone can only say it is self-consistent.",
+  "device_note": "The HCA and the GID index are DISCOVERED, not hardcoded: an ACTIVE Ethernet mlx5 port and the first GID whose type is RoCE v2. mlx5_2 and index 3 are what MN5 happens to expose and neither is a property of RoCE, so hardcoding them would make this case SKIP on the next cluster for the wrong reason.",
+  "platform_note": "SKIPs where there is no ACTIVE Ethernet mlx5 port with a RoCE v2 GID. du04 has one device, mlx5_0, InfiniBand — the full AV is genuinely unreachable there, and a case that asserted only the first two widths would report coverage it does not have. The skip reason names the missing hardware rather than the missing result.",
+  "workload": {
+    "ranks": 2,
+    "nodes": 2,
+    "gpus": 1,
+    "iters": 20,
+    "elems": 1024,
+    "elem_bytes": 4,
+    "app_buffer_bytes": 4096,
+    "umem_binding": 1,
+    "expected_av_ds": 3
+  },
+  "workload_params": [
+    "expected_av_ds"
+  ],
+  "workload_note": "`mpirun -np 2 --map-by ppr:1:node ... putget 1024 20`, the same binary cases 04/06/07/09/12 use, so the send shape is the one the rest of the board already understands. expected_av_ds is the oracle for the promoted capture: $OUT is the roce_dc leg, whose whole purpose is the 48-byte form, and stating the expected width as a param is what keeps full_av_was_produced an assertion rather than a golden that happens to match today's output.",
+  "expect_tables": [
+    "mlx5_umem",
+    "mlx5_devx_qp",
+    "mlx5_doorbell",
+    "mlx5_device_send"
+  ]
+}
