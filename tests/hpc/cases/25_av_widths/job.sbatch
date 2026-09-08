@@ -85,11 +85,20 @@ for d in /sys/class/infiniband/*; do
   if [ "$ll" = "InfiniBand" ] && [ -z "$IB_DEV" ]; then
     IB_DEV="$n"
   elif [ "$ll" = "Ethernet" ] && [ -z "$ETH_DEV" ]; then
-    # The first RoCE v2 GID on the port. RoCE v1 is not usable here: it is
-    # L2-only, and NVSHMEM's transport wants a routable GID.
+    # A ROUTABLE RoCE v2 GID. Two filters, and the second one was learned the
+    # expensive way. RoCE v1 is excluded because it is L2-only. And a RoCE v2
+    # GID whose address is LINK-LOCAL (fe80::/10) is excluded because it is a
+    # per-interface address that does not route between nodes: MN5's mlx5_2
+    # exposes one at index 1 and a routable IPv4-mapped one at index 3, and
+    # taking simply "the first RoCE v2 GID" picked index 1 — after which the
+    # workload hung until the leg's timeout with no error to read (job
+    # 45584080). The address is what distinguishes them, so the address is what
+    # this filters on.
     for i in $(seq 0 15); do
       t=$(cat "$d/ports/1/gid_attrs/types/$i" 2>/dev/null)
       [ "$t" = "RoCE v2" ] || continue
+      g=$(cat "$d/ports/1/gids/$i" 2>/dev/null)
+      case "$g" in fe80:*) continue ;; esac
       ETH_DEV="$n"; ETH_GID="$i"; break
     done
   fi
@@ -116,8 +125,9 @@ echo "=== 25_av_widths : arm=$ARM (NIC handler $HANDLER, $DOORBELL_FLAG) ==="
 # Runtime BEFORE the launcher check, and LD_LIBRARY_PATH after the build block.
 # Both orderings are the ones case 04 documents and case 12 paid for.
 pcomm_load_runtime
-MPIRUN="${PCOMM_MPIRUN:-mpirun}"
-command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
+command -v srun >/dev/null || fail "no srun on PATH"
+# nvcc is still reached through mpic++ below, so mpirun's toolchain has to be
+# present even though it does not launch anything here.
 
 APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget_sm80}"
 if [ ! -x "$APP" ]; then
@@ -134,7 +144,23 @@ if [ ! -x "$APP" ]; then
 fi
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBRARY_PATH:-}"
 
-export NVSHMEM_BOOTSTRAP=MPI
+# srun + PMI-2, NOT mpirun + the MPI bootstrap that cases 07 and 12 use.
+#
+# This is the one thing here that is chosen by measurement rather than by
+# convention, and the convention lost. The probes that first produced all three
+# AV widths (jobs 45462619, 45580050, 45582508) launch this exact shape — two
+# nodes, one PE each, one GPU — with srun --mpi=pmi2 and NVSHMEM_BOOTSTRAP=PMI.
+# Written first with mpirun to match the neighbouring cases, this case hung in
+# nvshmem_init and timed out with the application producing not one line (job
+# 45584080). srun is already how cases 01, 08 and 23 launch, so this is inside
+# the suite's vocabulary, not an exception to it.
+#
+# NVSHMEM_BOOTSTRAP is the FAMILY and NVSHMEM_BOOTSTRAP_PMI is the variant, and
+# `PMI2` is not legal in the first. Getting that backwards costs four jobs and
+# an errno 7 that prints as "No such file or directory" — see
+# probes/uar_doorbell_mode/README.md, which has the receipts.
+export NVSHMEM_BOOTSTRAP=PMI
+export NVSHMEM_BOOTSTRAP_PMI=PMI-2
 export NVSHMEM_DISABLE_P2P=1
 export NVSHMEM_REMOTE_TRANSPORT=ibgda
 export NVSHMEM_IB_ENABLE_IBGDA=1
@@ -152,15 +178,14 @@ leg() {  # leg <name> <out-dir> <hca> <gid-or-empty> <extra NVSHMEM env...>
   local name="$1" out="$2" hca="$3" gid="$4"; shift 4
   rm -rf "$out" "$out.csv"; mkdir -p "$out"
   echo "######## leg $name : hca=$hca gid=${gid:-default} ($*) ########"
+  # --export=ALL, so the exports below reach both ranks without the -x list
+  # mpirun would need. That list is its own failure mode: an env var added to
+  # the case and forgotten in the -x list is silently absent on every rank.
   ( export NVSHMEM_HCA_LIST="$hca:1"
     [ -n "$gid" ] && export NVSHMEM_IB_GID_INDEX="$gid"
     export "$@"
-    timeout 300 "$MPIRUN" -np 2 --map-by ppr:1:node ${PCOMM_MPIRUN_EXTRA:-} \
-      -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
-      -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
-      -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
-      -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE -x NVSHMEM_HCA_LIST \
-      -x NVSHMEM_IB_GID_INDEX -x NVSHMEM_IBGDA_NUM_RC_PER_PE -x NVSHMEM_IBGDA_NUM_DCI \
+    timeout 300 srun --mpi=pmi2 -n 2 --nodes=2 --ntasks-per-node=1 \
+      --gpus-per-task=1 --overlap --export=ALL \
       "$PCOMM" run -p ib,mlx5dv "$DOORBELL_FLAG" -o "$out" -- "$APP" "$ELEMS" "$ITERS" \
       > "$out.app" 2> "$out.err" )
   local rc=$?
