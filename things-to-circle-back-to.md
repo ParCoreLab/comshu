@@ -2,9 +2,26 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
-## OPEN (2026-09-08): the host doorbell arms UARs it does not own, and breaks MPI
+## FIXED (2026-09-08): the host doorbell armed UARs it did not own, and broke MPI
 
-**Root cause of the two-node hang below — diagnosed, not yet fixed.**
+**Fixed by selecting on the allocation flags.** Measured on a passive two-node
+run (job 45588970), 192 UARs in one rank: `flags=0x0` (BF) on 180 of them across
+17 pages, none rung by a GPU-driven queue pair; `flags=0x1` (NC) on 6; and
+`flags=0x80000000` (NC_DEDICATED) on 6 — page 280, rung by **all six** GPU-driven
+queue pairs. So BF is everybody else and the two NC types are IBGDA's.
+`is_ibgda_uar` admits only the latter.
+
+Verified both directions on the bisect matrix (job 45589340): all seven arms
+rc=0, and the doorbell arms report `uars_armed=4 doorbells=30 sends=30
+unknown_op=0 truncated=0 wqes_lapped=0` — working, not merely quiet, which is
+what separates this from the revert that also made the matrix pass by capturing
+nothing. Case 12 PASS 26 checks; du04 ctest 33/33.
+
+IBGDA's own BF fallback is deliberately uncovered: if it gets neither NC type
+this declines to arm and the run captures no device sends. The alternative is
+arming every BF UAR in the process to catch one, which is the bug.
+
+**The original diagnosis, kept because the reasoning is the useful part.**
 
 `hostdb::arm()` is called from the `mlx5dv_devx_alloc_uar` hook, on **every** UAR
 the process allocates. UCX allocates DEVX UARs too, for the RC transport MPI runs
@@ -57,7 +74,7 @@ UAR selection is fixed, a GPU-driven queue pair that uses BlueFlame would be
 truncated the same way. Nothing currently detects that — the sends would simply
 never arrive, which on the IBGDA path looks like a workload that did not send.
 
-## OPEN (2026-09-08): `--enable-host-doorbell` hangs on a two-node mpirun run
+## FIXED (2026-09-08): `--enable-host-doorbell` hung on a two-node mpirun run
 
 Under `mpirun` with `NVSHMEM_BOOTSTRAP=MPI`, a **two-node** run with
 `--enable-host-doorbell` initialises NVSHMEM, arms its UARs, prints the guard's
@@ -66,7 +83,11 @@ application produces **no output at all** until the timeout. No error, no
 partial capture, no stack. Jobs 45584690 and 45584080, both `timeout 300`,
 both rc=124.
 
-**Every component works alone**, which is why this is filed rather than fixed:
+Root cause and fix are in the entry above — UCX's UARs were being armed. The
+elimination below is left as written because it is how that was reached, and
+three of the four theories it rules out were mine.
+
+**Every component works alone**, which is why this was filed before it was fixed:
 
 | what | where | result |
 |---|---|---|
