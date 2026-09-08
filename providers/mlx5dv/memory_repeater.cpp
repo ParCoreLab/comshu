@@ -10,7 +10,6 @@
 
 #include <cpuid.h>
 #include <immintrin.h>
-#include <limits>
 #include <x86intrin.h>
 
 namespace mlx5::repeater {
@@ -36,16 +35,48 @@ bool has_waitpkg() noexcept {
     return (ecx & (1u << 5)) != 0;
 }
 
+// How long a parked wait may sleep before it re-checks the word itself.
+//
+// It is a BOUND, not a delay: a store to the monitored line wakes the core
+// immediately, so this only decides how long a *missed* wakeup can go unnoticed.
+// ~100k TSC cycles is about 40 us on this class of part — short enough that a
+// lost store costs one barrier's worth of latency rather than the run, long
+// enough that the core genuinely parks between doorbells instead of spinning.
+inline constexpr unsigned long long kWaitCycles = 100000;
+
 __attribute__((target("mwaitx"))) void wait_mwaitx(void* addr) noexcept {
     _mm_monitorx(addr, 0, 0);
-    _mm_mwaitx(0, 0, std::numeric_limits<unsigned>::max());
+    // extensions = 2 sets the timer-enable bit; without it MWAITX ignores the
+    // cycle count entirely and waits forever on a store that may already have
+    // happened. Passing a count with no enable bit, as this did, is the AMD
+    // half of the UMWAIT bug below.
+    _mm_mwaitx(2, 0, static_cast<unsigned>(kWaitCycles));
 }
 
 __attribute__((target("waitpkg"))) void wait_waitpkg(void* addr) noexcept {
     _umonitor(addr);
     // state 0 = C0.2: deeper sleep, slower wakeup; the doorbell is not latency-
     // critical to the microsecond, and lower power keeps the parked core cool.
-    _umwait(0, std::numeric_limits<unsigned>::max());
+    //
+    // THE SECOND ARGUMENT IS AN ABSOLUTE TSC DEADLINE, NOT A DURATION, and this
+    // used to pass UINT_MAX — 4.29e9, which the TSC passes about 1.6 seconds
+    // after boot on a 2.6 GHz part. So the deadline was ALWAYS in the past and
+    // UMWAIT returned immediately, every time, on every machine with WAITPKG.
+    // The repeater was a hot spin loop wearing a power-management comment.
+    //
+    // That is not merely wasteful, because the repeater threads inherit the
+    // application's CPU affinity. Under `mpirun` with its default --bind-to
+    // core, a rank owns one core; measured on MN5 (job 45587015) the main
+    // thread and three repeaters were all pinned to psr 80 taking ~27% each,
+    // and NVSHMEM's own proxy thread — the thread that has to ring the doorbell
+    // under the CPU NIC handler — was starved among them. A workload whose
+    // barrier spins on the GPU waiting for that doorbell then never finishes:
+    // two-node putget hung indefinitely while shmem_put_bw, which does not park
+    // the GPU on a device-side barrier, completed fine.
+    //
+    // rdtsc is read per wait rather than hoisted: the deadline has to be
+    // relative to now, which is the whole point of the fix.
+    _umwait(0, __rdtsc() + kWaitCycles);
 }
 
 void wait_pause(void*) noexcept {
