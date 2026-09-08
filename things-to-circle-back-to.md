@@ -1118,11 +1118,47 @@ Two things NOT closed by it, both recorded in `cuda_dmabuf.hpp`:
   consumer. Sharing it across providers needs the engine — a static library
   linked into two `.so`s gives two copies, not one.
 
-## OPEN (2026-08-10): NVBit faults on a 64-bit-indexed global access
+## OPEN (2026-08-10, RE-ATTRIBUTED 2026-09-09): the gpumem tool faults on a 64-bit-indexed access — NVBit does not
 
-Titled OPEN as of 2026-09-08 because it was not, and so did not appear in the
-obvious `grep '^## OPEN'` — while being the most severe correctness limit in
-this file. Its own Status line said NOT fixed all along.
+**This was filed against NVBit for a year and NVBit is not the component at
+fault.** Reproduced standalone in `../nvbit-bug-report` (40 lines of plain CUDA,
+a ~70-line NVBit tool, no NVSHMEM, no MPI). Same application, same H100, same
+CUDA 12.9, same NVBit 1.7.7.1:
+
+| kernel | minimal NVBit tool | `pcomm run -p p2p` |
+|---|---|---|
+| `int32` | ok | ok |
+| `int64` | ok | **FAULT: illegal memory access (700)** |
+| `mix64` (generic `ST.E`) | ok | ok |
+| `ind64` (`LDG.E.64.CONSTANT`) | ok | ok |
+
+Both tools instrument the same instructions of the same binary, so the
+difference is entirely in what OUR tool does — the channel, the host receive
+thread, the per-launch state — and not in NVBit's handling of an access.
+
+**Every mechanism previously written here is refuted by experiment:**
+
+* not the 64-bit index as a mechanism — `int64` is `int32` with one word
+  changed, and it is clean under a minimal tool;
+* not `IMAD.WIDE` / the 64-bit register pair, which this entry named as the
+  suspicion — the SASS shows the CLEAN `int32` kernel uses it too;
+* not the generic `ST.E` class — `mix64` emits it and is clean under BOTH tools;
+* not `LDG.E.64.CONSTANT` — `ind64` emits it, exactly as described here, and is
+  clean under both;
+* not the CUDA version (12.4 / 12.9 / 13.x, 264 runs, zero faults with the
+  minimal tool);
+* not the injected function's shape — a copy of `inject_funcs.cu`'s signature,
+  warp shuffles, 32-iteration loop and `-maxrregcount` pressure does not fault.
+
+The one part of the original observation that survives is the discriminator
+itself: `int32` clean, `int64` faults, one word apart. The faulting kernel is
+the *plainest* of the three, which is why no access-shape theory could ever have
+explained it.
+
+**What to do with it:** nothing goes to NVIDIA. The question is what
+`gpu-backends/nvbit/` does that a minimal tool does not, and why it only matters
+for `k_int64`; `app.cu` is a 40-line reproduction of that, which the NVSHMEM
+workload never was.
 
 **Status:** root-caused 2026-08-10, worked around in our fixture, NOT fixed.
 **Impact:** any application indexing a buffer with a 64-bit expression — i.e. any
