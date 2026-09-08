@@ -290,6 +290,16 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
     // green one that assumed it.
     const bool gpu_driven = known && wq.device != kUnknownDevice;
 
+    // The other half of the UAR-selection measurement above: which UAR page this
+    // queue pair will ring, and whether it is one this provider has any business
+    // watching. Joining the two logs answers whether alloc-time `flags` can tell
+    // IBGDA's UARs from UCX's — which is what a correct arm() needs and does not
+    // have. There is no uar_page field on Mlx5DevxQp to make this a SQL join
+    // instead; adding one is the follow-up if the flags turn out to separate.
+    if (hostdb::debug_on())
+        std::fprintf(stderr, "[hostdb] CREATE_QP qpn=%u uar_page=%u gpu_driven=%d\n", qp_num,
+                     DEVX_GET(qpc, qpc, uar_page), gpu_driven ? 1 : 0);
+
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5DevxQp{{},
                                 {},
@@ -489,6 +499,15 @@ Profiler::Profiler() {
             // modes; the decoy is an instrument and never appears in a capture.
             if (hostdb::enabled())
                 hostdb::arm(out);
+            // The allocation flags, which are the one thing known at this moment
+            // that might distinguish a UAR IBGDA will use from one UCX will —
+            // the question arming has to answer and currently does not, so it
+            // arms both and breaks MPI (things-to-circle-back-to.md). Printed
+            // rather than only recorded because the QP side below has no record
+            // field to join to yet, so the correlation lives in the log.
+            if (hostdb::debug_on())
+                std::fprintf(stderr, "[hostdb] UAR alloc page_id=%u flags=0x%x reg_addr=%p\n",
+                             out->page_id, flags, out->reg_addr);
             rec().record(pcomm::core::Temporal::none(),
                          rr::Mlx5Uar{{},
                                      {},
