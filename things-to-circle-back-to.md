@@ -134,9 +134,17 @@ is only the human path. The fix is to skip leading comments and whitespace
 before the first-token check — a few lines, deliberately not taken during the
 chat-panel work because that work was scoped to change no C++.
 
-## OPEN: perftest's queue pair is never created, only modified
+## FIXED: perftest's queue pair is never created, only modified
 
-`case 08`'s `ib_queue_pair` table is **empty**, on every capture we have
+**Fixed at some point before 2026-09-08 and never marked.** Verified against
+the current board (job 45589764): `ib_queue_pair` has 2 rows, `expect_tables`
+lists it, `expect_fail_asserts` is gone from case 08's meta.json, and the case
+passes 21 checks. The join that names the defect — modify rows whose `qp_num`
+no `ib_queue_pair` row created — returns **empty**.
+
+What it said while it was true:
+
+`case 08`'s `ib_queue_pair` table was **empty**, on every capture we have
 (44111484, 44113361), while `ib_modify_qp` holds the QP's three state
 transitions. So the modify records refer to an entity no record ever created.
 
@@ -415,7 +423,16 @@ Fixed with `-UNDEBUG` on the test targets only (the library and providers keep
 `NDEBUG`, so hot-path asserts stay compiled out). Turning them on immediately
 surfaced the two entries above.
 
-## OPEN: gpumem stamps *drain* time, as an Instant — plan written
+## FIXED: gpumem stamped *drain* time, as an Instant
+
+**Done, and the plan is renamed `-done`.** `RawAccess` carries `ticks_lo` and
+`ticks_hi` (attr/interfaces.hpp), and `attr/pipeline.hpp:43` emits
+`Temporal::window({0, ticks_lo}, {0, ticks_hi})` — falling back to
+`Temporal::none()` when the producer supplies no bound, because timeless is
+true and an invented timestamp is not. `Temporal::window` no longer has zero
+call sites, which is what this entry used as its evidence.
+
+What it said while it was true:
 
 Every `GpuAccess` carries `TimeKind::Instant` at a host TSC read taken when the
 NVBit drain thread dequeued it, not when the SM issued the access. The device
@@ -869,10 +886,23 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   `traffic` and `sends_have_payload` stay green, so it isolates this gap rather
   than shadowing the WR-API one.
 
-- **Event timestamps auto-stamp at emit**, not at the hooked call. The hook
-  engine already captures precise start/end `Timestamp`s (pre/post); thread
-  them into the records (build a `core::Temporal` span) instead of calling
-  `record(r)` which stamps `now()` at emit time.
+- ~~**Event timestamps auto-stamp at emit**~~ — FIXED 2026-09-08, and the
+  entry was imprecise besides. Every *event* already threaded the hook engine's
+  stamps through `span(t0, t1)`: post_send, post_send_sg, post_recv, poll_cq,
+  recv_cqe. The one that did not was **EntityClose** — five sites writing
+  `auto...`, discarding the measured pair, and calling `now_instant()`, which
+  both takes a second later reading and labels it `Instant` for something that
+  spanned a call. Those now carry the interval.
+
+  Deliberately unchanged: `MemObject` keeps `now_instant()` (an Entity whose
+  stamp opens a lifetime, stamped identically by gpumem and mlx5dv — one
+  provider disagreeing would be worse), artifacts and the remaining entities
+  keep `Temporal::none()`.
+
+  Still `now_instant()` elsewhere, for anyone picking this up: EntityClose in
+  mlx5dv (2 sites), ucx, ucx_deep, nccl, gpumem, and engine.cpp. The provider
+  ones sit in hook post-callbacks and have the stamps in hand; the engine.cpp
+  ones do not, and would need them plumbed.
 - **Reduced hook set** (phase-1 proof): post_recv, req_notify_cq, post_srq_recv,
   create_cq, alloc_pd(entity), reg_mr_iova2, reg_dmabuf_mr, create_ah,
   get_device_guid, query_device are defined but not all emit records. Expand as
@@ -968,7 +998,10 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   build only on Linux targets (du04 / MN5). Use `perl -i` not `sed -i` locally;
   build/verify remotely.
 
-## OPEN (2026-08-05): case 08 drives a queue pair nothing recorded creating
+## FIXED (verified 2026-09-08): case 08 drives a queue pair nothing recorded creating
+
+Same defect as the entry above and fixed with it; the join is empty on job
+45589764. Kept for the method note at the bottom, which is the durable part.
 5 `ib_modify_qp` rows exist for queue pairs that neither `ib_queue_pair` nor
 `mlx5_queue_pair` records, while the ib provider is healthy in the same process
 (1000 post_send, 1010 poll_cq). The standing explanation — "perftest uses
@@ -1069,7 +1102,11 @@ Two things NOT closed by it, both recorded in `cuda_dmabuf.hpp`:
   consumer. Sharing it across providers needs the engine — a static library
   linked into two `.so`s gives two copies, not one.
 
-## NVBit: instrumenting a 64-bit-indexed global access raises an illegal memory access
+## OPEN (2026-08-10): NVBit faults on a 64-bit-indexed global access
+
+Titled OPEN as of 2026-09-08 because it was not, and so did not appear in the
+obvious `grep '^## OPEN'` — while being the most severe correctness limit in
+this file. Its own Status line said NOT fixed all along.
 
 **Status:** root-caused 2026-08-10, worked around in our fixture, NOT fixed.
 **Impact:** any application indexing a buffer with a 64-bit expression — i.e. any
