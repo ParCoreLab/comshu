@@ -927,12 +927,28 @@ pass still exec's directly (no fork) and writes flat `out/rank-*` (back-compat).
   relying on it.
 
 ## Reader / export
-- **NCCL rank→LID reconstruction is approximate.** The rank-level comm graph
-  derives each rank's LID from `lid[dest_qp_num]=dest_lid` over RTR rows, which
-  is incomplete when a rank's QPs never appear as a `dest` (some ranks resolved
-  to a shared LID in the NCCL run). Good enough for the node-level graph; for a
-  clean rank-level graph, capture the local LID directly (hook `ibv_query_port`
-  or read it at `modify_qp`).
+- ~~**NCCL rank→LID reconstruction is approximate**~~ — FIXED, and more
+  thoroughly than this entry asked for. It wanted the local LID captured
+  directly, "hook `ibv_query_port` or read it at `modify_qp`"; both exist.
+  `_rank_lid` (link_sql.hpp) now unions `ib_modify_qp.src_lid`,
+  `mlx5_devx_qp_connect.src_lid` and `ib_port.lid` — the last of which needs no
+  traffic, closing the hole where a rank that opened a device and posted nothing
+  had no LID anywhere.
+
+  And the LID path is no longer the primary one: the capture RECORDS node
+  identity (`node_identity.node_hash`, from gethostname) and `_node` prefers the
+  record over the inference, which is what finally fixed the pure-NVLink case
+  the LID approach could never reach (no IB, no LID, so case 05's 1.18M peer
+  accesses resolved to "unknown peer").
+
+  Verified on job 45591634, not just read: 8/8 ranks carry a nonzero `src_lid`,
+  8/8 carry a nonzero `ib_port.lid`, 8/8 carry a node_hash, and the hashes
+  resolve to exactly 2 machines for a 2-node job. Seven cases spanning 1-8 ranks
+  and 1-4 nodes all match their declared `nodes`.
+
+  What was missing was a CHECK, not a fix — no assertion referenced
+  `params.nodes` at all. `suite/asserts/node_identity_matches_the_job.sql` now
+  guards it.
 - **Perfetto `.pftrace` is minimal.** No interned strings or `clock_snapshot`
   packets — fine at 8 ranks / 96k events, but interning names + a proper clock
   domain would shrink large traces and give absolute time.
