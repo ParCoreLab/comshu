@@ -233,6 +233,52 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
     return true;
 }
 
+// mlx5dv_devx_alloc_uar allocation types. Spelled out rather than included,
+// because the header that names the third one is not everywhere: du04's
+// rdma-core 52 has only BF and NC, MN5's DOCA OFED adds
+// `#define MLX5DV_UAR_ALLOC_TYPE_NC_DEDICATED (1U << 31)` in
+// infiniband/mlx5_api.h. Compiling against the older header must not silently
+// turn the test below into something else.
+inline constexpr std::uint32_t kUarAllocBf = 0x0;
+inline constexpr std::uint32_t kUarAllocNc = 0x1;
+inline constexpr std::uint32_t kUarAllocNcDedicated = 0x80000000u;
+
+// IS THIS UAR ONE OF OURS TO WATCH?
+//
+// It has to be answered HERE, at allocation, because the transport copies
+// reg_addr the moment it gets it — the header above says so, and moving the arm
+// to CREATE_QP to use a better signal produced an empty capture and a red case
+// 12 (job 45587885). Allocation flags are the only thing known this early.
+//
+// They are enough, measured rather than assumed (job 45588970, two nodes,
+// passive so nothing was armed). 192 UARs were allocated in one rank:
+//
+//   flags=0x0          180 UARs, 17 distinct pages   none rung by a GPU-driven QP
+//   flags=0x1            6 UARs                      none rung by a GPU-driven QP
+//   flags=0x80000000     6 UARs, page 280            ALL SIX GPU-driven QPs
+//
+// So BF (0x0) is everybody else — UCX's RC transport above all — and arming it
+// is what broke MPI: the repeater forwards eight bytes from offset 0 while
+// BlueFlame writes whole 64-byte WQEs into alternating buffers in the page, so
+// UCX's sends stopped reaching the NIC and a two-node run hung inside
+// MPI_Comm_dup in NVSHMEM's own bootstrap.
+//
+// NC and NC_DEDICATED are what IBGDA asks for, in that preference order —
+// ibgda.cpp's ibgda_create_cq_shared_objects tries NC_DEDICATED, falls back to
+// NC, and only then to BF. Both non-BF types are admitted because which one a
+// run gets depends on the rdma-core it links against, and a capture should not
+// depend on that.
+//
+// THE BF FALLBACK IS DELIBERATELY NOT COVERED. If IBGDA gets neither NC type it
+// allocates BF, and this will decline to arm it — the run captures no device
+// sends. That is the correct direction to be wrong in: the alternative is
+// arming every BF UAR in the process to catch one, which is precisely the bug
+// being fixed. A capture with a hole is recoverable; an application whose MPI
+// cannot send is not.
+inline bool is_ibgda_uar(std::uint32_t flags) {
+    return flags == kUarAllocNc || flags == kUarAllocNcDedicated;
+}
+
 // Swap this UAR's doorbell register for a page we watch.
 //
 // FAIL OPEN, like every other thing that sits in a data path here: if the decoy

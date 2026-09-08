@@ -497,7 +497,14 @@ Profiler::Profiler() {
             // NIC really owns and a doorbell row joins the Mlx5Uar recorded
             // below. The record therefore carries the true reg_addr in both
             // modes; the decoy is an instrument and never appears in a capture.
-            if (hostdb::enabled())
+            //
+            // ...and only for a UAR IBGDA asked for. Arming every UAR the
+            // process allocates swaps UCX's too, and a repeater that forwards
+            // eight bytes from offset 0 truncates the BlueFlame writes UCX's RC
+            // transport rings — its sends stop reaching the NIC and a two-node
+            // run hangs in MPI_Comm_dup inside NVSHMEM's bootstrap. The flags
+            // separate the two cleanly; is_ibgda_uar has the measurement.
+            if (hostdb::enabled() && hostdb::is_ibgda_uar(flags))
                 hostdb::arm(out);
             // The allocation flags, which are the one thing known at this moment
             // that might distinguish a UAR IBGDA will use from one UCX will —
