@@ -17,10 +17,50 @@ set(CMAKE_CUDA20_EXTENSION_COMPILE_OPTION "-std=c++20")
 
 set(NVBIT_ROOT ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/nvbit-1.7.7.1)
 
+# The injected function is compiled ON ITS OWN, whole-program, with
+# -Xptxas -astoolspatch — NOT as part of the shared library below.
+#
+# That flag is what forbids ptxas the uniform datapath inside a tools patch, and
+# it is not optional: NVBit preserves only UR4:UR5 across an injected call
+# (SAVE_UREG_SPACE in libnvbit.a), so a patch that uses UR6+ destroys whatever
+# the instrumented kernel had live there. Without the flag ptxas allocated
+# pcomm_instrument_mem UR4-UR27, which is the "64-bit index" illegal access in
+# ../nvbit-bug-report — a bug that had nothing to do with index width.
+#
+# It has to be a separate target because the flag cannot coexist with either of
+# the things gpumem_trace needs. ptxas rejects it in a TU containing an entry
+# function, and rejects it alongside -dc ("Conflicting options '--compile-only'
+# and --compile-as-tools-patch"), while gpumem_trace requires
+# CUDA_SEPARABLE_COMPILATION for nvbit_backend.cu. Putting the flag on the
+# target's $<DEVICE_LINK:...> instead — which is what this build did until
+# 2026-09-09 — compiles and links cleanly and applies nothing, because with -dc
+# ptxas has already generated the SASS by then.
+#
+# Check it, do not assume it. The flag is silent when it fails to apply:
+#   cuobjdump -sass libgpumem_trace.so | awk '/Function : pcomm_instrument_mem/{f=1} \
+#     f&&/Function : /&&!/pcomm_instrument_mem/{f=0} f' | grep -oE 'UR[0-9]+' | sort -uV
+# Any output at all means the fix is not in effect.
+add_library(gpumem_inject OBJECT
+  ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.cu)
+set_target_properties(gpumem_inject PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  POSITION_INDEPENDENT_CODE ON)
+target_include_directories(gpumem_inject PRIVATE
+  ${NVBIT_ROOT}
+  ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit
+  ${CMAKE_SOURCE_DIR}/libpcomm/include
+  ${CMAKE_CURRENT_SOURCE_DIR})
+# -std=c++20 and -allow-unsupported-compiler are repeated here rather than
+# inherited: this target deliberately does not link pcomm::engine (it needs only
+# headers), so it gets none of gpumem_trace's compile options.
+target_compile_options(gpumem_inject PRIVATE
+  -std=c++20 -allow-unsupported-compiler
+  -maxrregcount=24 --keep-device-functions -Xptxas -astoolspatch)
+
 add_library(gpumem_trace SHARED
   gpumem_provider.cpp
   ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/nvbit_backend.cu
-  ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.cu
+  $<TARGET_OBJECTS:gpumem_inject>
 )
 set_target_properties(gpumem_trace PROPERTIES
   PREFIX "lib" OUTPUT_NAME "gpumem_trace"
@@ -52,8 +92,8 @@ target_link_libraries(gpumem_trace PRIVATE
   cuda
 )
 
-set_source_files_properties(${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.cu
-  PROPERTIES COMPILE_FLAGS "-maxrregcount=24 --keep-device-functions")
+# (-maxrregcount=24 and --keep-device-functions moved onto gpumem_inject above,
+# with the -astoolspatch they have to travel with.)
 
 # DIAGNOSTIC ONLY, default OFF. inject_funcs.cu has carried a
 # PCOMM_INJECT_NO_PUSH branch since it was written — instrument everything,
@@ -66,8 +106,7 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.
 # be green and empty.
 option(PCOMM_INJECT_NO_PUSH "diagnostic: instrument but never push to the channel" OFF)
 if(PCOMM_INJECT_NO_PUSH)
-  set_source_files_properties(${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.cu
-    PROPERTIES COMPILE_DEFINITIONS PCOMM_INJECT_NO_PUSH)
+  target_compile_definitions(gpumem_inject PRIVATE PCOMM_INJECT_NO_PUSH)
   message(WARNING "PCOMM_INJECT_NO_PUSH=ON — gpumem will instrument but record nothing")
 endif()
 
@@ -76,8 +115,12 @@ target_compile_options(gpumem_trace PRIVATE
   # not parse it into a CUDA_STANDARD requirement it can't satisfy for nvcc).
   $<$<COMPILE_LANGUAGE:CUDA>:-allow-unsupported-compiler --keep-device-functions>)
 
+# -Xptxas=-astoolspatch is deliberately NOT here. It was, and it did nothing:
+# with CUDA_SEPARABLE_COMPILATION the sources are compiled -dc, so ptxas has
+# already generated their SASS before the device link sees the flag. It now sits
+# on gpumem_inject's compile line, which is the only place it has any effect.
 target_link_options(gpumem_trace PRIVATE
-  $<DEVICE_LINK:-allow-unsupported-compiler -Xptxas=-astoolspatch --keep-device-functions>)
+  $<DEVICE_LINK:-allow-unsupported-compiler --keep-device-functions>)
 
 # The NVHPC driver bakes a DT_RPATH to its own compilers/lib + the gcc-11.4 host
 # lib64 into this .so. DT_RPATH outranks LD_LIBRARY_PATH, so when gpumem is

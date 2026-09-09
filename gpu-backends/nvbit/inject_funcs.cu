@@ -123,9 +123,22 @@ pcomm_kernel_stamp(int is_end, int dev_id, uint64_t launch_id, uint64_t pchannel
 #endif
 }
 
-// Keeps the injected functions from being optimized away ("BLACK MAGIC DONT
-// REMOVE", per the original).
-__global__ void pcomm_trickery() {
-    pcomm_instrument_mem(0, 0, 0, 0, 0, 0, 0, 0);
-    pcomm_kernel_stamp(0, 0, 0, 0);
-}
+// There was an entry function here — `pcomm_trickery`, calling both injected
+// functions to keep them from being optimised away ("BLACK MAGIC DONT REMOVE",
+// per the original). It is gone, and it must stay gone.
+//
+// An entry function in THIS translation unit is what made
+// `-Xptxas -astoolspatch` impossible to apply here: ptxas refuses with "Entry
+// function is not allowed when command line option '--compile-as-tools-patch'
+// is specified". The build's answer was CUDA_SEPARABLE_COMPILATION plus the flag
+// at $<DEVICE_LINK:...>, where -dc has already had ptxas generate the SASS. The
+// flag was accepted and did nothing, and without it ptxas allocated this
+// function uniform registers up to UR27. NVBit preserves only UR4:UR5 across an
+// injected call, so every kernel that had a live pointer in UR6+ at an
+// instrumented instruction got it destroyed — the "64-bit index" illegal
+// access, which was never about the index. See ../nvbit-bug-report.
+//
+// The anchor was never needed: --keep-device-functions retains both functions on
+// its own in a whole-program compile, which is what NVBit's own sample tools
+// rely on. Re-adding any __global__ here silently reverts the fix, because the
+// build would have to move the flag back to the device link to compile at all.
