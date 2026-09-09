@@ -161,13 +161,33 @@ export NVSHMEM_DISABLE_P2P=1
 export NVSHMEM_REMOTE_TRANSPORT=ibdevx
 export NVSHMEM_IB_DISABLE_DMABUF=1
 
+# `-p ib,mlx5dv`, not `-p mlx5dv`, and the second provider is not decoration.
+#
+# ibdevx drives the control plane through DEVX but NVSHMEM still creates its
+# queue pairs with plain verbs. ibv_destroy_qp is interposed by the ENGINE, so
+# the closes are always recorded; ibv_create_qp is interposed by the IBVERBS
+# PROVIDER, so on a mlx5dv-only run the opens are not. Every queue pair was
+# therefore a "close names an entity no open record created" — 99 per rank,
+# which is what entity_close_accounted reported the first time this case ever
+# reached its assertions (job 45636332). Measured directly, same workload, same
+# node, job 45636769:
+#
+#   -p mlx5dv      ib_queue_pair   0 rows   99 orphaned closes per rank
+#   -p ib,mlx5dv   ib_queue_pair 198 rows    0 orphaned closes
+#
+# That assertion's whole point is that an unmatched close means a creation door
+# nobody hooked, and that the fix is to capture the door rather than filter the
+# row. Here the door exists and simply was not loaded. The providers co-run
+# (case 06 is the regression test) and `ib` does not perturb what the 200-range
+# streams record — mlx5_umem, mlx5_uar and mlx5_devx_* are identical across the
+# two arms above.
 rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 
 timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
   -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
   -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
   -x NVSHMEM_IB_DISABLE_DMABUF \
-  "$PCOMM" run -p mlx5dv -o "$OUT" -- "$APP" 1024 2
+  "$PCOMM" run -p ib,mlx5dv -o "$OUT" -- "$APP" 1024 2
 rc=$?; echo "mpirun exit=$rc"
 
 # A run that IBGDA declined to serve is a skip, not a failure: NVSHMEM exits
