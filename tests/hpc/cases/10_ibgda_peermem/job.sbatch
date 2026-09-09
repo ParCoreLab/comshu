@@ -32,6 +32,12 @@
 set -x
 PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
 source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+# BEFORE the mpirun check below — see the note in 11_ibdevx_peermem. common.sh
+# purges a GPP-inherited module environment and the inherited mpirun goes with
+# it, so checking for mpirun before this line tests the module environment
+# rather than the host. Case 11 is where it surfaced (job 45630290); this case
+# has the identical ordering and is only hidden by the peermem skip above it.
+pcomm_load_runtime
 CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/10_ibgda_peermem"
 OUT=$(pcomm_out ibgda_peermem)
 

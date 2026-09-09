@@ -34,6 +34,20 @@
 set -x
 PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
 source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+# BEFORE the mpirun check below, not after it, and this ordering has cost a red
+# board (job 45630290). common.sh purges the module environment when an ACC job
+# inherits a GPP one — which is every job since the default login node moved to
+# glogin1 — and that purge takes the inherited Intel MPI with it. Measured on
+# as01r1b32 (job 45636242):
+#
+#   before common.sh    mpirun /gpfs/apps/MN5/GPP/ONEAPI/.../bin/mpirun
+#   after  common.sh    <none>
+#   after  this line    mpirun /apps/ACC/NVIDIA-HPC-SDK/25.7/.../mpi/bin/mpirun
+#
+# So `command -v mpirun` in that window tests the module environment, not the
+# host, and reports FAIL for a cluster that runs MPI perfectly well. Cases
+# 04/06/07 call this first and have never had the problem.
+pcomm_load_runtime
 CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/11_ibdevx_peermem"
 OUT=$(pcomm_out ibdevx_peermem)
 
