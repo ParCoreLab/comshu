@@ -1118,10 +1118,64 @@ Two things NOT closed by it, both recorded in `cuda_dmabuf.hpp`:
   consumer. Sharing it across providers needs the engine — a static library
   linked into two `.so`s gives two copies, not one.
 
-## OPEN (2026-08-10, RE-ATTRIBUTED 2026-09-09): the gpumem tool faults on a 64-bit-indexed access — NVBit does not
+## FIXED (2026-09-09, `0669f54`): the gpumem tool faults on a 64-bit-indexed access — NVBit does not
 
-**This was filed against NVBit for a year and NVBit is not the component at
-fault.** Reproduced standalone in `../nvbit-bug-report` (40 lines of plain CUDA,
+**Root cause: `-Xptxas -astoolspatch` never reached `inject_funcs.cu`.** That
+flag is what forbids ptxas the uniform datapath inside a tools patch. Without
+it, `pcomm_instrument_mem` was allocated UR4–UR27. NVBit preserves only UR4:UR5
+across an injected call (`SAVE_UREG_SPACE` in `libnvbit.a`), so any kernel
+holding a live pointer in UR6+ at an instrumented instruction had it destroyed,
+and the next access through it was illegal.
+
+The flag could not be applied where it mattered: `inject_funcs.cu` carried an
+entry function (`pcomm_trickery`, "BLACK MAGIC DONT REMOVE") and ptxas rejects
+`--compile-as-tools-patch` in a TU that has one. So the build used
+`CUDA_SEPARABLE_COMPILATION` and put the flag on `$<DEVICE_LINK:...>` — where
+`-dc` has already had ptxas generate the SASS. It compiled, it linked, it did
+nothing. The fix drops the anchor (`--keep-device-functions` retains the
+injected functions on its own, which is what NVBit's own samples rely on) and
+compiles that one TU whole-program with the flag, as its own object library.
+
+**Why the index width looked like the mechanism for a year.** It isn't one; it
+only decides where the compiler puts a pointer. On sm_90 `k_int64` keeps `out`
+in UR6:UR7 live across the instrumented `LDG`; `k_int32` keeps it in R4:R5,
+which NVBit does save; sm_80 addresses `k_int64` from the constant bank with no
+UR live there at all — which is why du04 never reproduced this and MN5 always
+did. The same accident explains `app_ur`, where `k=4` is clean and `k=3`/`k=7`
+fault: ptxas emits an unrolled-by-4 body plus a remainder loop, and only the
+remainder loop keeps a uniform base live across the load.
+
+**Confirmed end to end**, job 45610406, one H100, same node, same launcher and
+engine, only the provider `.so` differing:
+
+| | `pcomm_instrument_mem` URs | `app int32` | `app int64` | `app_ur` k=3 | k=4 | k=7 |
+|---|---|---|---|---|---|---|
+| `d2ff87c` | UR4–UR27 | ok | **FAULT (700)** | **FAULT** | ok | **FAULT** |
+| `0669f54` | none | ok | ok | ok | ok | ok |
+
+`../nvbit-bug-report` now also reproduces it with **no profiler involved at
+all**, on an A100 (`Makefile.ur`), flipping clean↔FAULT on that one flag
+position. Two things that looked plausible and are refuted there: not register
+pressure (`-maxrregcount` 16..255 all give UR4–UR27), and not the function's
+body (identical body, two build paths, 13024 insns/no URs vs 2488/UR4–UR29).
+
+**Still nothing for NVIDIA.** NVBit saving only UR4:UR5 looks like an NVBit
+limitation until you notice NVBit also ships the mechanism that makes it safe
+and uses it in its own sample Makefiles. Compiled as NVBit intends, an injected
+function has no uniform registers to save. Our build defeated the flag.
+
+**Regression guard:** the fix is silent when it stops working — a `__global__`
+returning to `inject_funcs.cu` would force the flag back to the device link and
+revert this with no error anywhere. `providers/gpumem/CMakeLists.txt` carries
+the one-line `cuobjdump` check; any `UR` in `pcomm_instrument_mem` means the fix
+is not in effect.
+
+---
+
+Everything below is the investigation as it stood before the root cause, kept
+because the refutations are what narrowed it.
+
+Reproduced standalone in `../nvbit-bug-report` (40 lines of plain CUDA,
 a ~70-line NVBit tool, no NVSHMEM, no MPI). Same application, same H100, same
 CUDA 12.9, same NVBit 1.7.7.1:
 
@@ -1158,12 +1212,15 @@ explained it.
 **What to do with it:** nothing goes to NVIDIA. The question is what
 `gpu-backends/nvbit/` does that a minimal tool does not, and why it only matters
 for `k_int64`; `app.cu` is a 40-line reproduction of that, which the NVSHMEM
-workload never was.
+workload never was. *(Answered: it was not what the tool does at runtime but how
+its injected function was compiled — see the top of this entry.)*
 
-**Status:** root-caused 2026-08-10, worked around in our fixture, NOT fixed.
-**Impact:** any application indexing a buffer with a 64-bit expression — i.e. any
-buffer over 2 GB — cannot be captured with `-p p2p`. It is not a subtle
-mis-attribution; the context is poisoned and the capture is lost.
+**Impact while it was open:** any application indexing a buffer with a 64-bit
+expression — i.e. any buffer over 2 GB — could not be captured with `-p p2p`.
+Not a subtle mis-attribution; the context was poisoned and the capture lost.
+More broadly than the 2 GB framing suggests: any kernel whose compiler happened
+to leave a pointer in UR6+ across an instrumented instruction was affected, and
+index width was only a proxy for that.
 
 Reproduced on MN5, 4 PEs, one node, NVSHMEM 26.5, sm_90. A kernel doing
 `nvshmem_int_p(&dst[idx], src[i], peer)` faults under instrumentation when `idx`
