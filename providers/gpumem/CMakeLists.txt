@@ -55,6 +55,22 @@ target_link_libraries(gpumem_trace PRIVATE
 set_source_files_properties(${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.cu
   PROPERTIES COMPILE_FLAGS "-maxrregcount=24 --keep-device-functions")
 
+# DIAGNOSTIC ONLY, default OFF. inject_funcs.cu has carried a
+# PCOMM_INJECT_NO_PUSH branch since it was written — instrument everything,
+# push nothing — and nothing could switch it on, so the question it exists to
+# answer has never been asked. It separates "the injected code perturbs the
+# kernel" from "channel_dev->push() does", which is the last split standing in
+# the p2p illegal-access investigation (../nvbit-bug-report).
+#
+# A capture built this way records NO accesses. Never ship it; the board would
+# be green and empty.
+option(PCOMM_INJECT_NO_PUSH "diagnostic: instrument but never push to the channel" OFF)
+if(PCOMM_INJECT_NO_PUSH)
+  set_source_files_properties(${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.cu
+    PROPERTIES COMPILE_DEFINITIONS PCOMM_INJECT_NO_PUSH)
+  message(WARNING "PCOMM_INJECT_NO_PUSH=ON — gpumem will instrument but record nothing")
+endif()
+
 target_compile_options(gpumem_trace PRIVATE
   # -std=c++20 is set via CMAKE_CUDA_FLAGS above (kept out of here so CMake does
   # not parse it into a CUDA_STANDARD requirement it can't satisfy for nvcc).
