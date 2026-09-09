@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # run_on_a100.sh — one command, from a checkout of this repo: sync it to the
-# A100 box, build the mlx5dv provider, run the IBGDA case, print the verdict.
+# A100 box, build the ibverbs + mlx5dv providers, run the IBGDA case, print the
+# verdict. Exits non-zero if any case it ran reported ok:false.
+#
+# ibverbs is built alongside mlx5dv even though the IBGDA cases are about the
+# DEVX plane: cases 11, 12 and 25 capture with `-p ib,mlx5dv`, because
+# ibv_create_qp is interposed by the ibverbs provider while ibv_destroy_qp is
+# interposed by the engine — so a mlx5dv-only capture records a close for every
+# queue pair and an open for none. Building one provider and running a case that
+# asks for two is a hard stop in the launcher ("ib provider library not found"),
+# not a degraded capture.
 #
 #   tests/hpc/run_on_a100.sh                 # sync + build + run case 09
 #   tests/hpc/run_on_a100.sh --no-build      # skip the rebuild
@@ -149,7 +158,7 @@ if [ "$do_build" -eq 1 ]; then
   # finding 14 of the round-2 studies, word for word, and it was still here in
   # this file after being fixed in wait_and_run_mn5.sh.
   rsh "set -o pipefail; export PCOMM_COMMIT=$build_commit; cd $RDIR &&
-       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_STATIC -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
+       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_STATIC -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
        cmake --build build -j 2>&1 | tail -3" || {
     echo "run_on_a100.sh: build failed" >&2; exit 1; }
 fi
@@ -180,8 +189,10 @@ rsh "cd $RDIR && bash tests/hpc/suite/bake_providers.sh $RDIR/build" || {
 # No scheduler here, so a case's job.sbatch is executed directly — which works
 # because #SBATCH lines are comments to bash, the same property all_in_one.sbatch
 # already relies on.
+ran=""
 for c in $(rsh "ls $RDIR/tests/hpc/cases" | grep -E "^(${cases_filter// /|})" ); do
   echo "== case $c"
+  ran="$ran $c"
   rsh "cd $RDIR &&
        export PCOMM_ROOT=$RDIR &&
        export PCOMM_OUT_ROOT=$RDIR/results &&
@@ -194,4 +205,36 @@ done
 
 echo
 echo "== board"
-rsh "for f in $RDIR/results/*.csv/result.json; do [ -e \"\$f\" ] && cat \"\$f\"; done"
+board="$(rsh "for f in $RDIR/results/*.csv/result.json; do [ -e \"\$f\" ] && cat \"\$f\"; done")"
+printf '%s\n' "$board"
+
+# A FAILED case must turn this runner red, and until 2026-09-10 it did not:
+# the loop above discarded each case's exit status and the script ended on the
+# board `cat`, so `run_on_a100.sh --cases 11` printed ok:false and exited 0.
+# That is the "a broken harness reported a green board" failure this suite has
+# already been bitten by once (things-to-circle-back-to.md, 2026-08-04), and it
+# matters more here than on MN5 because this runner is the ONLY place the
+# IBGDA cases are ever really executed — a silent green is a case nobody is
+# testing.
+#
+# Scoped to the cases THIS invocation ran. $RDIR/results is a persistent
+# directory, so an unrelated case's result.json from an older run sits there and
+# would otherwise be read as this run's verdict — the same staleness MN5's
+# .last-run.manifest exists to prevent.
+echo
+echo "== verdict"
+rc=0
+for c in $ran; do
+  line="$(printf '%s\n' "$board" | grep -F "\"case\":\"$c\"" | tail -1)"
+  if [ -z "$line" ]; then
+    echo "  $c  NO RESULT — the case wrote no result.json"; rc=1
+  elif printf '%s' "$line" | grep -q '"ok":false'; then
+    echo "  $c  FAIL"; rc=1
+  elif printf '%s' "$line" | grep -q '"skipped":true'; then
+    echo "  $c  SKIP"
+  else
+    echo "  $c  PASS"
+  fi
+done
+if [ $rc -eq 0 ]; then echo "A100 BOARD GREEN"; else echo "A100 BOARD RED"; fi
+exit $rc
