@@ -105,33 +105,14 @@ fail() {
 # makes a case invisible exactly where it would have been informative.
 lsmod 2>/dev/null | grep -qE "nvidia_peermem|nv_peer_mem" || \
   skip "no nvidia_peermem/nv_peer_mem module loaded — by_addr registration of GPU memory needs it"
-# THE EXPERIMENT THE PARAGRAPH ABOVE DESCRIBES HAS RUN, AND PeerMappingOverride
-# IS REQUIRED AFTER ALL — so this case now gates on it exactly as 09 and 10 do.
-#
-# Job 45636332 was the first time this case ever reached its assertions: it had
-# been short-circuiting at the mpirun gate, and at the peermem gate before that.
-# It landed on as01r1b32, which has nvidia_peermem loaded and does NOT have
-# PeerMappingOverride=1 — precisely the host the note above was written to
-# interrogate. All 436 umems came back binding=by_addr with device=65535
-# (kUnknownDevice) and host addresses. Not one NIC buffer was GPU-resident, so
-# umem_binding_as_configured failed on its GPU-resident clause. peermem alone
-# does not get GPU memory registered with the NIC, even for a CPU-driven DEVX
-# control plane.
-#
-# Widening the skip is safe now in a way it was not before, and that is the
-# whole reason the narrow condition existed. The worry it was written against —
-# "a skip condition that is too broad makes a case invisible exactly where it
-# would have been informative" — was about MN5 hiding an answer nobody had. The
-# answer is now recorded here, and the case is not invisible: du04 has BOTH
-# peermem and PeerMappingOverride=1, so this runs there for real:
-#
-#   tests/hpc/run_on_a100.sh --cases "11"
-#
-# which is the division run_on_a100.sh's own header describes — du04 is the only
-# place device-initiated networking can be observed at all, MN5 the only place
-# multi-node behaviour can, and neither board subsumes the other.
-grep -q "PeerMappingOverride=1" /proc/driver/nvidia/params 2>/dev/null || \
-  skip "NVIDIA driver has no PeerMappingOverride=1 — peermem alone does not register GPU memory with the NIC (see meta.json prerequisite_answer)"
+# NO PeerMappingOverride GATE HERE, and the absence is now measured rather than
+# assumed. A gate was added on 2026-09-10 and removed on 2026-09-11: MN5 lacks
+# the flag and failed umem_binding_as_configured, which looked like the answer
+# to the question the paragraph above poses. It was not. du04 HAS
+# PeerMappingOverride=1 and failed that assertion identically, so the driver
+# flag was never the discriminator — the assertion was reading the wrong table.
+# See meta.json prerequisite_answer; the narrow prerequisite this case was built
+# with stands, and stands for the reason it was written.
 
 MPIRUN="${PCOMM_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"

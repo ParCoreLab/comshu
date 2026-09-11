@@ -177,7 +177,7 @@ row_count()  { sql "SELECT count(*) FROM \"$1\";" 2>/dev/null; }
 # call count. The nccl provider records the calls the APPLICATION made, and no
 # NCCL internal choice changes how many times the application called
 # ncclAllReduce.
-PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding gpudirect rx_depth colls_per_iter p2p_per_iter groups_per_iter"
+PARAM_COLS="ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding umem_control_plane_only gpudirect rx_depth colls_per_iter p2p_per_iter groups_per_iter"
 
 # ...AND A CASE MAY ADD ITS OWN, by naming them in meta.json:
 #
