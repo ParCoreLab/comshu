@@ -83,7 +83,8 @@ any non-numeric mtime and its "no engine" branch keys on the path alone.
 Measured on du04, 2 ranks, a fresh bake directory per run so both unpack at
 once (the first-run-after-rebuild condition): **5 of 8 runs** had a mapped
 image replaced before the fix, **0 of 8** after. du04 board 09/10/11 green;
-core `ctest` 33/33 (with DuckDB). The kept red capture now reads "mapped image
+core `ctest` 33/33 (with DuckDB); MN5 board job 45861484 at `0c012fa` green,
+23 PASS / 2 SKIP (09 and 10, no `PeerMappingOverride` there — green on du04). The kept red capture now reads "mapped image
 file was gone when the capture was written" for rank 0's engine — the actual
 problem — instead of "no engine".
 
