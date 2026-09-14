@@ -1,10 +1,11 @@
 # PLAN — the ibdevx data plane is a host send queue, so watch the queue
 
 - **Created:** 2026-09-14 17:50 +03
-- **Status:** in progress. Step 1 is done: the prototype (`PCOMM_SQ_WATCH=1`,
-  `providers/mlx5dv/sq_watch.hpp`) is lossless on du04 up to `1024 200`
-  (204,800 WQEs per rank) and keeps 99.9% at `1024 2000`. Steps 2–5 make it a
-  supported capture mode.
+- **Status:** in progress. Steps 1 and 2 are done: the prototype
+  (`PCOMM_SQ_WATCH=1`, `providers/mlx5dv/sq_watch.hpp`) is lossless on du04 up
+  to `1024 200` (204,800 WQEs per rank), keeps ≥99.7% at 20.5M WQEs per rank,
+  and — placed on the rank's L3 — slows the traffic phase ~1.15× at full rate.
+  Steps 3–5 make it a supported capture mode.
 - **Related:** the `OPEN (2026-09-14)` entry at the top of
   `things-to-circle-back-to.md` (the finding and the measurements live there);
   `tests/hpc/cases/11_ibdevx_peermem/parity/README.md` (where the gap was found);
@@ -116,13 +117,72 @@ the price is visible rather than hidden.
    rest are `lapped_early`, which no salvage recovers. The ring is the
    application's (`NVSHMEM_IBDEVX_QP_DEPTH`-class settings), so the loss rate
    at a given traffic rate is partly the application's to set.
-2. **Cost.** Spinning costs a core per rank. First number, and not yet the
-   answer: `1024 200` took 3.89 s watched, 3.85 s under pcomm with the watcher
-   off, 3.87 s bare — within noise, because this workload's wall time is
-   startup. It needs a workload whose runtime is traffic, and a measure of what
-   the extra spinning core costs a job that needed it. Then try
-   `umwait`/`monitorx` on the doorbell record (the memory repeater already has
-   both) or adaptive backoff, and keep whichever holds step 1's numbers.
+2. **Cost — DONE 2026-09-14.** The watcher's cost is distance, and placing it
+   on the rank's L3 cut the traffic-phase slowdown from ~2.2× to ~1.15×
+   (result at the end of this step).
+
+   *Method, because the first numbers were wrong.* Single runs at `1024 20000`
+   said the watcher tripled the traffic phase; rerun, the same configuration
+   matched the unwatched one, and bare itself varied 7.1–10.1 s. Three causes:
+   `auto` lands on a random L3 and migrates mid-run (`cpu=0->56`), NVSHMEM's
+   ibdevx deadlocks ~1 in 6 at this size with no pcomm at all
+   (things-to-circle-back-to.md), and one-shot wall times are noise. So:
+   `~/pcomm-parity/cost/cost_bench.sh` on du04 — every configuration 5 times,
+   interleaved round-robin, each run under a 60 s watchdog that reports HUNG
+   instead of a time, medians.
+
+   | du04, `1024 20000`, 20.5M WQEs/rank | median wall | traffic phase† | watcher CPU/rank | lost |
+   |---|---|---|---|---|
+   | bare | 7.17 s | ~3.4 s | — | — |
+   | pcomm, watcher off | 7.17 s | ~3.4 s | — | — |
+   | watcher pinned on the rank's L3 (CPU 2/3)‡ | 10.23 s | ~6.4 s (1.9×) | 7.4 s | lap ≤0.2%, **drop 0.5–2.9%** |
+   | watcher `auto` (NUMA node) | 11.26 s | ~7.4 s (2.2×) | 8.4 s | lap ≤0.2% |
+   | watcher on another L3, same socket | 14.33 s | ~10.5 s (3.1×) | 11.4 s | lap ≤0.1% |
+   | watcher on the other socket | 19.96 s | ~16.1 s (4.8×) | 17.0 s | lap ≤0.5% |
+
+   † wall minus ~3.8 s of startup (the `1024 200` wall).
+   ‡ with its decoder left on the rank's own core — see the correction below.
+
+   *What it says.* pcomm without the watcher costs nothing measurable. With it,
+   the cost is not CPU time but **distance**: the slowdown grows monotonically
+   with how far the watcher sits from the proxy it reads — same L3, another L3,
+   another socket — which is what cache-line transfers predict: every WQEBB and
+   doorbell-record line the watcher reads is one the proxy must take back before
+   it can write it again. Spinning costs a whole core per rank (watcher CPU =
+   its wall). Sleeping was already ruled out: 9–99% lost at 20–200 µs even with
+   precise timers.
+
+   *What it changes.* `auto` should prefer the CPUs sharing the rank's L3,
+   minus the rank's own binding, and fall back to the NUMA node when there are
+   none (`PCOMM_SQ_WATCH_CPU=node` keeps today's behaviour). On a
+   socket-wide-L3 machine (MN5's Sapphire Rapids) that is the socket, so nothing
+   changes there. Its known limit: on a node whose ranks fill an L3 domain the
+   watcher lands beside them again, which the `bound` numbers already priced.
+
+   *~~And what it uncovers~~ — RETRACTED, same day.* This said that near the
+   proxy the run became fast enough for recording to be the bottleneck (~1.15
+   GB per rank in ~6 s overflowing the staging ring), and filed it under step 3.
+   Wrong. The pinned configuration left the **decoder** on the rank's own core —
+   `place_thread`'s `<base>` mode did that on purpose — where it competed with
+   the proxy and fell behind. The result below records the same volume faster,
+   with the decoder on the node, and drops nothing. `<base>` now places the
+   decoder on the node too.
+
+   *Result of the change, same method* (du04, `1024 20000`, 5 interleaved
+   runs, deadlocked runs excluded — 1 bare, 1 pinned):
+
+   | configuration | median wall | traffic phase | lost |
+   |---|---|---|---|
+   | bare | 7.17 s | ~3.4 s | — |
+   | **`auto` = the rank's L3, minus its binding** | **7.68 s** | **~3.9 s (1.15×)** | lap ≤0.3%, 0 dropped |
+   | `node` (the old `auto`) | 11.26 s | ~7.5 s (2.2×) | lap ≤0.2%, 0 dropped |
+   | pinned CPU 2/3, decoder on the rank's core | 10.49 s | ~6.7 s (2×) | lap ≤0.3%, drop 0.8–2.5% |
+
+   Every `auto` run started and ended inside the rank's L3 `{0-3,128-131}`
+   (`131->3`, `0->130`, `130->2`, …). The watcher still spins a core per rank
+   (~4.9 s CPU on a ~5 s window); `umwait`/`monitorx` would save that core's
+   power, not the transfers, and is not worth its complexity until a job is
+   shown to want the core back.
 3. **Record semantics.** `Mlx5DeviceSend` is named for the GPU path. Add who
    submitted it (GPU doorbell hijack / host doorbell / send-queue watch) — a
    schema change, which pre-alpha takes over a misleading name — and document

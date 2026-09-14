@@ -50,8 +50,9 @@
 //     default, and the watcher inherits it: sharing two hardware threads with
 //     the main thread and the very proxy it watches, it took 7,700-16,000
 //     involuntary context switches and kept ~20% of `1024 20`. Unbound, the same
-//     run was lossless. So both threads move to the rank's NUMA node by default
-//     (place_thread); under SLURM the kernel intersects that with the job's
+//     run was lossless. So by default the watcher moves to the CPUs sharing the
+//     rank's L3 and the decoder to its NUMA node (place_thread, which has the
+//     measurements); under SLURM the kernel intersects that with the job's
 //     cpuset, so it never leaves the allocation;
 //   * a window of one ring between two polls, and of the staging ring between
 //     watcher and decoder. Anything lost to either is counted — `lapped` and
@@ -75,6 +76,7 @@
 #include <endian.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 
 #include "uar_hijack.hpp"
@@ -114,6 +116,36 @@ inline std::size_t stage_bytes() {
         return static_cast<std::size_t>(mb > 0 ? mb : 16) << 20;
     }();
     return b;
+}
+
+// MEASUREMENT ONLY, like PCOMM_HIJACK_NO_DECODE: how much of the watcher's cost
+// to the application is which part of it. PCOMM_SQ_WATCH_STAGE=
+//   poll   read the doorbell records and nothing else — no send-queue read;
+//   copy   also copy WQEBBs into staging, but the decoder records nothing;
+//   full   the capture (default).
+// `poll` and `copy` produce captures with no send rows, which is exactly the
+// shape of a broken watcher, so neither is a capture mode and neither gets a
+// launcher flag.
+enum class StageMode { Full, Copy, Poll };
+inline StageMode stage_mode() {
+    static const StageMode m = [] {
+        const char* v = std::getenv("PCOMM_SQ_WATCH_STAGE");
+        if (v && std::strcmp(v, "poll") == 0)
+            return StageMode::Poll;
+        if (v && std::strcmp(v, "copy") == 0)
+            return StageMode::Copy;
+        return StageMode::Full;
+    }();
+    return m;
+}
+
+// This thread's CPU time, user + system, in microseconds; -1 if unknown.
+inline long thread_cpu_us() {
+    rusage ru{};
+    if (getrusage(RUSAGE_THREAD, &ru) != 0)
+        return -1;
+    return (ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000000L + ru.ru_utime.tv_usec +
+           ru.ru_stime.tv_usec;
 }
 
 inline void cpu_relax() {
@@ -212,9 +244,16 @@ struct State {
     // The watcher thread's own view of its scheduling: which CPU it started on,
     // how many it may run on, and how often the kernel took the CPU away.
     int  cpu_start{-1};
+    int  cpu_end{-1};  // where it finished: an `auto` watcher can migrate across L3s
     int  affinity_cpus{-1};
     long csw_voluntary{-1};
     long csw_involuntary{-1};
+    // What the two threads actually consumed, against how long the watcher ran:
+    // the cost question, which wall time cannot answer on a run whose wall time
+    // is startup.
+    long watcher_cpu_us{-1};
+    long watcher_wall_us{-1};
+    long decoder_cpu_us{-1};
 };
 
 // Leaked on purpose. A function-local static would be destroyed by the C++
@@ -282,6 +321,12 @@ inline void drain_one(Watched& w) {
         return;
     for (std::uint32_t m = s.max_delta.load(std::memory_order_relaxed);
          delta > m && !s.max_delta.compare_exchange_weak(m, delta, std::memory_order_relaxed);) {
+    }
+    if (stage_mode() == StageMode::Poll) {  // measurement: the counter and nothing else
+        s.staged.fetch_add(delta, std::memory_order_relaxed);
+        w.last = end;
+        w.seen_any = true;
+        return;
     }
 
     if (!w.seen_any && (delta > slots || !slot_holds(w, start))) {
@@ -368,10 +413,11 @@ inline void decode_staged() {
             continue;
         }
         const auto t0 = std::chrono::steady_clock::now();
-        hijack::parse_wqes(st.buf.get() + off + hijack::kWqebb, hdr->start,
-                           (hdr->start + hdr->n) & hijack::kProdMask, hdr->qpn,
-                           hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type},
-                           hijack::state().device_send_sink);
+        if (stage_mode() != StageMode::Copy)  // measurement: Copy stages and records nothing
+            hijack::parse_wqes(st.buf.get() + off + hijack::kWqebb, hdr->start,
+                               (hdr->start + hdr->n) & hijack::kProdMask, hdr->qpn,
+                               hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type},
+                               hijack::state().device_send_sink);
         const std::uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count();
@@ -391,8 +437,10 @@ inline void decode_run() {
     for (;;) {
         const bool stopping = s.decoder_stop.load(std::memory_order_acquire);
         decode_staged();
-        if (stopping)
+        if (stopping) {
+            s.decoder_cpu_us = thread_cpu_us();
             return;  // one full pass after stop was seen, so nothing published is left
+        }
         std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
 }
@@ -411,8 +459,37 @@ inline bool wait_decoded(std::uint64_t upto, std::chrono::milliseconds limit) {
     return true;
 }
 
-// The CPUs sharing a NUMA node with `cpu`, from sysfs. False if sysfs does not
-// say, in which case the caller widens to everything instead.
+// A sysfs cpulist file ("0-3,128-131") into `out`. False if it cannot be read
+// or is not a cpulist — nothing is guessed from a malformed one.
+inline bool read_cpulist(const char* path, cpu_set_t& out) {
+    std::FILE* f = std::fopen(path, "r");
+    if (!f)
+        return false;
+    char       list[1024] = {};
+    const bool got = std::fgets(list, sizeof list, f) != nullptr;
+    std::fclose(f);
+    if (!got)
+        return false;
+    CPU_ZERO(&out);
+    for (char* p = list; *p && *p != '\n';) {
+        char*      next = nullptr;
+        const long lo = std::strtol(p, &next, 10);
+        if (next == p)
+            break;
+        long hi = lo;
+        if (*next == '-')
+            hi = std::strtol(next + 1, &next, 10);
+        for (long c = lo; c <= hi && c < CPU_SETSIZE; ++c)
+            CPU_SET(static_cast<int>(c), &out);
+        if (*next != ',')
+            break;
+        p = next + 1;
+    }
+    return CPU_COUNT(&out) > 0;
+}
+
+// The CPUs sharing a NUMA node with `cpu`. False if sysfs does not say, in
+// which case the caller widens to everything instead.
 inline bool node_cpus_of(int cpu, cpu_set_t& out) {
     char path[96];
     std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d", cpu);
@@ -427,39 +504,54 @@ inline bool node_cpus_of(int cpu, cpu_set_t& out) {
     if (node < 0)
         return false;
     std::snprintf(path, sizeof path, "/sys/devices/system/node/node%d/cpulist", node);
-    std::FILE* f = std::fopen(path, "r");
-    if (!f)
-        return false;
-    char       list[1024] = {};
-    const bool got = std::fgets(list, sizeof list, f) != nullptr;
-    std::fclose(f);
-    if (!got)
-        return false;
-    CPU_ZERO(&out);
-    for (char* p = list; *p && *p != '\n';) {  // "0-63,128-191"
-        char*      next = nullptr;
-        const long lo = std::strtol(p, &next, 10);
-        if (next == p)
-            break;  // not a number: not a cpulist, and nothing is guessed from it
-        long hi = lo;
-        if (*next == '-')
-            hi = std::strtol(next + 1, &next, 10);
-        for (long c = lo; c <= hi && c < CPU_SETSIZE; ++c)
-            CPU_SET(static_cast<int>(c), &out);
-        if (*next != ',')
-            break;
-        p = next + 1;
+    return read_cpulist(path, out);
+}
+
+// The CPUs sharing `cpu`'s last-level (L3) cache: the cache index whose level
+// is 3, not index3 by assumption — the numbering is the kernel's, not a
+// standard's.
+inline bool l3_cpus_of(int cpu, cpu_set_t& out) {
+    for (int i = 0; i < 8; ++i) {
+        char path[128];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index%d/level", cpu,
+                      i);
+        std::FILE* f = std::fopen(path, "r");
+        if (!f)
+            return false;  // indices are contiguous: past the last one
+        int        level = 0;
+        const bool got = std::fscanf(f, "%d", &level) == 1;
+        std::fclose(f);
+        if (!got || level != 3)
+            continue;
+        std::snprintf(path, sizeof path,
+                      "/sys/devices/system/cpu/cpu%d/cache/index%d/shared_cpu_list", cpu, i);
+        return read_cpulist(path, out);
     }
-    return CPU_COUNT(&out) > 0;
+    return false;
 }
 
 // Where a watcher thread runs. PCOMM_SQ_WATCH_CPU:
-//   auto (default)  the rank's NUMA node — off the rank's own core, which it
-//                   cannot share with the producer it watches (see the header),
-//                   and on the socket whose cache lines it is reading;
+//   auto (default)  the watcher on the CPUs sharing the rank's L3 cache, minus
+//                   the rank's own binding; the NUMA node if there are none.
+//                   The decoder always takes the NUMA node — it reads only the
+//                   staging ring, never a line the proxy writes.
+//   node            both threads anywhere on the rank's NUMA node (what auto
+//                   was until the cost measurement below);
 //   bound           the rank's binding, unchanged — the configuration that
 //                   loses data, kept so it can be measured;
-//   <base>          the watcher alone on CPU base + local rank.
+//   <base>          the watcher alone on CPU base + local rank; the decoder on
+//                   the node.
+//
+// WHY THE L3. The watcher's cost to the application is distance, not CPU time:
+// every WQEBB and doorbell-record line it reads is one the proxy must take back
+// before writing it again. Measured on du04 (EPYC 7742, a 4-core L3 per CCX),
+// `1024 20000`, medians of 5 interleaved runs, traffic phase against bare:
+// same L3 1.9x, NUMA node (the old auto, a random L3 that migrated mid-run)
+// 2.2x, another L3 on the socket 3.1x, the other socket 4.8x — and this `auto`,
+// same method, 1.15x, every run inside the rank's L3. On a machine whose
+// L3 spans the socket this is simply the socket. Its known limit: ranks that
+// fill an L3 domain leave the watcher beside them, which is `bound`'s price.
+//
 // The kernel intersects any request with the cgroup cpuset, so under SLURM none
 // of these leaves the job's allocation; if nothing is left, the call fails and
 // the thread keeps the binding it had, which is reported rather than hidden.
@@ -470,16 +562,32 @@ inline void place_thread(bool is_watcher) {
         return;
     cpu_set_t set;
     CPU_ZERO(&set);
-    if (std::isdigit(static_cast<unsigned char>(mode[0]))) {
-        if (!is_watcher)
-            return;  // a pinned watcher leaves the decoder where it was
+    // A pinned watcher's decoder still goes to the node. It used to stay on the
+    // rank's binding, where it competed with the proxy and fell behind — and
+    // the first pinned measurements read the resulting drops as a recording-
+    // bandwidth limit. `auto`, with the decoder on the node, recorded the same
+    // volume faster and dropped nothing.
+    if (is_watcher && std::isdigit(static_cast<unsigned char>(mode[0]))) {
         const char* local = std::getenv("OMPI_COMM_WORLD_LOCAL_RANK");
         CPU_SET(std::atoi(mode) + (local ? std::atoi(local) : 0), &set);
     } else {
         const int here = sched_getcpu();
-        if (here < 0 || !node_cpus_of(here, set))
-            for (int c = 0; c < CPU_SETSIZE; ++c)
-                CPU_SET(c, &set);
+        bool      placed = false;
+        if (is_watcher && std::strcmp(mode, "auto") == 0 && here >= 0 && l3_cpus_of(here, set)) {
+            cpu_set_t own;
+            CPU_ZERO(&own);
+            if (pthread_getaffinity_np(pthread_self(), sizeof own, &own) == 0)
+                for (int c = 0; c < CPU_SETSIZE; ++c)
+                    if (CPU_ISSET(c, &own))
+                        CPU_CLR(c, &set);
+            placed = CPU_COUNT(&set) > 0;
+        }
+        if (!placed) {
+            CPU_ZERO(&set);
+            if (here < 0 || !node_cpus_of(here, set))
+                for (int c = 0; c < CPU_SETSIZE; ++c)
+                    CPU_SET(c, &set);
+        }
     }
     if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0)
         std::fprintf(stderr,
@@ -491,6 +599,12 @@ inline void place_thread(bool is_watcher) {
 inline void run() {
     auto& s = state();
     place_thread(true);
+    const auto run_start = std::chrono::steady_clock::now();
+    // A sleeping watcher asks for exact wakeups. The default 50 us timer slack is
+    // why a requested 20 us sleep measured ~60 us, and a ring can lap inside the
+    // difference. Per-thread, so the application's own sleeps are untouched.
+    if (poll_interval().count() > 0)
+        prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
     s.cpu_start = sched_getcpu();
     cpu_set_t set;
     CPU_ZERO(&set);
@@ -515,6 +629,11 @@ inline void run() {
         s.csw_voluntary = ru.ru_nvcsw;
         s.csw_involuntary = ru.ru_nivcsw;
     }
+    s.cpu_end = sched_getcpu();
+    s.watcher_cpu_us = thread_cpu_us();
+    s.watcher_wall_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - run_start)
+                            .count();
 }
 
 // From the DEVX CREATE_QP decode: a queue pair created, so nothing posted yet.
@@ -629,6 +748,11 @@ inline void shutdown(int rank) {
                  static_cast<unsigned long long>(s.max_decode_ns / 1000),
                  static_cast<unsigned long long>(undecoded), s.cpu_start, s.affinity_cpus,
                  s.csw_voluntary, s.csw_involuntary);
+    std::fprintf(stderr,
+                 "[pcomm] sq-watch rank=%d watcher_cpu_ms=%ld watcher_wall_ms=%ld "
+                 "decoder_cpu_ms=%ld poll_us=%lld cpu=%d->%d\n",
+                 rank, s.watcher_cpu_us / 1000, s.watcher_wall_us / 1000, s.decoder_cpu_us / 1000,
+                 static_cast<long long>(poll_interval().count()), s.cpu_start, s.cpu_end);
 }
 
 }  // namespace mlx5::sqwatch

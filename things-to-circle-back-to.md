@@ -48,7 +48,12 @@ were not the one the plan had guessed:
 After both, default binding: `1024 2`, `1024 20` and `1024 200` exact and
 lossless (204,800 WQEs, 819,200 B per rank at 200); `1024 2000` keeps 99.9%
 (1,041 / 2,427 WQEBBs lapped of ~2.05M, counted). Wall time at 200 iterations
-is within noise of a bare run. The plan, with what was rejected and why:
+is within noise of a bare run. **Step 2 then priced it at full rate**
+(`1024 20000`, medians of interleaved runs): the watcher's cost is distance —
+the traffic phase slows 1.9× on the rank's L3, 2.2× anywhere on the NUMA node,
+3.1× on another L3, 4.8× across sockets — and placing it on the rank's L3 by
+default brought it to **~1.15×**, ≥99.7% kept, nothing dropped. The plan, with
+what was rejected and why:
 `plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
 
 ## OPEN (upstream, 2026-09-14): NVSHMEM's ibdevx deadlocks under sustained load — with no pcomm at all
