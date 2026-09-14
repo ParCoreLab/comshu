@@ -51,6 +51,29 @@ lossless (204,800 WQEs, 819,200 B per rank at 200); `1024 2000` keeps 99.9%
 is within noise of a bare run. The plan, with what was rejected and why:
 `plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
 
+## OPEN (upstream, 2026-09-14): NVSHMEM's ibdevx deadlocks under sustained load — with no pcomm at all
+
+Case 11's workload at `1024 20000` (20.5M WQEs per rank) hangs intermittently
+on du04, NVSHMEM 3.3.24 (HPC SDK 25.9). Measured with a watchdog that
+backtraces every thread before killing (`~/pcomm-parity/hang/hang_hunt.sh` on
+du04, backtraces beside it): **bare 1 of 6, under pcomm with the watcher off 2 of
+6**, watcher on 0 of 3 — plus one timeout each of the last two in an earlier
+matrix. At `1024 2` (the case) and up to `1024 10000` nothing has ever hung.
+
+The signature is identical with and without pcomm, and contains no pcomm frame.
+In each rank the two running threads are:
+
+- the main thread, spinning in `sched_yield` inside `cuLaunchKernel` — the next
+  launch waits for a kernel that never finishes;
+- NVSHMEM's proxy, spinning in `nvshmemi_proxy_progress →
+  nvshmemt_ibdevx_quiet → check_poll_avail → progress_send`, taking and
+  releasing its lock, waiting on completions that never come.
+
+The GPU waits on the proxy and the proxy waits on the NIC. Not ours, and not
+worth chasing here beyond this record — but **any measurement at this size must
+run under a watchdog and report hung runs separately**, or a deadlock shows up
+as a 580 s "cost".
+
 ## OPEN (2026-09-14): the first full arena stalls the thread that fills it for ~2 ms
 
 `pcomm_engine_arena_flush` runs inline on the recording thread
