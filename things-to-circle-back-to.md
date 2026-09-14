@@ -2,6 +2,43 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN (2026-09-14): the ibdevx data plane reaches the NIC through a door nobody watches
+
+Case 11's SigmaTrace comparison (`tests/hpc/cases/11_ibdevx_peermem/parity/`)
+found that under `NVSHMEM_REMOTE_TRANSPORT=ibdevx` **neither tool records one
+byte** of the 16,384 the workload moves through the HCA. Three facts, each read
+from source or measured, and none of them a bug in isolation:
+
+- **There is no call to interpose.** ibdevx never calls `ibv_post_send`; its
+  CPU proxy builds WQEs in a DEVX send queue by hand, and
+  `nvshmemt_ibdevx_post_send` is `static inline` (ibdevx.cpp; the doorbell half
+  is identical in NVSHMEM v3.4.5, 3.7.2 and git).
+- **Its doorbell is a BlueFlame UAR.** `mlx5dv_devx_alloc_uar(..., BF)`, flags
+  `0x0` — measured on du04: 5 per rank, 5 DEVX queue pairs per rank ringing
+  them. `hostdb::is_ibgda_uar` arms only NC types, deliberately, because BF is
+  what UCX rings (the FIXED entry below). And on du04 the platform guard would
+  refuse even an NC UAR, since that platform maps UARs into the GPU — a guard
+  whose hazard (changing IBGDA's mode) cannot arise for ibdevx, which never maps
+  its UAR at all.
+- **SigmaTrace watches only UARs a GPU maps** (`CUDAHijack.cpp`), so it reports
+  `doorbell_submitted: 0` here for the same structural reason.
+
+What ibdevx does write is plain host memory: the WQE into the send queue, then
+the producer index into the doorbell record, then eight bytes to the UAR. A
+passive watcher on the doorbell record sees every WQE without touching the
+doorbell. Prototyped as `PCOMM_SQ_WATCH=1` (`providers/mlx5dv/sq_watch.hpp`),
+measured on du04:
+
+| run | decoded | lapped | result |
+|---|---|---|---|
+| `1024 2`, spin, ×2 | 2,048 `rdma_write` × 4 B per rank, both runs identical | 0 | exact against the workload's own arithmetic |
+| `1024 20`, spin | rank 0 5,151 / rank 1 920 WQEBBs | 15,392 / 19,620 | decoded + lapped = 20,543 / 20,540: loss counted, not silent |
+| `1024 2`, 20 µs sleep | 9 of ~4,100 | (report lost to the exit abort, since fixed) | sleeping laps the 1,024-slot ring |
+
+So the door exists and the design holds at case scale; its throughput does not
+yet. The plan, with what was rejected and why:
+`plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
+
 ## FIXED (2026-09-08): the host doorbell armed UARs it did not own, and broke MPI
 
 **Fixed by selecting on the allocation flags.** Measured on a passive two-node

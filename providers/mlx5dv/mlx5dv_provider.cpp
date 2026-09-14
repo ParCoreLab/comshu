@@ -44,6 +44,7 @@
 #include "pcomm/core/dmabuf_registry.hpp"
 #include "mlx5_records.hpp"
 #include "host_doorbell.hpp"
+#include "sq_watch.hpp"
 #include "uar_hijack.hpp"
 
 namespace mlx5 {
@@ -93,6 +94,9 @@ struct UmemInfo {
     // under dmabuf on purpose (umem_binding_as_configured asserts that), so the
     // GPU address is kept here separately rather than by rewriting the row.
     std::uint64_t gpu_base{0};
+    // The umem object itself, so the send-queue watcher can be told a buffer is
+    // going away by the dereg hook, which sees the pointer and not the id.
+    const void* umem{nullptr};
 };
 
 static std::mutex                                  g_umem_mutex;
@@ -151,7 +155,8 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
                             : pcomm::core::device_of(addr),
                   by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress,
                   dmabuf_fd,
-                  gpu_base};
+                  gpu_base,
+                  out};
     remember_umem(out->umem_id, info);
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5Umem{{},
@@ -325,6 +330,36 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
         if (hostdb::enabled())
             hijack::capture_gpu_ctx();
     }
+
+    // The passive send-queue watcher (sq_watch.hpp): a CPU-driven queue pair
+    // whose send queue and doorbell record are plain host memory, which is
+    // ibdevx's shape exactly. IBGDA's queues are GPU-resident and stay with the
+    // doorbell paths above.
+    if (sqwatch::enabled() && !gpu_driven) {
+        // A regular receive queue shares the WQ buffer and comes FIRST, so the
+        // send queue starts after it. ibdevx uses an SRQ, where it is zero bytes —
+        // but a queue pair from another stack need not.
+        const auto          rq_type = DEVX_GET(qpc, qpc, rq_type);
+        const std::uint64_t rq_bytes = rq_type == 0
+                                           ? (std::uint64_t{1} << DEVX_GET(qpc, qpc, log_rq_size))
+                                                 << (DEVX_GET(qpc, qpc, log_rq_stride) + 4)
+                                           : 0;
+        const std::uint64_t sq_off = wq_offset + rq_bytes;
+        const std::uint64_t sq_bytes = (std::uint64_t{1} << log_sq_size) * hijack::kWqebb;
+        const bool          dbr_valid = DEVX_GET(qpc, qpc, dbr_umem_valid) != 0;
+        const auto          dbr_umem_id = DEVX_GET(qpc, qpc, dbr_umem_id);
+        const std::uint64_t dbr_off = DEVX_GET64(qpc, qpc, dbr_addr);
+        UmemInfo            dbr{};
+        if (!known || wq.binding != UmemBinding::ByAddress || sq_off + sq_bytes > wq.size)
+            sqwatch::refused(qp_num, "send queue is not a known host umem");
+        else if (!dbr_valid || !lookup_umem(dbr_umem_id, &dbr) ||
+                 dbr.binding != UmemBinding::ByAddress || dbr_off + 8 > dbr.size)
+            sqwatch::refused(qp_num, "doorbell record is not a known host umem");
+        else
+            sqwatch::watch(qp_num, wq.addr + sq_off, log_sq_size,
+                           static_cast<std::uint8_t>(service_type), dbr.addr + dbr_off, wq.umem,
+                           dbr.umem);
+    }
 }
 
 // The completion queue IBGDA polls, captured for its identity and geometry.
@@ -419,7 +454,7 @@ Profiler::Profiler() {
     // returned. The capture had no stream 212 and no 214 while the shutdown line
     // claimed hundreds of doorbells, which is the one contradiction this
     // provider must never ship.
-    if (hijack::enabled() || hostdb::enabled()) {
+    if (hijack::enabled() || hostdb::enabled() || sqwatch::enabled()) {
         // The decode runs on the repeater thread and emits through these sinks,
         // because the Recorder and intern tables live here in the provider. The
         // doorbell's uar handle interns h(uar_ptr) — the same handle the Mlx5Uar
@@ -536,6 +571,10 @@ Profiler::Profiler() {
     this->register_post<devx_umem_dereg_tag>([](int ret, mlx5dv_devx_umem* umem, auto...) {
         if (ret != 0 || !umem)
             return;
+        // Before the transport frees the buffer: the watcher's last look at a
+        // send queue or doorbell record, and then it lets go of both.
+        if (sqwatch::enabled())
+            sqwatch::unwatch_umem(umem);
         rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
                                               {}, {}, h(umem), rr::Mlx5Umem::pcomm_type_id});
     });
@@ -692,6 +731,8 @@ static void __attribute__((constructor)) pcomm_mlx5dv_load() {
     mlx5::Profiler::instance();
 }
 static void __attribute__((destructor)) pcomm_mlx5dv_unload() {
+    if (mlx5::sqwatch::enabled())
+        mlx5::sqwatch::shutdown(pcomm::Config::from_env().rank);
     if (mlx5::hijack::enabled())
         mlx5::hijack::report_and_shutdown(pcomm::Config::from_env().rank);
     if (mlx5::hostdb::enabled())
