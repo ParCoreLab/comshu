@@ -663,6 +663,18 @@ std::string mapped_images() {
         if (slash == std::string_view::npos)
             continue;
         std::string path{line.substr(slash)};
+        // A file replaced or deleted under a running process is shown as
+        // "<path> (deleted)". That suffix used to reach the record verbatim, where
+        // the space broke images_are_no_older_than_the_engine's parse and it
+        // reported "no engine" for an engine that was mapped and merely replaced.
+        // Stripped here — and NOT stat'd afterwards: the bare path now names the
+        // replacement, and describing it would claim the wrong binary answered.
+        constexpr std::string_view kDeleted = " (deleted)";
+        const bool                 deleted =
+            path.size() > kDeleted.size() &&
+            path.compare(path.size() - kDeleted.size(), kDeleted.size(), kDeleted) == 0;
+        if (deleted)
+            path.resize(path.size() - kDeleted.size());
         const auto  base = path.rfind('/');
         std::string_view name{path};
         if (base != std::string::npos)
@@ -680,7 +692,7 @@ std::string mapped_images() {
         seen.push_back(path);
 
         struct stat st {};
-        if (::stat(path.c_str(), &st) == 0) {
+        if (!deleted && ::stat(path.c_str(), &st) == 0) {
             char buf[64];
             std::snprintf(buf, sizeof buf, " %lld %lld", static_cast<long long>(st.st_size),
                           static_cast<long long>(st.st_mtime));

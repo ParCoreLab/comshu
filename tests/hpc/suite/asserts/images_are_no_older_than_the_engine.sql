@@ -79,9 +79,15 @@ UNION ALL
 -- stat'd — deleted or replaced under a running job. That is not a tidiness
 -- problem: it means the thing that answered cannot be identified afterwards,
 -- which is the same unknown-provenance state as a missing invocation row.
+--
+-- Any non-numeric mtime, not only '?': engines before 2026-09-14 wrote the
+-- kernel's "<path> (deleted) ? ?" verbatim, which parses as mtime '? ?'. That
+-- escaped this branch and fell through to "no engine" below — the right
+-- verdict for the wrong reason, on the one board it ever fired (case 11, du04,
+-- two ranks unpacking the baked launcher at once; things-to-circle-back-to.md).
 SELECT 'mapped image file was gone when the capture was written',
        rank, path, NULL
-FROM parts WHERE mtime = '?'
+FROM parts WHERE mtime NOT GLOB '[0-9]*'
 
 UNION ALL
 
@@ -95,8 +101,12 @@ FROM invocation i WHERE coalesce(i.images, '') = ''
 
 UNION ALL
 
+-- By path, not through `engine`: an engine that is mapped but could not be
+-- stat'd is present, and is already reported by the branch above as gone.
 SELECT 'mapped images do not include libpcomm_engine.so',
        CAST(i.rank AS INTEGER), NULL, NULL
 FROM invocation i
 WHERE coalesce(i.images, '') <> ''
-  AND NOT EXISTS (SELECT 1 FROM engine e WHERE e.rank = CAST(i.rank AS INTEGER));
+  AND NOT EXISTS (SELECT 1 FROM parts p
+                  WHERE p.rank = CAST(i.rank AS INTEGER)
+                    AND p.path LIKE '%/libpcomm_engine.so');

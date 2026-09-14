@@ -203,9 +203,9 @@ std::string materialize(const std::string& name) {
         std::fprintf(stderr, "pcomm: cannot read my own binary to unpack %s\n", name.c_str());
         return {};
     }
-    // Written under a unique name and renamed, because a node runs many ranks
-    // and they all unpack at once: rename is atomic, so a reader sees either no
-    // file or a complete one, never a half-written library being dlopen'd.
+    // Written under a unique name and then linked into place, because a node runs
+    // many ranks and they all unpack at once: a reader sees either no file or a
+    // complete one, never a half-written library being dlopen'd.
     const fs::path tmp = dir / (name + "." + std::to_string(::getpid()) + ".tmp");
     int            o = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (o < 0) {
@@ -244,15 +244,33 @@ std::string materialize(const std::string& name) {
         fs::remove(tmp, ec);
         return {};
     }
-    fs::rename(tmp, out, ec);
-    if (ec) {
-        // Someone else won the race and the name is taken by an identical file;
-        // that is a success, not a failure. Any other error is real.
+    // Placed with link(), NOT rename(). This used to rename, under a comment
+    // saying the loser of a race would fail and find an identical file in place.
+    // It does not fail: rename(2) replaces an existing name silently, so the
+    // second rank's rename unlinked the library the first had already dlopen'd.
+    // Nothing was ever torn — both copies came from this archive — but the first
+    // rank's /proc/self/maps then said "(deleted)", its provenance could not be
+    // proven, and images_are_no_older_than_the_engine turned the board red.
+    // Measured on du04 with a fresh bake directory per run: 5 of 8 runs.
+    //
+    // link() fails with EEXIST instead of replacing, and EEXIST here means
+    // another rank placed an identical file first — which is success.
+    const int linked = ::link(tmp.c_str(), out.c_str());
+    const int link_errno = errno;
+    if (linked == 0 || link_errno == EEXIST) {
         fs::remove(tmp, ec);
-        if (!fs::exists(out)) {
-            std::fprintf(stderr, "pcomm: cannot place %s\n", out.c_str());
-            return {};
-        }
+        return out.string();
+    }
+    // A filesystem without hard links. rename stays the fallback, and only onto
+    // a name still free — narrowing the window, not closing it, which is why it
+    // is the fallback and not the method.
+    if (!fs::exists(out))
+        fs::rename(tmp, out, ec);
+    fs::remove(tmp, ec);
+    if (!fs::exists(out)) {
+        std::fprintf(stderr, "pcomm: cannot place %s: %s\n", out.c_str(),
+                     std::strerror(link_errno));
+        return {};
     }
     return out.string();
 }

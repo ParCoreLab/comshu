@@ -71,7 +71,23 @@ published hijack costs (+68% forward, +86% with decode) predate this finding and
 may include it. The watcher's fix is the direction: record off any thread whose
 latency belongs to someone else.
 
-## OPEN (2026-09-14): two ranks unpacking the baked launcher unlink each other's engine
+## FIXED (2026-09-14): two ranks unpacking the baked launcher unlink each other's engine
+
+**Fixed by placing with `link()`,** which fails with `EEXIST` instead of
+replacing; `rename` survives only as the fallback onto a free name. And the
+engine now strips the kernel's ` (deleted)` suffix and records such a mapping as
+`<path> ? ?` without `stat`-ing the bare path, which would describe the
+replacement rather than what was mapped. The assertion's "gone" branch matches
+any non-numeric mtime and its "no engine" branch keys on the path alone.
+
+Measured on du04, 2 ranks, a fresh bake directory per run so both unpack at
+once (the first-run-after-rebuild condition): **5 of 8 runs** had a mapped
+image replaced before the fix, **0 of 8** after. du04 board 09/10/11 green;
+core `ctest` 33/33 (with DuckDB). The kept red capture now reads "mapped image
+file was gone when the capture was written" for rank 0's engine — the actual
+problem — instead of "no engine".
+
+**The original report, kept as written.**
 
 Case 11 on du04 went red once — watcher off, first run after a rebuild —
 with `images_are_no_older_than_the_engine` reporting "mapped images do not
