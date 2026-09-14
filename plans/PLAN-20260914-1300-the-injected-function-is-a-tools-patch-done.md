@@ -145,8 +145,11 @@ existence and had never once run their assertions.
 
 ## Still open
 
-- **The SigmaTrace ibdevx comparison has never run.** It is the reason case 11
-  exists (`meta.json: comparison_note`). The 2026-08-10 parity run used
+- ~~**The SigmaTrace ibdevx comparison has never run.**~~ **Ran 2026-09-14** —
+  `tests/hpc/cases/11_ibdevx_peermem/parity/README.md`. Agreement on every class
+  both tools record except `ibv_dereg_mr` (a SigmaTrace gap); neither tool sees
+  the ibdevx data plane. It is the reason case 11 exists (`meta.json:
+  comparison_note`). The 2026-08-10 parity run used
   `NVSHMEM_REMOTE_TRANSPORT=ibgda` — that is case 12's doorbell comparison, a
   different one. SigmaTrace is installed on du04 at `~/SigmaTrace`.
 - **`run_on_a100.sh` writes no per-case `.log`.** It runs `job.sbatch` directly
