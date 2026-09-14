@@ -35,9 +35,75 @@ measured on du04:
 | `1024 20`, spin | rank 0 5,151 / rank 1 920 WQEBBs | 15,392 / 19,620 | decoded + lapped = 20,543 / 20,540: loss counted, not silent |
 | `1024 2`, 20 µs sleep | 9 of ~4,100 | (report lost to the exit abort, since fixed) | sleeping laps the 1,024-slot ring |
 
-So the door exists and the design holds at case scale; its throughput does not
-yet. The plan, with what was rejected and why:
+So the door exists and the design holds at case scale; its throughput did not,
+at first. **Step 1 of the plan fixed that the same day**, and the two causes
+were not the one the plan had guessed:
+
+- a ~2 ms stall on the watcher when its first record arena filled (the entry
+  below), fixed by moving all recording to a decoder thread;
+- no CPU: under Open MPI's default one-core binding the watcher shared two
+  hardware threads with the proxy it watches (7,700–16,000 involuntary context
+  switches), fixed by moving both threads to the rank's NUMA node.
+
+After both, default binding: `1024 2`, `1024 20` and `1024 200` exact and
+lossless (204,800 WQEs, 819,200 B per rank at 200); `1024 2000` keeps 99.9%
+(1,041 / 2,427 WQEBBs lapped of ~2.05M, counted). Wall time at 200 iterations
+is within noise of a bare run. The plan, with what was rejected and why:
 `plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
+
+## OPEN (2026-09-14): the first full arena stalls the thread that fills it for ~2 ms
+
+`pcomm_engine_arena_flush` runs inline on the recording thread
+(`libpcomm/src/engine.cpp`), and besides the drain it is where the process's
+one-time `GpuDevice` emission (`maybe_emit_gpu_devices`, which queries the CUDA
+driver) and `Invocation` emission happen. Measured on the send-queue watcher,
+du04: the batch that filled its first 4,096-row arena took **2.1–2.4 ms**, at
+batch ~800 in every run; every other batch took microseconds. With the watcher
+alone on a CPU, that single stall was the whole of its data loss.
+
+Harmless on an application thread that records between calls. **Not harmless on
+a thread that sits in somebody's data path.** The GPU and host doorbell
+repeaters decode and record in `on_doorbell` BEFORE they forward the doorbell to
+the NIC (`memory_repeater.hpp`: "Record before forwarding"), so the first full
+arena on a repeater thread holds one of the application's doorbells for ~2 ms,
+and every later flush holds one for the drain. Not measured on that path. The
+published hijack costs (+68% forward, +86% with decode) predate this finding and
+may include it. The watcher's fix is the direction: record off any thread whose
+latency belongs to someone else.
+
+## OPEN (2026-09-14): two ranks unpacking the baked launcher unlink each other's engine
+
+Case 11 on du04 went red once — watcher off, first run after a rebuild —
+with `images_are_no_older_than_the_engine` reporting "mapped images do not
+include libpcomm_engine.so" for rank 0. They did include it, as
+
+```
+/tmp/pcomm-baked-99e736818a17a347/libpcomm_engine.so (deleted) ? ?
+```
+
+Rank 1's line was intact. A rerun with the same binaries was green. The capture
+is kept on du04 at `~/pcomm-parity/ibdevx/red11`.
+
+**Cause, in `pcomm/baked.cpp`'s unpack path:** in a fresh content-named
+directory both ranks find the file missing, both write `<name>.<pid>.tmp`, and
+both `fs::rename(tmp, out)`. `rename(2)` replaces an existing target silently, so
+the second rank's rename unlinks the inode the first has already `dlopen`'d. The
+comment at that rename ("Someone else won the race and the name is taken by an
+identical file; that is a success") assumes the second rename fails — it does
+not. No rank can map a torn file (each writes its own temporary, and the
+content is the same archive), but the first rank's provenance becomes
+unprovable, which is exactly what the assertion exists to refuse.
+
+**Fix:** place with `link(tmp, out)`, which fails with `EEXIST` rather than
+replacing, or `renameat2(..., RENAME_NOREPLACE)`; unlink the temporary either
+way; keep `rename` only as the fallback for a filesystem with neither.
+
+**A second defect it exposed:** the assertion parses each image line from the
+left on spaces, and `/proc/self/maps` appends ` (deleted)` to a replaced file.
+The mtime field then reads `? ?`, so neither its "mapped image file was gone"
+branch (`mtime = '?'`) nor its engine match fires, and it reports the wrong
+problem. The right verdict for the wrong reason; match a trailing ` (deleted)`
+explicitly.
 
 ## FIXED (2026-09-08): the host doorbell armed UARs it did not own, and broke MPI
 

@@ -6,7 +6,8 @@
 // recorded one byte of the 16,384 the workload moved through the NIC.
 //
 // PROTOTYPE, opt-in via PCOMM_SQ_WATCH=1, to measure whether the design holds
-// before it is given a launcher flag, a record of its own, and a case.
+// before it is given a launcher flag, a record of its own, and a case
+// (plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue).
 //
 // WHY PASSIVE, rather than extending the host doorbell's UAR swap to BlueFlame
 // UARs. ibdevx posts the way every mlx5 stack does (ibdevx.cpp,
@@ -27,20 +28,39 @@
 // NVSHMEM's UARs from UCX's, or to ask whether the platform maps UARs into the
 // GPU (host_doorbell.hpp's guard): it never touches a UAR at all.
 //
+// TWO THREADS, AND THE WATCHER NEVER RECORDS. The first version copied, decoded
+// and recorded on one thread, and lost 7,000-12,000 WQEBBs per rank on
+// `1024 20` in exactly one event per run — even with the watcher on a CPU of its
+// own (du04, 2026-09-14: 2-4 involuntary context switches, a poll every ~1 us).
+// The longest single batch was 2.1-2.4 ms, always at batch ~800: the moment the
+// watcher's first 4,096-row arena filled and pcomm_engine_arena_flush ran inline
+// — a synchronous drain plus the process's one-time GpuDevice emission, which
+// queries the CUDA driver. The proxy posted straight through it and lapped the
+// 1,024-slot ring many times over. Recording is a stall waiting to happen, so it
+// moved: the watcher only copies WQEBBs into a staging ring, and a decoder
+// thread parses and records them. A decoder stall now costs staging space, not
+// data, and 16 MiB of staging is ~262k WQEBBs.
+//
 // What it costs, stated rather than discovered later:
-//   * a row's time is when the watcher SAW the WQE, not when it was posted;
-//   * one thread polling every watched doorbell record, and by default it SPINS,
-//     which costs a core. Measured on du04 (case 11, 1024-slot rings): sleeping
-//     20 us between polls — about 60 us once the kernel rounds it — let the CPU
-//     proxy lap the whole ring, and one run decoded 9 of ~4,100 WQEs.
-//     PCOMM_SQ_WATCH_US=<n> sleeps instead, and the lapped counter says what
-//     that cost;
-//   * a window of one ring. A producer that laps the ring between two polls has
-//     overwritten WQEs nobody read; they are counted as lapped, never decoded
-//     from whatever bytes replaced them.
+//   * a row's time is when the decoder recorded it, not when it was posted;
+//   * the watcher SPINS, which costs a core. Sleeping 20 us between polls —
+//     about 60 us once the kernel rounds it — let the CPU proxy lap the ring
+//     (one run decoded 9 of ~4,100 WQEs). PCOMM_SQ_WATCH_US=<n> sleeps anyway;
+//   * and that core is NOT the rank's own. Open MPI binds a rank to one core by
+//     default, and the watcher inherits it: sharing two hardware threads with
+//     the main thread and the very proxy it watches, it took 7,700-16,000
+//     involuntary context switches and kept ~20% of `1024 20`. Unbound, the same
+//     run was lossless. So both threads move to the rank's NUMA node by default
+//     (place_thread); under SLURM the kernel intersects that with the job's
+//     cpuset, so it never leaves the allocation;
+//   * a window of one ring between two polls, and of the staging ring between
+//     watcher and decoder. Anything lost to either is counted — `lapped` and
+//     `dropped` — and never decoded from whatever bytes replaced it. staged +
+//     lapped + dropped is everything the producer published.
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -51,7 +71,11 @@
 #include <thread>
 #include <vector>
 
+#include <dirent.h>
 #include <endian.h>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
 
 #include "uar_hijack.hpp"
 
@@ -83,6 +107,15 @@ inline std::chrono::microseconds poll_interval() {
     return us;
 }
 
+inline std::size_t stage_bytes() {
+    static const std::size_t b = [] {
+        const char* v = std::getenv("PCOMM_SQ_WATCH_STAGE_MB");
+        const long  mb = v ? std::strtol(v, nullptr, 10) : 0;
+        return static_cast<std::size_t>(mb > 0 ? mb : 16) << 20;
+    }();
+    return b;
+}
+
 inline void cpu_relax() {
 #if defined(__x86_64__) || defined(__i386__)
     __builtin_ia32_pause();
@@ -104,15 +137,38 @@ inline constexpr std::size_t kSndDbrOffset = 4;
 inline constexpr std::uint32_t kUnpublishedSlack = 2;
 
 struct Watched {
-    std::uint32_t             qpn{0};
-    std::uint8_t*             sq{nullptr};       // host VA of WQEBB 0; read, never written
-    std::uint32_t*            dbr_snd{nullptr};  // host VA of the send counter; read, never written
-    hijack::QpInfo            shape{};
-    const void*               sq_umem{nullptr};  // unwatch keys: compared, never dereferenced
-    const void*               dbr_umem{nullptr};
-    std::uint32_t             last{0};
-    bool                      seen_any{false};
-    std::vector<std::uint8_t> buf;  // one ring: the copy the decoder reads
+    std::uint32_t  qpn{0};
+    std::uint8_t*  sq{nullptr};       // host VA of WQEBB 0; read, never written
+    std::uint32_t* dbr_snd{nullptr};  // host VA of the send counter; read, never written
+    hijack::QpInfo shape{};
+    const void*    sq_umem{nullptr};  // unwatch keys: compared, never dereferenced
+    const void*    dbr_umem{nullptr};
+    std::uint32_t  last{0};
+    bool           seen_any{false};
+};
+
+// --- staging ring: the watcher writes, the decoder reads ----------------------
+//
+// Single producer (the watcher, or an unwatch/shutdown drain — all under the
+// State mutex, so never two at once) and single consumer (the decoder thread).
+// Each entry is one WQEBB-sized header followed by the WQEBBs it describes, and
+// never wraps: an entry that would is preceded by a padding header (n == 0) that
+// fills the ring to its end, so the decoder always hands parse_wqes one
+// contiguous run.
+struct alignas(64) StageHdr {
+    std::uint32_t qpn;
+    std::uint32_t start;  // producer index of the first WQEBB
+    std::uint32_t n;      // WQEBBs that follow; 0 = padding to the end of the ring
+    std::uint32_t log_wq_size;
+    std::uint8_t  service_type;
+};
+static_assert(sizeof(StageHdr) == hijack::kWqebb, "a header is one WQEBB");
+
+struct Stage {
+    std::unique_ptr<std::uint8_t[]> buf;  // not zero-filled: pages fault in as used
+    std::size_t                     cap{0};
+    std::atomic<std::uint64_t>      head{0};  // bytes published by the watcher
+    std::atomic<std::uint64_t>      tail{0};  // bytes consumed by the decoder
 };
 
 struct State {
@@ -121,24 +177,52 @@ struct State {
     // never will be again, so the transport may free it.
     std::mutex                            mutex;
     std::vector<std::unique_ptr<Watched>> qps;
-    std::thread                           thread;
+    std::thread                           watcher;
+    std::thread                           decoder;
     std::atomic<bool>                     stop{false};
+    std::atomic<bool>                     decoder_stop{false};
     bool                                  started{false};  // under mutex
+    Stage                                 stage;
 
     std::atomic<std::uint32_t> qps_watched{0};
     std::atomic<std::uint32_t> qps_refused{0};
-    std::atomic<std::uint64_t> wqebbs{0};
+    std::atomic<std::uint64_t> staged{0};   // WQEBBs the watcher copied and published
+    std::atomic<std::uint64_t> decoded{0};  // WQEBBs the decoder parsed and recorded
     std::atomic<std::uint64_t> held{0};
-    std::atomic<std::uint64_t> lapped{0};
     std::atomic<std::uint64_t> polls{0};
+
+    // Where any loss comes from. `lapped_early`: the producer was already more
+    // than a ring ahead when the watcher looked. `lapped_late`: the copy was
+    // taken and discarded because the producer came within reach of it while
+    // copying. `dropped`: the staging ring was full — the decoder is behind.
+    std::atomic<std::uint64_t> lapped_early{0};
+    std::atomic<std::uint64_t> lapped_late{0};
+    std::atomic<std::uint64_t> dropped{0};
+
+    // Timing, per thread, because one stall is enough to lose a ring and a total
+    // hides it.
+    std::atomic<std::uint64_t> batches{0};
+    std::atomic<std::uint32_t> max_delta{0};
+    std::atomic<std::uint64_t> copy_ns{0};
+    std::uint64_t              max_batch_ns{0};  // watcher thread only
+    std::uint64_t              max_batch_at{0};
+    std::uint64_t              first_batch_ns{0};
+    std::atomic<std::uint64_t> decode_ns{0};
+    std::uint64_t              max_decode_ns{0};  // decoder thread only
+    // The watcher thread's own view of its scheduling: which CPU it started on,
+    // how many it may run on, and how often the kernel took the CPU away.
+    int  cpu_start{-1};
+    int  affinity_cpus{-1};
+    long csw_voluntary{-1};
+    long csw_involuntary{-1};
 };
 
 // Leaked on purpose. A function-local static would be destroyed by the C++
 // runtime at exit BEFORE the provider's __attribute__((destructor)) runs, and
 // destroying a joinable std::thread is std::terminate — measured: every watched
-// rank aborted with signal 6 just after the workload printed OK. The watcher's
-// final reads of each queue happen at umem dereg, during the application's own
-// teardown, so nothing is lost by never destroying this.
+// rank aborted with signal 6 just after the workload printed OK. The final reads
+// of each queue happen at umem dereg, during the application's own teardown, so
+// nothing is lost by never destroying this.
 inline State& state() {
     static State* s = new State;
     return *s;
@@ -164,9 +248,31 @@ inline bool slot_holds(const Watched& w, std::uint32_t idx) {
            (be32toh(qpn_ds) >> 8) == w.qpn;
 }
 
-// If this queue's producer index moved, copy the WQEBBs it passed over and
-// decode them. Called with state().mutex held.
-inline void drain_one(Watched& w, hijack::DeviceSendSink sink) {
+// Room for a header plus n WQEBBs, contiguous; nullptr if the ring is full.
+// Writes the padding header itself when the entry would cross the end, and
+// returns the position the entry starts at through `pos`.
+inline std::uint8_t* stage_reserve(Stage& st, std::uint32_t n, std::uint64_t& pos) {
+    const std::size_t   need = static_cast<std::size_t>(n + 1) * hijack::kWqebb;
+    std::uint64_t       head = st.head.load(std::memory_order_relaxed);
+    const std::uint64_t tail = st.tail.load(std::memory_order_acquire);
+    std::size_t         off = head % st.cap;
+    const std::size_t   pad = off + need > st.cap ? st.cap - off : 0;
+    if (head + pad + need - tail > st.cap)
+        return nullptr;
+    if (pad) {
+        // Not published by itself: if the entry after it is discarded, the next
+        // reserve simply writes the same padding again.
+        reinterpret_cast<StageHdr*>(st.buf.get() + off)->n = 0;
+        head += pad;
+        off = 0;
+    }
+    pos = head;
+    return st.buf.get() + off;
+}
+
+// If this queue's producer index moved, copy the WQEBBs it passed over into
+// staging. Called with state().mutex held; records nothing.
+inline void drain_one(Watched& w) {
     auto&               s = state();
     const std::uint32_t slots = 1u << w.shape.log_wq_size;
     const std::uint32_t end = read_counter(w);
@@ -174,6 +280,9 @@ inline void drain_one(Watched& w, hijack::DeviceSendSink sink) {
     const std::uint32_t delta = hijack::prod_diff(end, start);
     if (delta == 0)
         return;
+    for (std::uint32_t m = s.max_delta.load(std::memory_order_relaxed);
+         delta > m && !s.max_delta.compare_exchange_weak(m, delta, std::memory_order_relaxed);) {
+    }
 
     if (!w.seen_any && (delta > slots || !slot_holds(w, start))) {
         // Before the first real post: the counter is the uninitialised doorbell
@@ -184,18 +293,36 @@ inline void drain_one(Watched& w, hijack::DeviceSendSink sink) {
     if (delta > slots || !slot_holds(w, start)) {
         // More than a ring since the last look: those WQEs are gone. Resume at
         // the producer rather than decode what replaced them.
-        s.lapped.fetch_add(delta, std::memory_order_relaxed);
+        s.lapped_early.fetch_add(delta, std::memory_order_relaxed);
         w.last = end;
         return;
     }
 
+    using clock = std::chrono::steady_clock;
+    const auto    t0 = clock::now();
+    std::uint64_t pos = 0;
+    std::uint8_t* entry = stage_reserve(s.stage, delta, pos);
+    if (!entry) {
+        s.dropped.fetch_add(delta, std::memory_order_relaxed);
+        w.last = end;
+        w.seen_any = true;
+        return;
+    }
+    auto* hdr = reinterpret_cast<StageHdr*>(entry);
+    hdr->qpn = w.qpn;
+    hdr->start = start;
+    hdr->n = delta;
+    hdr->log_wq_size = w.shape.log_wq_size;
+    hdr->service_type = w.shape.service_type;
+
+    std::uint8_t*       dst = entry + hijack::kWqebb;
     const std::uint32_t mask = slots - 1u;
     const std::uint32_t first_slot = start & mask;
     const std::uint32_t tail = std::min(delta, slots - first_slot);
-    std::memcpy(w.buf.data(), w.sq + static_cast<std::size_t>(first_slot) * hijack::kWqebb,
+    std::memcpy(dst, w.sq + static_cast<std::size_t>(first_slot) * hijack::kWqebb,
                 static_cast<std::size_t>(tail) * hijack::kWqebb);
     if (tail < delta)
-        std::memcpy(w.buf.data() + static_cast<std::size_t>(tail) * hijack::kWqebb, w.sq,
+        std::memcpy(dst + static_cast<std::size_t>(tail) * hijack::kWqebb, w.sq,
                     static_cast<std::size_t>(delta - tail) * hijack::kWqebb);
 
     // Could the producer have reached a slot while it was being copied? It
@@ -203,24 +330,177 @@ inline void drain_one(Watched& w, hijack::DeviceSendSink sink) {
     // and it may be a few WQEBBs ahead of what it has published.
     const std::uint32_t after = read_counter(w);
     if (hijack::prod_diff(after, start) + kUnpublishedSlack > slots) {
-        s.lapped.fetch_add(delta, std::memory_order_relaxed);
+        s.lapped_late.fetch_add(delta, std::memory_order_relaxed);
         w.last = end;
         return;
     }
 
-    hijack::parse_wqes(w.buf.data(), start, end, w.qpn, w.shape, sink);
-    s.wqebbs.fetch_add(delta, std::memory_order_relaxed);
+    s.stage.head.store(pos + static_cast<std::uint64_t>(delta + 1) * hijack::kWqebb,
+                       std::memory_order_release);
+    s.staged.fetch_add(delta, std::memory_order_relaxed);
     w.last = end;
     w.seen_any = true;
+
+    const std::uint64_t batch_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - t0).count();
+    s.copy_ns.fetch_add(batch_ns, std::memory_order_relaxed);
+    const std::uint64_t batch_no = s.batches.fetch_add(1, std::memory_order_relaxed);
+    if (batch_no == 0)
+        s.first_batch_ns = batch_ns;
+    if (batch_ns > s.max_batch_ns) {
+        s.max_batch_ns = batch_ns;
+        s.max_batch_at = batch_no;
+    }
+}
+
+// Everything published so far: parse, record, give the space back. Decoder
+// thread only.
+inline void decode_staged() {
+    auto&         s = state();
+    auto&         st = s.stage;
+    std::uint64_t tail = st.tail.load(std::memory_order_relaxed);
+    while (tail < st.head.load(std::memory_order_acquire)) {
+        const std::size_t off = tail % st.cap;
+        const auto*       hdr = reinterpret_cast<const StageHdr*>(st.buf.get() + off);
+        if (hdr->n == 0) {
+            tail += st.cap - off;  // padding to the end of the ring
+            st.tail.store(tail, std::memory_order_release);
+            continue;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        hijack::parse_wqes(st.buf.get() + off + hijack::kWqebb, hdr->start,
+                           (hdr->start + hdr->n) & hijack::kProdMask, hdr->qpn,
+                           hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type},
+                           hijack::state().device_send_sink);
+        const std::uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now() - t0)
+                                     .count();
+        s.decode_ns.fetch_add(ns, std::memory_order_relaxed);
+        s.max_decode_ns = std::max(s.max_decode_ns, ns);
+        s.decoded.fetch_add(hdr->n, std::memory_order_relaxed);
+        tail += static_cast<std::uint64_t>(hdr->n + 1) * hijack::kWqebb;
+        st.tail.store(tail, std::memory_order_release);  // space back as soon as it is free
+    }
+}
+
+inline void place_thread(bool is_watcher);  // with the watcher's own setup, below
+
+inline void decode_run() {
+    auto& s = state();
+    place_thread(false);
+    for (;;) {
+        const bool stopping = s.decoder_stop.load(std::memory_order_acquire);
+        decode_staged();
+        if (stopping)
+            return;  // one full pass after stop was seen, so nothing published is left
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+}
+
+// Block until the decoder has consumed everything published up to `upto`, for
+// at most `limit`. Used where a caller must know the rows are recorded before it
+// lets the application continue tearing down.
+inline bool wait_decoded(std::uint64_t upto, std::chrono::milliseconds limit) {
+    auto&      st = state().stage;
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (st.tail.load(std::memory_order_acquire) < upto) {
+        if (std::chrono::steady_clock::now() > deadline)
+            return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(20));
+    }
+    return true;
+}
+
+// The CPUs sharing a NUMA node with `cpu`, from sysfs. False if sysfs does not
+// say, in which case the caller widens to everything instead.
+inline bool node_cpus_of(int cpu, cpu_set_t& out) {
+    char path[96];
+    std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d", cpu);
+    DIR* dir = opendir(path);
+    if (!dir)
+        return false;
+    int node = -1;
+    while (dirent* e = readdir(dir))
+        if (std::strncmp(e->d_name, "node", 4) == 0 && std::isdigit(e->d_name[4]))
+            node = std::atoi(e->d_name + 4);
+    closedir(dir);
+    if (node < 0)
+        return false;
+    std::snprintf(path, sizeof path, "/sys/devices/system/node/node%d/cpulist", node);
+    std::FILE* f = std::fopen(path, "r");
+    if (!f)
+        return false;
+    char       list[1024] = {};
+    const bool got = std::fgets(list, sizeof list, f) != nullptr;
+    std::fclose(f);
+    if (!got)
+        return false;
+    CPU_ZERO(&out);
+    for (char* p = list; *p && *p != '\n';) {  // "0-63,128-191"
+        char*      next = nullptr;
+        const long lo = std::strtol(p, &next, 10);
+        if (next == p)
+            break;  // not a number: not a cpulist, and nothing is guessed from it
+        long hi = lo;
+        if (*next == '-')
+            hi = std::strtol(next + 1, &next, 10);
+        for (long c = lo; c <= hi && c < CPU_SETSIZE; ++c)
+            CPU_SET(static_cast<int>(c), &out);
+        if (*next != ',')
+            break;
+        p = next + 1;
+    }
+    return CPU_COUNT(&out) > 0;
+}
+
+// Where a watcher thread runs. PCOMM_SQ_WATCH_CPU:
+//   auto (default)  the rank's NUMA node — off the rank's own core, which it
+//                   cannot share with the producer it watches (see the header),
+//                   and on the socket whose cache lines it is reading;
+//   bound           the rank's binding, unchanged — the configuration that
+//                   loses data, kept so it can be measured;
+//   <base>          the watcher alone on CPU base + local rank.
+// The kernel intersects any request with the cgroup cpuset, so under SLURM none
+// of these leaves the job's allocation; if nothing is left, the call fails and
+// the thread keeps the binding it had, which is reported rather than hidden.
+inline void place_thread(bool is_watcher) {
+    const char* v = std::getenv("PCOMM_SQ_WATCH_CPU");
+    const char* mode = v && *v ? v : "auto";
+    if (std::strcmp(mode, "bound") == 0)
+        return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (std::isdigit(static_cast<unsigned char>(mode[0]))) {
+        if (!is_watcher)
+            return;  // a pinned watcher leaves the decoder where it was
+        const char* local = std::getenv("OMPI_COMM_WORLD_LOCAL_RANK");
+        CPU_SET(std::atoi(mode) + (local ? std::atoi(local) : 0), &set);
+    } else {
+        const int here = sched_getcpu();
+        if (here < 0 || !node_cpus_of(here, set))
+            for (int c = 0; c < CPU_SETSIZE; ++c)
+                CPU_SET(c, &set);
+    }
+    if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0)
+        std::fprintf(stderr,
+                     "[sqwatch] could not place the %s thread (PCOMM_SQ_WATCH_CPU=%s); it "
+                     "keeps the rank's binding\n",
+                     is_watcher ? "watcher" : "decoder", mode);
 }
 
 inline void run() {
     auto& s = state();
+    place_thread(true);
+    s.cpu_start = sched_getcpu();
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (pthread_getaffinity_np(pthread_self(), sizeof set, &set) == 0)
+        s.affinity_cpus = CPU_COUNT(&set);
     while (!s.stop.load(std::memory_order_acquire)) {
         {
             std::lock_guard<std::mutex> lk(s.mutex);
             for (auto& w : s.qps)
-                drain_one(*w, hijack::state().device_send_sink);
+                drain_one(*w);
         }
         s.polls.fetch_add(1, std::memory_order_relaxed);
         if (poll_interval().count() > 0) {
@@ -229,6 +509,11 @@ inline void run() {
             for (int i = 0; i < 32; ++i)
                 cpu_relax();
         }
+    }
+    rusage ru{};
+    if (getrusage(RUSAGE_THREAD, &ru) == 0) {
+        s.csw_voluntary = ru.ru_nvcsw;
+        s.csw_involuntary = ru.ru_nivcsw;
     }
 }
 
@@ -243,7 +528,6 @@ inline void watch(std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq
     w->shape = hijack::QpInfo{sq_host, log_wq_size, service_type};
     w->sq_umem = sq_umem;
     w->dbr_umem = dbr_umem;
-    w->buf.resize(static_cast<std::size_t>(1u << log_wq_size) * hijack::kWqebb);
     if (debug_on())
         std::fprintf(stderr, "[sqwatch] watch qpn=%u sq=%#llx slots=%u dbr=%#llx\n", qpn,
                      static_cast<unsigned long long>(sq_host), 1u << log_wq_size,
@@ -255,7 +539,10 @@ inline void watch(std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq
     s.qps_watched.fetch_add(1, std::memory_order_relaxed);
     if (!s.started) {
         s.started = true;
-        s.thread = std::thread(run);
+        s.stage.cap = stage_bytes();
+        s.stage.buf.reset(new std::uint8_t[s.stage.cap]);
+        s.decoder = std::thread(decode_run);
+        s.watcher = std::thread(run);
     }
 }
 
@@ -266,46 +553,82 @@ inline void refused(std::uint32_t qpn, const char* why) {
 }
 
 // From the umem dereg hook, which runs before the transport frees the buffer:
-// one last drain, then forget the queue. Keyed on the umem pointer, compared
-// only — it may already be freed by the time this runs.
+// one last drain into staging, then forget the queue — and wait, briefly, for
+// the decoder to record it, so the rows exist before teardown goes further.
+// Keyed on the umem pointer, compared only: it may already be freed.
 inline void unwatch_umem(const void* umem) {
     if (!umem)
         return;
-    auto&                       s = state();
-    std::lock_guard<std::mutex> lk(s.mutex);
-    for (auto it = s.qps.begin(); it != s.qps.end();) {
-        if ((*it)->sq_umem == umem || (*it)->dbr_umem == umem) {
-            drain_one(**it, hijack::state().device_send_sink);
-            it = s.qps.erase(it);
-        } else {
-            ++it;
+    auto&         s = state();
+    std::uint64_t upto = 0;
+    {
+        std::lock_guard<std::mutex> lk(s.mutex);
+        if (!s.started)
+            return;
+        for (auto it = s.qps.begin(); it != s.qps.end();) {
+            if ((*it)->sq_umem == umem || (*it)->dbr_umem == umem) {
+                drain_one(**it);
+                it = s.qps.erase(it);
+            } else {
+                ++it;
+            }
         }
+        upto = s.stage.head.load(std::memory_order_relaxed);
     }
+    wait_decoded(upto, std::chrono::milliseconds(200));
 }
 
 inline void shutdown(int rank) {
     auto& s = state();
     if (s.stop.exchange(true, std::memory_order_acq_rel))
         return;  // already stopped and reported
-    if (s.thread.joinable())
-        s.thread.join();
+    if (s.watcher.joinable())
+        s.watcher.join();
+    std::uint64_t upto = 0;
     {
         std::lock_guard<std::mutex> lk(s.mutex);
         for (auto& w : s.qps)
-            drain_one(*w, hijack::state().device_send_sink);
+            drain_one(*w);
+        upto = s.stage.head.load(std::memory_order_relaxed);
     }
-    auto& hs = hijack::state();
+    wait_decoded(upto, std::chrono::milliseconds(500));
+    s.decoder_stop.store(true, std::memory_order_release);
+    if (s.decoder.joinable())
+        s.decoder.join();
+
+    auto&               hs = hijack::state();
+    const std::uint64_t undecoded =
+        (s.stage.head.load() - s.stage.tail.load()) / hijack::kWqebb;  // headers included
     std::fprintf(stderr,
-                 "[pcomm] sq-watch rank=%d qps_watched=%u refused=%u wqebbs=%llu sends=%llu "
-                 "(unknown_op=%llu truncated=%llu) held=%llu lapped=%llu polls=%llu\n",
+                 "[pcomm] sq-watch rank=%d qps_watched=%u refused=%u staged=%llu decoded=%llu "
+                 "sends=%llu (unknown_op=%llu truncated=%llu) held=%llu lapped=%llu "
+                 "dropped=%llu polls=%llu\n",
                  rank, s.qps_watched.load(), s.qps_refused.load(),
-                 static_cast<unsigned long long>(s.wqebbs.load()),
+                 static_cast<unsigned long long>(s.staged.load()),
+                 static_cast<unsigned long long>(s.decoded.load()),
                  static_cast<unsigned long long>(hs.sends_emitted.load()),
                  static_cast<unsigned long long>(hs.sends_unknown_op.load()),
                  static_cast<unsigned long long>(hs.sends_truncated.load()),
                  static_cast<unsigned long long>(s.held.load()),
-                 static_cast<unsigned long long>(s.lapped.load()),
+                 static_cast<unsigned long long>(s.lapped_early.load() + s.lapped_late.load()),
+                 static_cast<unsigned long long>(s.dropped.load()),
                  static_cast<unsigned long long>(s.polls.load()));
+    std::fprintf(stderr,
+                 "[pcomm] sq-watch rank=%d lapped_early=%llu lapped_late=%llu batches=%llu "
+                 "max_delta=%u copy_us=%llu first_batch_us=%llu max_batch_us=%llu@%llu "
+                 "decode_us=%llu max_decode_us=%llu undecoded=%llu cpu=%d affinity=%d "
+                 "csw_vol=%ld csw_invol=%ld\n",
+                 rank, static_cast<unsigned long long>(s.lapped_early.load()),
+                 static_cast<unsigned long long>(s.lapped_late.load()),
+                 static_cast<unsigned long long>(s.batches.load()), s.max_delta.load(),
+                 static_cast<unsigned long long>(s.copy_ns.load() / 1000),
+                 static_cast<unsigned long long>(s.first_batch_ns / 1000),
+                 static_cast<unsigned long long>(s.max_batch_ns / 1000),
+                 static_cast<unsigned long long>(s.max_batch_at),
+                 static_cast<unsigned long long>(s.decode_ns.load() / 1000),
+                 static_cast<unsigned long long>(s.max_decode_ns / 1000),
+                 static_cast<unsigned long long>(undecoded), s.cpu_start, s.affinity_cpus,
+                 s.csw_voluntary, s.csw_involuntary);
 }
 
 }  // namespace mlx5::sqwatch

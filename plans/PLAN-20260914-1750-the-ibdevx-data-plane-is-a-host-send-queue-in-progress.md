@@ -1,9 +1,10 @@
 # PLAN — the ibdevx data plane is a host send queue, so watch the queue
 
 - **Created:** 2026-09-14 17:50 +03
-- **Status:** in progress. The prototype (`PCOMM_SQ_WATCH=1`,
-  `providers/mlx5dv/sq_watch.hpp`) is exact at case-11 scale and loses most of
-  a 10× run; steps 1–5 below make it a supported capture mode.
+- **Status:** in progress. Step 1 is done: the prototype (`PCOMM_SQ_WATCH=1`,
+  `providers/mlx5dv/sq_watch.hpp`) is lossless on du04 up to `1024 200`
+  (204,800 WQEs per rank) and keeps 99.9% at `1024 2000`. Steps 2–5 make it a
+  supported capture mode.
 - **Related:** the `OPEN (2026-09-14)` entry at the top of
   `things-to-circle-back-to.md` (the finding and the measurements live there);
   `tests/hpc/cases/11_ibdevx_peermem/parity/README.md` (where the gap was found);
@@ -71,21 +72,57 @@ the price is visible rather than hidden.
 - **IBGDA's queues are not this path's.** They are GPU-resident; the watcher
   takes only `!gpu_driven` queue pairs whose send queue and doorbell record are
   both known `by_addr` host umems, and refuses everything else with a reason.
+- **The watcher thread never records.** Its first full arena stalled it for
+  2.1–2.4 ms inside `pcomm_engine_arena_flush` and the proxy lapped the ring
+  many times over (step 1, below). Anything that can block — recording,
+  interning, allocation — belongs on the decoder.
+- **The watcher never shares the rank's core.** Open MPI binds a rank to one
+  core by default, and a watcher inheriting that binding competes with the very
+  proxy it watches: 7,700–16,000 involuntary context switches and ~20% kept on
+  `1024 20`. `place_thread` moves both threads to the rank's NUMA node by
+  default; keep `PCOMM_SQ_WATCH_CPU=bound` as the measurement it is, not as an
+  option anyone should run with.
 
 ## Steps
 
-1. **Throughput.** The watcher copies, decodes and records on one thread, so a
-   batch's decode cost is time the producer spends lapping it. Split it: the
-   watcher only copies raw WQEBBs into a per-queue staging buffer (a 64 KiB ring
-   copies in microseconds), and a second thread decodes and records. And salvage
-   instead of discard — when the post-copy check finds the producer near a lap,
-   drop only the provably overwritten prefix and realign on `slot_holds()`,
-   rather than throwing away the batch. Target: `lapped = 0` on `1024 20`;
-   then find where it breaks and write that number down.
-2. **Cost.** Spinning costs a core per rank. Measure wall time against a bare
-   run; then try `umwait`/`monitorx` on the doorbell record (the memory
-   repeater already has both) or adaptive backoff, and keep whichever holds
-   step 1's number.
+1. **Throughput — DONE 2026-09-14.** Two causes, found by instrumenting rather
+   than by building the planned fix first, and the planned fix alone would not
+   have been enough:
+
+   - *A stall, not a slow watcher.* Every lossy run lost its WQEs in ONE event
+     (`max_delta` = `lapped`), even with the watcher alone on a CPU. The longest
+     batch was 2.1–2.4 ms at batch ~800 — the first 4,096-row arena filling.
+     Fixed by the split: the watcher copies into a 16 MiB staging ring and a
+     decoder thread records. The same stall now shows up as `max_decode_us`
+     ≈ 2–4 ms, where it costs nothing.
+   - *No CPU.* With the split in, runs under Open MPI's default binding still
+     lost 20–55%; unbound, the same runs were lossless. Fixed by placement
+     (see Constraints).
+
+   Measured after both, du04, default binding, `auto` placement:
+
+   | workload | WQEs decoded per rank | lapped | dropped |
+   |---|---|---|---|
+   | `1024 2`, ×2 | 2,048 × 4 B — exact | 0 | 0 |
+   | `1024 20`, ×2 | 20,480 × 4 B = 81,920 B — exact | 0 | 0 |
+   | `1024 200` | 204,800 × 4 B = 819,200 B — exact | 0 | 0 |
+   | `1024 2000` | 2,045,577 / 2,046,964 of 2,048,000 | 2,427 / 1,041 | 0 |
+
+   **Where it breaks:** ~2M WQEs per rank, at 0.05–0.12%, always counted. The
+   largest single jump there was 1,028–1,220 WQEBBs — just over the 1,024-slot
+   ring, i.e. an occasional ~190 µs gap between two looks at the same queue.
+   Salvaging instead of discarding (drop only the overwritten prefix) was
+   planned here and is NOT worth it yet: `lapped_late` is 13–28 of those, the
+   rest are `lapped_early`, which no salvage recovers. The ring is the
+   application's (`NVSHMEM_IBDEVX_QP_DEPTH`-class settings), so the loss rate
+   at a given traffic rate is partly the application's to set.
+2. **Cost.** Spinning costs a core per rank. First number, and not yet the
+   answer: `1024 200` took 3.89 s watched, 3.85 s under pcomm with the watcher
+   off, 3.87 s bare — within noise, because this workload's wall time is
+   startup. It needs a workload whose runtime is traffic, and a measure of what
+   the extra spinning core costs a job that needed it. Then try
+   `umwait`/`monitorx` on the doorbell record (the memory repeater already has
+   both) or adaptive backoff, and keep whichever holds step 1's numbers.
 3. **Record semantics.** `Mlx5DeviceSend` is named for the GPU path. Add who
    submitted it (GPU doorbell hijack / host doorbell / send-queue watch) — a
    schema change, which pre-alpha takes over a misleading name — and document
