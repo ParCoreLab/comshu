@@ -364,6 +364,9 @@ void usage() {
                "                     rank's L3 (PCOMM_SQ_WATCH_CPU overrides), and slows\n"
                "                     a full-rate send loop ~1.15x. Anything it misses is\n"
                "                     counted in mlx5_send_coverage, never silent.\n"
+               "                     Under NVSHMEM's ibdevx set NVSHMEM_QP_DEPTH=8192:\n"
+               "                     its default 1,024-slot ring is ~200 us of slack,\n"
+               "                     less than the watcher's routine scheduling gaps.\n"
                "  -h, --help         this message\n"
                "\n"
                "  e.g.  pcomm run -p ib -- ./app      # network only, single run\n"
@@ -582,6 +585,46 @@ int pcomm::cli::run_main(int argc, char** argv) {
                      "pcomm: note — the workload runs %zu times (exclusive providers can't\n"
                      "       share a process); passes are wall-aligned for pcomm-read.\n",
                      passes.size());
+
+    // ── The send-queue watcher's one tunable is the application's ───────────
+    //
+    // The watcher reads NVSHMEM's ibdevx send queues from outside the path, so
+    // nothing waits for it: it must copy each slot before the CPU proxy comes
+    // back around to it. The proxy posts at least ~5 WQEBBs per us, so a ring of
+    // N slots is ~N/5 us of slack, and the watcher's routine scheduling gaps are
+    // 100-335 us on MN5 (4.2 ms seen on du04), pinned or not. NVSHMEM's default
+    // 1,024 slots lapped 1,450-2,009 WQEBBs per rank on a `1024 20` put-ring;
+    // 8,192 lost nothing in any run since (MN5 job 45893428, plan
+    // PLAN-20260914-1750, step 5). Loss is counted either way — this only says
+    // how to avoid it, before the run rather than after.
+    //
+    // Only for ibdevx: NVSHMEM's other transports post through verbs (ibrc,
+    // captured in the call) or from GPU-resident queues (ibgda, the doorbell
+    // doors'), so NVSHMEM_QP_DEPTH means nothing to the watcher there. Once per
+    // job, not once per rank: rank 0, or a launch with no rank at all.
+    if (watch_send_queues) {
+        const char* transport = std::getenv("NVSHMEM_REMOTE_TRANSPORT");
+        const char* depth_env = std::getenv("NVSHMEM_QP_DEPTH");
+        const long  depth = depth_env && *depth_env ? std::atol(depth_env) : 1024;
+        const char* rank = nullptr;
+        for (const char* v : {"OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK", "SLURM_PROCID"})
+            if ((rank = std::getenv(v)))
+                break;
+        if (transport && std::string_view(transport) == "ibdevx" && depth < 8192 &&
+            (!rank || std::string_view(rank) == "0"))
+            std::fprintf(stderr,
+                         "pcomm: warning — --watch-send-queues under NVSHMEM's ibdevx with a "
+                         "%ld-slot ring (NVSHMEM_QP_DEPTH=%s).\n"
+                         "       At NVSHMEM's posting rate that is ~%ld us of slack between the "
+                         "watcher's looks;\n"
+                         "       its scheduling gaps are routinely 100-335 us (MN5) and have "
+                         "reached 4.2 ms\n"
+                         "       (du04), so WQEs may be lapped — counted, not decoded. Set\n"
+                         "       NVSHMEM_QP_DEPTH=8192 (512 KiB per queue, lossless in every "
+                         "measured run).\n",
+                         depth, depth_env && *depth_env ? depth_env : "unset, default 1024",
+                         depth / 5);
+    }
 
     if (dry_run) {
         for (const auto& pass : passes) {

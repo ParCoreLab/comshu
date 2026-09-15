@@ -2,6 +2,43 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN (2026-09-15): NCCL's GPU-initiated networking (GIN) is a data plane no case exercises
+
+Classic NCCL over InfiniBand is not exposed to the send-queue watcher's timing
+problem. Its proxy thread posts with `ibv_post_send`, and the ib provider
+records inside that call, on NCCL's own thread: NCCL cannot move on until the
+row is written, so there is nothing to lap. The cost runs the other way — a
+pcomm stall is NCCL's stall. Case 02 pins the volume byte for byte (2,240
+`rdma_write` + 1,120 `rdma_write_imm` per rank, `traffic.golden`).
+
+GIN is a different data plane. The suite's `NCCL_HOME` resolves to the newest
+SDK's NCCL, 2.29.3 on MN5 (SDK 26.5), which ships `nccl_device/gin`; in
+`reference/nccl-git` (2.30.7) GIN is on by default (`NCCL_GIN_ENABLE=1`) and is
+used by kernels written against the device API, and by symmetric-memory
+collectives beyond one NVLink team (`init.cc`: `symmetricSupport` needs
+`globalGinSupport` unless the communicator is one LSA team). Two backends,
+`src/transport/net_ib/gin.cc`:
+
+- **`GIN_IB_PROXY`**: the GPU writes descriptors into a credit-limited queue
+  (`nccl_device/gin/proxy/gin_proxy.h` waits for credits when it is full) and a
+  CPU thread posts them with `ibv_post_send` (`net_ib/gin.cc`). The ib provider
+  should see it exactly as it sees classic NCCL. Unverified.
+- **`GIN_IB_GDAKI`**: the GPU builds WQEs and rings the doorbell itself, through
+  a bundled DOCA GPUNetIO — IBGDA's shape. Queues are DEVX objects
+  (`mlx5dv_devx_obj_create`, resolved by `dlsym` as NVSHMEM's are), 128 slots
+  deep by default (`NCCL_GIN_GDAKI_QP_DEPTH`), and the NIC handler is chosen the
+  way NVSHMEM's is: AUTO registers the UAR with the GPU where the driver allows
+  it, and falls back to CPU_PROXY where it does not
+  (`doca_gpunetio_high_level.cpp`) — MN5, i.e. the host doorbell's mode.
+  GPU-resident queues are the doorbell doors' business, not the watcher's.
+  Whether either door arms on DOCA's UARs is unverified.
+
+Next: a case that runs a small device-API GIN kernel on MN5 under
+`--enable-host-doorbell` (and `NCCL_GIN_TYPE` forced to each backend in turn),
+asserting its volume the way case 12's `data_plane_puts_arrived.sql` does.
+Check whether du04's SDK (25.9) ships a GIN-capable NCCL before counting on the
+GPU arm there.
+
 ## FIXED (2026-09-15): a baked engine carried its unpack time, so build-tree providers looked stale
 
 `images_are_no_older_than_the_engine` compares each mapped libpcomm object's
