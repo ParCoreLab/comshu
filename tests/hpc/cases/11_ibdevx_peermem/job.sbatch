@@ -1,5 +1,6 @@
 #!/bin/bash
-# Case 11 — ibdevx_peermem: the DEVX control plane WITHOUT a GPU data plane.
+# Case 11 — ibdevx_peermem: the DEVX control plane, and the CPU-driven data
+# plane under it — which no door saw until the send-queue watcher (below).
 #
 # This is SigmaTrace's published artifact configuration, and it is the third
 # corner of a deliberate 2x2. Cases 09, 10 and 11 differ from each other in
@@ -163,7 +164,9 @@ fi
 # traffic in a CPU-driven transport would be asserting a bug. What this case
 # does prove is that the DEVX decoding, the umem registry and the topology
 # closure hold independently of who rings the doorbell, which is the part case
-# 09 cannot separate.
+# 09 cannot separate — AND, since 2026-09-15, that the CPU-driven data plane is
+# captured whole: every put the workload makes, decoded, with nothing lapped or
+# dropped (asserts/data_plane_*.sql).
 export NVSHMEM_BOOTSTRAP=MPI
 export NVSHMEM_DISABLE_P2P=1
 export NVSHMEM_REMOTE_TRANSPORT=ibdevx
@@ -189,13 +192,23 @@ export NVSHMEM_IB_DISABLE_DMABUF=1
 # (case 06 is the regression test) and `ib` does not perturb what the 200-range
 # streams record — mlx5_umem, mlx5_uar and mlx5_devx_* are identical across the
 # two arms above.
+#
+# `--watch-send-queues`, because without it this case had no data plane at all.
+# ibdevx never calls ibv_post_send and rings a BlueFlame UAR that neither
+# doorbell path watches, so until 2026-09-15 pcomm — and SigmaTrace, measured
+# side by side in parity/ — recorded not one byte of the 16,384 this workload
+# moves. The watcher reads each DEVX queue's doorbell record and send queue from
+# outside the path (providers/mlx5dv/sq_watch.hpp): it touches no doorbell, so it
+# cannot break the run, and what it misses is counted in mlx5_send_coverage
+# rather than absent. PLAN-20260914-1750 has the design and the measurements.
+# Both hosts run it: RC queue pairs on du04, DC initiators on MN5.
 rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 
 timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
   -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
   -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
   -x NVSHMEM_IB_DISABLE_DMABUF \
-  "$PCOMM" run -p ib,mlx5dv -o "$OUT" -- "$APP" 1024 2
+  "$PCOMM" run -p ib,mlx5dv --watch-send-queues -o "$OUT" -- "$APP" 1024 2
 rc=$?; echo "mpirun exit=$rc"
 
 # A run that IBGDA declined to serve is a skip, not a failure: NVSHMEM exits

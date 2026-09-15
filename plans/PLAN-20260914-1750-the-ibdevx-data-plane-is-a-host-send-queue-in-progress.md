@@ -238,9 +238,47 @@ the price is visible rather than hidden.
    20,540 + 0 + 0; `rows` 20,513 / 20,510, equal to the CSV's `sq_watch` rows
    on each rank. Cases 11 and 12 PASS, core ctest 33/33. Schema hash
    `0x05D78F93455BDACA`.
-5. **Case 11 asserts it.** 2 × 1024 `rdma_write` of 4 B per rank (8,192 B —
-   the workload's own arithmetic), full decode, `lapped = 0`. The case that
-   found the gap becomes the one that proves it closed.
+5. **Case 11 asserts it — DONE on du04 2026-09-15; MN5 board pending.** The
+   case runs with `--watch-send-queues` and gained four assertions, each
+   written so that a watcher that never ran FAILS rather than skips:
+
+   - `suite/asserts/send_coverage_adds_up.sql` — published = decoded + lapped
+     + dropped, on every run of every case the watcher ran in; true of a lossy
+     run too, so how much may be lost stays each case's own claim.
+   - `data_plane_puts_arrived.sql` — every rank carries exactly
+     `elems × iters` RDMA writes of `elem_bytes` (2,048 × 4 B), derived from
+     `params`; counted by length so NVSHMEM's own 128 B writes are not.
+   - `data_plane_covered.sql` — every rank with DEVX queue pairs has exactly
+     one coverage row, nothing lapped, dropped or refused, decoded = published
+     > 0, and its `rows` equal to the capture's. It requires `mlx5_devx_qp`,
+     not the coverage table, so a missing row is a failure and not a [skip].
+   - `data_plane_rows_are_windows.sql` — every watched row is a real Window
+     (`0 < ticks < ticks_hi`) and fully decoded.
+
+   `expect_tables` gained `mlx5_device_send` and `mlx5_send_coverage`, and
+   the case's own notes stopped saying no tool sees this data plane.
+
+   du04, twice, `--no-build` the second time: PASS, 26 assertions (18
+   before), both runs. Three suite assertions that had always skipped here now
+   run and pass on the watcher's rows (atomic operand width, AV width stable
+   per QP, DC sends name a destination). Coverage: rank 0 published 2,075 =
+   decoded 2,075, rows 2,063; rank 1 2,072 / 2,060; 5 queues each, nothing
+   lapped, dropped, refused or held.
+
+   *Mutation-tested* against the saved capture — each corruption fails exactly
+   the assertion it should, and nothing else:
+
+   | mutation | adds_up | covered | puts_arrived | windows |
+   |---|---|---|---|---|
+   | rank 1's coverage row deleted | ok | **fail** | ok | ok |
+   | 5 lapped, still adding up | ok | **fail** | ok | ok |
+   | decoded − 1 (a silent loss) | **fail** | **fail** | ok | ok |
+   | 10 of rank 0's puts removed | ok | **fail** | **fail** | ok |
+   | one window collapsed | ok | ok | ok | **fail** |
+
+   *Still to see:* MN5, where the same case runs NVSHMEM's DC initiators (60
+   per rank, service_type 0x5) through the watcher for the first time — a
+   different WQE layout, with an address vector, under the same assertions.
 6. **Later, and bigger than ibdevx.** The doorbell record format is mlx5's, not
    NVSHMEM's. Hooking `mlx5dv_init_obj` would hand the watcher every
    verbs-created queue pair whose owner posts by hand — UCX's `rc_mlx5` above
