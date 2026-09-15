@@ -46,9 +46,24 @@ cross-leg check stopped assuming NVSHMEM posts the same WQEs over RoCE as over
 IB (`c87b6aa`). Case 11 then failed for its own reason — the send-queue
 watcher lapping a 1,024-slot ring — which the ibdevx entry below covers.
 
-Worth re-reading with this in mind: case 12's MN5 host-doorbell numbers after
-the binary changed — 63 sends decoded on recent boards, where job 45449988 had
-7,232.
+**Case 12, re-read (2026-09-15).** Every MN5 board from 45497122 (2026-09-06)
+to 45887330 decoded exactly 63 sends and passed: 30 `atomic_masked_cs` per rank
+and three 128 B writes on rank 0, all NVSHMEM's own, and none of the 40,960
+puts. From 45889178 on it is 1,347: 640 × 128 B per rank to the neighbour's
+buffer (every int of `1024 20`, a warp's 32 puts coalesced into one write), 32
+atomics per rank, and the same three writes. The 7,232 of job 45449988 was never
+a comparison: that was the probe running NVSHMEM's `shmem_put_bw` on two nodes.
+
+Why 27 assertions passed on no data plane: each one checks rows that exist —
+named, sized, in sequence, starting at the queue head — and the wire check is an
+upper bound. The byte-identical-output check compared two runs whose kernels had
+both not run. Nothing tied the capture's volume to the workload's. Case 12 now
+asserts it (`asserts/data_plane_puts_arrived.sql`: every byte of the
+destination written exactly `iters` times, which holds whatever NVSHMEM
+coalesces), and case 25 runs the same file against its RoCE leg for the same
+reason, since its leg-to-leg comparisons are relative. Verified against the
+captures themselves: 45895420 passes both cases, 45887330 fails with 0 of
+4,096 B on each rank.
 
 ## RESOLVED (2026-09-15): the ibdevx data plane reached the NIC through a door nobody watched
 

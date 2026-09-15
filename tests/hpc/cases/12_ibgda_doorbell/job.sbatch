@@ -63,9 +63,17 @@ fail() {
 #
 # So the prerequisite check now SELECTS an arm rather than giving up, and skips
 # only where neither can work. Measured 2026-09-05: du04 takes the gpu arm
-# (job on a100), MN5 the host arm (job 45449988, 7,232 sends decoded). See
+# (job on a100), MN5 the host arm (probe job 45449988, 7,232 sends decoded —
+# from NVSHMEM's shmem_put_bw on two nodes, not from this case's workload). See
 # tests/hpc/probes/uar_doorbell_mode/ for the probe that answers this in a
 # minute on any new cluster.
+#
+# This case's own MN5 runs decoded 63 sends each from 2026-09-06 to 2026-09-15,
+# and none of them was a put: the workload's kernel never ran on the H100s
+# (d45b536). From board 45889178 on it is 640 x 128 B per rank — every int of
+# 1024 x 20, coalesced a warp at a time — plus NVSHMEM's own 32 atomics per
+# rank and three 128 B writes on rank 0: 1,347. asserts/data_plane_puts_arrived.sql
+# is what now fails a run whose puts are missing; nothing did before.
 have_peermem=0
 lsmod 2>/dev/null | grep -qE "nvidia_peermem|nv_peer_mem" && have_peermem=1
 if grep -q "PeerMappingOverride=1" /proc/driver/nvidia/params 2>/dev/null && \
