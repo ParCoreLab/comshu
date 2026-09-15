@@ -271,24 +271,50 @@ for l in rc dc roce_dc; do
 done
 
 # ---- THE CROSS-LEG CHECK ---------------------------------------------------
-# Same workload, same iteration count, three different segment layouts. The
-# (length, count) histogram of the RDMA writes must be identical, because a
-# mis-derived AV width moves `length` and nothing else in this comparison can.
+# Same workload, same iteration count, three different segment layouts. A
+# mis-derived AV width moves where `length` is read from, so what each leg
+# decodes must agree — but NOT as the same histogram in every leg, because
+# NVSHMEM does not post the same WQEs in every leg.
+#
+# nvshmemi_ibgda_rma_p (ibgda_device.cuh) combines a full warp's contiguous p's
+# into ONE write only when `state->support_half_av_seg` — the compact AV. IB RC
+# and IB DC have it, so a warp of nvshmem_int_p is one 128-byte write; RoCE needs
+# the full 48-byte AV, so there each p is its own 4-byte write. Measured, MN5 job
+# 45889178, the first run whose kernel actually executed there (putget.cu's
+# sm_80-only binary never launched on the H100s before d45b536): rc and dc
+# 640 x 128 B per rank, roce_dc 20,480 x 4 B — 81,920 B per rank in every leg,
+# plus the same three 128 B barrier writes on rank 0. The histogram comparison
+# this replaced had only ever compared those barrier writes, and failed the
+# first time it saw the puts.
+#
+# So: the compact-AV leg must match RC exactly, histogram and all — same
+# combining, different segment layout. The full-AV leg must match RC in bytes
+# per rank, which a wrong 48-byte offset cannot: it would read `length` from
+# the wrong place in every one of 20,480 WQEs per rank.
 hist() {
   local f; f=$(csv_of "$1")
   awk -F, -v o="$(col "$f" opcode_name)" -v L="$(col "$f" length)" \
     'NR>1 && $o=="rdma_write" {print $L}' "$f" | sort -n | uniq -c
 }
+bytes_by_rank() {
+  local f; f=$(csv_of "$1")
+  awk -F, -v o="$(col "$f" opcode_name)" -v L="$(col "$f" length)" -v r="$(col "$f" rank)" \
+    'NR>1 && $o=="rdma_write" {b[$r] += $L} END {for (k in b) print k, b[k]}' "$f" | sort -n
+}
 h_rc=$(hist rc); h_dc=$(hist dc); h_roce=$(hist roce_dc)
+b_rc=$(bytes_by_rank rc); b_roce=$(bytes_by_rank roce_dc)
 echo "=== rdma_write length histograms ==="
 echo "rc:      $(echo "$h_rc"   | tr '\n' ';')"
 echo "dc:      $(echo "$h_dc"   | tr '\n' ';')"
 echo "roce_dc: $(echo "$h_roce" | tr '\n' ';')"
+echo "=== rdma_write bytes per rank ==="
+echo "rc:      $(echo "$b_rc"   | tr '\n' ';')"
+echo "roce_dc: $(echo "$b_roce" | tr '\n' ';')"
 [ -n "$h_rc" ] || fail "the rc leg decoded no rdma_write rows — nothing to compare against"
 [ "$h_rc" = "$h_dc" ] || \
   fail "compact-AV leg disagrees with RC on rdma_write lengths — the 16-byte AV offset is wrong"
-[ "$h_rc" = "$h_roce" ] || \
-  fail "full-AV leg disagrees with RC on rdma_write lengths — the 48-byte AV offset is wrong"
+[ "$b_rc" = "$b_roce" ] || \
+  fail "full-AV leg disagrees with RC on rdma_write bytes per rank — the 48-byte AV offset is wrong"
 
 # ---- assert the full-AV capture --------------------------------------------
 # roce_dc captured straight into $OUT because it carries the width that exists
