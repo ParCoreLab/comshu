@@ -212,7 +212,9 @@ export NVSHMEM_IB_DISABLE_DMABUF=1
 # outside the path (providers/mlx5dv/sq_watch.hpp): it touches no doorbell, so it
 # cannot break the run, and what it misses is counted in mlx5_send_coverage
 # rather than absent. PLAN-20260914-1750 has the design and the measurements.
-# Both hosts run it: RC queue pairs on du04, DC initiators on MN5.
+# Both hosts run it. NVSHMEM's ibdevx queues are RC on both; on MN5 the watcher
+# also takes UCX's DEVX queues (40 RC + 15 DCI per rank, MPI's), which carry
+# no puts but are watched and counted all the same.
 rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 
 timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
