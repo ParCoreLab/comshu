@@ -275,6 +275,12 @@ struct State {
     std::atomic<std::uint64_t> copy_ns{0};
     std::uint64_t              max_batch_ns{0};  // watcher thread only
     std::uint64_t              max_batch_at{0};
+    // The longest time between the starts of two polling rounds, and the round
+    // it ended. A spinning watcher that is preempted for longer than a ring
+    // takes to fill laps it however much CPU it gets overall: MN5 job 45891600
+    // lost 1,450 WQEBBs on rank 0 in one gap with 4,786 of 4,798 ms on CPU.
+    std::uint64_t              max_gap_ns{0};  // watcher thread only
+    std::uint64_t              max_gap_at{0};
     std::uint64_t              first_batch_ns{0};
     std::atomic<std::uint64_t> decode_ns{0};
     std::uint64_t              max_decode_ns{0};  // decoder thread only
@@ -677,7 +683,18 @@ inline void run() {
     CPU_ZERO(&set);
     if (pthread_getaffinity_np(pthread_self(), sizeof set, &set) == 0)
         s.affinity_cpus = CPU_COUNT(&set);
+    auto round_start = std::chrono::steady_clock::now();
     while (!s.stop.load(std::memory_order_acquire)) {
+        {
+            const auto now = std::chrono::steady_clock::now();
+            const auto gap = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now - round_start).count());
+            if (gap > s.max_gap_ns) {
+                s.max_gap_ns = gap;
+                s.max_gap_at = s.polls.load(std::memory_order_relaxed);
+            }
+            round_start = now;
+        }
         {
             std::lock_guard<std::mutex> lk(s.mutex);
             for (auto& w : s.qps)
@@ -868,9 +885,11 @@ inline void shutdown(int rank) {
                  s.csw_voluntary, s.csw_involuntary);
     std::fprintf(stderr,
                  "[pcomm] sq-watch rank=%d watcher_cpu_ms=%ld watcher_wall_ms=%ld "
-                 "decoder_cpu_ms=%ld poll_us=%lld cpu=%d->%d\n",
+                 "decoder_cpu_ms=%ld poll_us=%lld cpu=%d->%d max_gap_us=%llu@%llu\n",
                  rank, s.watcher_cpu_us / 1000, s.watcher_wall_us / 1000, s.decoder_cpu_us / 1000,
-                 static_cast<long long>(poll_interval().count()), s.cpu_start, s.cpu_end);
+                 static_cast<long long>(poll_interval().count()), s.cpu_start, s.cpu_end,
+                 static_cast<unsigned long long>(s.max_gap_ns / 1000),
+                 static_cast<unsigned long long>(s.max_gap_at));
 }
 
 }  // namespace mlx5::sqwatch
