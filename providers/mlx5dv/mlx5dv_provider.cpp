@@ -368,11 +368,24 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
                                            : 0;
         const std::uint64_t sq_off = wq_offset + rq_bytes;
         const std::uint64_t sq_bytes = (std::uint64_t{1} << log_sq_size) * hijack::kWqebb;
+        // dbr_umem_valid is NOT consulted, only reported. ibdevx sets it; UCX
+        // never does (ib_mlx5_dv.c) and still names its doorbell record by
+        // dbr_umem_id + dbr_addr, and its queues run — on a DEVX create the kernel
+        // marks the umems valid itself (mlx5_ib's devx_set_umem_valid), in its own
+        // copy of the command, so the bit this hook reads says nothing. Requiring
+        // it refused every UCX queue on MN5 (40 RC + 15 DCI per rank).
+        //
+        // What does rule a queue out is send_dbr_mode, the top two bits of the
+        // byte the vendored ifc calls reserved_at_80 (UCX and rdma-core's
+        // mlx5_prm_structs.py both put it right after uar_page): 0 is a doorbell
+        // record the NIC reads; UCX's NO_DBR_INT (2) keeps none, so there would be
+        // nothing to watch.
+        const unsigned      send_dbr_mode = DEVX_GET(qpc, qpc, reserved_at_80) >> 6;
         const bool          dbr_valid = DEVX_GET(qpc, qpc, dbr_umem_valid) != 0;
         const auto          dbr_umem_id = DEVX_GET(qpc, qpc, dbr_umem_id);
         const std::uint64_t dbr_off = DEVX_GET64(qpc, qpc, dbr_addr);
         UmemInfo            dbr{};
-        const bool          dbr_known = dbr_valid && lookup_umem(ctx, dbr_umem_id, &dbr);
+        const bool          dbr_known = lookup_umem(ctx, dbr_umem_id, &dbr);
 
         const char* why = nullptr;
         if (!known)
@@ -381,8 +394,8 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
             why = "send queue's umem is not host memory";
         else if (sq_off + sq_bytes > wq.size)
             why = "send queue runs past the end of its umem";
-        else if (!dbr_valid)
-            why = "doorbell record is not in a umem (dbr_umem_valid=0)";
+        else if (send_dbr_mode != 0)
+            why = "send queue keeps no doorbell record (send_dbr_mode != 0)";
         else if (!dbr_known)
             why = "doorbell record's umem is not registered on this context";
         else if (dbr.binding != UmemBinding::ByAddress)
@@ -396,7 +409,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
                 fields, sizeof fields,
                 "qpn=%u st=%#x log_sq=%u rq_type=%u log_rq=%u log_rq_stride=%u "
                 "wq_umem=%u wq_off=%#llx wq_size=%#llx sq_off=%#llx sq_bytes=%#llx "
-                "dbr_valid=%d dbr_umem=%u dbr_off=%#llx dbr_size=%#llx",
+                "send_dbr_mode=%u dbr_valid=%d dbr_umem=%u dbr_off=%#llx dbr_size=%#llx",
                 qp_num, static_cast<unsigned>(service_type), static_cast<unsigned>(log_sq_size),
                 static_cast<unsigned>(rq_type),
                 static_cast<unsigned>(DEVX_GET(qpc, qpc, log_rq_size)),
@@ -404,7 +417,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
                 static_cast<unsigned>(wq_umem_id), static_cast<unsigned long long>(wq_offset),
                 static_cast<unsigned long long>(known ? wq.size : 0),
                 static_cast<unsigned long long>(sq_off), static_cast<unsigned long long>(sq_bytes),
-                dbr_valid ? 1 : 0, static_cast<unsigned>(dbr_umem_id),
+                send_dbr_mode, dbr_valid ? 1 : 0, static_cast<unsigned>(dbr_umem_id),
                 static_cast<unsigned long long>(dbr_off),
                 static_cast<unsigned long long>(dbr_known ? dbr.size : 0));
             sqwatch::refused(qp_num, why, fields);
