@@ -600,7 +600,7 @@ MLX = [
  ("mlx5_devx_qp_connect", 208, "Event", "The \u2192RTR transition on the DEVX plane, carrying src_lid for the same reason verbs does."),
  ("mlx5_queue_pair", 210, "Entity", "An ordinary verbs QP reached through mlx5dv_create_qp. perftest creates its queue pairs this way and never calls ibv_create_qp."),
  ("mlx5_doorbell", 212, "Event", "The GPU rang a doorbell. Emitted even when the WQE cannot be read, so an undecodable doorbell is a visible row."),
- ("mlx5_device_send", 214, "Event", "A GPU-initiated send decoded from the WQE. Same shape as ib_post_send so a reader can union the two planes."),
+ ("mlx5_device_send", 214, "Event", "A send WQE, decoded — seen at the GPU doorbell, the host doorbell, or by the send-queue watcher, as submitter says. Same shape as ib_post_send so a reader can union the two planes."),
  ("mlx5_devx_cq", 216, "Entity", "A DEVX completion queue: its identity and geometry. Not its polls \u2014 IBGDA consumes a CQE with GPU loads and writes no CQ doorbell record, so a completion being taken leaves no trace to capture."),
 ]
 INT = [

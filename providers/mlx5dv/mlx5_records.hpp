@@ -190,11 +190,6 @@ PCOMM_RECORD(Mlx5Doorbell, RecordKind::Event, 212, "mlx5_doorbell") {
     std::uint32_t prod_idx;  // producer index the doorbell announced
 };
 
-// EVENT — a GPU-initiated send, decoded from the work-queue entry the doorbell
-// announced. The device-plane counterpart of IbPostSend, and deliberately the
-// same shape (opcode, local, remote, length) so a reader can union the two: on
-// an IBGDA run the ib_post_send table is empty and this is the only send record
-// there is.
 // How much of the WQE the decode read. On the row because "every field was
 // read" and "this build does not know this opcode's layout" must not look the
 // same in the capture — the rule Mlx5DevxCmd.decoded already applies one layer
@@ -207,6 +202,34 @@ enum class SendDecode : std::uint8_t {
     UnknownOp = 3,  // opcode not in the layout table; only ids are meaningful
 };
 
+// Which door saw the WQE a Mlx5DeviceSend row was decoded from — and so what
+// the row's time means. Mirrored as hijack::kSubmitter* in uar_hijack.hpp (which
+// cannot include this header); the provider static_asserts the two equal.
+enum class SendSubmitter : std::uint8_t {
+    Unknown = 0,       // never written on purpose: a call site that forgot to say
+    GpuDoorbell = 1,   // uar_hijack.hpp — the GPU's doorbell store (IBGDA). Instant
+    HostDoorbell = 2,  // host_doorbell.hpp — a host thread's doorbell (CPU-assisted IBGDA). Instant
+    SqWatch = 3,       // sq_watch.hpp — the doorbell record moving (ibdevx). Window
+};
+
+// EVENT — a send work-queue entry, decoded. The WQE-level counterpart of
+// IbPostSend, and deliberately the same shape (opcode, local, remote, length) so
+// a reader can union the two: when a transport writes its WQEs itself — IBGDA
+// from the GPU, ibdevx from a CPU proxy — ib_post_send is empty and this is the
+// only send record there is.
+//
+// The name is older than its meaning. It was written for the GPU doorbell, when
+// "device send" was accurate; the host doorbell and the send-queue watcher now
+// decode through the same parser, and `submitter` says which door saw each row.
+// The wire name stays: renaming it would touch every reader of the table for no
+// gain in meaning, once the row itself says where it came from.
+//
+// What the row's TIME means depends on `submitter`, and the time kind says so.
+// The doorbell doors record an Instant — the doorbell itself, intercepted before
+// the NIC sees it. The watcher records a Window: the WQE was published after its
+// previous look at this queue and before this one, each look bracketed by TSC
+// reads either side of the doorbell-record read, so the bound is exact and
+// typically a few microseconds wide. It is never the post itself.
 PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     std::uint64_t laddr;  // local address (data segment)
     std::uint64_t raddr;  // remote address (RDMA segment), 0 if none
@@ -233,6 +256,7 @@ PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     // from one that never ran (MN5 job 45452104); with this on the row it is
     // one query, on any capture, forever.
     std::uint8_t av_ds;
+    std::uint8_t submitter;  // SendSubmitter: which door saw it, so what its time means
 };
 
 }  // namespace pcomm::providers::mlx5dv::records

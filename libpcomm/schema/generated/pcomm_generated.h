@@ -3027,7 +3027,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   uint8_t opcode_;
   uint8_t decode_;
   uint8_t av_ds_;
-  int8_t padding0__;  int32_t padding1__;
+  uint8_t submitter_;
+  int32_t padding0__;
 
  public:
   Mlx5DeviceSend()
@@ -3043,12 +3044,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         opcode_(0),
         decode_(0),
         av_ds_(0),
-        padding0__(0),
-        padding1__(0) {
+        submitter_(0),
+        padding0__(0) {
     (void)padding0__;
-    (void)padding1__;
   }
-  Mlx5DeviceSend(const pcomm::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint32_t _dest_dct, uint8_t _opcode, uint8_t _decode, uint8_t _av_ds)
+  Mlx5DeviceSend(const pcomm::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint32_t _dest_dct, uint8_t _opcode, uint8_t _decode, uint8_t _av_ds, uint8_t _submitter)
       : temporal_(_temporal),
         laddr_(::flatbuffers::EndianScalar(_laddr)),
         raddr_(::flatbuffers::EndianScalar(_raddr)),
@@ -3061,10 +3061,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         opcode_(::flatbuffers::EndianScalar(_opcode)),
         decode_(::flatbuffers::EndianScalar(_decode)),
         av_ds_(::flatbuffers::EndianScalar(_av_ds)),
-        padding0__(0),
-        padding1__(0) {
+        submitter_(::flatbuffers::EndianScalar(_submitter)),
+        padding0__(0) {
     (void)padding0__;
-    (void)padding1__;
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -3101,6 +3100,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   }
   uint8_t av_ds() const {
     return ::flatbuffers::EndianScalar(av_ds_);
+  }
+  uint8_t submitter() const {
+    return ::flatbuffers::EndianScalar(submitter_);
   }
 };
 FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 96);

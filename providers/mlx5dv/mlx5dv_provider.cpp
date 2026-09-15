@@ -467,10 +467,29 @@ Profiler::Profiler() {
             [](std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr, std::uint32_t rkey,
                std::uint32_t length, std::uint32_t dest_dct, std::uint8_t decode,
-               std::uint8_t av_ds) {
-                rec().record(rr::Mlx5DeviceSend{{}, {}, laddr, raddr, qp_num, wqe_idx, lkey, rkey,
-                                                length, dest_dct, opcode, decode, av_ds});
+               std::uint8_t av_ds, std::uint8_t submitter, std::uint64_t ticks_lo,
+               std::uint64_t ticks_hi) {
+                const rr::Mlx5DeviceSend r{{},      {},     laddr, raddr,    qp_num,
+                                           wqe_idx, lkey,   rkey,  length,   dest_dct,
+                                           opcode,  decode, av_ds, submitter};
+                // A doorbell path calls this at the doorbell: the time is now.
+                if (ticks_hi == 0) {
+                    rec().record(r);
+                    return;
+                }
+                // The send-queue watcher knows only that the WQE was published
+                // between two of its looks, and says exactly that: a Window, the
+                // TimeKind that exists for a bound rather than a measurement.
+                const auto domain = rec().now().domain;
+                rec().record(pcomm::core::Temporal::window({domain, ticks_lo}, {domain, ticks_hi}),
+                             r);
             });
+        static_assert(hijack::kSubmitterGpuDoorbell ==
+                      static_cast<std::uint8_t>(rr::SendSubmitter::GpuDoorbell));
+        static_assert(hijack::kSubmitterHostDoorbell ==
+                      static_cast<std::uint8_t>(rr::SendSubmitter::HostDoorbell));
+        static_assert(hijack::kSubmitterSqWatch ==
+                      static_cast<std::uint8_t>(rr::SendSubmitter::SqWatch));
     }
 
     // ...but the CUDA export-table patcher is the GPU path's alone. The host

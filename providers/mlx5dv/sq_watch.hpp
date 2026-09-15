@@ -42,7 +42,10 @@
 // data, and 16 MiB of staging is ~262k WQEBBs.
 //
 // What it costs, stated rather than discovered later:
-//   * a row's time is when the decoder recorded it, not when it was posted;
+//   * a row's time is a Window, not an Instant: the WQE was published after the
+//     watcher's previous look at its queue and before this one (both bracketed
+//     by TSC reads around the doorbell-record read, carried through staging).
+//     It is never the post itself, and the record says so (SendSubmitter::SqWatch);
 //   * the watcher SPINS, which costs a core. Sleeping 20 us between polls —
 //     about 60 us once the kernel rounds it — let the CPU proxy lap the ring
 //     (one run decoded 9 of ~4,100 WQEs). PCOMM_SQ_WATCH_US=<n> sleeps anyway;
@@ -79,6 +82,7 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 
+#include "pcomm/helpers/clock.hpp"
 #include "uar_hijack.hpp"
 
 namespace mlx5::sqwatch {
@@ -177,6 +181,10 @@ struct Watched {
     const void*    dbr_umem{nullptr};
     std::uint32_t  last{0};
     bool           seen_any{false};
+    // TSC taken just before the counter read of the last look that moved `last`
+    // or found nothing new: everything past `last` was published after it. The
+    // lower end of the next row's Window.
+    std::uint64_t look_ticks{0};
 };
 
 // --- staging ring: the watcher writes, the decoder reads ----------------------
@@ -192,6 +200,8 @@ struct alignas(64) StageHdr {
     std::uint32_t start;  // producer index of the first WQEBB
     std::uint32_t n;      // WQEBBs that follow; 0 = padding to the end of the ring
     std::uint32_t log_wq_size;
+    std::uint64_t ticks_lo;  // published after this (TSC)...
+    std::uint64_t ticks_hi;  // ...and before this: the rows' Window
     std::uint8_t  service_type;
 };
 static_assert(sizeof(StageHdr) == hijack::kWqebb, "a header is one WQEBB");
@@ -314,17 +324,26 @@ inline std::uint8_t* stage_reserve(Stage& st, std::uint32_t n, std::uint64_t& po
 inline void drain_one(Watched& w) {
     auto&               s = state();
     const std::uint32_t slots = 1u << w.shape.log_wq_size;
+    // The TSC either side of the counter read. Whatever this look finds new was
+    // published after w.look_ticks and before `seen` — an exact bound, which is
+    // what the row's Window says, and all this passive door can honestly say.
+    const std::uint64_t look = pcomm::helpers::TscClock::now();
     const std::uint32_t end = read_counter(w);
+    const std::uint64_t seen = pcomm::helpers::TscClock::now();
+    const std::uint64_t since = w.look_ticks;
     const std::uint32_t start = w.last;
     const std::uint32_t delta = hijack::prod_diff(end, start);
-    if (delta == 0)
+    if (delta == 0) {
+        w.look_ticks = look;  // nothing new: whatever comes next is newer than this look
         return;
+    }
     for (std::uint32_t m = s.max_delta.load(std::memory_order_relaxed);
          delta > m && !s.max_delta.compare_exchange_weak(m, delta, std::memory_order_relaxed);) {
     }
     if (stage_mode() == StageMode::Poll) {  // measurement: the counter and nothing else
         s.staged.fetch_add(delta, std::memory_order_relaxed);
         w.last = end;
+        w.look_ticks = look;
         w.seen_any = true;
         return;
     }
@@ -340,6 +359,7 @@ inline void drain_one(Watched& w) {
         // the producer rather than decode what replaced them.
         s.lapped_early.fetch_add(delta, std::memory_order_relaxed);
         w.last = end;
+        w.look_ticks = look;
         return;
     }
 
@@ -350,6 +370,7 @@ inline void drain_one(Watched& w) {
     if (!entry) {
         s.dropped.fetch_add(delta, std::memory_order_relaxed);
         w.last = end;
+        w.look_ticks = look;
         w.seen_any = true;
         return;
     }
@@ -359,6 +380,8 @@ inline void drain_one(Watched& w) {
     hdr->n = delta;
     hdr->log_wq_size = w.shape.log_wq_size;
     hdr->service_type = w.shape.service_type;
+    hdr->ticks_lo = since;
+    hdr->ticks_hi = seen;
 
     std::uint8_t*       dst = entry + hijack::kWqebb;
     const std::uint32_t mask = slots - 1u;
@@ -377,6 +400,7 @@ inline void drain_one(Watched& w) {
     if (hijack::prod_diff(after, start) + kUnpublishedSlack > slots) {
         s.lapped_late.fetch_add(delta, std::memory_order_relaxed);
         w.last = end;
+        w.look_ticks = look;
         return;
     }
 
@@ -384,6 +408,7 @@ inline void drain_one(Watched& w) {
                        std::memory_order_release);
     s.staged.fetch_add(delta, std::memory_order_relaxed);
     w.last = end;
+    w.look_ticks = look;
     w.seen_any = true;
 
     const std::uint64_t batch_ns =
@@ -417,7 +442,8 @@ inline void decode_staged() {
             hijack::parse_wqes(st.buf.get() + off + hijack::kWqebb, hdr->start,
                                (hdr->start + hdr->n) & hijack::kProdMask, hdr->qpn,
                                hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type},
-                               hijack::state().device_send_sink);
+                               hijack::state().device_send_sink, hijack::kSubmitterSqWatch,
+                               hdr->ticks_lo, hdr->ticks_hi);
         const std::uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count();
@@ -647,6 +673,7 @@ inline void watch(std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq
     w->shape = hijack::QpInfo{sq_host, log_wq_size, service_type};
     w->sq_umem = sq_umem;
     w->dbr_umem = dbr_umem;
+    w->look_ticks = pcomm::helpers::TscClock::now();  // just created: nothing was posted before now
     if (debug_on())
         std::fprintf(stderr, "[sqwatch] watch qpn=%u sq=%#llx slots=%u dbr=%#llx\n", qpn,
                      static_cast<unsigned long long>(sq_host), 1u << log_wq_size,

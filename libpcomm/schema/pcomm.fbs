@@ -745,9 +745,10 @@ struct Mlx5Doorbell {
   prod_idx:uint32;
 }
 
-// type 214, Event. A GPU-initiated send decoded from the WQE the doorbell
-// announced. Same shape as IbPostSend so a reader can union device- and
-// host-initiated sends.
+// type 214, Event. A send WQE, decoded — seen at the GPU doorbell, the host
+// doorbell, or by the send-queue watcher, as `submitter` says. Same shape as
+// IbPostSend so a reader can union WQE-level and verbs-level sends. Its time is
+// an Instant from a doorbell, a Window (between two looks) from the watcher.
 struct Mlx5DeviceSend {
   temporal:Temporal;
   laddr:uint64;
@@ -761,6 +762,7 @@ struct Mlx5DeviceSend {
   opcode:uint8;
   decode:uint8;     // SendDecode: 0 full, 1 partial, 2 truncated, 3 unknown opcode
   av_ds:uint8;      // address-vector width in 16 B units: 0 none (RC), 1 compact, 3 full
+  submitter:uint8;  // SendSubmitter: 0 unknown, 1 GPU doorbell, 2 host doorbell, 3 send-queue watch
 }
 
 // --- ucx/UCP provider records (600-699) -----------------------------------

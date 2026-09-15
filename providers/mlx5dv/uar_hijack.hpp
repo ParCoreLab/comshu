@@ -58,10 +58,15 @@ namespace mlx5::hijack {
 // provider constructor. Interning on the repeater thread is safe: the engine's
 // intern tables are process-wide under a per-domain lock.
 using DoorbellSink = void (*)(void* uar_ptr, std::uint32_t qp_num, std::uint32_t prod_idx);
+// `submitter` says which door saw the WQE (kSubmitter* below). `ticks_lo` and
+// `ticks_hi` say when: 0/0 from the doorbell paths, which call the sink at the
+// doorbell itself, so the row's time is now; a window from the send-queue
+// watcher, which knows only that the WQE was published between two of its looks.
 using DeviceSendSink = void (*)(std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                                 std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr,
                                 std::uint32_t rkey, std::uint32_t length, std::uint32_t dest_dct,
-                                std::uint8_t decode, std::uint8_t av_ds);
+                                std::uint8_t decode, std::uint8_t av_ds, std::uint8_t submitter,
+                                std::uint64_t ticks_lo, std::uint64_t ticks_hi);
 
 // What the WQE copy-out needs to read a send queue: its GPU address and shape.
 // Registered by the provider from the DEVX CREATE_QP decode, which is the only
@@ -407,12 +412,21 @@ inline CuResult copy_wqes(std::uint8_t* dst, const QpInfo& qp, std::uint32_t sta
                      static_cast<std::size_t>(head) * kWqebb, stream);
 }
 
+// Mlx5DeviceSend.submitter: which door saw the WQE a row was decoded from, and
+// therefore what its time means. Mirrors records::SendSubmitter — this header
+// cannot include the records — and the provider static_asserts the two equal.
+// 0 is deliberately "unknown", so a call site that forgets to say is visible.
+inline constexpr std::uint8_t kSubmitterGpuDoorbell = 1;   // this file: the GPU's doorbell store
+inline constexpr std::uint8_t kSubmitterHostDoorbell = 2;  // host_doorbell.hpp: a host thread's
+inline constexpr std::uint8_t kSubmitterSqWatch = 3;       // sq_watch.hpp: the doorbell record
+
 // Parse the WQEBBs copied into `buf` (covering producer indices [start, end))
 // and emit one Mlx5DeviceSend per real WQE. Ported from SigmaTrace parse_and_emit,
 // reduced to per-WQE emission (no doorbell-boundary batching — that is Stage 3's
 // concern, and correctness comes first).
 inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32_t end,
-                       std::uint32_t qpn, const QpInfo& qp, DeviceSendSink sink) {
+                       std::uint32_t qpn, const QpInfo& qp, DeviceSendSink sink,
+                       std::uint8_t submitter, std::uint64_t ticks_lo, std::uint64_t ticks_hi) {
     const std::uint32_t total = prod_diff(end, start);
     const bool          is_dci = qp.service_type == kServiceTypeDci;
     std::uint32_t       i = 0, prod = start;
@@ -555,7 +569,7 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
         // quietly omits it is indistinguishable from a run that did not send.
         if (sink) {
             sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, decode,
-                 static_cast<std::uint8_t>(av_ds));
+                 static_cast<std::uint8_t>(av_ds), submitter, ticks_lo, ticks_hi);
             state().sends_emitted.fetch_add(1, std::memory_order_relaxed);
             if (decode == kDecodeUnknownOp)
                 state().sends_unknown_op.fetch_add(1, std::memory_order_relaxed);
@@ -707,7 +721,11 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
         return;
     if (stream_sync(copy->stream) != kCudaSuccess)
         return;
-    parse_wqes(copy->host_buf, start, end, qpn, qp, s.device_send_sink);
+    // Both doorbell paths decode here, and they never share a run —
+    // host_doorbell.hpp refuses to arm when the GPU hijack is on — so whichever
+    // is live is who saw this WQE. Time 0/0: the sink runs at the doorbell.
+    parse_wqes(copy->host_buf, start, end, qpn, qp, s.device_send_sink,
+               enabled() ? kSubmitterGpuDoorbell : kSubmitterHostDoorbell, 0, 0);
     copy->last_prod = end;
 }
 

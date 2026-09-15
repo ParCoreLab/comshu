@@ -1,11 +1,12 @@
 # PLAN — the ibdevx data plane is a host send queue, so watch the queue
 
 - **Created:** 2026-09-14 17:50 +03
-- **Status:** in progress. Steps 1 and 2 are done: the prototype
+- **Status:** in progress. Steps 1–3 are done: the prototype
   (`PCOMM_SQ_WATCH=1`, `providers/mlx5dv/sq_watch.hpp`) is lossless on du04 up
   to `1024 200` (204,800 WQEs per rank), keeps ≥99.7% at 20.5M WQEs per rank,
   and — placed on the rank's L3 — slows the traffic phase ~1.15× at full rate.
-  Steps 3–5 make it a supported capture mode.
+  and every row says which door saw it and when (a Window, ~3 µs wide).
+  Steps 4–5 make it a supported capture mode.
 - **Related:** the `OPEN (2026-09-14)` entry at the top of
   `things-to-circle-back-to.md` (the finding and the measurements live there);
   `tests/hpc/cases/11_ibdevx_peermem/parity/README.md` (where the gap was found);
@@ -183,10 +184,28 @@ the price is visible rather than hidden.
    (~4.9 s CPU on a ~5 s window); `umwait`/`monitorx` would save that core's
    power, not the transfers, and is not worth its complexity until a job is
    shown to want the core back.
-3. **Record semantics.** `Mlx5DeviceSend` is named for the GPU path. Add who
-   submitted it (GPU doorbell hijack / host doorbell / send-queue watch) — a
-   schema change, which pre-alpha takes over a misleading name — and document
-   that a watched row's time is observation time.
+3. **Record semantics — DONE 2026-09-15.** `Mlx5DeviceSend.submitter`
+   (`SendSubmitter`: 0 unknown, 1 `gpu_doorbell`, 2 `host_doorbell`,
+   3 `sq_watch`) says which door saw each row; 0 is never written on purpose,
+   so a call site that forgets to say is visible. The reader exports
+   `submitter`, `submitter_name` and `ticks_hi`, appended so no column moves.
+
+   *Time.* It was "observation time", and after step 1's split that meant the
+   decoder's recording time — up to milliseconds after the watcher saw the
+   WQE. Now the doorbell doors record an Instant at the doorbell, and the
+   watcher a **Window**: TSC reads either side of each doorbell-record read,
+   carried through staging, bound the publication between its previous look
+   and this one. `TimeKind::Window` already existed for exactly this ("known
+   only within [a, b]"). Measured, du04, `1024 20`: 41,023 rows, all
+   `sq_watch`, none inverted; width median 3.1 µs, p90 3.8, p99 16.5, max
+   45.6 µs (TSC 2.25 GHz). Case 12's 1,343 rows: all `gpu_doorbell`, all
+   Instants.
+
+   *The name stays.* `mlx5_device_send` says "device" and ibdevx is a CPU
+   proxy, but renaming it reaches ~60 files — UI panels, the agent catalog,
+   figures, a dozen assertions and probes — for no gain in meaning once every
+   row names its door. The record's comment says why the name is older than
+   its meaning. Schema hash `0xC49A5128D6293AF1`.
 4. **Surface.** A launcher flag instead of the env var, and the counters into a
    record rather than stderr, so an assertion can read them.
 5. **Case 11 asserts it.** 2 × 1024 `rdma_write` of 4 B per rank (8,192 B —

@@ -7,7 +7,7 @@
 
 const PROVIDER_EVIDENCE = [
   ['ibverbs (host-posted InfiniBand)', 'ib_post_send'],
-  ['mlx5 DEVX / IBGDA (device-issued)', 'mlx5_device_send'],
+  ['mlx5 DEVX (IBGDA device-issued, or ibdevx through the send-queue watcher)', 'mlx5_device_send'],
   ['gpumem (GPU memory access, NVLink peer traffic)', 'gpu_access'],
   ['gpumem source attribution (PC -> line)', 'source_line'],
 ];

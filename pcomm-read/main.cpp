@@ -908,6 +908,24 @@ inline const char* mlx5_send_decode_name(std::uint8_t d) {
     }
 }
 
+// Which door saw the WQE (Mlx5DeviceSend.submitter / SendSubmitter), and so what
+// the row's time means: an instant at a doorbell, or — for the send-queue
+// watcher — a window between two of its looks, whose upper end is `ticks_hi`.
+inline const char* mlx5_send_submitter_name(std::uint8_t s) {
+    switch (s) {
+        case 0:
+            return "unknown";
+        case 1:
+            return "gpu_doorbell";
+        case 2:
+            return "host_doorbell";
+        case 3:
+            return "sq_watch";
+        default:
+            return "?";
+    }
+}
+
 template<> struct Table<mxr::Mlx5DevxCq> {
     static constexpr const char* name = "mlx5_devx_cq";
     static constexpr const char* cols =
@@ -926,16 +944,18 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
     static constexpr const char* name = "mlx5_device_send";
     static constexpr const char* cols =
         "ticks,qp_num,wqe_idx,opcode,opcode_name,laddr,lkey,raddr,rkey,length,dest_dct,decode,"
-        "decode_name,av_ds";
+        "decode_name,av_ds,submitter,submitter_name,ticks_hi";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DeviceSend>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%s,%u",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
-                     s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
-                     (unsigned long long)s.payload.laddr, s.payload.lkey,
-                     (unsigned long long)s.payload.raddr, s.payload.rkey, s.payload.length,
-                     s.payload.dest_dct, s.payload.decode,
-                     mlx5_send_decode_name(s.payload.decode), s.payload.av_ds);
+        std::fprintf(
+            f, "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%s,%u,%u,%s,%llu",
+            (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
+            s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
+            (unsigned long long)s.payload.laddr, s.payload.lkey,
+            (unsigned long long)s.payload.raddr, s.payload.rkey, s.payload.length,
+            s.payload.dest_dct, s.payload.decode, mlx5_send_decode_name(s.payload.decode),
+            s.payload.av_ds, s.payload.submitter, mlx5_send_submitter_name(s.payload.submitter),
+            (unsigned long long)s.temporal.b.ticks);
     }
 };
 
