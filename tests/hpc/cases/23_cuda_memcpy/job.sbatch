@@ -20,6 +20,7 @@
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=80
 #SBATCH --gres=gpu:4
 #SBATCH --time=00:10:00
 #SBATCH --output=%x.%j.out
