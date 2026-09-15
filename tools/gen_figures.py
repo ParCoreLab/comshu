@@ -217,19 +217,21 @@ b.append(box(320, 220, "mlx5_doorbell", 212, "EVT", "uar · qp_num · prod_idx",
 b.append(box(630, 40, "mlx5_devx_qp_connect", 208, "EVT", "qp_num · src_lid → dest_lid", "mlx"))
 b.append(box(630, 130, "mlx5_device_send", 214, "EVT", "qp_num · wqe_idx · laddr/raddr", "mlx"))
 b.append(box(630, 220, "mlx5_devx_cq", 216, "ENT", "obj · cqn · cq_base", "mlx"))
+b.append(box(630, 310, "mlx5_send_coverage", 218, "ART", "published · decoded · lapped", "mlx"))
 b.append(box(10, 250, "mlx5_queue_pair", 210, "ENT", "qp · pd · qp_num", "mlx"))
 b.append(path("M630 243 H565 V63 H435", "cqn_snd → cqn", 560, 150, anchor="end"))
 b.append(path("M320 63 H245", "wq_umem_id → umem_id", 282, 32))
 b.append(path("M435 130 V86", "obj", 443, 116, anchor="start"))
 b.append(path("M320 243 H280 V153 H245", "uar", 276, 205, anchor="end"))
 b.append(bracket([(630, 63), (630, 153)], 578, (555, 63), "qp_num", 578, 32))
-b.append(note(10, 320, "The doorbell is what announces the WQE that mlx5_device_send decodes — so a row in one without the other is a", cls="fnote"))
-b.append(note(10, 336, "readable state, not a contradiction: the doorbell is emitted even when the work-queue entry cannot be read, so an", cls="fnote"))
-b.append(note(10, 352, "undecodable doorbell stays a visible row instead of vanishing.", cls="fnote"))
+b.append(note(10, 372, "mlx5_send_coverage is the send-queue watcher's own count, one row per rank: published = decoded + lapped + dropped.", cls="fnote"))
+b.append(note(10, 390, "The doorbell is what announces the WQE that mlx5_device_send decodes — so a row in one without the other is a", cls="fnote"))
+b.append(note(10, 406, "readable state, not a contradiction: the doorbell is emitted even when the work-queue entry cannot be read, so an", cls="fnote"))
+b.append(note(10, 422, "undecodable doorbell stays a visible row instead of vanishing.", cls="fnote"))
 b.append(note(255, 282, "Not DEVX at all: an ordinary verbs queue pair reached through the mlx5 door.", cls="fnote"))
 b.append(note(255, 298, "perftest creates its queue pairs this way and never calls ibv_create_qp.", cls="fnote"))
-FIGS["mlx"] = svg(880, 370, "".join(b),
-    "The mlx5dv DEVX provider's eight record types: the umem and UAR handed to the NIC, the DEVX queue pair, and the doorbell and device send that follow")
+FIGS["mlx"] = svg(880, 440, "".join(b),
+    "The mlx5dv DEVX provider's nine record types: the umem and UAR handed to the NIC, the DEVX queue pair, the doorbell and device send that follow, and the send-queue watcher's coverage")
 
 # ---------------------------------------------------------------- fig: ucx
 b = []
@@ -602,6 +604,7 @@ MLX = [
  ("mlx5_doorbell", 212, "Event", "The GPU rang a doorbell. Emitted even when the WQE cannot be read, so an undecodable doorbell is a visible row."),
  ("mlx5_device_send", 214, "Event", "A send WQE, decoded — seen at the GPU doorbell, the host doorbell, or by the send-queue watcher, as submitter says. Same shape as ib_post_send so a reader can union the two planes."),
  ("mlx5_devx_cq", 216, "Entity", "A DEVX completion queue: its identity and geometry. Not its polls \u2014 IBGDA consumes a CQE with GPU loads and writes no CQ doorbell record, so a completion being taken leaves no trace to capture."),
+ ("mlx5_send_coverage", 218, "Artifact", "The send-queue watcher's coverage, one row per rank: published = decoded + lapped + dropped, so a query can ask whether anything was missed. No row means the rank did not exit normally."),
 ]
 INT = [
  ("intern_key", 510, "Artifact", "handle \u2192 uint64 for the numeric domains. The dictionary behind every Handle."),

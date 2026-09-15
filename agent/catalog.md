@@ -416,7 +416,7 @@ The ones worth knowing, by what they record:
 | `mem_object` | an application allocation: `id`, `range_base`, `range_size`, `device` |
 | `gpu_access` | one GPU memory access (p2p provider): `address`, `size`, `op`, `space`, `run_device`, `mem_device`, `thread`, `pc` |
 | `gpu_kernel` | a kernel launch: grid/block dims, `stream`, `device`, `correlation` |
-| `mlx5_device_send`, `mlx5_devx_*`, `mlx5_doorbell`, `mlx5_uar`, `mlx5_umem` | the DEVX path (IBGDA, ibdevx) — decoded send WQEs, whose `submitter` says which door saw them (`gpu_doorbell`, `host_doorbell`, `sq_watch`), and the objects behind them |
+| `mlx5_device_send`, `mlx5_devx_*`, `mlx5_doorbell`, `mlx5_uar`, `mlx5_umem`, `mlx5_send_coverage` | the DEVX path (IBGDA, ibdevx) — decoded send WQEs, whose `submitter` says which door saw them (`gpu_doorbell`, `host_doorbell`, `sq_watch`), the objects behind them, and the send-queue watcher's per-rank coverage (`published = decoded + lapped + dropped`) |
 | `node_identity` | `node_hash` per rank: which ranks share a physical node |
 | `source_line` | `pc` → `(file, line)`. Empty unless the gpumem provider ran with PC→line |
 | `clock_anchor` | the per-domain clock anchors the timeline is built from. Read-only curiosity; do not re-derive alignment |

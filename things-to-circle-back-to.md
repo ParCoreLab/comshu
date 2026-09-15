@@ -55,8 +55,10 @@ the traffic phase slows 1.9× on the rank's L3, 2.2× anywhere on the NUMA node,
 default brought it to **~1.15×**, ≥99.7% kept, nothing dropped. **Step 3** made
 every `mlx5_device_send` row say which door saw it (`submitter`) and when: a
 doorbell row is an Instant at the doorbell, a watcher row a Window bounding the
-publication between two looks — ~3 µs wide at the median on du04. The plan,
-with what was rejected and why:
+publication between two looks — ~3 µs wide at the median on du04. **Step 4**
+put it behind `pcomm run --watch-send-queues` and wrote its counters into the
+capture (`mlx5_send_coverage`: published = decoded + lapped + dropped). The
+plan, with what was rejected and why:
 `plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
 
 ## OPEN (upstream, 2026-09-14): NVSHMEM's ibdevx deadlocks under sustained load — with no pcomm at all

@@ -492,6 +492,32 @@ Profiler::Profiler() {
                       static_cast<std::uint8_t>(rr::SendSubmitter::SqWatch));
     }
 
+    // The watcher's coverage, written by the watcher's own atexit handler — the
+    // one moment that is both after the application's last send and before the
+    // tracer's finalize (sq_watch.hpp says why no other moment is).
+    if (sqwatch::enabled()) {
+        sqwatch::set_coverage_sink(
+            [](const sqwatch::Coverage& c) {
+                rec().record(pcomm::core::Temporal::none(),
+                             rr::Mlx5SendCoverage{{},
+                                                  {},
+                                                  c.published,
+                                                  c.decoded,
+                                                  c.lapped,
+                                                  c.dropped,
+                                                  c.rows,
+                                                  c.rows_unknown_op,
+                                                  c.rows_truncated,
+                                                  c.queues,
+                                                  c.refused,
+                                                  c.held,
+                                                  hijack::kSubmitterSqWatch,
+                                                  0,
+                                                  0});
+            },
+            pcomm::Config::from_env().rank);
+    }
+
     // ...but the CUDA export-table patcher is the GPU path's alone. The host
     // path must not install it: patching the driver is how the GPU hijack sees
     // the UAR mapping, and there is no such mapping in the mode the host path

@@ -78,6 +78,7 @@ PCOMM_SCHEMA_MATCH(mr::Mlx5QueuePair, fb::Mlx5QueuePair);
 PCOMM_SCHEMA_MATCH(mr::Mlx5Doorbell, fb::Mlx5Doorbell);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DeviceSend, fb::Mlx5DeviceSend);
 PCOMM_SCHEMA_MATCH(mr::Mlx5DevxCq, fb::Mlx5DevxCq);
+PCOMM_SCHEMA_MATCH(mr::Mlx5SendCoverage, fb::Mlx5SendCoverage);
 PCOMM_SCHEMA_MATCH(ur::UcxContext, fb::UcxContext);
 PCOMM_SCHEMA_MATCH(ur::UcxWorker, fb::UcxWorker);
 PCOMM_SCHEMA_MATCH(ur::UcxEndpoint, fb::UcxEndpoint);
@@ -1198,6 +1199,27 @@ int main() {
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
             7, 0x7F0044330000ull, 0x0004D2, 0x0011, 10, 0x0012, 1, 1, 0);
         expect_identical("Mlx5DevxCq", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<mr::Mlx5SendCoverage> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.published = 0x1111222233334444ull;
+        c.payload.decoded = 0x5555666677778888ull;
+        c.payload.lapped = 0x0102030405060708ull;
+        c.payload.dropped = 0x1112131415161718ull;
+        c.payload.rows = 0x2122232425262728ull;
+        c.payload.rows_unknown_op = 0x3132333435363738ull;
+        c.payload.rows_truncated = 0x4142434445464748ull;
+        c.payload.queues = 0x99AABBCCu;
+        c.payload.refused = 0xDDEEFF00u;
+        c.payload.held = 0x0A0B0C0Du;
+        c.payload.submitter = 3;
+        fb::Mlx5SendCoverage f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0x1111222233334444ull, 0x5555666677778888ull, 0x0102030405060708ull,
+            0x1112131415161718ull, 0x2122232425262728ull, 0x3132333435363738ull,
+            0x4142434445464748ull, 0x99AABBCCu, 0xDDEEFF00u, 0x0A0B0C0Du, 3, 0, 0);
+        expect_identical("Mlx5SendCoverage", &c, &f, sizeof(c));
     }
     {  // InternKey / InternString: the dictionary every Handle depends on.
         Stamped<cr::InternKey> c{};

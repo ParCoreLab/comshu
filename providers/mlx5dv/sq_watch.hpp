@@ -5,9 +5,10 @@
 // measured the gap this closes: under ibdevx neither pcomm nor SigmaTrace
 // recorded one byte of the 16,384 the workload moved through the NIC.
 //
-// PROTOTYPE, opt-in via PCOMM_SQ_WATCH=1, to measure whether the design holds
-// before it is given a launcher flag, a record of its own, and a case
-// (plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue).
+// Opt-in: `pcomm run --watch-send-queues`, which sets PCOMM_SQ_WATCH=1. What it
+// saw and missed is one Mlx5SendCoverage row per rank; the design, the rejected
+// alternatives and the measurements are in
+// plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue.
 //
 // WHY PASSIVE, rather than extending the host doorbell's UAR swap to BlueFlame
 // UARs. ibdevx posts the way every mlx5 stack does (ibdevx.cpp,
@@ -213,6 +214,23 @@ struct Stage {
     std::atomic<std::uint64_t>      tail{0};  // bytes consumed by the decoder
 };
 
+// The watcher's coverage at shutdown — what Mlx5SendCoverage records. Kept in
+// this header's own terms, because the records live with the provider, which
+// hands in a sink to write them (the same split as hijack::set_sinks).
+struct Coverage {
+    std::uint64_t published{0};  // staged + lapped + dropped
+    std::uint64_t decoded{0};
+    std::uint64_t lapped{0};
+    std::uint64_t dropped{0};
+    std::uint64_t rows{0};
+    std::uint64_t rows_unknown_op{0};
+    std::uint64_t rows_truncated{0};
+    std::uint32_t queues{0};
+    std::uint32_t refused{0};
+    std::uint32_t held{0};
+};
+using CoverageSink = void (*)(const Coverage&);
+
 struct State {
     // Held for a whole polling round, and by unwatch. That is what makes unwatch
     // safe: once it returns the watcher is not inside this queue's memory and
@@ -264,6 +282,15 @@ struct State {
     long watcher_cpu_us{-1};
     long watcher_wall_us{-1};
     long decoder_cpu_us{-1};
+
+    // This door's own rows. hijack::state()'s counters are process-wide and
+    // shared by every door that decodes through parse_wqes.
+    std::atomic<std::uint64_t> rows{0};
+    std::atomic<std::uint64_t> rows_unknown_op{0};
+    std::atomic<std::uint64_t> rows_truncated{0};
+
+    CoverageSink coverage_sink{nullptr};  // set by the provider before any watch()
+    int          rank{-1};
 };
 
 // Leaked on purpose. A function-local static would be destroyed by the C++
@@ -438,12 +465,17 @@ inline void decode_staged() {
             continue;
         }
         const auto t0 = std::chrono::steady_clock::now();
-        if (stage_mode() != StageMode::Copy)  // measurement: Copy stages and records nothing
-            hijack::parse_wqes(st.buf.get() + off + hijack::kWqebb, hdr->start,
-                               (hdr->start + hdr->n) & hijack::kProdMask, hdr->qpn,
-                               hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type},
-                               hijack::state().device_send_sink, hijack::kSubmitterSqWatch,
-                               hdr->ticks_lo, hdr->ticks_hi);
+        if (stage_mode() != StageMode::Copy) {  // measurement: Copy stages and records nothing
+            const hijack::ParseCounts pc =
+                hijack::parse_wqes(st.buf.get() + off + hijack::kWqebb, hdr->start,
+                                   (hdr->start + hdr->n) & hijack::kProdMask, hdr->qpn,
+                                   hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type},
+                                   hijack::state().device_send_sink, hijack::kSubmitterSqWatch,
+                                   hdr->ticks_lo, hdr->ticks_hi);
+            s.rows.fetch_add(pc.rows, std::memory_order_relaxed);
+            s.rows_unknown_op.fetch_add(pc.unknown_op, std::memory_order_relaxed);
+            s.rows_truncated.fetch_add(pc.truncated, std::memory_order_relaxed);
+        }
         const std::uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count();
@@ -662,6 +694,8 @@ inline void run() {
                             .count();
 }
 
+inline void shutdown(int rank);  // below; watch() registers it with atexit
+
 // From the DEVX CREATE_QP decode: a queue pair created, so nothing posted yet.
 inline void watch(std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq_size,
                   std::uint8_t service_type, std::uint64_t dbr_host, const void* sq_umem,
@@ -689,7 +723,21 @@ inline void watch(std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq
         s.stage.buf.reset(new std::uint8_t[s.stage.cap]);
         s.decoder = std::thread(decode_run);
         s.watcher = std::thread(run);
+        // The coverage row must be written after the application's last send
+        // and before the tracer finalizes. The tracer registered finalize with
+        // atexit when it started, before any queue pair existed; atexit is LIFO,
+        // so a handler registered now runs first — while the capture is still
+        // open. The provider's destructor also calls shutdown(), but it runs
+        // after finalize and can only print; shutdown() does its work once.
+        std::atexit([] { shutdown(state().rank); });
     }
+}
+
+// From the provider's constructor, before any queue pair can be watched.
+inline void set_coverage_sink(CoverageSink sink, int rank) {
+    auto& s = state();
+    s.coverage_sink = sink;
+    s.rank = rank;
 }
 
 inline void refused(std::uint32_t qpn, const char* why) {
@@ -742,7 +790,22 @@ inline void shutdown(int rank) {
     if (s.decoder.joinable())
         s.decoder.join();
 
-    auto&               hs = hijack::state();
+    const std::uint64_t lapped = s.lapped_early.load() + s.lapped_late.load();
+    if (s.coverage_sink) {
+        Coverage c;
+        c.published = s.staged.load() + lapped + s.dropped.load();
+        c.decoded = s.decoded.load();
+        c.lapped = lapped;
+        c.dropped = s.dropped.load();
+        c.rows = s.rows.load();
+        c.rows_unknown_op = s.rows_unknown_op.load();
+        c.rows_truncated = s.rows_truncated.load();
+        c.queues = s.qps_watched.load();
+        c.refused = s.qps_refused.load();
+        c.held = static_cast<std::uint32_t>(s.held.load());
+        s.coverage_sink(c);
+    }
+
     const std::uint64_t undecoded =
         (s.stage.head.load() - s.stage.tail.load()) / hijack::kWqebb;  // headers included
     std::fprintf(stderr,
@@ -752,9 +815,9 @@ inline void shutdown(int rank) {
                  rank, s.qps_watched.load(), s.qps_refused.load(),
                  static_cast<unsigned long long>(s.staged.load()),
                  static_cast<unsigned long long>(s.decoded.load()),
-                 static_cast<unsigned long long>(hs.sends_emitted.load()),
-                 static_cast<unsigned long long>(hs.sends_unknown_op.load()),
-                 static_cast<unsigned long long>(hs.sends_truncated.load()),
+                 static_cast<unsigned long long>(s.rows.load()),
+                 static_cast<unsigned long long>(s.rows_unknown_op.load()),
+                 static_cast<unsigned long long>(s.rows_truncated.load()),
                  static_cast<unsigned long long>(s.held.load()),
                  static_cast<unsigned long long>(s.lapped_early.load() + s.lapped_late.load()),
                  static_cast<unsigned long long>(s.dropped.load()),

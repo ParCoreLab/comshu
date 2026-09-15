@@ -259,4 +259,42 @@ PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     std::uint8_t submitter;  // SendSubmitter: which door saw it, so what its time means
 };
 
+// ARTIFACT — how much of the data plane one door saw, per rank: the send-queue
+// watcher's counters, which until now reached stderr and nowhere a query could.
+//
+// The identity it exists to expose: every WQEBB the producers published past a
+// watched queue's starting point is exactly one of decoded, lapped or dropped,
+//
+//     published == decoded + lapped + dropped
+//
+// so an assertion can demand `lapped + dropped == 0` and know it asked the whole
+// question. (du04, case 11's workload at 1024 x 20: published = decoded =
+// 20,543 on rank 0.)
+//
+// Emitted once per rank from the watcher's own atexit handler. atexit is LIFO
+// and the watcher starts after the tracer, so that handler runs BEFORE the
+// tracer's finalize — the provider's destructor, where the counters used to be
+// printed, runs after it and could not have recorded anything. Like
+// CaptureStatus, its ABSENCE therefore means something: a rank with watched
+// queues and no row did not reach a normal exit, and its coverage is unknown.
+//
+// Only the send-queue watcher writes it. The doorbell doors keep their counters
+// on stderr: they do not count what was published in WQEBBs, so a row from them
+// could not honour the identity above, and a row that cannot is worse than none.
+PCOMM_RECORD(Mlx5SendCoverage, RecordKind::Artifact, 218, "mlx5_send_coverage") {
+    std::uint64_t published;        // WQEBBs published past the watched queues' start
+    std::uint64_t decoded;          // ...parsed into Mlx5DeviceSend rows
+    std::uint64_t lapped;           // ...overwritten before they could be read
+    std::uint64_t dropped;          // ...read, but the staging ring was full
+    std::uint64_t rows;             // Mlx5DeviceSend rows this door emitted (NOPs make none)
+    std::uint64_t rows_unknown_op;  // ...of which the opcode had no layout
+    std::uint64_t rows_truncated;   // ...of which ds did not cover the segments
+    std::uint32_t queues;           // queue pairs watched
+    std::uint32_t refused;          // queue pairs declined (the reason is on stderr)
+    std::uint32_t held;             // looks that waited out an uninitialised doorbell record
+    std::uint8_t  submitter;        // SendSubmitter — SqWatch, today always
+    std::uint8_t  pad0;
+    std::uint16_t pad1;
+};
+
 }  // namespace pcomm::providers::mlx5dv::records

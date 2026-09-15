@@ -354,6 +354,16 @@ void usage() {
                "                     above — which one a run needs is a property of the\n"
                "                     platform, and each says so at exit if it was the\n"
                "                     wrong choice.\n"
+               "      --watch-send-queues\n"
+               "                     capture the data plane of transports whose CPU\n"
+               "                     writes WQEs itself — NVSHMEM's ibdevx above all —\n"
+               "                     by reading each DEVX queue's doorbell record and\n"
+               "                     send queue from outside the path (mlx5dv provider).\n"
+               "                     Touches no doorbell, so it cannot break the run,\n"
+               "                     but it SPINS one core per rank, placed on the\n"
+               "                     rank's L3 (PCOMM_SQ_WATCH_CPU overrides), and slows\n"
+               "                     a full-rate send loop ~1.15x. Anything it misses is\n"
+               "                     counted in mlx5_send_coverage, never silent.\n"
                "  -h, --help         this message\n"
                "\n"
                "  e.g.  pcomm run -p ib -- ./app      # network only, single run\n"
@@ -382,6 +392,7 @@ int pcomm::cli::run_main(int argc, char** argv) {
     bool               verbose = false, dry_run = false;
     bool               doorbell_hijack = false;
     bool               host_doorbell = false;
+    bool               watch_send_queues = false;
     std::vector<char*> target;
 
     auto add_selector = [&](std::string_view csv) {
@@ -430,6 +441,8 @@ int pcomm::cli::run_main(int argc, char** argv) {
             doorbell_hijack = true;
         else if (a == "--enable-host-doorbell")
             host_doorbell = true;
+        else if (a == "--watch-send-queues")
+            watch_send_queues = true;
         else if (a == "--list") {
             list_providers();
             return 0;
@@ -609,6 +622,11 @@ int pcomm::cli::run_main(int argc, char** argv) {
         // than a mode it silently picks.
         if (host_doorbell)
             setenv("PCOMM_HOST_DOORBELL", "1", 1);
+        // Same provider again, and not exclusive with either doorbell door: the
+        // watcher takes only queue pairs whose send queue is host memory and
+        // refuses GPU-resident ones, which are the doorbell doors' business.
+        if (watch_send_queues)
+            setenv("PCOMM_SQ_WATCH", "1", 1);
     };
 
     // ── Single pass: exec directly (no wrapper process left behind) ─────────

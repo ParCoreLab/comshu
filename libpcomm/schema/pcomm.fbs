@@ -765,6 +765,27 @@ struct Mlx5DeviceSend {
   submitter:uint8;  // SendSubmitter: 0 unknown, 1 GPU doorbell, 2 host doorbell, 3 send-queue watch
 }
 
+// type 218, Artifact. The send-queue watcher's coverage, one row per rank:
+// published == decoded + lapped + dropped. Written from the watcher's atexit
+// handler, before finalize, so a rank with watched queues and no row did not
+// exit normally — see providers/mlx5dv/mlx5_records.hpp.
+struct Mlx5SendCoverage {
+  temporal:Temporal;
+  published:uint64;        // WQEBBs published past the watched queues' start
+  decoded:uint64;
+  lapped:uint64;
+  dropped:uint64;
+  rows:uint64;             // Mlx5DeviceSend rows this door emitted
+  rows_unknown_op:uint64;
+  rows_truncated:uint64;
+  queues:uint32;
+  refused:uint32;
+  held:uint32;
+  submitter:uint8;         // SendSubmitter; 3 (send-queue watch) today
+  pad0:uint8;
+  pad1:uint16;
+}
+
 // --- ucx/UCP provider records (600-699) -----------------------------------
 
 // type 600, Entity. A public UCP context.

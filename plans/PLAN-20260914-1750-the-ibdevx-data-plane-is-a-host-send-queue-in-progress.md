@@ -1,12 +1,13 @@
 # PLAN — the ibdevx data plane is a host send queue, so watch the queue
 
 - **Created:** 2026-09-14 17:50 +03
-- **Status:** in progress. Steps 1–3 are done: the prototype
+- **Status:** in progress. Steps 1–4 are done: the watcher
   (`PCOMM_SQ_WATCH=1`, `providers/mlx5dv/sq_watch.hpp`) is lossless on du04 up
   to `1024 200` (204,800 WQEs per rank), keeps ≥99.7% at 20.5M WQEs per rank,
   and — placed on the rank's L3 — slows the traffic phase ~1.15× at full rate.
-  and every row says which door saw it and when (a Window, ~3 µs wide).
-  Steps 4–5 make it a supported capture mode.
+  and every row says which door saw it and when (a Window, ~3 µs wide). It
+  is enabled with `pcomm run --watch-send-queues`, and its coverage is a
+  record (`mlx5_send_coverage`). Step 5 makes case 11 prove it every run.
 - **Related:** the `OPEN (2026-09-14)` entry at the top of
   `things-to-circle-back-to.md` (the finding and the measurements live there);
   `tests/hpc/cases/11_ibdevx_peermem/parity/README.md` (where the gap was found);
@@ -205,9 +206,38 @@ the price is visible rather than hidden.
    proxy, but renaming it reaches ~60 files — UI panels, the agent catalog,
    figures, a dozen assertions and probes — for no gain in meaning once every
    row names its door. The record's comment says why the name is older than
-   its meaning. Schema hash `0xC49A5128D6293AF1`.
-4. **Surface.** A launcher flag instead of the env var, and the counters into a
-   record rather than stderr, so an assertion can read them.
+   its meaning. Schema hash `0xC49A5128D6293AF1`. MN5 board job 45884393 at
+   `e246b6b`: 23 PASS / 2 SKIP (09, 10 — no `PeerMappingOverride` there).
+   That board's case 12 runs the host doorbell (MN5 cannot map a UAR into the
+   GPU): 63 rows, all `host_doorbell`, all Instants — so each of the three
+   doors has now been seen naming itself on real hardware, not just the two
+   du04 can exercise.
+4. **Surface — DONE 2026-09-15.** `pcomm run --watch-send-queues` sets
+   `PCOMM_SQ_WATCH=1` (not exclusive with the doorbell flags: the watcher takes
+   only host-resident queues and refuses the GPU-resident ones those watch).
+   The counters are a record, `Mlx5SendCoverage` (218, Artifact,
+   `mlx5_send_coverage`), one row per rank, built so an assertion can ask the
+   whole question: `published == decoded + lapped + dropped`, plus rows,
+   unknown-opcode and truncated rows, queues watched, refused and held.
+
+   *When it is written* was the design question, not what. The provider's
+   destructor, where the counters used to be printed, runs AFTER the tracer's
+   atexit `finalize()` — a record from there would never reach the capture.
+   The watcher registers its own shutdown with `atexit` when it first starts;
+   atexit is LIFO and the tracer registered earlier, so the watcher's handler
+   runs first, after the application's last send and while the capture is
+   open. Like `capture_status`, its absence then means something: a rank with
+   watched queues and no row did not exit normally.
+
+   The row counts are the watcher's own. They used to come from the doorbell
+   hijack's process-wide counters, which would mix doors in a run using more
+   than one; `parse_wqes` now returns what each call emitted.
+
+   Measured, du04, `1024 20`, watcher enabled by the flag alone (env set to
+   0): rank 0 published 20,543 = decoded 20,543 + 0 + 0, rank 1 20,540 =
+   20,540 + 0 + 0; `rows` 20,513 / 20,510, equal to the CSV's `sq_watch` rows
+   on each rank. Cases 11 and 12 PASS, core ctest 33/33. Schema hash
+   `0x05D78F93455BDACA`.
 5. **Case 11 asserts it.** 2 × 1024 `rdma_write` of 4 B per rank (8,192 B —
    the workload's own arithmetic), full decode, `lapped = 0`. The case that
    found the gap becomes the one that proves it closed.

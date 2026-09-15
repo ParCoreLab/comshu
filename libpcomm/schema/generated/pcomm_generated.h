@@ -104,6 +104,8 @@ struct Mlx5Doorbell;
 
 struct Mlx5DeviceSend;
 
+struct Mlx5SendCoverage;
+
 struct UcxContext;
 
 struct UcxWorker;
@@ -3106,6 +3108,101 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 96);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5SendCoverage FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint64_t published_;
+  uint64_t decoded_;
+  uint64_t lapped_;
+  uint64_t dropped_;
+  uint64_t rows_;
+  uint64_t rows_unknown_op_;
+  uint64_t rows_truncated_;
+  uint32_t queues_;
+  uint32_t refused_;
+  uint32_t held_;
+  uint8_t submitter_;
+  uint8_t pad0_;
+  uint16_t pad1_;
+
+ public:
+  Mlx5SendCoverage()
+      : temporal_(),
+        published_(0),
+        decoded_(0),
+        lapped_(0),
+        dropped_(0),
+        rows_(0),
+        rows_unknown_op_(0),
+        rows_truncated_(0),
+        queues_(0),
+        refused_(0),
+        held_(0),
+        submitter_(0),
+        pad0_(0),
+        pad1_(0) {
+  }
+  Mlx5SendCoverage(const pcomm::fb::Temporal &_temporal, uint64_t _published, uint64_t _decoded, uint64_t _lapped, uint64_t _dropped, uint64_t _rows, uint64_t _rows_unknown_op, uint64_t _rows_truncated, uint32_t _queues, uint32_t _refused, uint32_t _held, uint8_t _submitter, uint8_t _pad0, uint16_t _pad1)
+      : temporal_(_temporal),
+        published_(::flatbuffers::EndianScalar(_published)),
+        decoded_(::flatbuffers::EndianScalar(_decoded)),
+        lapped_(::flatbuffers::EndianScalar(_lapped)),
+        dropped_(::flatbuffers::EndianScalar(_dropped)),
+        rows_(::flatbuffers::EndianScalar(_rows)),
+        rows_unknown_op_(::flatbuffers::EndianScalar(_rows_unknown_op)),
+        rows_truncated_(::flatbuffers::EndianScalar(_rows_truncated)),
+        queues_(::flatbuffers::EndianScalar(_queues)),
+        refused_(::flatbuffers::EndianScalar(_refused)),
+        held_(::flatbuffers::EndianScalar(_held)),
+        submitter_(::flatbuffers::EndianScalar(_submitter)),
+        pad0_(::flatbuffers::EndianScalar(_pad0)),
+        pad1_(::flatbuffers::EndianScalar(_pad1)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint64_t published() const {
+    return ::flatbuffers::EndianScalar(published_);
+  }
+  uint64_t decoded() const {
+    return ::flatbuffers::EndianScalar(decoded_);
+  }
+  uint64_t lapped() const {
+    return ::flatbuffers::EndianScalar(lapped_);
+  }
+  uint64_t dropped() const {
+    return ::flatbuffers::EndianScalar(dropped_);
+  }
+  uint64_t rows() const {
+    return ::flatbuffers::EndianScalar(rows_);
+  }
+  uint64_t rows_unknown_op() const {
+    return ::flatbuffers::EndianScalar(rows_unknown_op_);
+  }
+  uint64_t rows_truncated() const {
+    return ::flatbuffers::EndianScalar(rows_truncated_);
+  }
+  uint32_t queues() const {
+    return ::flatbuffers::EndianScalar(queues_);
+  }
+  uint32_t refused() const {
+    return ::flatbuffers::EndianScalar(refused_);
+  }
+  uint32_t held() const {
+    return ::flatbuffers::EndianScalar(held_);
+  }
+  uint8_t submitter() const {
+    return ::flatbuffers::EndianScalar(submitter_);
+  }
+  uint8_t pad0() const {
+    return ::flatbuffers::EndianScalar(pad0_);
+  }
+  uint16_t pad1() const {
+    return ::flatbuffers::EndianScalar(pad1_);
+  }
+};
+FLATBUFFERS_STRUCT_END(Mlx5SendCoverage, 120);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) UcxContext FLATBUFFERS_FINAL_CLASS {
  private:

@@ -926,6 +926,27 @@ inline const char* mlx5_send_submitter_name(std::uint8_t s) {
     }
 }
 
+// One row per rank from the send-queue watcher: published == decoded + lapped +
+// dropped is the identity an assertion checks. Numbers only, like capture_status;
+// `submitter` is printed as a number here and named by submitter_name beside it.
+template<> struct Table<mxr::Mlx5SendCoverage> {
+    static constexpr const char* name = "mlx5_send_coverage";
+    static constexpr const char* cols =
+        "submitter,submitter_name,published,decoded,lapped,dropped,rows,rows_unknown_op,"
+        "rows_truncated,queues,refused,held";
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5SendCoverage>& s,
+                    const rec::InternDictionary&) {
+        std::fprintf(f, "%u,%s,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%u,%u", s.payload.submitter,
+                     mlx5_send_submitter_name(s.payload.submitter),
+                     (unsigned long long)s.payload.published, (unsigned long long)s.payload.decoded,
+                     (unsigned long long)s.payload.lapped, (unsigned long long)s.payload.dropped,
+                     (unsigned long long)s.payload.rows,
+                     (unsigned long long)s.payload.rows_unknown_op,
+                     (unsigned long long)s.payload.rows_truncated, s.payload.queues,
+                     s.payload.refused, s.payload.held);
+    }
+};
+
 template<> struct Table<mxr::Mlx5DevxCq> {
     static constexpr const char* name = "mlx5_devx_cq";
     static constexpr const char* cols =
@@ -1646,23 +1667,20 @@ template<> struct Table<ncr::NcclProxyOp> {
 };
 
 // known_types() is a set, and --types sorts by id.
-using TableRecords =
-    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, CudaMemcpy, SourceLine, NodeIdentity,
-               GpuDevice, Invocation, PeerMapping,
-               ClockAnchor, CaptureStatus, Attribution, ibr::IbQueuePair, ibr::IbCompletionQueue,
-               ibr::IbModifyQp,
-               ibr::IbPostSend, ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle,
-               ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbRecvCqe,
-               ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort, mxr::Mlx5Umem, mxr::Mlx5Uar,
-               mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect, mxr::Mlx5QueuePair,
-               mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, mxr::Mlx5DevxCq, ucr::UcxContext, ucr::UcxWorker,
-               ucr::UcxEndpoint, ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend,
-               ucr::UcxMemMap, ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic,
-               ucr::UcxWorkerAddress, ucr::UcxEpConnection, ucr::UcxRkey, ucr::UcxRkeyPack,
-               udr::UctBinding, udr::UctIface,
-               udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective, ncr::NcclP2p,
-               ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm, ncr::NcclProfComm,
-               ncr::NcclCollExec, ncr::NcclProxyOp>;
+using TableRecords = std::tuple<
+    MemObject, EntityClose, GpuAccess, GpuKernel, CudaMemcpy, SourceLine, NodeIdentity, GpuDevice,
+    Invocation, PeerMapping, ClockAnchor, CaptureStatus, Attribution, ibr::IbQueuePair,
+    ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend, ibr::IbSharedRecvQueue,
+    ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq,
+    ibr::IbMemRegion, ibr::IbRecvCqe, ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
+    mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
+    mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, mxr::Mlx5DevxCq,
+    mxr::Mlx5SendCoverage, ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend,
+    ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend, ucr::UcxMemMap, ucr::UcxWorkerProgress,
+    ucr::UcxTagProbe, ucr::UcxAtomic, ucr::UcxWorkerAddress, ucr::UcxEpConnection, ucr::UcxRkey,
+    ucr::UcxRkeyPack, udr::UctBinding, udr::UctIface, udr::UctEndpoint, udr::UctSend, ncr::NcclComm,
+    ncr::NcclCollective, ncr::NcclP2p, ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm,
+    ncr::NcclProfComm, ncr::NcclCollExec, ncr::NcclProxyOp>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so pcomm-ui can load a
 // capture directly instead of only reading a Parquet export of one.

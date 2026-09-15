@@ -424,9 +424,20 @@ inline constexpr std::uint8_t kSubmitterSqWatch = 3;       // sq_watch.hpp: the 
 // and emit one Mlx5DeviceSend per real WQE. Ported from SigmaTrace parse_and_emit,
 // reduced to per-WQE emission (no doorbell-boundary batching — that is Stage 3's
 // concern, and correctness comes first).
-inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32_t end,
-                       std::uint32_t qpn, const QpInfo& qp, DeviceSendSink sink,
-                       std::uint8_t submitter, std::uint64_t ticks_lo, std::uint64_t ticks_hi) {
+// What one parse emitted, so a door can keep its own counts. `state()`'s
+// counters below are process-wide and shared by every door that decodes here;
+// a door that reports its coverage needs the rows that were its own.
+struct ParseCounts {
+    std::uint32_t rows{0};
+    std::uint32_t unknown_op{0};
+    std::uint32_t truncated{0};
+};
+
+inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32_t end,
+                              std::uint32_t qpn, const QpInfo& qp, DeviceSendSink sink,
+                              std::uint8_t submitter, std::uint64_t ticks_lo,
+                              std::uint64_t ticks_hi) {
+    ParseCounts         counts;
     const std::uint32_t total = prod_diff(end, start);
     const bool          is_dci = qp.service_type == kServiceTypeDci;
     std::uint32_t       i = 0, prod = start;
@@ -571,15 +582,20 @@ inline void parse_wqes(const std::uint8_t* buf, std::uint32_t start, std::uint32
             sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, decode,
                  static_cast<std::uint8_t>(av_ds), submitter, ticks_lo, ticks_hi);
             state().sends_emitted.fetch_add(1, std::memory_order_relaxed);
-            if (decode == kDecodeUnknownOp)
+            ++counts.rows;
+            if (decode == kDecodeUnknownOp) {
                 state().sends_unknown_op.fetch_add(1, std::memory_order_relaxed);
-            else if (decode == kDecodeTruncated)
+                ++counts.unknown_op;
+            } else if (decode == kDecodeTruncated) {
                 state().sends_truncated.fetch_add(1, std::memory_order_relaxed);
+                ++counts.truncated;
+            }
         }
 
         i += wqebbs;
         prod = (prod + wqebbs) & kProdMask;
     }
+    return counts;
 }
 
 // The repeater callback: decode the doorbell, emit Mlx5Doorbell, then copy the
