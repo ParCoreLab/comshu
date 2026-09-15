@@ -43,12 +43,6 @@ pcomm_load_runtime
 CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/10_ibgda_peermem"
 OUT=$(pcomm_out ibgda_peermem)
 
-# The workload links libnvshmem_host.so.3, which lives in the SDK rather than in
-# any default search path — cases 04/06/07 all carry this line and omitting it
-# here cost a run (rc=127, "cannot open shared object file"). common.sh cannot
-# set it because it does not know whether a case needs NVSHMEM.
-export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBRARY_PATH:-}"
-
 # ---- prerequisites --------------------------------------------------------
 # IBGDA needs the NIC to be allowed to expose its doorbell page to the GPU. That
 # takes either the nvidia_peermem/nv_peer_mem kernel module or DMABUF support,
@@ -113,6 +107,21 @@ if [ ! -x "$APP" ]; then
     -lnvshmem_host -lnvshmem_device -lcudart || fail "workload did not build"
   pcomm_load_runtime
 fi
+
+# AFTER the build block, not before it — the order case 04 documents and case
+# 12 learned. The block's pcomm_load_build/pcomm_load_runtime PREPEND SDK 25.7's
+# lib dir while NVSHMEM_HOME globs to the newest SDK (26.5 on MN5), so exported
+# above it, 25.7 ends up first and the fresh binary gets a libnvshmem_host it
+# was not linked against: "undefined symbol: nvshmem_selected_device_transport",
+# rc=127 (MN5 job 45889178, the first run that had to build it). This line sat
+# above the block here since the case was written, and never paid while the
+# binary already existed.
+#
+# The workload links libnvshmem_host.so.3, which lives in the SDK rather than in
+# any default search path — cases 04/06/07 all carry this line and omitting it
+# here cost a run (rc=127, "cannot open shared object file"). common.sh cannot
+# set it because it does not know whether a case needs NVSHMEM.
+export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBRARY_PATH:-}"
 
 # ---- force GPU-initiated IB ----------------------------------------------
 # The exact inverse of case 07, which pins IBGDA *off* because "the IB half of
