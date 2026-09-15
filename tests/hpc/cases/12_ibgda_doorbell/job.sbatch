@@ -92,13 +92,13 @@ MPIRUN="${PCOMM_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
 # ---- workload (same binary as cases 04/06/07/09) --------------------------
-APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget_sm80}"
+APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
 if [ ! -x "$APP" ]; then
   pcomm_load_build
   command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
   [ -n "${NVSHMEM_HOME:-}" ] && [ -d "$NVSHMEM_HOME" ] || fail "NVSHMEM_HOME did not resolve"
   ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
-    -gencode arch="${PCOMM_CUDA_ARCH:-compute_80}",code="${PCOMM_CUDA_CODE:-sm_80}" \
+    -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -Wno-deprecated-gpu-targets \
     "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \

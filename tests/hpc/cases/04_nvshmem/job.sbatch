@@ -27,7 +27,7 @@ PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
 source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 pcomm_load_runtime
 
-APP="$HOME/nvshmem_putget-li"
+APP="$HOME/nvshmem_putget-li-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)"
 if [ ! -x "$APP" ]; then
   pcomm_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
