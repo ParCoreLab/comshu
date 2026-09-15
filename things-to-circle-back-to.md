@@ -2,6 +2,24 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## FIXED (2026-09-15): a baked engine carried its unpack time, so build-tree providers looked stale
+
+`images_are_no_older_than_the_engine` compares each mapped libpcomm object's
+mtime with the engine's. A baked engine is unpacked into a cache directory at
+run time, and bake format 1 stamped every copy with the moment it was written —
+so any image loaded straight from the build tree looked as old as the queue
+wait. On MN5 board 45894230, case 05's NCCL profiler plugin, which NCCL dlopens
+by path from `build/`, came out 873 s "older" than an engine built 89 s before
+it, and a correct capture failed. Earlier case 05 captures did not list the
+plugin at all, which is why they passed.
+
+Fixed in `c4cb7db` (bake format 2): the TOC records each input's mtime, and
+unpack stamps it onto the copy before linking it into place. The cache tag
+covers the mtime, so a directory a format-1 launcher filled is never reused.
+Tested locally: a payload bakes and unpacks with its original mtime and
+identical bytes, and a second run reuses the copy. MN5 board at `c4cb7db`:
+pending.
+
 ## FIXED (2026-09-15): the put-ring said "OK" having put nothing — on MN5, cases 11, 12 and 25
 
 `tests/hpc/cases/04_nvshmem/putget.cu` checked no CUDA call and printed
@@ -22,7 +40,11 @@ before any PE puts, and reads it back on every PE: a missing int aborts the job
 non-zero, so "OK" now means every int arrived. The five cases build sm_80 and
 sm_90, and every putget binary is named for `putget.cu`'s content, because each
 case builds only when its binary is missing. du04 with the new binary: 09, 10,
-11 and 12 PASS. MN5 board at `d45b536`: pending.
+11 and 12 PASS. On MN5 (board 45891600, `1b3b81f`), 11, 12 and 25 ran a real kernel there for the
+first time: every int arrived, case 12 passed, and case 25 passed once its
+cross-leg check stopped assuming NVSHMEM posts the same WQEs over RoCE as over
+IB (`c87b6aa`). Case 11 then failed for its own reason — the send-queue
+watcher lapping a 1,024-slot ring — which the ibdevx entry below covers.
 
 Worth re-reading with this in mind: case 12's MN5 host-doorbell numbers after
 the binary changed — 63 sends decoded on recent boards, where job 45449988 had
@@ -83,7 +105,15 @@ every `mlx5_device_send` row say which door saw it (`submitter`) and when: a
 doorbell row is an Instant at the doorbell, a watcher row a Window bounding the
 publication between two looks — ~3 µs wide at the median on du04. **Step 4**
 put it behind `pcomm run --watch-send-queues` and wrote its counters into the
-capture (`mlx5_send_coverage`: published = decoded + lapped + dropped). The
+capture (`mlx5_send_coverage`: published = decoded + lapped + dropped).
+**Step 5** made case 11 assert it every run (every put decoded, nothing lapped,
+dropped or refused). Its first MN5 run found five defects between the watcher
+and a real run — umem ids per device, silent refusals, a doorbell-record valid
+bit only the kernel sets, and a workload whose kernel never ran on the H100s —
+and, once those were fixed, that a 1,024-slot ring is ~200 µs of slack against
+NVSHMEM's proxy while the watcher's routine polling gaps are 100–335 µs. Case
+11 now runs with `NVSHMEM_QP_DEPTH=8192`, measured lossless where 1,024 lapped
+(MN5 job 45893428). The
 plan, with what was rejected and why:
 `plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
 

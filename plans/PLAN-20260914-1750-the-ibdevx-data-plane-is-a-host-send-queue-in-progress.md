@@ -9,7 +9,7 @@
   enabled with `pcomm run --watch-send-queues`, and its coverage is a record
   (`mlx5_send_coverage`). Step 5, case 11 proving it every run, is done on
   du04; its first MN5 board found five defects between the watcher and a real
-  run, all fixed, and the MN5 board at `d45b536` is pending.
+  run, all fixed, and the MN5 board at `458acac` is pending.
 - **Related:** the `OPEN (2026-09-14)` entry at the top of
   `things-to-circle-back-to.md` (the finding and the measurements live there);
   `tests/hpc/cases/11_ibdevx_peermem/parity/README.md` (where the gap was found);
@@ -314,7 +314,32 @@ the price is visible rather than hidden.
    a capture with no data plane in it, whatever the reason — and the reason
    turned out to be the workload.
 
-   MN5 board at `d45b536`: pending.
+   - **A 1,024-slot ring is ~200 µs of slack** (`586f746`, `458acac`). With
+     every fix above, board 45891600 still lost 1,450 WQEBBs on rank 0 in one
+     look, and the per-case run after it (45892425) lost nothing. The
+     watcher's new `max_gap_us` shows why: the longest gap between polling
+     rounds is 100–335 µs on every MN5 run, pinned or not (du04 has shown
+     4.2 ms), and NVSHMEM's proxy posts at least ~5 WQEBBs per µs — one look
+     spanned 1,056 of them in a gap of at most 214 µs. So the default ring
+     laps whenever a gap lands on a burst. Measured in one allocation, job
+     45893428:
+
+     | run | depth | lapped (rank 0 / 1) |
+     |---|---|---|
+     | `1024 2`, twice | 1,024 | 0 / 0, 0 / 0 |
+     | `1024 20` | 1,024 | 2,009 / 1,562 |
+     | `1024 20`, each watcher pinned to its own CPU | 1,024 | 0 / 1,259 |
+     | `1024 20` | 8,192 | 0 / 0 — 20,547 / 20,544 decoded |
+
+     Pinning does not help; depth does. Case 11 runs with
+     `NVSHMEM_QP_DEPTH=8192`, and asserts exactly what it did — the data plane
+     decoded whole, any loss counted and failing. The same arithmetic holds
+     for anyone watching NVSHMEM at full rate: the default ring gives the
+     watcher ~200 µs.
+
+   du04 at `458acac`, depth 8,192: PASS, 26 assertions — nothing lapped
+   (2,079 / 2,076 WQEBBs decoded), longest polling gaps 0.78 / 0.76 ms, which
+   the deeper ring absorbs. MN5 board at `458acac`: pending.
 6. **Later, and bigger than ibdevx.** The doorbell record format is mlx5's, not
    NVSHMEM's. Hooking `mlx5dv_init_obj` would hand the watcher every
    verbs-created queue pair whose owner posts by hand — UCX's `rc_mlx5` above
