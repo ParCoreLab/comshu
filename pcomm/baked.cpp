@@ -21,7 +21,7 @@ namespace {
 
 constexpr char        kMagic[8] = {'P', 'C', 'O', 'M', 'M', 'B', 'K', '1'};
 constexpr std::size_t kFooter = 8 + 8 + 8 + 4 + 4 + 8;  // see baked.hpp
-constexpr unsigned    kFormatVersion = 1;
+constexpr unsigned    kFormatVersion = 2;               // 2: each entry carries its source mtime
 
 // FNV-1a. Not a cryptographic claim — it names a cache directory, and the only
 // property needed is that different bytes get different names.
@@ -117,7 +117,7 @@ bool parse(const std::string& path, std::vector<Entry>& out) {
             return false;
         unsigned nlen = get32(p);
         p += 4;
-        if (static_cast<std::size_t>(end - p) < nlen + 24u)
+        if (static_cast<std::size_t>(end - p) < nlen + 32u)
             return false;
         Entry e;
         e.name.assign(reinterpret_cast<const char*>(p), nlen);
@@ -125,7 +125,8 @@ bool parse(const std::string& path, std::vector<Entry>& out) {
         e.offset = get64(p);
         e.size = get64(p + 8);
         e.hash = get64(p + 16);
-        p += 24;
+        e.mtime = static_cast<long long>(get64(p + 24));
+        p += 32;
         out.push_back(std::move(e));
     }
     return true;
@@ -147,6 +148,9 @@ std::string cache_tag(const std::vector<Entry>& es) {
         h = fnv(e.name.data(), e.name.size(), h);
         h = fnv(&e.size, sizeof e.size, h);
         h = fnv(&e.hash, sizeof e.hash, h);
+        // The mtime too, so a directory a format-1 launcher unpacked — every copy
+        // stamped with its unpack time — is never mistaken for this one.
+        h = fnv(&e.mtime, sizeof e.mtime, h);
     }
     char buf[17];
     std::snprintf(buf, sizeof buf, "%016llx", h);
@@ -237,6 +241,17 @@ std::string materialize(const std::string& name) {
         left -= n;
     }
     ::close(in);
+    // Stamped with the time it was BUILT, before it is placed where a loader can
+    // map it. Invocation.images reads mtimes to prove a provider was built with
+    // the engine that loaded it (baked.hpp, format 2); the time it was unpacked
+    // says nothing about that. A copy that cannot be stamped is still correct
+    // bytes, so this is not a failure — but it would carry the unpack time.
+    if (ok) {
+        const struct timespec when[2] = {{found->mtime, 0}, {found->mtime, 0}};
+        if (::futimens(o, when) != 0)
+            std::fprintf(stderr, "pcomm: could not stamp %s with its build time: %s\n",
+                         name.c_str(), std::strerror(errno));
+    }
     ::close(o);
     if (!ok) {
         std::fprintf(stderr, "pcomm: failed to unpack %s: %s\n", name.c_str(),
@@ -483,6 +498,8 @@ int bake_main(int argc, char** argv) {
         e.name = fs::path(in).filename().string();
         e.offset = pos;
         e.size = 0;
+        struct stat ist{};
+        e.mtime = ::fstat(::fileno(f), &ist) == 0 ? static_cast<long long>(ist.st_mtim.tv_sec) : 0;
         unsigned long long h = 1469598103934665603ull;
         std::size_t        n;
         while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) {
@@ -518,6 +535,7 @@ int bake_main(int argc, char** argv) {
         put64(toc, e.offset);
         put64(toc, e.size);
         put64(toc, e.hash);
+        put64(toc, static_cast<unsigned long long>(e.mtime));
     }
     const unsigned long long toc_off = pos;
     if (std::fwrite(toc.data(), 1, toc.size(), out) != toc.size()) {

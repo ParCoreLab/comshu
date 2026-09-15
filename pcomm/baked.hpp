@@ -28,12 +28,22 @@
 //
 //   [ host binary, exactly as it was ]
 //   [ blob 0 ][ blob 1 ] ... [ blob n-1 ]
-//   [ TOC   ] n × { u32 name_len, name bytes, u64 offset, u64 size, u64 hash }
+//   [ TOC   ] n × { u32 name_len, name bytes, u64 offset, u64 size, u64 hash,
+//                   u64 mtime }
 //   [ footer, 40 bytes ] u64 host_size, u64 toc_offset, u64 toc_size,
 //                        u32 count, u32 format_version, char magic[8]
 //
 // `host_size` is what makes re-baking exact rather than cumulative: a second
 // bake truncates to it instead of appending a second archive behind the first.
+//
+// `mtime` (format 2) is the source file's modification time when it was baked,
+// in seconds, and every unpacked copy is stamped with it. Format 1 left each copy
+// with the time it was UNPACKED, and Invocation.images — which proves a mapped
+// provider was built with the engine that loaded it — reads mtimes: a baked
+// engine unpacked fourteen minutes after the build looked fourteen minutes
+// newer than a provider loaded straight from the build tree, and
+// images_are_no_older_than_the_engine failed a correct capture (MN5 job
+// 45894230, case 05: NCCL's profiler plugin from build/, 873 s "older").
 #include <string>
 #include <vector>
 
@@ -43,7 +53,8 @@ struct Entry {
     std::string        name;    // basename, e.g. "libucx_trace.so"
     unsigned long long offset;  // from the start of the file
     unsigned long long size;
-    unsigned long long hash;  // FNV-1a of the blob; identifies the cache dir
+    unsigned long long hash;   // FNV-1a of the blob; identifies the cache dir
+    long long          mtime;  // source mtime at bake, seconds; stamped on unpack
 };
 
 // What this binary carries. Empty when nothing was baked in, which is the

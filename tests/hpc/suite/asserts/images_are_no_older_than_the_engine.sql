@@ -20,6 +20,13 @@
 -- libraries copied in. Nothing legitimate lands older. 60 s is comfortably
 -- past the intra-build spread and still catches the two-hour-stale copy above.
 --
+-- A BAKED engine is unpacked into a cache directory at run time, and the
+-- comparison is only meaningful because the unpacked copy carries the mtime
+-- its source had when it was baked (pcomm/baked.hpp, format 2). Format 1
+-- stamped the unpack time, so a provider loaded straight from the build tree
+-- — NCCL's profiler plugin, which NCCL dlopens by path — looked as old as the
+-- queue wait: 873 s on MN5 job 45894230, a correct capture failed.
+--
 -- The direction is deliberate. A provider NEWER than the engine was built
 -- against it; a provider OLDER was built against something else. The reverse
 -- case — a stale ENGINE under fresh providers — is what
