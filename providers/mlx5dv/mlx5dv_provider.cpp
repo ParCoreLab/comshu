@@ -21,8 +21,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 
 #include <endian.h>
 
@@ -99,30 +101,49 @@ struct UmemInfo {
     const void* umem{nullptr};
 };
 
-static std::mutex                                  g_umem_mutex;
-static std::unordered_map<std::uint32_t, UmemInfo> g_umems;
+// Keyed on the context as well as the id, because a umem id is unique only
+// within one device. Each HCA hands out ids from the same small range, and a
+// stack that opens several of them — UCX opens all six on an MN5 node — reuses
+// them all at once: rank 0 of job 45886136 had 218 umems under 71 distinct ids,
+// and four queue pairs naming wq_umem_id 20. Keyed on the id alone, the registry
+// answered with whichever buffer was registered last, on any device, so
+// sq_base was wrong and the send-queue watcher refused 55 queues per rank there,
+// including the ones carrying the puts. DEVX lets a command reference only a
+// umem of its own context, so (context, id) is exact.
+using UmemKey = std::pair<const ibv_context*, std::uint32_t>;
+static std::mutex                  g_umem_mutex;
+static std::map<UmemKey, UmemInfo> g_umems;
 // DEVX objects carry no context pointer into obj_modify, so the context is
 // remembered at create time. Without it there is no way to query our own port's
 // LID, and without that a queue pair has no globally unique name.
 static std::mutex                                    g_obj_mutex;
 static std::unordered_map<const void*, ibv_context*> g_obj_ctx;
 
-static void remember_umem(std::uint32_t id, const UmemInfo& info) {
+static void remember_umem(const ibv_context* ctx, std::uint32_t id, const UmemInfo& info) {
     std::lock_guard<std::mutex> lk(g_umem_mutex);
-    g_umems[id] = info;
+    g_umems[{ctx, id}] = info;
 }
 
-static bool lookup_umem(std::uint32_t id, UmemInfo* out) {
+static bool lookup_umem(const ibv_context* ctx, std::uint32_t id, UmemInfo* out) {
     std::lock_guard<std::mutex> lk(g_umem_mutex);
-    auto                        it = g_umems.find(id);
+    auto                        it = g_umems.find({ctx, id});
     if (it == g_umems.end())
         return false;
     *out = it->second;
     return true;
 }
 
-static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t size,
-                        std::uint32_t access, std::int32_t dmabuf_fd, UmemEntry entry) {
+// On dereg the id goes back to the device, so a later lookup must miss rather
+// than find the buffer that is gone.
+static void forget_umem(const void* umem) {
+    std::lock_guard<std::mutex> lk(g_umem_mutex);
+    for (auto it = g_umems.begin(); it != g_umems.end();)
+        it = it->second.umem == umem ? g_umems.erase(it) : std::next(it);
+}
+
+static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const void* addr,
+                        std::size_t size, std::uint32_t access, std::int32_t dmabuf_fd,
+                        UmemEntry entry) {
     if (!out)
         return;
     const bool by_dmabuf = dmabuf_fd >= 0;
@@ -157,7 +178,7 @@ static void record_umem(mlx5dv_devx_umem* out, const void* addr, std::size_t siz
                   dmabuf_fd,
                   gpu_base,
                   out};
-    remember_umem(out->umem_id, info);
+    remember_umem(ctx, out->umem_id, info);
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5Umem{{},
                               {},
@@ -255,7 +276,8 @@ static void decode_rst2init(mlx5dv_devx_obj* obj, const void* cmd_in) {
 
 // --- DEVX decoding ---------------------------------------------------------
 
-static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd_out) {
+static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const void* cmd_in,
+                             void* cmd_out) {
     const auto* qpc = DEVX_ADDR_OF(create_qp_in, const_cast<void*>(cmd_in), qpc);
 
     const auto qp_num = DEVX_GET(create_qp_out, cmd_out, qpn);
@@ -274,7 +296,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
     // provider — dropping it is how a capture comes back empty and looks like a
     // workload that made no connections.
     UmemInfo   wq{};
-    const bool known = lookup_umem(wq_umem_id, &wq);
+    const bool known = lookup_umem(ctx, wq_umem_id, &wq);
 
     // GPU residency, and nothing else. This used to read
     //
@@ -352,7 +374,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
         UmemInfo            dbr{};
         if (!known || wq.binding != UmemBinding::ByAddress || sq_off + sq_bytes > wq.size)
             sqwatch::refused(qp_num, "send queue is not a known host umem");
-        else if (!dbr_valid || !lookup_umem(dbr_umem_id, &dbr) ||
+        else if (!dbr_valid || !lookup_umem(ctx, dbr_umem_id, &dbr) ||
                  dbr.binding != UmemBinding::ByAddress || dbr_off + 8 > dbr.size)
             sqwatch::refused(qp_num, "doorbell record is not a known host umem");
         else
@@ -370,7 +392,8 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
 // dbrec IBGDA touches is qp->tx_wq.dbrec, on the send side — so a consumed
 // completion leaves no artifact anywhere a host interposer or the NIC can see.
 // This records what the CQ IS, and the honest limit is stated on the record.
-static void decode_create_cq(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd_out) {
+static void decode_create_cq(mlx5dv_devx_obj* obj, const ibv_context* ctx, const void* cmd_in,
+                             void* cmd_out) {
     const auto* cqc = DEVX_ADDR_OF(create_cq_in, const_cast<void*>(cmd_in), cq_context);
 
     const auto cqn = DEVX_GET(create_cq_out, cmd_out, cqn);
@@ -384,7 +407,7 @@ static void decode_create_cq(mlx5dv_devx_obj* obj, const void* cmd_in, void* cmd
     // invisible to the ibverbs provider, so it is recorded either way and
     // residency is a field rather than a filter.
     UmemInfo   cq{};
-    const bool known = lookup_umem(umem_id, &cq);
+    const bool known = lookup_umem(ctx, umem_id, &cq);
 
     rec().record(pcomm::core::Temporal::none(),
                  rr::Mlx5DevxCq{{},
@@ -548,19 +571,18 @@ Profiler::Profiler() {
     pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     this->register_post<devx_umem_reg_tag>(
-        [](mlx5dv_devx_umem* out, ibv_context*, void* addr, size_t size, uint32_t access, auto...) {
-            record_umem(out, addr, size, access, -1, UmemEntry::Reg);
-        });
+        [](mlx5dv_devx_umem* out, ibv_context* ctx, void* addr, size_t size, uint32_t access,
+           auto...) { record_umem(out, ctx, addr, size, access, -1, UmemEntry::Reg); });
 
     // The entry point IBGDA actually uses on current NVSHMEM. `addr` here is an
     // offset into the dmabuf when one is supplied, not a pointer — which is why
     // the binding is recorded rather than the address alone being trusted.
     this->register_post<devx_umem_reg_ex_tag>(
-        [](mlx5dv_devx_umem* out, ibv_context*, mlx5dv_devx_umem_in* in, auto...) {
+        [](mlx5dv_devx_umem* out, ibv_context* ctx, mlx5dv_devx_umem_in* in, auto...) {
             if (!in)
                 return;
             const bool has_dmabuf = (in->comp_mask & MLX5DV_UMEM_MASK_DMABUF) != 0;
-            record_umem(out, in->addr, in->size, in->access, has_dmabuf ? in->dmabuf_fd : -1,
+            record_umem(out, ctx, in->addr, in->size, in->access, has_dmabuf ? in->dmabuf_fd : -1,
                         UmemEntry::RegEx);
         });
 
@@ -620,6 +642,7 @@ Profiler::Profiler() {
         // send queue or doorbell record, and then it lets go of both.
         if (sqwatch::enabled())
             sqwatch::unwatch_umem(umem);
+        forget_umem(umem);
         rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
                                               {}, {}, h(umem), rr::Mlx5Umem::pcomm_type_id});
     });
@@ -649,9 +672,9 @@ Profiler::Profiler() {
         const bool decode =
             ((opcode == MLX5_CMD_OP_CREATE_QP) || (opcode == MLX5_CMD_OP_CREATE_CQ)) && cmd_out;
         if (opcode == MLX5_CMD_OP_CREATE_QP && cmd_out)
-            decode_create_qp(obj, cmd_in, cmd_out);
+            decode_create_qp(obj, ctx, cmd_in, cmd_out);
         else if (opcode == MLX5_CMD_OP_CREATE_CQ && cmd_out)
-            decode_create_cq(obj, cmd_in, cmd_out);
+            decode_create_cq(obj, ctx, cmd_in, cmd_out);
         // Every command is recorded, decoded or not. An opcode this build does
         // not know is the version boundary most likely to move under us, and it
         // must be visible in the capture rather than absent from it.
