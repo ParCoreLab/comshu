@@ -237,7 +237,8 @@ the price is visible rather than hidden.
    0): rank 0 published 20,543 = decoded 20,543 + 0 + 0, rank 1 20,540 =
    20,540 + 0 + 0; `rows` 20,513 / 20,510, equal to the CSV's `sq_watch` rows
    on each rank. Cases 11 and 12 PASS, core ctest 33/33. Schema hash
-   `0x05D78F93455BDACA`.
+   `0x05D78F93455BDACA`. MN5 board job 45885534 at `70857db`: 23 PASS /
+   2 SKIP (09, 10 — no `PeerMappingOverride` there).
 5. **Case 11 asserts it — DONE on du04 2026-09-15; MN5 board pending.** The
    case runs with `--watch-send-queues` and gained four assertions, each
    written so that a watcher that never ran FAILS rather than skips:
