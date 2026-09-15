@@ -5,9 +5,11 @@
   (`PCOMM_SQ_WATCH=1`, `providers/mlx5dv/sq_watch.hpp`) is lossless on du04 up
   to `1024 200` (204,800 WQEs per rank), keeps ≥99.7% at 20.5M WQEs per rank,
   and — placed on the rank's L3 — slows the traffic phase ~1.15× at full rate.
-  and every row says which door saw it and when (a Window, ~3 µs wide). It
-  is enabled with `pcomm run --watch-send-queues`, and its coverage is a
-  record (`mlx5_send_coverage`). Step 5 makes case 11 prove it every run.
+  Every row says which door saw it and when (a Window, ~3 µs wide). It is
+  enabled with `pcomm run --watch-send-queues`, and its coverage is a record
+  (`mlx5_send_coverage`). Step 5, case 11 proving it every run, is done on
+  du04; its first MN5 board found five defects between the watcher and a real
+  run, all fixed, and the MN5 board at `d45b536` is pending.
 - **Related:** the `OPEN (2026-09-14)` entry at the top of
   `things-to-circle-back-to.md` (the finding and the measurements live there);
   `tests/hpc/cases/11_ibdevx_peermem/parity/README.md` (where the gap was found);
@@ -277,9 +279,42 @@ the price is visible rather than hidden.
    | 10 of rank 0's puts removed | ok | **fail** | **fail** | ok |
    | one window collapsed | ok | ok | ok | **fail** |
 
-   *Still to see:* MN5, where the same case runs NVSHMEM's DC initiators (60
-   per rank, service_type 0x5) through the watcher for the first time — a
-   different WQE layout, with an address vector, under the same assertions.
+   *MN5, and what it found.* The first MN5 board with these assertions
+   (`9cfef56`, job 45886136) failed case 11 alone: 5 queues watched per rank,
+   55 refused, and 0 of 2,048 puts. Chasing it found five defects, none in the
+   watcher's core, each now fixed:
+
+   - **A umem id is per device** (`cb3d04b`). UCX opens six HCAs per rank
+     there — 218 umems under 71 ids — and the registry was keyed on the id
+     alone, so CREATE_QP could resolve another device's buffer. Now keyed on
+     (context, id), and a dereg forgets its entry.
+   - **A refusal said nothing** (`a41d425`). `refused=55` was the whole
+     report. Now seven reasons, each counted with the first refused queue's
+     CREATE_QP fields, in the always-on summary.
+   - **`dbr_umem_valid` was trusted** (`c8aa9bc`). UCX never sets it, because
+     the kernel's DEVX path does (`devx_set_umem_valid`, mlx5_ib devx.c), in
+     its own copy of the command — so every UCX queue was refused: 40 RC and 15
+     DCI per rank. (An earlier line here called those DCIs NVSHMEM's; ibdevx
+     creates RC only, and they were UCX's.) What rules a queue out is
+     `send_dbr_mode` ≠ 0, no doorbell record at all. After it: 60 watched, 0
+     refused — and still 0 puts.
+   - **The workload never ran its kernel** (`d45b536`). Cases 09–12 and 25
+     shared an sm_80-only binary with no PTX, MN5's GPUs are H100s, and
+     `putget.cu` checked no CUDA call and printed OK regardless. The watcher's
+     27 / 24 WQEBBs per rank were exactly the barrier WQEs du04 records beside
+     its 2,048 puts. `putget` now checks every launch and reads back every int
+     on every PE, and its binaries carry sm_80 and sm_90 and are named for
+     their source. du04 with it: 09, 10, 11, 12 PASS.
+   - **On the way:** `--per-case` could neither submit nine cases (no
+     `--cpus-per-task`; `b5a1bf3`) nor bind the 2-rank ones (`--exclusive`;
+     `3e149d9`), and a failed run in cases 09–11 matched the `set -x` trace of
+     its own skip check and reported SKIP (`3e149d9`).
+
+   So the assertion did its job on its first MN5 run: it would not go green on
+   a capture with no data plane in it, whatever the reason — and the reason
+   turned out to be the workload.
+
+   MN5 board at `d45b536`: pending.
 6. **Later, and bigger than ibdevx.** The doorbell record format is mlx5's, not
    NVSHMEM's. Hooking `mlx5dv_init_obj` would hand the watcher every
    verbs-created queue pair whose owner posts by hand — UCX's `rc_mlx5` above

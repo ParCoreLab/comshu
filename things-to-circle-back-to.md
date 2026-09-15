@@ -2,6 +2,32 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## FIXED (2026-09-15): the put-ring said "OK" having put nothing — on MN5, cases 11, 12 and 25
+
+`tests/hpc/cases/04_nvshmem/putget.cu` checked no CUDA call and printed
+`nvshmem put-ring OK` unconditionally. Cases 09, 10, 11, 12 and 25 share one
+binary, built once per host as `$HOME/nvshmem_putget_sm80`, and on MN5 it holds
+one `sm_80.cubin` and no PTX (`cuobjdump --list-elf`, `--list-ptx`). MN5's GPUs
+are H100s, so there the kernel could not launch; NVSHMEM's host barriers still
+ran, and the run said OK. Cases 09 and 10 skip on MN5, so 11, 12 and 25 are the
+ones that ran an empty workload there, since at least 2026-09-05 (the binary's
+date).
+
+Nothing noticed until case 11's `data_plane_puts_arrived` (step 5 of the ibdevx
+plan): with every DEVX queue watched, 0 of 2,048 puts per rank, and around them
+exactly the 15 / 12 barrier WQEs du04 records beside its 2,048.
+
+Fixed in `d45b536`. `putget` checks every CUDA call and launch, clears `dst`
+before any PE puts, and reads it back on every PE: a missing int aborts the job
+non-zero, so "OK" now means every int arrived. The five cases build sm_80 and
+sm_90, and every putget binary is named for `putget.cu`'s content, because each
+case builds only when its binary is missing. du04 with the new binary: 09, 10,
+11 and 12 PASS. MN5 board at `d45b536`: pending.
+
+Worth re-reading with this in mind: case 12's MN5 host-doorbell numbers after
+the binary changed — 63 sends decoded on recent boards, where job 45449988 had
+7,232.
+
 ## OPEN (2026-09-14): the ibdevx data plane reaches the NIC through a door nobody watches
 
 Case 11's SigmaTrace comparison (`tests/hpc/cases/11_ibdevx_peermem/parity/`)
