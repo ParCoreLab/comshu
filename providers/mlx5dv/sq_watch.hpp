@@ -73,6 +73,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -246,6 +247,14 @@ struct State {
 
     std::atomic<std::uint32_t> qps_watched{0};
     std::atomic<std::uint32_t> qps_refused{0};
+    // Why, by reason, with the first refused queue's CREATE_QP fields. A bare
+    // "refused=55" is what MN5's case 11 first reported, and nobody can act on it.
+    struct Refusal {
+        const char*   why;
+        std::uint32_t n;
+        std::string   first;
+    };
+    std::vector<Refusal>       refusals;    // under mutex
     std::atomic<std::uint64_t> staged{0};   // WQEBBs the watcher copied and published
     std::atomic<std::uint64_t> decoded{0};  // WQEBBs the decoder parsed and recorded
     std::atomic<std::uint64_t> held{0};
@@ -740,10 +749,23 @@ inline void set_coverage_sink(CoverageSink sink, int rank) {
     s.rank = rank;
 }
 
-inline void refused(std::uint32_t qpn, const char* why) {
-    state().qps_refused.fetch_add(1, std::memory_order_relaxed);
+// `fields` is the queue's CREATE_QP as the watcher judged it; the first one of
+// each reason is kept for the shutdown summary.
+inline void refused(std::uint32_t qpn, const char* why, const std::string& fields) {
+    auto& s = state();
+    s.qps_refused.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lk(s.mutex);
+        auto it = std::find_if(s.refusals.begin(), s.refusals.end(), [&](const State::Refusal& r) {
+            return std::strcmp(r.why, why) == 0;
+        });
+        if (it == s.refusals.end())
+            s.refusals.push_back({why, 1, fields});
+        else
+            ++it->n;
+    }
     if (debug_on())
-        std::fprintf(stderr, "[sqwatch] NOT watching qpn=%u: %s\n", qpn, why);
+        std::fprintf(stderr, "[sqwatch] NOT watching qpn=%u: %s (%s)\n", qpn, why, fields.c_str());
 }
 
 // From the umem dereg hook, which runs before the transport frees the buffer:
@@ -822,6 +844,12 @@ inline void shutdown(int rank) {
                  static_cast<unsigned long long>(s.lapped_early.load() + s.lapped_late.load()),
                  static_cast<unsigned long long>(s.dropped.load()),
                  static_cast<unsigned long long>(s.polls.load()));
+    {
+        std::lock_guard<std::mutex> lk(s.mutex);
+        for (const auto& r : s.refusals)
+            std::fprintf(stderr, "[pcomm] sq-watch rank=%d refused %u: %s — first: %s\n", rank, r.n,
+                         r.why, r.first.c_str());
+    }
     std::fprintf(stderr,
                  "[pcomm] sq-watch rank=%d lapped_early=%llu lapped_late=%llu batches=%llu "
                  "max_delta=%u copy_us=%llu first_batch_us=%llu max_batch_us=%llu@%llu "

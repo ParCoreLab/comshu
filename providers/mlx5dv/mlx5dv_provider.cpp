@@ -372,15 +372,47 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
         const auto          dbr_umem_id = DEVX_GET(qpc, qpc, dbr_umem_id);
         const std::uint64_t dbr_off = DEVX_GET64(qpc, qpc, dbr_addr);
         UmemInfo            dbr{};
-        if (!known || wq.binding != UmemBinding::ByAddress || sq_off + sq_bytes > wq.size)
-            sqwatch::refused(qp_num, "send queue is not a known host umem");
-        else if (!dbr_valid || !lookup_umem(ctx, dbr_umem_id, &dbr) ||
-                 dbr.binding != UmemBinding::ByAddress || dbr_off + 8 > dbr.size)
-            sqwatch::refused(qp_num, "doorbell record is not a known host umem");
-        else
+        const bool          dbr_known = dbr_valid && lookup_umem(ctx, dbr_umem_id, &dbr);
+
+        const char* why = nullptr;
+        if (!known)
+            why = "send queue's umem is not registered on this context";
+        else if (wq.binding != UmemBinding::ByAddress)
+            why = "send queue's umem is not host memory";
+        else if (sq_off + sq_bytes > wq.size)
+            why = "send queue runs past the end of its umem";
+        else if (!dbr_valid)
+            why = "doorbell record is not in a umem (dbr_umem_valid=0)";
+        else if (!dbr_known)
+            why = "doorbell record's umem is not registered on this context";
+        else if (dbr.binding != UmemBinding::ByAddress)
+            why = "doorbell record's umem is not host memory";
+        else if (dbr_off + 8 > dbr.size)
+            why = "doorbell record runs past the end of its umem";
+
+        if (why) {
+            char fields[384];
+            std::snprintf(
+                fields, sizeof fields,
+                "qpn=%u st=%#x log_sq=%u rq_type=%u log_rq=%u log_rq_stride=%u "
+                "wq_umem=%u wq_off=%#llx wq_size=%#llx sq_off=%#llx sq_bytes=%#llx "
+                "dbr_valid=%d dbr_umem=%u dbr_off=%#llx dbr_size=%#llx",
+                qp_num, static_cast<unsigned>(service_type), static_cast<unsigned>(log_sq_size),
+                static_cast<unsigned>(rq_type),
+                static_cast<unsigned>(DEVX_GET(qpc, qpc, log_rq_size)),
+                static_cast<unsigned>(DEVX_GET(qpc, qpc, log_rq_stride)),
+                static_cast<unsigned>(wq_umem_id), static_cast<unsigned long long>(wq_offset),
+                static_cast<unsigned long long>(known ? wq.size : 0),
+                static_cast<unsigned long long>(sq_off), static_cast<unsigned long long>(sq_bytes),
+                dbr_valid ? 1 : 0, static_cast<unsigned>(dbr_umem_id),
+                static_cast<unsigned long long>(dbr_off),
+                static_cast<unsigned long long>(dbr_known ? dbr.size : 0));
+            sqwatch::refused(qp_num, why, fields);
+        } else {
             sqwatch::watch(qp_num, wq.addr + sq_off, log_sq_size,
                            static_cast<std::uint8_t>(service_type), dbr.addr + dbr_off, wq.umem,
                            dbr.umem);
+        }
     }
 }
 
