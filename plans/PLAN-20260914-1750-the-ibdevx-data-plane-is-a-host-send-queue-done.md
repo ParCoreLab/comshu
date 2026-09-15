@@ -1,15 +1,16 @@
 # PLAN — the ibdevx data plane is a host send queue, so watch the queue
 
 - **Created:** 2026-09-14 17:50 +03
-- **Status:** in progress. Steps 1–4 are done: the watcher
+- **Status:** done (2026-09-15); step 6 stays later work. Steps 1–4: the watcher
   (`PCOMM_SQ_WATCH=1`, `providers/mlx5dv/sq_watch.hpp`) is lossless on du04 up
   to `1024 200` (204,800 WQEs per rank), keeps ≥99.7% at 20.5M WQEs per rank,
   and — placed on the rank's L3 — slows the traffic phase ~1.15× at full rate.
   Every row says which door saw it and when (a Window, ~3 µs wide). It is
   enabled with `pcomm run --watch-send-queues`, and its coverage is a record
-  (`mlx5_send_coverage`). Step 5, case 11 proving it every run, is done on
-  du04; its first MN5 board found five defects between the watcher and a real
-  run, all fixed, and the MN5 board at `458acac` is pending.
+  (`mlx5_send_coverage`). Step 5 makes case 11 prove it every run, on both
+  hosts: its first MN5 board found five defects between the watcher and a real
+  run, and then a ring too shallow for the watcher's routine polling gaps — all
+  fixed, and MN5 board 45895420 at `34ada18` is green.
 - **Related:** the `OPEN (2026-09-14)` entry at the top of
   `things-to-circle-back-to.md` (the finding and the measurements live there);
   `tests/hpc/cases/11_ibdevx_peermem/parity/README.md` (where the gap was found);
@@ -241,7 +242,7 @@ the price is visible rather than hidden.
    on each rank. Cases 11 and 12 PASS, core ctest 33/33. Schema hash
    `0x05D78F93455BDACA`. MN5 board job 45885534 at `70857db`: 23 PASS /
    2 SKIP (09, 10 — no `PeerMappingOverride` there).
-5. **Case 11 asserts it — DONE on du04 2026-09-15; MN5 board pending.** The
+5. **Case 11 asserts it — DONE 2026-09-15, on du04 and MN5.** The
    case runs with `--watch-send-queues` and gained four assertions, each
    written so that a watcher that never ran FAILS rather than skips:
 
@@ -339,7 +340,14 @@ the price is visible rather than hidden.
 
    du04 at `458acac`, depth 8,192: PASS, 26 assertions — nothing lapped
    (2,079 / 2,076 WQEBBs decoded), longest polling gaps 0.78 / 0.76 ms, which
-   the deeper ring absorbs. MN5 board at `458acac`: pending.
+   the deeper ring absorbs.
+
+   MN5 board 45895420 at `34ada18`: 23 PASS / 2 SKIP (09, 10 — no
+   `PeerMappingOverride` there), SUITE GREEN. Case 11 PASS, 26 assertions: 60
+   queues watched per rank, 0 refused, 2,079 / 2,076 WQEBBs decoded, nothing
+   lapped, longest polling gaps 325 / 218 µs. (The board before it, 45894230,
+   was green on case 11 and red on case 05 for an unrelated reason — baked
+   copies stamped with their unpack time, fixed in `c4cb7db`.)
 6. **Later, and bigger than ibdevx.** The doorbell record format is mlx5's, not
    NVSHMEM's. Hooking `mlx5dv_init_obj` would hand the watcher every
    verbs-created queue pair whose owner posts by hand — UCX's `rc_mlx5` above

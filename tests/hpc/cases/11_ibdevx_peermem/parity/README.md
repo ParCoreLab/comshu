@@ -55,10 +55,10 @@ CQs and SRQ, and which GPU the NVSHMEM heap's memory region lives on.
 
 **Update, 2026-09-15 — pcomm now captures it.** `pcomm run --watch-send-queues`
 reads each DEVX queue's doorbell record and send queue from outside the path,
-and case 11 runs with it and asserts every put arrived (2,048 × 4 B per rank on
-du04), fully decoded, with nothing lapped or dropped. SigmaTrace still sees
+and case 11 runs with it and asserts every put arrived (2,048 × 4 B per rank, on
+du04 and MN5), fully decoded, with nothing lapped or dropped. SigmaTrace still sees
 none of it. Design and measurements:
-`plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
+`plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-done.md`.
 The result below is kept as measured on 2026-09-14.
 
 **Neither tool captured one byte of the data plane.** The put-ring moves

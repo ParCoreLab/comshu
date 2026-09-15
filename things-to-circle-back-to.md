@@ -17,8 +17,8 @@ Fixed in `c4cb7db` (bake format 2): the TOC records each input's mtime, and
 unpack stamps it onto the copy before linking it into place. The cache tag
 covers the mtime, so a directory a format-1 launcher filled is never reused.
 Tested locally: a payload bakes and unpacks with its original mtime and
-identical bytes, and a second run reuses the copy. MN5 board at `c4cb7db`:
-pending.
+identical bytes, and a second run reuses the copy. du04 with a format-2 bake:
+09 and 11 PASS. MN5 board 45895420 at `34ada18`: case 05 PASS, suite green.
 
 ## FIXED (2026-09-15): the put-ring said "OK" having put nothing — on MN5, cases 11, 12 and 25
 
@@ -50,7 +50,7 @@ Worth re-reading with this in mind: case 12's MN5 host-doorbell numbers after
 the binary changed — 63 sends decoded on recent boards, where job 45449988 had
 7,232.
 
-## OPEN (2026-09-14): the ibdevx data plane reaches the NIC through a door nobody watches
+## RESOLVED (2026-09-15): the ibdevx data plane reached the NIC through a door nobody watched
 
 Case 11's SigmaTrace comparison (`tests/hpc/cases/11_ibdevx_peermem/parity/`)
 found that under `NVSHMEM_REMOTE_TRANSPORT=ibdevx` **neither tool records one
@@ -115,7 +115,12 @@ NVSHMEM's proxy while the watcher's routine polling gaps are 100–335 µs. Case
 11 now runs with `NVSHMEM_QP_DEPTH=8192`, measured lossless where 1,024 lapped
 (MN5 job 45893428). The
 plan, with what was rejected and why:
-`plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-in-progress.md`.
+`plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue-done.md`.
+
+Resolved by MN5 board 45895420 (`34ada18`) and du04: case 11 decodes every put
+on both hosts, nothing lapped, and fails if any is lost. Step 6 —
+`mlx5dv_init_obj` for verbs-created queues, UCX's `rc_mlx5` above all — stays
+in the plan as later work.
 
 ## OPEN (upstream, 2026-09-14): NVSHMEM's ibdevx deadlocks under sustained load — with no pcomm at all
 
