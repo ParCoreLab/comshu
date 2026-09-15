@@ -39,7 +39,11 @@ UNION ALL
 -- this clause was not, and which cost a red board on a correct capture (case 25,
 -- job 45584953). **umem_id is recycled.** The NIC hands ids back out as buffers
 -- are registered and deregistered, so one (rank, umem_id) can name several
--- different buffers over a run, with different bindings. Rank 1 of that capture
+-- different buffers over a run, with different bindings. And it is not unique
+-- even at one instant: each HCA has its own id space, so a rank that opens six
+-- of them (UCX on MN5, job 45886136) has four queue pairs naming wq_umem_id 20.
+-- The provider keys its registry on (context, id) for exactly this reason; the
+-- rows carry no context, so this join cannot. Rank 1 of job 45584953's capture
 -- has FIVE rows for umem_id 51:
 --
 --   addr=0x4383000 size=131072 device=65535 by_addr
