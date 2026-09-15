@@ -29,6 +29,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=20
+#SBATCH --exclusive
 #SBATCH --gres=gpu:2
 #SBATCH --time=00:10:00
 #SBATCH --output=%x.%j.out
@@ -209,16 +210,22 @@ timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
   -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
   -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
   -x NVSHMEM_IB_DISABLE_DMABUF \
-  "$PCOMM" run -p ib,mlx5dv --watch-send-queues -o "$OUT" -- "$APP" 1024 2
-rc=$?; echo "mpirun exit=$rc"
+  "$PCOMM" run -p ib,mlx5dv --watch-send-queues -o "$OUT" -- "$APP" 1024 2 2>&1 | tee "$OUT.run.log"
+rc=${PIPESTATUS[0]}; echo "mpirun exit=$rc"
 
-# A run that IBGDA declined to serve is a skip, not a failure: NVSHMEM exits
+# A run the transport declined to serve is a skip, not a failure: NVSHMEM exits
 # non-zero when the pinned transport cannot initialise, and that is the same
 # fact the pre-flight checks test for, arriving later.
+#
+# Only the workload's own output is searched, and only for NVSHMEM's own words.
+# This used to grep the job's .out for "peermem", which set -x had already
+# written the grep's own pattern into — so every failure matched itself and
+# came back a SKIP (MN5, job 45887836: mpirun could not even bind a process).
+# On the combined board the same glob named the whole board's .out.
 if [ $rc -ne 0 ]; then
-  if grep -qiE "GPU-initiated communication|peermem|init failed for transport: IBGDA|init failed for transport: IBDEVX" \
-       "${SLURM_SUBMIT_DIR:-.}"/*"${SLURM_JOB_ID:-}"*.out 2>/dev/null; then
-    skip "NVSHMEM declined IBGDA on this host (rc=$rc)"
+  if grep -qE "nv_peer_mem, or nvidia_peermem detected|GPU-initiated communication|init failed for transport: (IBGDA|IBDEVX)" \
+       "$OUT.run.log" 2>/dev/null; then
+    skip "NVSHMEM declined the ibdevx transport on this host (rc=$rc)"
   fi
   echo "FAILED: workload did not complete (rc=$rc; 124 = timed out)."
   mkdir -p "$OUT.csv"

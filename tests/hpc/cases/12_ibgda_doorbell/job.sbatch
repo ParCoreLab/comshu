@@ -14,6 +14,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=20
+#SBATCH --exclusive
 #SBATCH --gres=gpu:2
 #SBATCH --time=00:10:00
 #SBATCH --output=%x.%j.out
@@ -162,7 +163,7 @@ mpi() {  # mpi <out-dir> <extra pcomm args...>
 # ---- control run: hijack OFF ----------------------------------------------
 mpi "$CTRL" > "$CTRL.app" 2>"$CTRL.err"; rc_ctrl=$?
 if [ $rc_ctrl -ne 0 ]; then
-  if grep -qiE "GPU-initiated communication|peermem|init failed for transport: IBGDA" \
+  if grep -qE "nv_peer_mem, or nvidia_peermem detected|GPU-initiated communication|init failed for transport: IBGDA" \
        "$CTRL.err" 2>/dev/null; then
     skip "NVSHMEM declined IBGDA on this host (rc=$rc_ctrl)"
   fi
