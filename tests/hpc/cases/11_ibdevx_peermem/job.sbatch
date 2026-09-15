@@ -182,6 +182,17 @@ export NVSHMEM_BOOTSTRAP=MPI
 export NVSHMEM_DISABLE_P2P=1
 export NVSHMEM_REMOTE_TRANSPORT=ibdevx
 export NVSHMEM_IB_DISABLE_DMABUF=1
+# An 8,192-deep send queue, because the default 1,024 gives the send-queue
+# watcher ~200 us of slack. NVSHMEM's proxy posts at least ~5 WQEBBs per us (one
+# look on MN5 spanned 1,056 of them in a gap of at most 214 us), and the
+# watcher's longest gap between polling rounds is 100-335 us on every MN5 run,
+# pinned to a CPU of its own or not. One such gap on a burst laps the ring: MN5
+# board 45891600 lost 1,450 WQEBBs on rank 0 that way. Job 45893428 measured
+# it in one allocation, `1024 20`: depth 1,024 lapped 1,562 / 2,009 (pinned,
+# 1,259 / 0); depth 8,192 lapped nothing (20,547 / 20,544 decoded). The case
+# claims the watcher decodes the data plane whole; the coverage row still
+# counts any loss, and a loss still fails it.
+export NVSHMEM_QP_DEPTH=8192
 
 # `-p ib,mlx5dv`, not `-p mlx5dv`, and the second provider is not decoration.
 #
@@ -220,7 +231,7 @@ rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
   -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
   -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
-  -x NVSHMEM_IB_DISABLE_DMABUF \
+  -x NVSHMEM_IB_DISABLE_DMABUF -x NVSHMEM_QP_DEPTH \
   "$PCOMM" run -p ib,mlx5dv --watch-send-queues -o "$OUT" -- "$APP" 1024 2 2>&1 | tee "$OUT.run.log"
 rc=${PIPESTATUS[0]}; echo "mpirun exit=$rc"
 
