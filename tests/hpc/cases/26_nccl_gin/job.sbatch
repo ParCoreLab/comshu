@@ -47,6 +47,26 @@ pcomm_load_runtime
 MPIRUN="${PCOMM_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
+# ---- does this host's NCCL have the device API at all? ----------------------
+#
+# GIN arrived in NCCL 2.28, together with nccl_device.h and ncclDevCommCreate.
+# Where NCCL_HOME resolves to something older the workload cannot be compiled,
+# let alone run — and that is a host fact like "no InfiniBand device", so it
+# belongs in skip() and not in a build failure. du04 is exactly that host: its
+# SDK resolves to 2.27.7 (the 2.28.9 in /usr is not what NCCL_HOME finds), and
+# without this the case would report FAIL for owning an older library than it
+# needs, on a host where it simply cannot run.
+[ -n "${NCCL_HOME:-}" ] && [ -d "$NCCL_HOME" ] || skip "NCCL_HOME did not resolve"
+[ -r "$NCCL_HOME/include/nccl_device.h" ] || \
+  skip "NCCL at $NCCL_HOME has no device API (no nccl_device.h) — GIN needs 2.28+"
+nccl_ver=$(awk '/^#define NCCL_MAJOR /{maj=$3} /^#define NCCL_MINOR /{min=$3} END{print maj"."min}' \
+           "$NCCL_HOME/include/nccl.h" 2>/dev/null)
+case "$nccl_ver" in
+  2.2[89]|2.[3-9][0-9]|[3-9].*) : ;;
+  *) skip "NCCL $nccl_ver has no GIN — needs 2.28+" ;;
+esac
+echo "=== 26_nccl_gin : NCCL $nccl_ver at $NCCL_HOME ==="
+
 # ---- workload ---------------------------------------------------------------
 # Named for its source, like the putget binaries, so an edit cannot be run as if
 # it were the old build — the failure that let case 12 pass for three weeks on a
@@ -55,7 +75,6 @@ APP="${PCOMM_GIN_APP:-$HOME/gin_putring-$(sha1sum "$CASE_DIR/gin_putring.cu" | c
 if [ ! -x "$APP" ]; then
   pcomm_load_build
   command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
-  [ -n "${NCCL_HOME:-}" ] && [ -d "$NCCL_HOME" ] || fail "NCCL_HOME did not resolve"
   ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -std=c++17 -O2 --expt-extended-lambda \
     -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -I"$NCCL_HOME/include" "$CASE_DIR/gin_putring.cu" -o "$APP" \
