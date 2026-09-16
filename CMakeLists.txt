@@ -62,6 +62,21 @@ option(PCOMM_CUPTI "Build the CUPTI kernel-timing backend (needs libcupti)" OFF)
 # and asks for 3.4.29, which every host already has.
 option(PCOMM_STATIC_CXXLIB "Carry libstdc++ in the binaries instead of requiring it" ON)
 if(PCOMM_STATIC_CXXLIB AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
+  # Capability, not identity. Being a GNU/Clang driver means the flag is
+  # ACCEPTED; it does not mean it can be LINKED. -static-libstdc++ needs
+  # libstdc++.a, which distributions ship in a separate, compiler-versioned
+  # package (Fedora's libstdc++-static, RHEL's likewise) that is not installed
+  # by default. On a host whose default g++ was 16 while only gcc 15 had the
+  # archive, every link died with
+  #   /usr/bin/ld.bfd: cannot find -lstdc++
+  #   have you installed the static version of the stdc++ library ?
+  # and the pre-commit gate then refused every commit for a reason that had
+  # nothing to do with the change being committed. Asking the linker costs one
+  # try-compile and turns that into a configure-time sentence.
+  include(CheckLinkerFlag)
+  check_linker_flag(CXX "-static-libstdc++" PCOMM_HAVE_STATIC_LIBSTDCXX)
+endif()
+if(PCOMM_STATIC_CXXLIB AND PCOMM_HAVE_STATIC_LIBSTDCXX)
   # LINK_LANGUAGE:CXX excludes CUDA-linked targets: the device link runs through
   # nvcc, which does not take these either.
   # Spelled -Wl, rather than CMake's LINKER: prefix on purpose: the guard above
@@ -69,6 +84,22 @@ if(PCOMM_STATIC_CXXLIB AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
   # expression is one indirection too many to be obvious.
   add_link_options("$<$<LINK_LANGUAGE:CXX>:-static-libstdc++>"
                    "$<$<LINK_LANGUAGE:CXX>:-Wl,--exclude-libs,ALL>")
+elseif(PCOMM_STATIC_CXXLIB AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
+  # Loud, not silent, and this is the whole reason the check is here rather than
+  # a quiet fallback: carrying libstdc++ is load-bearing on MareNostrum 5, whose
+  # system libstdc++.so.6 tops out at GLIBCXX_3.4.29 while gcc/13.2.0 builds
+  # against 3.4.30-3.4.32. A build that quietly went dynamic there would link
+  # clean and then die at startup with `GLIBCXX_3.4.30' not found — the exact
+  # failure this option was added to prevent. Degrading is right on a
+  # workstation; doing it without saying so is not.
+  message(WARNING
+    "pcomm: -static-libstdc++ does not link with this toolchain, so the "
+    "binaries will REQUIRE ${CMAKE_CXX_COMPILER_ID}'s libstdc++ at run time. "
+    "That is fine locally and NOT fine for a cluster install, where the system "
+    "libstdc++ is usually older than the one this was built against. Install "
+    "the static runtime (Fedora/RHEL: libstdc++-static, matching your default "
+    "gcc) to get a portable binary, or pass -DPCOMM_STATIC_CXXLIB=OFF to say "
+    "you meant it and silence this.")
 elseif(PCOMM_STATIC_CXXLIB)
   message(STATUS "pcomm: PCOMM_STATIC_CXXLIB ignored — ${CMAKE_CXX_COMPILER_ID} "
                  "does not accept -static-libstdc++; this build will need its "

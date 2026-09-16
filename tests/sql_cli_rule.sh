@@ -42,11 +42,19 @@ if ! "$PCOMM" sql "$WORK" "SELECT 1" >/dev/null 2>&1; then
     # Distinguish "no DuckDB in this build" from "the command is broken": the
     # first is a legitimate configuration (MN5 builds with PCOMM_DUCKDB=OFF) and
     # the second is what this file exists to catch.
-    if "$PCOMM" sql "$WORK" "SELECT 1" 2>&1 | grep -q "no DuckDB"; then
+    # Captured into a variable rather than piped straight into grep, and that is
+    # the whole fix: `set -o pipefail` at the top of this file makes a pipeline
+    # report the FAILING left-hand status even when grep matches. So this probe
+    # always looked like a miss, and every DuckDB-less build — MN5's, and any
+    # default `cmake -B build` — reported a hard FAIL instead of the skip the
+    # comment above promises. The sibling rules never hit it because they grep a
+    # file (capture_integrity_rule.sh) instead of a failing command.
+    probe=$("$PCOMM" sql "$WORK" "SELECT 1" 2>&1)
+    if printf '%s' "$probe" | grep -q "no DuckDB"; then
         echo "SKIP: build without DuckDB"; exit 0
     fi
     echo "FAIL: pcomm sql cannot run the simplest possible query"
-    "$PCOMM" sql "$WORK" "SELECT 1" 2>&1 | head -5
+    printf '%s\n' "$probe" | head -5
     exit 1
 fi
 
