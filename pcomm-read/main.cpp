@@ -2077,6 +2077,40 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
                 // candidate is charged and the row is flagged. This is the case
                 // the shared-vocabulary design actually predicted, and it stays
                 // a finding.
+                //
+                // EXACT BASE — the address IS one candidate's base. That
+                // candidate names it, and nothing is invented by saying so: a
+                // registration's own base belongs to that registration, whatever
+                // neighbour it happens to fall inside. Checked before the
+                // containment chain because it is the stronger statement.
+                //
+                // NOT HYPOTHETICAL, and the reason this exists. NCCL's GIN
+                // registers DOCA's CPU-proxy doorbell record as a DEVX umem at a
+                // calloc'd — therefore unaligned — pointer with a page-rounded
+                // size, so its range runs past the page boundary into the next
+                // registration: 0xc157050+4096 over 0xc158000+4096 (MN5 job
+                // 45913525, and 51 such umems per rank). Neither contains the
+                // other, both are host memory, both agree on the device, and the
+                // only reference involved is the second one's own base. Without
+                // this rule a correct NCCL GIN capture fails
+                // mem_owner_unambiguous, which is the check announcing that
+                // attribution is untrustworthy — on a capture where it is not.
+                {
+                    std::size_t exact = objs.size(), exact_hits = 0;
+                    for (std::size_t i = 0; i < objs.size(); ++i)
+                        if (objs[i].base == addr && objs[i].size > 0) {
+                            ++exact_hits;
+                            exact = i;
+                        }
+                    // Exactly one, or it is no tiebreak at all: two objects
+                    // sharing a base is the double-recording this assertion was
+                    // written to catch, and it must stay ambiguous.
+                    if (exact_hits == 1) {
+                        objs[exact].refs += refs;
+                        continue;
+                    }
+                }
+
                 // Sentinel rather than 0: objs[0] need not be a candidate at
                 // all, and seeding with it would compare against a range that
                 // does not contain this address.

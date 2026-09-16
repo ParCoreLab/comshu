@@ -2,6 +2,42 @@
 
 Known limitations / deferred work, recorded so they aren't lost. Newest first.
 
+## OPEN (2026-09-16): NCCL GIN's GDAKI plane is captured on MN5 and NOT on du04
+
+Superseding the entry below, which was written before any of this ran. Case 26
+(`tests/hpc/cases/26_nccl_gin/`) now captures NCCL's GPU-initiated data plane on
+MN5, whole: with `--enable-host-doorbell`, GDAKI and `NCCL_GIN_GDAKI_NIC_HANDLER=1`,
+per rank 20,480 `rdma_write` of 128 B = 2,621,440 B — the workload's bytes
+exactly — plus 20,480 `atomic_fa` of 8 B, one signal per put, `wqes_lapped=0`,
+on both ranks and in AUTO mode too (job 45913525). Passive sees none of it.
+GIN's other backend needs no new door: `GIN_IB_PROXY` posts through
+`ibv_post_send` and the ibverbs provider already records every put and signal
+(du04: 20,548 writes/rank = 2,625,792 B, 20,480 atomics).
+
+**du04 captures none of GDAKI's plane, with either arm, and the cause is not
+yet named.** What is measured:
+
+- the GPU arm installs (all three driver entries patched) and remembers 32 UARs,
+  but reports `register_calls=0 getdevptr_calls=0` even with
+  `NCCL_GIN_GDAKI_NIC_HANDLER=2` — nothing ever asks to map a doorbell page;
+- the host arm refuses there, correctly by its own rule: du04 CAN map a UAR into
+  the GPU, so arming could change which mode a transport picks;
+- DOCA's own log (`DOCA_GPUNETIO_LOG=6`) prints "Enabling CPU proxy mode" 56
+  times when the handler is pinned to 1, and never in AUTO or 2;
+- an `LD_PRELOAD` shim over `cudaHostRegister`, `cudaHostGetDevicePointer` and
+  `cuMemHostRegister_v2` sees nothing in either mode, which rules out the
+  dynamic-symbol route but not a statically linked cudart;
+- du04 has `nvidia_peermem` but no `gdrdrv`, and DOCA logs "GPU doesn't support
+  dmabuf, fallback to legacy nvidia-peermem mode".
+
+So either du04's DOCA reaches libcuda by a route the export-table patch does not
+cover, or it falls back to a CPU proxy without logging it on that path — and the
+host arm's platform-based guard refuses exactly where that would matter. The
+narrow fix to try first: an explicit opt-in that arms the host path when the
+transport's handler is PINNED to CPU by configuration, which is safe precisely
+because DOCA then never probes for GPU mapping. Case 26 skips on du04 rather
+than going red, and says why.
+
 ## OPEN (2026-09-15): NCCL's GPU-initiated networking (GIN) is a data plane no case exercises
 
 Classic NCCL over InfiniBand is not exposed to the send-queue watcher's timing
