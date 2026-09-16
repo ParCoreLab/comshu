@@ -1,0 +1,14 @@
+# This repository is also a Spack package repository, so that `spack repo add`
+# can point straight at it and no fork of spack/spack-packages is needed:
+#
+#   spack repo add https://github.com/ParCoreLab/pcomm.git
+#   spack install pcomm +ibverbs +ucx
+#
+# Spack clones this repo, reads this file, and registers every path below as a
+# package repository (each one carries its own repo.yaml naming its namespace).
+# The recipe lives here rather than upstream because it tracks the build options
+# in CMakeLists.txt, and those two drift apart the moment they live in separate
+# repositories.
+repo_index:
+  paths:
+  - spack_repo/parcore
