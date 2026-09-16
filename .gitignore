@@ -31,13 +31,6 @@ __pycache__/
 # under third_party/ with its licence, as mlx5 is.
 reference/
 
-# Upstream checkouts kept for working against rather than for reading: spack,
-# under references/spack. The package recipe we maintain is tracked, under
-# spack_repo/ — this is only the clone it gets registered with, which belongs to
-# its own upstream and carries its own .git. Plural, and distinct from the
-# reference/ above, which is read-only source.
-references/
-
 # PNG renders of demos/figures/*.svg. The SVGs are the source and are tracked;
 # the slides reference them by .svg name. These are ad-hoc renders made to show
 # a figure on a projector — 1.5 MB of derived pixels with no script to
