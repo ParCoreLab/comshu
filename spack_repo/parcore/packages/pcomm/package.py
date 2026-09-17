@@ -29,7 +29,12 @@ class Pcomm(CMakePackage):
     variant("nccl", default=False, description="NCCL collective provider (host API)")
     variant("cupti", default=False, description="CUPTI kernel-timing backend")
     variant("duckdb", default=False, description="Parquet export and SQL over a capture")
+    variant("ui", default=False, description="The `pcomm ui` server, panels in a browser")
     variant("tests", default=True, description="Build the core tests")
+
+    # Serving a capture is querying it, and the root CMakeLists refuses the
+    # combination outright rather than quietly building half a UI.
+    requires("+duckdb", when="+ui", msg="+ui needs +duckdb: `pcomm ui` queries the capture")
 
     depends_on("cxx", type="build")
     depends_on("cmake@3.20:", type="build")
@@ -47,6 +52,10 @@ class Pcomm(CMakePackage):
     depends_on("cuda", when="+nccl")
     depends_on("cuda", when="+cupti")
     depends_on("duckdb", when="+duckdb")
+    # The UI server is an HTTP server; cpp-httplib is the single header it uses.
+    # The other half of what it needs, the built frontend, is committed under
+    # ui/dist precisely so this variant can exist without pnpm.
+    depends_on("cpp-httplib", when="+ui")
 
     # The gpumem provider (NVBit, GPU-initiated NVLink load/store) is absent on
     # purpose. It has to be configured in its own build tree against the NVHPC
@@ -89,6 +98,32 @@ class Pcomm(CMakePackage):
         force_symlink(headers[0], join_path(staged, "duckdb.h"))
         force_symlink(libraries[0], join_path(staged, "libduckdb.so"))
 
+    @run_before("cmake")
+    def stage_httplib(self):
+        """Put cpp-httplib where the UI build looks for it.
+
+        Same bargain as stage_duckdb: pcomm-ui wants .tools/httplib/httplib.h,
+        because that is where tools/get_httplib.sh drops it on a machine with
+        network. Found by search rather than by assuming include/httplib.h,
+        since a single-header package is free to nest it.
+
+        The other half of the UI, the built frontend, needs no staging: ui/dist
+        is committed, so a spack build that fetched this repo already has it.
+        """
+        if self.spec.satisfies("~ui"):
+            return
+
+        prefix = self.spec["cpp-httplib"].prefix
+        headers = find(prefix, "httplib.h", recursive=True)
+        if not headers:
+            raise InstallError(
+                "the cpp-httplib dependency has no httplib.h under {0}".format(prefix)
+            )
+
+        staged = join_path(self.stage.source_path, ".tools", "httplib")
+        mkdirp(staged)
+        force_symlink(headers[0], join_path(staged, "httplib.h"))
+
     def cmake_args(self):
         return [
             self.define_from_variant("PCOMM_PROVIDER_IBVERBS", "ibverbs"),
@@ -98,11 +133,11 @@ class Pcomm(CMakePackage):
             self.define_from_variant("PCOMM_CUPTI", "cupti"),
             self.define_from_variant("PCOMM_DUCKDB", "duckdb"),
             self.define_from_variant("PCOMM_BUILD_TESTS", "tests"),
-            # PCOMM_UI follows PCOMM_DUCKDB by default, and the UI half refuses
-            # to configure without a pnpm-built ui/dist and a fetched
-            # cpp-httplib. A spack build has neither, so +duckdb would turn on a
-            # target that cannot be built. Off explicitly, in every spec.
-            self.define("PCOMM_UI", False),
+            # Explicit in both directions. PCOMM_UI otherwise FOLLOWS
+            # PCOMM_DUCKDB, so every +duckdb spec would try to build the UI and
+            # fail on the missing httplib; and a spec that does want it has to
+            # say so. `requires` above ties +ui to +duckdb.
+            self.define_from_variant("PCOMM_UI", "ui"),
             # Spack already guarantees the right libstdc++ through the
             # gcc-runtime package and RPATH. Carrying a second copy inside every
             # binary would defeat that, and it is only on upstream because the

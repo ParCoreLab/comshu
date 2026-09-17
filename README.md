@@ -24,6 +24,7 @@ Every capture provider is a variant, and all of them are off by default:
 | `+nccl` | NCCL collectives |
 | `+cupti` | CUDA kernels and memory copies |
 | `+duckdb` | Parquet export and SQL over a capture |
+| `+ui` | The panels in a browser, with `pcomm ui` |
 
 `+nccl` builds against NCCL, which asks for a GPU target:
 
@@ -31,12 +32,8 @@ Every capture provider is a variant, and all of them are off by default:
 spack install pcomm +nccl ^nccl cuda_arch=80
 ```
 
-Two things are not in the package, because each needs a second toolchain:
-
-- The NVLink provider (`gpumem`), which needs NVBit and its own CUDA build tree.
-- The web UI (`pcomm ui`), which embeds a bundle built from `ui/` with `pnpm`.
-
-Build from source if you want either.
+The NVLink provider (`gpumem`) is not in the package. It needs NVBit and its own
+CUDA build tree, so build that one from source.
 
 ## Build
 
@@ -82,10 +79,10 @@ Visualize it:
 pcomm ui pcomm-out                      # panels at 127.0.0.1:8777
 ```
 
-`sql` needs a build with DuckDB, which is the `+duckdb` variant. `ui` needs the
-frontend bundle as well, so it is only in a source build. When it is built, the
-bundle is compiled into the binary, and `pcomm ui` serves it with no other files
-needed.
+`sql` needs `+duckdb`, and `ui` needs `+ui`, which turns on `+duckdb` too. The
+page is compiled into the binary, so `pcomm ui` needs no other files. This is
+the usual way to read a cluster capture: record it there, copy the directory
+home, open it here.
 
 For the layout, the gates, and how to add a record type or a provider, see
 [`docs/development.md`](docs/development.md).

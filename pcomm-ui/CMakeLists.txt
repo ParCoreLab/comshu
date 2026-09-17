@@ -14,7 +14,7 @@ endif()
 # The built frontend, embedded byte for byte so the binary is self-contained: a
 # UI that needs a sibling directory is a UI that serves a blank page the first
 # time somebody scp's it to a login node. Regenerated whenever ui/dist changes;
-# never committed.
+# committed, unlike every other build artifact here — see ui/.gitignore for why.
 #
 # ui/dist is the REAL app (ui/, Svelte) and is now the only page this server
 # knows. It used to embed a hand-written pcomm-ui/index.html — the step-3
