@@ -14,11 +14,6 @@
     "tailwindcss": "^4.1.14",
     "vite": "^7.1.9"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
   "dependencies": {
     "vega": "^6.4.0",
     "vega-lite": "^6.4.3"
