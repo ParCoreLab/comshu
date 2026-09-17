@@ -63,9 +63,18 @@ class Pcomm(CMakePackage):
     # pcomm is touched. `^duckdb+icu` drops icu4c and that whole chain.
     depends_on("duckdb~python", when="+duckdb")
     # The UI server is an HTTP server; cpp-httplib is the single header it uses.
-    # The other half of what it needs, the built frontend, is committed under
-    # ui/dist precisely so this variant can exist without pnpm.
     depends_on("cpp-httplib", when="+ui")
+    # The other half of the UI is the frontend bundle, which the build now
+    # builds (tools/build_ui.sh) rather than carrying in git. That needs node
+    # and npm, and npm is its own package here because spack's node-js is
+    # configured --without-npm. npm rather than pnpm because spack has no pnpm.
+    #
+    # This is the one variant whose BUILD needs network: npm fetches the
+    # frontend packages. Fine where the UI is wanted, which is a workstation
+    # reading a capture; not fine on an offline cluster, which is why +ui is off
+    # by default and MN5 builds without it.
+    depends_on("node-js", type="build", when="+ui")
+    depends_on("npm", type="build", when="+ui")
 
     # The gpumem provider (NVBit, GPU-initiated NVLink load/store) is absent on
     # purpose. It has to be configured in its own build tree against the NVHPC
@@ -117,8 +126,8 @@ class Pcomm(CMakePackage):
         network. Found by search rather than by assuming include/httplib.h,
         since a single-header package is free to nest it.
 
-        The other half of the UI, the built frontend, needs no staging: ui/dist
-        is committed, so a spack build that fetched this repo already has it.
+        The other half of the UI, the frontend bundle, needs no staging either:
+        the build builds it with npm (tools/build_ui.sh).
         """
         if self.spec.satisfies("~ui"):
             return

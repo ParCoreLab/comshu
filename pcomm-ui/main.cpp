@@ -160,6 +160,25 @@ int pcomm::cli::ui_main(int argc, char** argv) {
         }
         const auto st = pcomm::capture::load_raw_tables(con, ranks);
         pcomm::capture::fill_missing_raw_tables(con);
+        // BEFORE link::define, not after: `_intern_name` is one of the views it
+        // creates, and that view selects FROM intern_text. Loading the
+        // dictionary afterwards would be loading it for the next run.
+        //
+        // These are the two loads `pcomm export` performs (pcomm-read/main.cpp,
+        // the intern_text and capture_integrity pair), and the EXPORT branch
+        // below gets both for free because duck::mount_raw_tables calls them.
+        // The capture branch called neither, so `pcomm ui` on a raw capture
+        // failed to create _intern_name, then failed _uct_iface_named after it,
+        // and every interned name the UI shows — UCX tl_name and dev_name, NCCL
+        // func and algo — resolved to nothing. Serving an export was fine, which
+        // is exactly what made it read as a UI bug rather than a missing load.
+        //
+        // This is the divergence duck_mount.hpp warns about in its own comment,
+        // arriving through the one door that function cannot guard: it
+        // centralises the export path, and the capture path has no equivalent
+        // choke point, so each caller has to remember. `pcomm ui` forgot.
+        pcomm::capture::load_intern_text(con, ranks);
+        pcomm::capture::load_capture_integrity(con, ranks);
         const auto bad = pcomm::link::define(con);
         tables = st.tables;
         std::printf("pcomm ui: capture %s — %zu ranks, %zu tables, %zu rows%s\n", dir.c_str(),

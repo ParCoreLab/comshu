@@ -5,20 +5,29 @@ Svelte 5 + Vite + Tailwind. Built to `dist/`, which is **compiled into**
 node carries the whole app with it.
 
 ```bash
-pnpm install
-pnpm build                                   # -> ui/dist, embedded at cmake build time
+npm ci                                       # exactly what package-lock.json pins
+npm run build                                # -> ui/dist, embedded at cmake build time
 
 pcomm ui <trace-dir>                         # http://127.0.0.1:8777 — that is the whole flow
 
-pnpm dev                                     # vite on :5180, /query proxied to :8777
+npm run dev                                  # vite on :5180, /query proxied to :8777
 pcomm ui <trace-dir> --dir ui/dist           # serve from disk instead of the embedded copy
 ```
 
-`ui/dist` must exist when cmake configures the UI half, or the build stops and
-says so. Rebuilding the bundle re-runs the embedder; no export step and no
-`pcomm export`/`pcomm link` first, since `pcomm ui` loads a capture directly.
+Neither of the first two is something you have to remember: a build with
+`-DPCOMM_UI=ON` runs `tools/build_ui.sh`, which installs when the lockfile
+changed and then builds. `ui/dist` is a build artifact and is not committed, so
+the build produces it. No export step either, and no `pcomm export`/`pcomm link`
+first, since `pcomm ui` loads a capture directly.
 
-`pnpm dev` proxies `/query` to a running `pcomm ui` rather than mocking it. The
+**npm, not pnpm**, which this used to use. A spack `+ui` build installs these
+packages itself, and spack has an npm package but no pnpm one at all. Measured
+before switching: three of the four output chunks come out byte-identical, and
+only the app chunk differs, by 725 bytes. There is one lockfile,
+`package-lock.json`, because two lockfiles over one `package.json` is how the
+build and the developer end up installing different things.
+
+`npm run dev` proxies `/query` to a running `pcomm ui` rather than mocking it. The
 data path is the part most worth exercising, and a fixture would be the one
 thing never tested against a real capture.
 

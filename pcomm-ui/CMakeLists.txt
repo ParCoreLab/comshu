@@ -13,8 +13,11 @@ endif()
 
 # The built frontend, embedded byte for byte so the binary is self-contained: a
 # UI that needs a sibling directory is a UI that serves a blank page the first
-# time somebody scp's it to a login node. Regenerated whenever ui/dist changes;
-# committed, unlike every other build artifact here — see ui/.gitignore for why.
+# time somebody scp's it to a login node.
+#
+# BUILT here, not committed. ui/dist is a build artifact, and carrying one in
+# git meant new blobs on every frontend change, because Vite's hashed names
+# never dedupe. tools/build_ui.sh produces it; this file only embeds it.
 #
 # ui/dist is the REAL app (ui/, Svelte) and is now the only page this server
 # knows. It used to embed a hand-written pcomm-ui/index.html — the step-3
@@ -22,23 +25,43 @@ endif()
 # and passing --dir. That made the default invocation show the weakest thing the
 # project had, so the prototype is gone and --dir is now purely a dev override.
 set(_ui_dist "${CMAKE_SOURCE_DIR}/ui/dist")
-if(NOT EXISTS "${_ui_dist}/index.html")
+
+find_program(PCOMM_NPM_EXECUTABLE npm)
+if(NOT PCOMM_NPM_EXECUTABLE)
   message(FATAL_ERROR
-    "pcomm-ui embeds the built frontend, and there is none at ${_ui_dist}.\n"
-    "  build it:  pnpm -C ui install && pnpm -C ui build\n"
-    "  (needs network for the first install — like get_duckdb.sh, not "
-    "available on MN5)")
+    "pcomm-ui builds the frontend and there is no npm on PATH.\n"
+    "  install node and npm, or configure with -DPCOMM_UI=OFF\n"
+    "  (the first build fetches the packages, so it needs network — which is "
+    "why MN5 builds without the UI)")
 endif()
+
+# The SOURCES, not the output. Globbing ui/dist at configure time is what the
+# previous version did, and it cannot survive dist being built rather than
+# committed: at configure time the directory is empty or absent, so the glob
+# returns nothing and the embedder depends on nothing.
+file(GLOB_RECURSE _ui_sources CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/ui/src/*")
+add_custom_command(
+  OUTPUT  "${_ui_dist}/index.html"
+  COMMAND "${CMAKE_SOURCE_DIR}/tools/build_ui.sh"
+  DEPENDS "${CMAKE_SOURCE_DIR}/tools/build_ui.sh"
+          "${CMAKE_SOURCE_DIR}/ui/package.json"
+          "${CMAKE_SOURCE_DIR}/ui/package-lock.json"
+          "${CMAKE_SOURCE_DIR}/ui/vite.config.js"
+          "${CMAKE_SOURCE_DIR}/ui/index.html"
+          ${_ui_sources}
+  COMMENT "building the pcomm frontend (npm)"
+  VERBATIM)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-# CONFIGURE_DEPENDS so a rebuilt bundle (Vite renames its hashed assets on every
-# content change) re-runs cmake rather than embedding the previous file list.
-file(GLOB_RECURSE _ui_dist_files CONFIGURE_DEPENDS "${_ui_dist}/*")
 set(_assets "${CMAKE_CURRENT_BINARY_DIR}/ui_assets.hpp")
 add_custom_command(
   OUTPUT  "${_assets}"
   COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/embed_assets.py"
           "${_ui_dist}" "${_assets}"
-  DEPENDS "${CMAKE_SOURCE_DIR}/tools/embed_assets.py" ${_ui_dist_files}
+  # The bundle's own index.html stands in for the whole directory: Vite renames
+  # every hashed asset when content changes, so there is no stable file list to
+  # depend on, and index.html is rewritten whenever those names change.
+  DEPENDS "${CMAKE_SOURCE_DIR}/tools/embed_assets.py" "${_ui_dist}/index.html"
   COMMENT "embedding ui/dist into pcomm-ui"
   VERBATIM)
 

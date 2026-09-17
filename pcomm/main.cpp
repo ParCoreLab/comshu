@@ -109,9 +109,10 @@ int main(int argc, char** argv) {
 #if PCOMM_HAVE_UI
         return pcomm::cli::ui_main(sub_argc, sub_argv);
 #else
-        std::fputs("pcomm: this build has no `ui` — it needs DuckDB and a built frontend.\n"
-                   "  tools/get_duckdb.sh && pnpm -C ui install && pnpm -C ui build\n"
-                   "  cmake -B build -DPCOMM_DUCKDB=ON\n",
+        std::fputs("pcomm: this build has no `ui` — it needs DuckDB, cpp-httplib and npm.\n"
+                   "  tools/get_duckdb.sh && tools/get_httplib.sh\n"
+                   "  cmake -B build -DPCOMM_DUCKDB=ON -DPCOMM_UI=ON\n"
+                   "  (the frontend itself is built for you, by tools/build_ui.sh)\n",
                    stderr);
         return 1;
 #endif

@@ -1,10 +1,8 @@
 node_modules/
 
-# dist/ is NOT ignored, though it is a build artifact and everything else of
-# that kind in this repo is. It is the one the binary cannot be built without:
-# pcomm-ui embeds it, so a source tree with no dist/ cannot produce `pcomm ui`
-# at all, and neither can a spack build, which fetches this repo and has no
-# pnpm. Committing it is what makes the UI installable for the case it exists
-# to serve: capture on a cluster, copy the directory home, read it locally.
-# Rebuild with `pnpm -C ui build` and commit the result when the frontend
-# changes.
+# The build produces this (tools/build_ui.sh, driven by pcomm-ui/CMakeLists),
+# so it is ignored like any other build output. It was briefly committed, to
+# make the spack +ui variant possible before the build could build it itself;
+# that cost new blobs on every frontend change, since Vite's hashed names never
+# dedupe. package-lock.json IS tracked — a lockfile is source, not output.
+dist/
