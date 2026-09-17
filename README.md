@@ -31,8 +31,12 @@ Every capture provider is a variant, and all of them are off by default:
 spack install pcomm +nccl ^nccl cuda_arch=80
 ```
 
-The NVLink provider (`gpumem`) is not in the package. It needs a second
-toolchain, so build that one from source.
+Two things are not in the package, because each needs a second toolchain:
+
+- The NVLink provider (`gpumem`), which needs NVBit and its own CUDA build tree.
+- The web UI (`pcomm ui`), which embeds a bundle built from `ui/` with `pnpm`.
+
+Build from source if you want either.
 
 ## Build
 
@@ -78,7 +82,10 @@ Visualize it:
 pcomm ui pcomm-out                      # panels at 127.0.0.1:8777
 ```
 
-`sql` and `ui` need a build with DuckDB.
+`sql` needs a build with DuckDB, which is the `+duckdb` variant. `ui` needs the
+frontend bundle as well, so it is only in a source build. When it is built, the
+bundle is compiled into the binary, and `pcomm ui` serves it with no other files
+needed.
 
 For the layout, the gates, and how to add a record type or a provider, see
 [`docs/development.md`](docs/development.md).
