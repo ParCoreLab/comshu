@@ -51,7 +51,17 @@ class Pcomm(CMakePackage):
     # application already loaded) but it does include cuda_runtime_api.h.
     depends_on("cuda", when="+nccl")
     depends_on("cuda", when="+cupti")
-    depends_on("duckdb", when="+duckdb")
+    # ~python because pcomm uses DuckDB's C API and nothing else: pcomm-read
+    # links libduckdb.so against duckdb.h, and never imports the bindings.
+    # Measured, not assumed — it removes every py-* node from the spec, which is
+    # a whole CPython/setuptools subtree built for a library we link as C.
+    #
+    # Not constrained here, but worth knowing when +duckdb is slow to install:
+    # DuckDB's `icu` variant means the BUNDLED ICU, so the default ~icu pulls
+    # the external icu4c, which build-depends on autoconf/automake/libtool. On a
+    # machine with no autotools that is a from-source automake before any of
+    # pcomm is touched. `^duckdb+icu` drops icu4c and that whole chain.
+    depends_on("duckdb~python", when="+duckdb")
     # The UI server is an HTTP server; cpp-httplib is the single header it uses.
     # The other half of what it needs, the built frontend, is committed under
     # ui/dist precisely so this variant can exist without pnpm.
