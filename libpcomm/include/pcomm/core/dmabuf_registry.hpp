@@ -56,6 +56,8 @@
 // The door a conversion arrived by is tallied in the engine, so a run says which
 // one actually delivered rather than which ones were armed.
 
+#include <dlfcn.h>
+
 #include <cstdint>
 #include <cstring>
 
@@ -134,23 +136,40 @@ inline CuResult get_handle_for_address_range(void* handle, CuDevicePtr dptr, std
     return rc;
 }
 
-// Substitute our wrapper when a lookup hands back the conversion. Shared by every
-// entry-point door; `real` is captured once, since all of them resolve the same
-// driver function.
+// Is `fn` the driver's own code? Only libcuda's function may become `real`.
+//
+// MEASURED, not anticipated: MN5 job 48812008, case 12's control run died with
+// SIGSEGV on a stack of one frame repeated thirty deep inside
+// libmlx5dv_trace.so. The export-table door patches the conversion's table
+// entry with its own wrapper; a later cuGetProcAddress then handed that wrapper
+// back as "the" cuMemGetHandleForAddressRange, it was adopted as real, and the
+// wrapper called itself. Excluding our four registry instantiations by address
+// (the first guard) could not see it, because the door's wrapper is a fifth,
+// and every pcomm .so carries its own copies of all of them besides.
+//
+// So the test is positive rather than an exclusion list: the pointer must come
+// from libcuda. Anything else is some interposer — ours in another provider, or
+// a third party's — and is left exactly where it is.
+inline bool is_driver_fn(const void* fn) {
+    Dl_info info{};
+    if (!fn || !dladdr(fn, &info) || !info.dli_fname)
+        return false;
+    return std::strstr(info.dli_fname, "libcuda") != nullptr;
+}
+
+// Substitute our wrapper when a lookup hands back the conversion — but only
+// when what it handed back is the DRIVER's. If it is another pcomm wrapper
+// (another provider's door, which records into the same engine table) it is
+// already observing, and wrapping it again would at best double-count and at
+// worst, as above, recurse. Shared by every entry-point door.
 template<Door D>
 inline void substitute_if_conversion(const char* symbol, void** pfn) {
-    if (symbol && pfn && *pfn && std::strcmp(symbol, "cuMemGetHandleForAddressRange") == 0) {
-        auto* got = reinterpret_cast<PfnMemGetHandle>(*pfn);
-        // Our own wrapper can come back through a second door (the export table
-        // handing cudart the cuGetProcAddress we already patched); never make
-        // it its own "real".
-        if (got != &get_handle_for_address_range<kDoorDlsym> &&
-            got != &get_handle_for_address_range<kDoorGetProc> &&
-            got != &get_handle_for_address_range<kDoorGetProcV2> &&
-            got != &get_handle_for_address_range<kDoorExportTable>)
-            real_get_handle() = got;
-        *pfn = reinterpret_cast<void*>(&get_handle_for_address_range<D>);
-    }
+    if (!symbol || !pfn || !*pfn || std::strcmp(symbol, "cuMemGetHandleForAddressRange") != 0)
+        return;
+    if (!is_driver_fn(*pfn))
+        return;
+    real_get_handle() = reinterpret_cast<PfnMemGetHandle>(*pfn);
+    *pfn = reinterpret_cast<void*>(&get_handle_for_address_range<D>);
 }
 
 // The primary door. Substitutes the pointer CUDA hands back for the one symbol

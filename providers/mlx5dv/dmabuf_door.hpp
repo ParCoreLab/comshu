@@ -67,13 +67,25 @@ inline dmb::CuResult get_proc_address(const char* symbol, void** pfn, int driver
     return rc;
 }
 
+// The table entry's replacement. It calls the real the PATCHER captured — the
+// pointer that was in libcuda's table before we overwrote it — and never the
+// registry's shared real_get_handle(), which another door may have set. Taking
+// that one is how this wrapper came to call itself (MN5 job 48812008).
 inline dmb::CuResult get_handle(void* handle, dmb::CuDevicePtr dptr, std::size_t size,
                                 int handle_type, unsigned long long flags) {
-    if (!dmb::real_get_handle())
-        dmb::real_get_handle() = reinterpret_cast<dmb::PfnMemGetHandle>(
-            export_table::real("cuMemGetHandleForAddressRange"));
-    return dmb::get_handle_for_address_range<dmb::kDoorExportTable>(handle, dptr, size,
-                                                                     handle_type, flags);
+    auto* real = reinterpret_cast<dmb::PfnMemGetHandle>(
+        export_table::real("cuMemGetHandleForAddressRange"));
+    if (!real || !dmb::is_driver_fn(reinterpret_cast<const void*>(real)))
+        return 1 /* CUDA_ERROR_INVALID_VALUE */;
+    const dmb::CuResult rc = real(handle, dptr, size, handle_type, flags);
+    if (rc == 0 && handle && handle_type == dmb::kDmaBufFd) {
+        const int fd = *static_cast<int*>(handle);
+        dmb::remember(fd,
+                      dmb::Range{static_cast<std::uint64_t>(dptr), static_cast<std::uint64_t>(size),
+                                 pcomm::core::device_of(reinterpret_cast<const void*>(dptr))},
+                      dmb::kDoorExportTable);
+    }
+    return rc;
 }
 
 // Call once from the provider constructor. Idempotent through the patcher.

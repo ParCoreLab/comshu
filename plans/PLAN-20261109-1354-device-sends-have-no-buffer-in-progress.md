@@ -1,7 +1,8 @@
 # PLAN — GPU-initiated sends reach comm_edges but no buffer, device or kernel
 
 - **Created:** 2026-11-09 13:54 +03
-- **Status:** IN PROGRESS
+- **Status:** IN PROGRESS. Phase 1 done (7755562). Phase 2 done (29c81e7).
+  Phase 3 code landed (bb41c67), MN5 measurement pending. Phase 4 not started.
 - **Related:** `PLAN-20260806-2140-dmabuf-registered-regions-done` (the fd → VA
   table and the iova rule this extends); `PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-todo`
   (the host doorbell that produces these rows); case 12 and case 26.
@@ -75,21 +76,24 @@ the kernel ended. Not decided yet — see Phase 4.
   `raddr` the NIC saw. `object_access` computes the target VA as
   `mr.range_base + (raddr - iova)` when the peer MR named by `rkey` has an iova
   row, else `raddr`. The NIC's rule exactly: remote VA = MR base + (raddr − iova).
-- **Reach the conversion through the export table, in core.** The patcher moves
-  from `providers/mlx5dv/cuda_export_table.hpp` to core so the dmabuf registry
-  can register `cuMemGetHandleForAddressRange` (and `cuGetProcAddress_v2`, for
-  the entry-point lookup) with it. Which of the two entries GIN's pointer
+- **Reach the conversion through the export table; share the TABLE, not the
+  patcher.** *(Revised while implementing.)* The patcher stays in mlx5dv, which
+  every GDAKI run loads; what moved is the fd → range table, into the engine
+  (`pcomm_engine_dmabuf_note/_find/_stats`), because the per-provider copies were
+  the second half of the bug — the conversion is seen by mlx5dv and needed by
+  ibverbs. `providers/mlx5dv/dmabuf_door.hpp` registers
+  `cuGetProcAddress_v2`, `cuGetProcAddress` and `cuMemGetHandleForAddressRange`
+  with the patcher; the registry gains a dlsym door for `cuGetProcAddress_v2`. Which of the two entries GIN's pointer
   actually comes from is MEASURED on MN5 with `PCOMM_HIJACK_DEBUG=1` before the
   code relies on either.
   - Constraint: the patcher is a process-wide table rewrite. Two providers each
     patching the same entry would see the first's replacement, not the real
-    pointer, and silently skip. Core owns one patcher; providers register
-    replacements with it.
+    pointer, and silently skip. Hence one patcher (mlx5dv's) and one table.
   - Constraint: patching the export table outside `--enable-doorbell-hijack` is
     a behaviour change. It observes a conversion and returns the real result
     unchanged, but it is still in-memory rewriting of libcuda's table. Gated on
-    `PCOMM_DMABUF_EXPORT_TABLE` (default ON only when ibverbs or mlx5dv is
-    loaded and CUDA is present) so it can be turned off if a driver disagrees.
+    `PCOMM_DMABUF_EXPORT_TABLE` (default ON whenever mlx5dv is loaded; `0`
+    disables) so it can be turned off if a driver disagrees.
 - **Kernel attribution is measured before it is designed.**
 
 ## Steps
@@ -133,6 +137,18 @@ the kernel ended. Not decided yet — see Phase 4.
    kernel's span on the same device.
 2. Decide from that: an exact join where exactly one kernel on the queue's
    device can have produced the WQE, `exact = FALSE` otherwise, or no column.
+
+## Follow-ups found on the way
+
+- `mlx5dv_reg_dmabuf_mr` is hooked by nothing. GIN tries it FIRST
+  (`MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT`, CUDA ≥ 12.8, gin_host_gdaki.cc:114)
+  and falls back to `ibv_reg_dmabuf_mr` only when it fails. On MN5's NICs it
+  fails, which is why case 26's window is recorded at all. On a data-direct
+  NIC the window would be registered through a door we do not see, and its
+  puts would name an rkey with no region. Needs a hook in the mlx5dv provider
+  with the same iova record.
+- DC targets: `_peer_of_qp` does not resolve `dest_dct`, so a DCI's sends have
+  no peer and no object. Counted nowhere yet.
 
 ## Constraints
 
