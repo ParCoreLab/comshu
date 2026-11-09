@@ -363,6 +363,7 @@ The vocabulary is closed. These are all of them:
 | `unnamed_uct_transport` | defect | a UCT op whose `tl_name` did not resolve |
 | `colliding_gpu_uuids` | defect | two PCI addresses on one node reporting one UUID |
 | `unattributed_p2p_accesses` | defect | a GPU access `object_access` could not place |
+| `unplaced_offset_sends` | defect | a send naming a zero-based region (NCCL GIN) whose VA pcomm never recovered, or an rkey reused across regions that disagree; `object_access` drops it rather than misplace it |
 | `self_edges` | defect | a rank sending to itself — the qp_num-collision signature |
 | `ambiguous_recv_buffers` | defect | a `wr_id` naming more than one posted buffer |
 | `unattributed_recv_completions` | defect | a receive resolving to no known object |
@@ -412,6 +413,7 @@ The ones worth knowing, by what they record:
 | `ib_recv_cqe` | a receive completion with `srq` / `wqe_counter` detail |
 | `ib_queue_pair`, `ib_modify_qp`, `ib_qp_signalling` | QP creation, state transitions (`state`), and `sq_sig_all` |
 | `ib_mem_region` | a registered MR: `range_base`, `range_size`, `lkey`, `rkey`, `access`, `dmabuf_fd` |
+| `ib_mem_region_iova` | the `iova` an MR was registered at, by `mr`/`rkey`, **only** when it differs from `range_base`. A zero-based MR (NCCL GIN) is addressed by offset: VA = `range_base + (remote_addr - iova)`. `object_access` already applies it |
 | `ib_device`, `ib_port` | the HCA and its ports; `lid` lives here |
 | `mem_object` | an application allocation: `id`, `range_base`, `range_size`, `device` |
 | `gpu_access` | one GPU memory access (p2p provider): `address`, `size`, `op`, `space`, `run_device`, `mem_device`, `thread`, `pc` |

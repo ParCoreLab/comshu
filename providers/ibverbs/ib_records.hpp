@@ -188,6 +188,34 @@ PCOMM_RECORD(IbQpSignalling, RecordKind::Artifact, 126, "ib_qp_signalling") {
     std::uint8_t sq_sig_all;
 };
 
+// ARTIFACT — the I/O virtual address a region was registered AT, when it is not
+// the region's own base. Emitted beside IbMemRegion only in that case.
+//
+// A remote work request names `iova + offset`, not the buffer's VA, so a reader
+// that resolves a send's remote_addr against ib_mem_region.range is right only
+// while the two coincide. They do on ibv_reg_mr (iova IS addr) and on NCCL's
+// net_ib dmabuf path, which passes the real address as iova. They do NOT on a
+// ZERO-BASED registration, where iova = 0 and every remote address is an offset
+// into the region: NCCL GIN's GDAKI window (gin_host_gdaki.cc, iova 0) and any
+// ibv_reg_mr_iova2 caller that picks its own iova.
+//
+// Measured, MN5 job 45925495, case 26: GIN's puts carried raddr 0 … 130,944,
+// offsets into a 512 KB dmabuf region, and resolved against nothing. The
+// region's `range` holds the VA when the dmabuf fd was resolved and the iova
+// when it was not, so after a successful resolve "this region is zero-based"
+// was simply gone from the capture. This puts it back:
+//
+//     remote VA = range.base + (remote_addr - iova)     for the region `rkey` names
+//
+// Additive rather than a field on IbMemRegion, because a layout is immutable
+// once a capture holds it, and because the common case (iova == base) needs no
+// row at all. Artifact: a fact fixed at registration, closed with its region.
+PCOMM_RECORD(IbMemRegionIova, RecordKind::Artifact, 130, "ib_mem_region_iova") {
+    Handle        mr;    // interned ibv_mr*, as IbMemRegion.mr
+    std::uint32_t rkey;  // denormalised: the key a remote send names this region by
+    std::uint64_t iova;  // the address the NIC was told the region starts at
+};
+
 PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
     Handle        qp;
     std::uint64_t wr_id;

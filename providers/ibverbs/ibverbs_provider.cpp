@@ -170,6 +170,17 @@ static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
     return pcomm::core::Temporal::interval({0, t0}, {0, t1});
 }
 
+// A region registered at an iova other than its base is addressed by iova, so
+// the reader needs both to turn a remote address into a VA. Only that case gets
+// a row; on every ordinary registration the two coincide and there is nothing
+// to add. See IbMemRegionIova.
+static void record_iova_if_rebased(const ibv_mr* mr, std::uint64_t base, std::uint64_t iova) {
+    if (!mr || iova == base)
+        return;
+    rec().record(pcomm::core::Temporal::none(),
+                 rr::IbMemRegionIova{{}, {}, h(mr), mr->rkey, iova});
+}
+
 // Slots computed by the post_srq_recv PRE-hook, consumed by its post-hook.
 // Thread-local: the two halves run on one thread around one call, and this is
 // the hottest receive path in the capture, so a per-call allocation is not free.
@@ -545,10 +556,11 @@ Profiler::Profiler() {
     // and the classic path passes iova == addr, so the record keeps addr and the
     // two paths produce identical rows. A capture cannot tell which entry point
     // registered a region, which is the point — nothing downstream should care.
-    // (If an application ever registers with iova != addr, that offset is not in
-    // the record. Nothing needs it yet; it would be a version bump, not an edit.)
+    // An application that registers with iova != addr gets an IbMemRegionIova
+    // beside the region, because its remote work requests then name iova-based
+    // addresses that do not resolve against `range`.
     this->register_post<reg_mr_iova2_tag>([](ibv_mr* mr, ibv_pd* pd, void* addr, size_t length,
-                                             std::uint64_t, unsigned int access, auto...) {
+                                             std::uint64_t iova, unsigned int access, auto...) {
         if (!mr)
             return;
         // Suppressed when this call is rdma-core's own, made from inside the
@@ -566,6 +578,7 @@ Profiler::Profiler() {
                                      static_cast<std::uint32_t>(access),
                                      -1,
                                      static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
+        record_iova_if_rebased(mr, reinterpret_cast<std::uint64_t>(addr), iova);
 
         // ...and the buffer it registered, attributed to its owning device.
         //
@@ -945,6 +958,11 @@ Profiler::Profiler() {
                                      static_cast<std::uint32_t>(access),
                                      fd,
                                      static_cast<std::uint8_t>(rr::IbRegionOrigin::Dmabuf)});
+        // NCCL GIN registers its window here with iova 0, so its puts carry
+        // offsets. When the fd resolved, `base` is the VA and differs from the
+        // iova, and only this row keeps the fact that the region is zero-based.
+        // When it did not resolve, base IS the iova and there is nothing to say.
+        record_iova_if_rebased(mr, base, iova);
 
         if (base)
             rec().record(rec().now_instant(),

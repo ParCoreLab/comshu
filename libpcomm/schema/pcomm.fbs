@@ -471,6 +471,18 @@ struct IbQpSignalling {
   sq_sig_all:uint8;
 }
 
+// type 130, Artifact. The iova a region was registered at, emitted only when it
+// differs from the region's base: a zero-based registration (NCCL GIN's GDAKI
+// window, iova 0) makes every remote address an offset into the region. Remote
+// VA = range.base + (remote_addr - iova) for the region rkey names. See
+// ib_records.hpp.
+struct IbMemRegionIova {
+  temporal:Temporal;
+  mr:uint32;
+  rkey:uint32;
+  iova:uint64;
+}
+
 // type 104, Entity. A completion queue, lifetime [create, destroy). The entity
 // IbPollCq.cq has referenced since ib_poll_cq existed, and which nothing
 // created until now. Hangs off a CONTEXT rather than a PD — the one ibverbs

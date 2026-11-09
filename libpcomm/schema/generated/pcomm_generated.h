@@ -62,6 +62,8 @@ struct IbQueuePair;
 
 struct IbQpSignalling;
 
+struct IbMemRegionIova;
+
 struct IbCompletionQueue;
 
 struct IbModifyQp;
@@ -1713,6 +1715,41 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbQpSignalling FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(IbQpSignalling, 64);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegionIova FLATBUFFERS_FINAL_CLASS {
+ private:
+  pcomm::fb::Temporal temporal_;
+  uint32_t mr_;
+  uint32_t rkey_;
+  uint64_t iova_;
+
+ public:
+  IbMemRegionIova()
+      : temporal_(),
+        mr_(0),
+        rkey_(0),
+        iova_(0) {
+  }
+  IbMemRegionIova(const pcomm::fb::Temporal &_temporal, uint32_t _mr, uint32_t _rkey, uint64_t _iova)
+      : temporal_(_temporal),
+        mr_(::flatbuffers::EndianScalar(_mr)),
+        rkey_(::flatbuffers::EndianScalar(_rkey)),
+        iova_(::flatbuffers::EndianScalar(_iova)) {
+  }
+  const pcomm::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t mr() const {
+    return ::flatbuffers::EndianScalar(mr_);
+  }
+  uint32_t rkey() const {
+    return ::flatbuffers::EndianScalar(rkey_);
+  }
+  uint64_t iova() const {
+    return ::flatbuffers::EndianScalar(iova_);
+  }
+};
+FLATBUFFERS_STRUCT_END(IbMemRegionIova, 64);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbCompletionQueue FLATBUFFERS_FINAL_CLASS {
  private:

@@ -182,6 +182,7 @@ b.append(box(300, 200, "ib_queue_pair", 102, "ENT", "qp · pd · qp_num", "ib"))
 b.append(box(300, 270, "ib_shared_recv_queue", 108, "ENT", "srq · pd · max_wr", "ib"))
 b.append(box(300, 340, "ib_mem_region", 100, "ENT", "mr · pd · range · lkey · rkey", "ib"))
 b.append(box(300, 410, "ib_address_handle", 118, "ENT", "ah · pd · dlid · dgid", "ib"))
+b.append(box(300, 525, "ib_mem_region_iova", 130, "ART", "mr · rkey · iova", "ib"))
 b.append(box(620, 40, "ib_req_notify_cq", 116, "EVT", "cq · solicited_only", "ib"))
 b.append(box(620, 110, "ib_poll_cq", 112, "EVT", "cq · wr_id · qp_num · status", "ib"))
 b.append(box(620, 180, "ib_recv_cqe", 124, "EVT", "cq · srq · wqe_counter", "ib"))
@@ -197,6 +198,7 @@ b.append(path("M620 483 H552 V293 H535", "subject, per origin", 548, 500, anchor
 b.append(path("M415 160 V196", None))
 b.append(note(423, 176, "qp", cls="jlabel"))
 b.append(path("M620 413 H590 V363 H535", "lkey → mr", 562, 356))
+b.append(path("M300 548 H280 V363 H295", "mr", 276, 450, anchor="end"))
 b.append(path("M735 390 V366", "(qp_num, wr_id, ticks)", 743, 381, anchor="start"))
 b.append(note(10, 236, "ib_device and ib_port exist so a rank", cls="fnote"))
 b.append(note(10, 250, "that never moves traffic still has a LID.", cls="fnote"))
@@ -204,8 +206,8 @@ b.append(note(10, 278, "ib_modify_qp's →RTR row is the other", cls="fnote"))
 b.append(note(10, 292, "half: (src_lid, qp_num) is what names a", cls="fnote"))
 b.append(note(10, 306, "queue pair across the whole fabric, since", cls="fnote"))
 b.append(note(10, 320, "qp_num is per-HCA and collides.", cls="fnote"))
-FIGS["ib"] = svg(870, 530, "".join(b),
-    "The ibverbs provider's fifteen record types: the device and port, the protection-domain objects, and the events that reference them")
+FIGS["ib"] = svg(870, 590, "".join(b),
+    "The ibverbs provider's sixteen record types: the device and port, the protection-domain objects, and the events that reference them")
 
 # ---------------------------------------------------------------- fig: mlx5
 b = []
@@ -593,6 +595,7 @@ IB = [
  ("ib_recv_cqe", 124, "Event", "The raw CQE's own account of a receive \u2014 written only where it agreed with the ibv_wc beside it."),
  ("ib_qp_signalling", 126, "Artifact", "sq_sig_all, which certifies that every work request completes. Additive, because a layout is immutable once a capture holds it."),
  ("ib_post_send_sg", 128, "Event", "One scatter-gather entry \u2014 the LOCAL buffer, which ib_post_send does not keep. Full mode only."),
+ ("ib_mem_region_iova", 130, "Artifact", "The iova a region was registered at, only where it is not the base. A zero-based region (NCCL GIN) is addressed by offset: VA = base + (remote_addr \u2212 iova)."),
 ]
 MLX = [
  ("mlx5_umem", 200, "Entity", "A buffer handed to the NIC. base is 0 under dmabuf: the buffer is named by fd and the address is an offset."),

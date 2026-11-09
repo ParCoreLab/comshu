@@ -1302,6 +1302,67 @@ LEFT JOIN _owner o_peer
        ON o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
 )sql"},
 
+    // (rank, rkey) -> how to turn a remote address naming that region into a
+    // VA, for the regions registered at an iova other than their base.
+    //
+    // A remote work request names iova + offset. On an ordinary registration
+    // the iova IS the base, so remote_addr is already a VA and nothing needs
+    // this. On a ZERO-BASED one it is not: NCCL GIN registers its GDAKI window
+    // with iova 0, so its puts carry raddr 0 … window size, and resolving those
+    // against mem_object either finds nothing or, worse, finds whatever object
+    // sits at a low address. Measured on MN5 job 45925495 (case 26): 81,920
+    // puts, raddr 0 … 130,944, none placed.
+    //
+    //     VA = base + (remote_addr - iova)
+    //
+    // ib_mem_region_iova exists only where the two differ, and only regions
+    // whose VA was recovered (base <> 0) can be translated — an unresolved
+    // dmabuf region has no VA to translate TO, and is left out rather than
+    // given one.
+    //
+    // ONE ROW PER KEY THAT IS NOT PLAIN, with `mode` saying what a send naming
+    // it may be resolved as:
+    //
+    //   rebase   every region this (rank, rkey) ever named was registered at the
+    //            same (base, iova), and they differ: translate.
+    //   unknown  the key names a zero-based region we cannot translate — its
+    //            dmabuf fd was never resolved, so it has no VA (base 0) — or an
+    //            rkey reused across regions at least one of which is re-based,
+    //            so without joining the send's time to each region's lifetime
+    //            the right translation cannot be chosen. A send naming it is
+    //            DROPPED, never resolved as a plain address: its raddr is an
+    //            offset, and an offset like 10 lands in any object that happens
+    //            to sit at a low address with exact = TRUE. link_health counts
+    //            these as unplaced_offset_sends.
+    //
+    // A key that names only ordinary regions has no row, and a send naming it
+    // resolves exactly as it always did — including the common case of an rkey
+    // reused across ordinary registrations, which this view must not disturb.
+    {"_mr_rebase", R"sql(
+CREATE OR REPLACE VIEW _mr_rebase AS
+WITH r AS (
+    SELECT m.rank, m.rkey,
+           -- an unresolved dmabuf region: no VA, and (no iova row) its iova was
+           -- the base it was recorded with, i.e. 0 — zero-based by construction
+           CASE WHEN m.range_base = 0 AND m.dmabuf_fd >= 0 THEN NULL
+                ELSE m.range_base::HUGEINT END              AS base,
+           coalesce(i.iova, m.range_base)::HUGEINT         AS iova
+    FROM ib_mem_region m
+    LEFT JOIN ib_mem_region_iova i
+      ON i.rank = m.rank AND i.mr = m.mr AND i.rkey = m.rkey
+)
+SELECT rank, rkey,
+       min(base) AS base,
+       min(iova) AS iova,
+       CASE WHEN count(base) < count(*)                          THEN 'unknown'
+            WHEN count(DISTINCT base::VARCHAR || ':' || iova::VARCHAR) > 1 THEN 'unknown'
+            ELSE 'rebase'
+       END AS mode
+FROM r
+GROUP BY rank, rkey
+HAVING count(base) < count(*) OR bool_or(base <> iova)
+)sql"},
+
     // One row per successful two-sided RECEIVE completion, carrying the buffer
     // it landed in and how confidently that buffer was named.
     //
@@ -1649,18 +1710,39 @@ LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
     -- failure this whole comment block exists to record.
     WHERE po.owner_rank IS NOT NULL AND om.id IS NOT NULL
 ),
-verbs AS (
-    SELECT e.peer_rank                              AS owner_rank,
-           m.id                                     AS object,
-           s.remote_addr - m.range_base             AS obj_offset,
-           s.length                                 AS size,
-           'verbs'                                  AS source,
-           s.rank::BIGINT                           AS actor_rank,
-           rd.device::BIGINT                        AS actor_device,
-           TRUE                                     AS exact
+-- The remote address each send names, translated to a VA in the PEER's space.
+-- Plain remote_addr for an ordinary region; base + (remote_addr - iova) for a
+-- region registered at another iova (see _mr_rebase). HUGEINT because the
+-- subtraction can go negative for a malformed send, and UBIGINT would raise.
+verbs_target AS (
+    SELECT s.rank, s.length, e.peer_rank,
+           CASE WHEN rb.mode = 'rebase'
+                THEN rb.base + (s.remote_addr::HUGEINT - rb.iova)
+                ELSE s.remote_addr::HUGEINT
+           END AS target
     FROM ib_post_send s
     JOIN _peer_of_qp e
       ON e.rank = s.rank AND e.qp_num = s.qp_num
+    LEFT JOIN _mr_rebase rb
+      ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
+    -- remote_addr = 0 is a control send with no target buffer (41 of them on
+    -- one rank of the case 07 capture). Left in, they drag the window to zero
+    -- and every real access collapses into the last bin. EXCEPT on a re-based
+    -- region, where 0 is the region's first byte and a real target.
+    WHERE (s.remote_addr > 0 OR rb.mode = 'rebase')
+      AND coalesce(rb.mode, 'plain') <> 'unknown'
+      AND e.peer_rank IS NOT NULL
+),
+verbs AS (
+    SELECT t.peer_rank                              AS owner_rank,
+           m.id                                     AS object,
+           (t.target - m.range_base)::UBIGINT       AS obj_offset,
+           t.length                                 AS size,
+           'verbs'                                  AS source,
+           t.rank::BIGINT                           AS actor_rank,
+           rd.device::BIGINT                        AS actor_device,
+           TRUE                                     AS exact
+    FROM verbs_target t
     -- INNERMOST containing object, via LATERAL so the pick is made per send.
     -- Ranges nest: an nvshmem_malloc'd buffer sits inside the symmetric-heap
     -- region mapped once for all of them, so "any containing object" binds every
@@ -1671,21 +1753,16 @@ verbs AS (
     -- LATERAL and not QUALIFY: there is no unique send id here (wr_id repeats),
     -- so a window partition collapses distinct sends — measured, 393228 rows
     -- became 131078.
-    LEFT JOIN _rank_device rd ON rd.rank = s.rank
+    LEFT JOIN _rank_device rd ON rd.rank = t.rank
     JOIN LATERAL (
         SELECT o.id, o.range_base
         FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
-        WHERE o.rank = e.peer_rank
-          AND s.remote_addr >= o.range_base
-          AND s.remote_addr <  o.range_base + o.range_size
+        WHERE o.rank = t.peer_rank
+          AND t.target >= o.range_base
+          AND t.target <  o.range_base + o.range_size
         ORDER BY o.range_size
         LIMIT 1
     ) m ON TRUE
-    -- remote_addr = 0 is a control send with no target buffer (41 of them on
-    -- one rank of the case 07 capture). Left in, they drag the window to zero
-    -- and every real access collapses into the last bin.
-    WHERE s.remote_addr > 0
-      AND e.peer_rank IS NOT NULL
 ),
 -- THE DEVICE-INITIATED HALF: sends the GPU built itself and a doorbell (GPU or
 -- host) or the send-queue watcher decoded. These never pass ibv_post_send, so
@@ -1717,34 +1794,47 @@ devx_qp_device AS (
     -- one key; max() would then name one of them silently. Refuse instead.
     HAVING count(DISTINCT device) = 1
 ),
-devx AS (
-    SELECT e.peer_rank                              AS owner_rank,
-           m.id                                     AS object,
-           s.raddr - m.range_base                   AS obj_offset,
-           s.length                                 AS size,
-           'devx'                                   AS source,
-           s.rank::BIGINT                           AS actor_rank,
-           coalesce(qd.device, rd.device)::BIGINT   AS actor_device,
-           TRUE                                     AS exact
+-- Same translation as verbs_target: NCCL GIN's puts name offsets into a
+-- zero-based window, NVSHMEM's name VAs, and only the rkey says which.
+devx_target AS (
+    SELECT s.rank, s.qp_num, s.length, e.peer_rank,
+           CASE WHEN rb.mode = 'rebase'
+                THEN rb.base + (s.raddr::HUGEINT - rb.iova)
+                ELSE s.raddr::HUGEINT
+           END AS target
     FROM mlx5_device_send s
     JOIN _peer_of_qp e
       ON e.rank = s.rank AND e.qp_num = s.qp_num
-    LEFT JOIN devx_qp_device qd
-      ON qd.rank = s.rank AND qd.qp_num = s.qp_num
-    LEFT JOIN _rank_device rd ON rd.rank = s.rank AND qd.device IS NULL
-    JOIN LATERAL (
-        SELECT o.id, o.range_base
-        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
-        WHERE o.rank = e.peer_rank
-          AND s.raddr >= o.range_base
-          AND s.raddr <  o.range_base + o.range_size
-        ORDER BY o.range_size
-        LIMIT 1
-    ) m ON TRUE
-    WHERE s.raddr > 0
+    LEFT JOIN _mr_rebase rb
+      ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
+    WHERE (s.raddr > 0 OR rb.mode = 'rebase')
+      AND coalesce(rb.mode, 'plain') <> 'unknown'
       AND s.decode <= 1
       AND s.opcode != 35
       AND e.peer_rank IS NOT NULL
+),
+devx AS (
+    SELECT t.peer_rank                              AS owner_rank,
+           m.id                                     AS object,
+           (t.target - m.range_base)::UBIGINT       AS obj_offset,
+           t.length                                 AS size,
+           'devx'                                   AS source,
+           t.rank::BIGINT                           AS actor_rank,
+           coalesce(qd.device, rd.device)::BIGINT   AS actor_device,
+           TRUE                                     AS exact
+    FROM devx_target t
+    LEFT JOIN devx_qp_device qd
+      ON qd.rank = t.rank AND qd.qp_num = t.qp_num
+    LEFT JOIN _rank_device rd ON rd.rank = t.rank AND qd.device IS NULL
+    JOIN LATERAL (
+        SELECT o.id, o.range_base
+        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
+        WHERE o.rank = t.peer_rank
+          AND t.target >= o.range_base
+          AND t.target <  o.range_base + o.range_size
+        ORDER BY o.range_size
+        LIMIT 1
+    ) m ON TRUE
 ),
 -- THE TWO-SIDED HALF, read from the RECEIVER's records.
 --
@@ -2913,6 +3003,29 @@ LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
       AND om.range_base = am.range_base
       AND om.range_size = am.range_size
 WHERE po.owner_rank IS NULL OR om.id IS NULL
+UNION ALL
+-- Sends object_access DROPPED because their remote address is an offset into a
+-- region it cannot translate (_mr_rebase mode 'unknown'): a zero-based dmabuf
+-- window whose VA was never recovered, or an rkey reused across regions that
+-- disagree. Dropped rather than placed, because an offset resolved as an
+-- address lands in any low-address object with exact = TRUE — so the gap has to
+-- surface here, or the Objects panel reads as "this traffic touched nothing".
+-- On NCCL GIN this is the count of puts whose cuMemGetHandleForAddressRange
+-- pcomm did not see.
+SELECT 'unplaced_offset_sends',
+       'defect',
+       coalesce(count(*), 0)::BIGINT,
+       'sends naming a zero-based region whose VA pcomm never recovered (or an ambiguous rkey); object_access cannot place them'
+FROM (
+    SELECT e.peer_rank, s.rkey FROM ib_post_send s
+    JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+    UNION ALL
+    SELECT e.peer_rank, s.rkey FROM mlx5_device_send s
+    JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+    WHERE s.decode <= 1 AND s.opcode != 35
+) x
+JOIN _mr_rebase rb ON rb.rank = x.peer_rank AND rb.rkey = x.rkey
+WHERE rb.mode = 'unknown'
 UNION ALL
 SELECT 'self_edges',
        'defect',

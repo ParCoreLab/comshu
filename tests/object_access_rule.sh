@@ -67,6 +67,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,2,0,100,0,900,0,1,0,8192,2048,1
 1,2,0,100,0,900,0,2,0,8192,512,1
 1,2,0,100,0,900,0,4,0,0,256,1
+1,2,0,100,0,900,0,6,0,30000,2048,1
 0,2,0,100,0,900,0,3,0,4096,1024,0
 CSV
 
@@ -88,6 +89,8 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,2,0,1000,0,1010,0,1,1,8256,7,32,5,2,0,1
 0,2,0,1100,0,1110,0,1,2,9000,7,16,5,2,0,1
 0,2,0,1200,0,1210,0,1,3,0,7,8,5,2,0,1
+0,2,0,1300,0,1310,0,1,4,200,77,32,5,2,0,1
+0,2,0,1400,0,1410,0,1,5,20,88,8,5,2,0,1
 CSV
 
 # GPU-INITIATED SENDS, which reach the capture as decoded WQEs rather than as
@@ -129,6 +132,35 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,1,0,2040,0,0,0,100,0,7,3,1,2,4,0,8,0,0,2
 0,1,0,2050,0,0,0,100,9000,7,4,1,2,4,0,35,0,0,2
 0,1,0,2060,0,0,0,100,9000,7,5,1,2,4,0,8,2,0,2
+0,1,0,2070,0,0,0,100,0,7,6,1,77,16,0,8,0,0,2
+0,1,0,2080,0,0,0,100,100,7,7,1,77,8,0,8,0,0,2
+0,1,0,2090,0,0,0,100,10,7,8,1,88,4,0,8,0,0,2
+CSV
+
+# ZERO-BASED REGIONS — NCCL GIN's GDAKI window shape. A remote address naming
+# such a region is an OFFSET, and the region's rkey is the only thing that says so:
+#
+#   rkey 77  rank 1's 2 KiB window at VA 30000, registered at iova 0 (the
+#            iova row). Offsets 0, 100 and 200 must land in object 6 at those
+#            offsets — including offset 0, which the raddr = 0 guard would
+#            otherwise drop as a control send.
+#   rkey 88  a zero-based dmabuf window whose fd pcomm never resolved: base 0,
+#            no VA. Offset 10/20 resolved as an ADDRESS falls into object 4,
+#            the one at base 0, with exact = TRUE. It must be dropped, and
+#            counted in link_health.
+#   rkey 7   reused by two ORDINARY regions at different bases — the common
+#            case. It must stay a plain address and not be taken for ambiguous.
+cat > "$WORK/ib_mem_region.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,mr,pd,range_base,range_size,lkey,rkey,access,dmabuf_fd,origin
+1,0,0,0,0,0,0,50,1,30000,2048,77,77,15,9,2
+1,0,0,0,0,0,0,51,1,0,4096,88,88,15,10,2
+1,0,0,0,0,0,0,53,1,8192,2048,7,7,15,-1,1
+1,0,0,0,0,0,0,54,1,4096,1024,7,7,15,-1,1
+CSV
+
+cat > "$WORK/ib_mem_region_iova.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,mr,rkey,iova
+1,0,0,0,0,0,0,50,77,0
 CSV
 
 # op 1 = Store, space 0 = Global.
@@ -184,7 +216,7 @@ expect() {  # <label> <sql> <expected>
 # Every placement in one value. Each defect in the header changes it.
 expect "the placements" \
     "SELECT string_agg(source||':'||owner_rank||':'||object||':'||obj_offset||':'||size||':'||exact, ' ' ORDER BY source, owner_rank, object, obj_offset, size) FROM object_access" \
-    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:9:20:8:true p2p:1:9:0:4:false p2p:1:9:0:8:false p2p:1:9:256:8:false p2p:2:7:0:8:false p2p:2:7:256:8:false verbs:1:1:808:16:true verbs:1:2:64:32:true"
+    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:0:4:false p2p:1:9:0:8:false p2p:1:9:256:8:false p2p:2:7:0:8:false p2p:2:7:256:8:false verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true"
 
 # The column that meant two things. A peer write is owned by the rank whose
 # memory it landed in, never by the rank that issued it.
@@ -213,7 +245,7 @@ expect "the smallest containing object wins" \
 
 # A two-sided SEND names no remote address. Placing it would invent an offset.
 expect "a send with no remote address is not placed" \
-    "SELECT count(*) FROM object_access WHERE source = 'verbs'" "2"
+    "SELECT count(*) FROM object_access WHERE source = 'verbs' AND object <> 6" "2"
 
 # RDMA names the peer's real virtual address, so the verbs offset is exact. A
 # p2p offset is anchored to the lowest address observed, so it is not — and the
@@ -238,13 +270,30 @@ expect "a gpu put resolves against the PEER's objects" \
 
 expect "a gpu put names the queue's GPU, else the rank's" \
     "SELECT string_agg(obj_offset||'@'||actor_device, ',' ORDER BY obj_offset) FROM object_access WHERE source = 'devx'" \
-    "20@3,64@3,908@0"
+    "0@3,20@3,64@3,100@3,908@0"
 
 # Seven decoded rows, three placed: the sender's own memory, raddr 0, DUMP and a
 # truncated WQE are all out. Counting the DUMP or the truncated row here would
 # put bytes in the Objects panel that comm_edges does not count.
 expect "only traffic rows that name a peer buffer are placed" \
-    "SELECT count(*) FROM object_access WHERE source = 'devx'" "3"
+    "SELECT count(*) FROM object_access WHERE source = 'devx' AND object <> 6" "3"
+
+# Zero-based regions. Every offset into rkey 77 lands in the window at its own
+# offset, offset 0 included; nothing naming rkey 88 lands anywhere — above all
+# not in object 4, the one an offset read as an address would hit.
+expect "an offset into a zero-based region is placed at that offset" \
+    "SELECT string_agg(source||':'||obj_offset, ',' ORDER BY source, obj_offset) FROM object_access WHERE object = 6" \
+    "devx:0,devx:100,verbs:200"
+
+expect "an offset into an unresolved region is never read as an address" \
+    "SELECT count(*) FROM object_access WHERE owner_rank = 1 AND object = 4" "0"
+
+expect "the dropped offsets are counted, not silent" \
+    "SELECT n FROM link_health WHERE finding = 'unplaced_offset_sends'" "2"
+
+# rkey 7, reused across two ordinary regions, needs no check of its own: both
+# verbs rows in "the placements" name it, and either one dropped as ambiguous
+# would change that value.
 
 [ "$fail" -eq 0 ] || exit 1
 echo "ok: object attribution holds on a capture built to break it"

@@ -57,6 +57,7 @@ PCOMM_SCHEMA_MATCH(cr::InternString, fb::InternString);
 PCOMM_SCHEMA_MATCH(ir::IbMemRegion, fb::IbMemRegion);
 PCOMM_SCHEMA_MATCH(ir::IbQueuePair, fb::IbQueuePair);
 PCOMM_SCHEMA_MATCH(ir::IbQpSignalling, fb::IbQpSignalling);
+PCOMM_SCHEMA_MATCH(ir::IbMemRegionIova, fb::IbMemRegionIova);
 PCOMM_SCHEMA_MATCH(ir::IbPostSendSg, fb::IbPostSendSg);
 PCOMM_SCHEMA_MATCH(ir::IbPort, fb::IbPort);
 PCOMM_SCHEMA_MATCH(ir::IbCompletionQueue, fb::IbCompletionQueue);
@@ -900,6 +901,17 @@ int main() {
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x31), fb::TimePoint(1, 0x41), 0),
             13, 0x1EFFE, 1);
         expect_identical("IbQpSignalling", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<ir::IbMemRegionIova> c{};
+        c.temporal = pcomm::core::Temporal::none();
+        c.payload.mr = 0x0A0B0C0Du;
+        c.payload.rkey = 0x11223344u;
+        c.payload.iova = 0x5566778899AABBCCull;
+        fb::IbMemRegionIova f(
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
+            0x0A0B0C0Du, 0x11223344u, 0x5566778899AABBCCull);
+        expect_identical("IbMemRegionIova", &c, &f, sizeof(c));
     }
     {
         Stamped<ir::IbPostSendSg> c{};

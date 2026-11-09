@@ -586,6 +586,19 @@ template<> struct Table<ibr::IbQpSignalling> {
     }
 };
 
+// The iova a region was registered at, present only where it is not the
+// region's base. `mr` joins ib_mem_region.mr; `rkey` is what a remote send
+// names the region by, which is the join object_access makes.
+template<> struct Table<ibr::IbMemRegionIova> {
+    static constexpr const char* name = "ib_mem_region_iova";
+    static constexpr const char* cols = "mr,rkey,iova";
+    static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegionIova>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%u,%u,%llu", s.payload.mr, s.payload.rkey,
+                     (unsigned long long)s.payload.iova);
+    }
+};
+
 // Names for IbCompletionQueue.origin. A raw 1/2 in a CSV is a value nobody
 // checks; these are what let an assertion say "no CQ arrived through the
 // extended door" in words.
@@ -1672,7 +1685,7 @@ using TableRecords = std::tuple<
     Invocation, PeerMapping, ClockAnchor, CaptureStatus, Attribution, ibr::IbQueuePair,
     ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend, ibr::IbSharedRecvQueue,
     ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq,
-    ibr::IbMemRegion, ibr::IbRecvCqe, ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
+    ibr::IbMemRegion, ibr::IbMemRegionIova, ibr::IbRecvCqe, ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
     mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
     mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, mxr::Mlx5DevxCq,
     mxr::Mlx5SendCoverage, ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend,
