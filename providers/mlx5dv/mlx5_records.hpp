@@ -150,6 +150,11 @@ PCOMM_RECORD(Mlx5DevxCq, RecordKind::Entity, 216, "mlx5_devx_cq") {
 PCOMM_RECORD(Mlx5DevxQpConnect, RecordKind::Event, 208, "mlx5_devx_qp_connect") {
     std::uint64_t dest_gid_prefix;  // remote GID, high 8 bytes
     std::uint64_t dest_gid_iface;   // remote GID, low 8 bytes
+    // Our own GID: the GID table entry the path's src_addr_index names, on the
+    // port RST2INIT bound. What names this queue pair where LIDs are 0 (RoCE),
+    // exactly as src_lid names it on InfiniBand. See IbModifyQp.
+    std::uint64_t src_gid_prefix;
+    std::uint64_t src_gid_iface;
     std::uint32_t qp_num;
     std::uint32_t dest_qp_num;
     std::uint32_t dest_lid;
@@ -257,15 +262,24 @@ PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     // one query, on any capture, forever.
     std::uint8_t av_ds;
     std::uint8_t submitter;  // SendSubmitter: which door saw it, so what its time means
-    // The destination LID of a DC send, from the address vector's rlid (AV
-    // offset 14, in both the compact and the full form). 0 on RC, and 0 on a
-    // RoCE port, which addresses by GID. dest_dct alone does not name a peer:
+    // The address vector's rlid (AV offset 14, in both the compact and the
+    // full form). On InfiniBand it is the DC target's LID; 0 on RC. On RoCE v2
+    // it is NOT a LID: mlx5 puts the UDP source port there (MN5 job 48818283's
+    // RoCE leg: 60060 and 60325), so it names nothing and the reader ignores it
+    // whenever dest_gid is set. dest_dct alone does not name a peer:
     // a DCT number is allocated per HCA and repeats across nodes exactly as
     // qp_num does, so the owner is the PAIR (dest_lid, dest_dct), looked up the
     // way an RC peer is, through _owner. MN5 job 45925495's DC leg (case 25)
     // decoded 1,347 sends and its comm_edges had no row naming a peer.
     std::uint16_t dest_lid;
     std::uint16_t pad;
+    // The DC target's GID, host order, from a full (48-byte) AV whose GRH flag
+    // is set: rgid at AV offset 32, present iff bit 30 of grh_gid_fl (offset
+    // 28). 0 on RC and in the compact AV, which has no room for one. On RoCE it
+    // is the only thing naming the target port, so the owner of a RoCE DC send
+    // is (dest_gid, dest_dct) — DCT numbers repeat across HCAs, GIDs do not.
+    std::uint64_t dest_gid_prefix;
+    std::uint64_t dest_gid_iface;
 };
 
 // ARTIFACT — how much of the data plane one door saw, per rank: the send-queue

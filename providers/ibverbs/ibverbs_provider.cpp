@@ -125,22 +125,58 @@ static pcomm::core::Handle h(const void* p) {
 // This is what makes a QP nameable. qp_num is allocated per HCA, so it collides
 // across nodes as a matter of course; with the LID, (src_lid, qp_num) is unique
 // because qp_num IS unique within one HCA.
-static std::mutex                                       g_lid_mutex;
-static std::unordered_map<const ibv_qp*, std::uint32_t> g_qp_lid;
+struct QpPort {
+    std::uint32_t lid = 0;
+    std::uint8_t  port = 0;
+};
+static std::mutex                                g_lid_mutex;
+static std::unordered_map<const ibv_qp*, QpPort> g_qp_lid;
 
-static std::uint32_t local_lid(ibv_qp* qp, const ibv_qp_attr* attr, int mask) {
+static QpPort local_port(ibv_qp* qp, const ibv_qp_attr* attr, int mask) {
     if ((mask & IBV_QP_PORT) && qp && qp->context) {
         ibv_port_attr pa{};
-        std::uint32_t lid = 0;
+        QpPort        p{0, attr->port_num};
         if (ibv_query_port(qp->context, attr->port_num, &pa) == 0)
-            lid = pa.lid;
+            p.lid = pa.lid;
         std::lock_guard<std::mutex> lk(g_lid_mutex);
-        g_qp_lid[qp] = lid;
-        return lid;
+        g_qp_lid[qp] = p;
+        return p;
     }
     std::lock_guard<std::mutex> lk(g_lid_mutex);
     auto                        it = g_qp_lid.find(qp);
-    return it == g_qp_lid.end() ? 0u : it->second;
+    return it == g_qp_lid.end() ? QpPort{} : it->second;
+}
+
+// The GIDs of an ->RTR whose address handle is global, host order; all zero
+// otherwise. On RoCE this is the only name a queue pair has (its LID is 0), so
+// without it neither end of a RoCE connection can be resolved to a rank.
+//
+// Ours is read back with ibv_query_gid: the caller names it only by index. The
+// port is ah_attr.port_num where the caller set it, else the port INIT bound —
+// a DCT's RTR need not repeat it. A failed query leaves ours at 0, which the
+// reader treats as unknown rather than as a GID.
+struct Gids {
+    std::uint64_t src_prefix = 0, src_iface = 0, dest_prefix = 0, dest_iface = 0;
+};
+static Gids rtr_gids(ibv_qp* qp, const ibv_qp_attr* attr, int mask, std::uint8_t init_port) {
+    Gids g;
+    if (!(mask & IBV_QP_AV) || !attr->ah_attr.is_global)
+        return g;
+    std::uint64_t v = 0;
+    std::memcpy(&v, &attr->ah_attr.grh.dgid.raw[0], 8);
+    g.dest_prefix = be64toh(v);
+    std::memcpy(&v, &attr->ah_attr.grh.dgid.raw[8], 8);
+    g.dest_iface = be64toh(v);
+    const std::uint8_t port = attr->ah_attr.port_num ? attr->ah_attr.port_num : init_port;
+    ibv_gid            mine{};
+    if (qp && qp->context && port &&
+        ibv_query_gid(qp->context, port, attr->ah_attr.grh.sgid_index, &mine) == 0) {
+        std::memcpy(&v, &mine.raw[0], 8);
+        g.src_prefix = be64toh(v);
+        std::memcpy(&v, &mine.raw[8], 8);
+        g.src_iface = be64toh(v);
+    }
+    return g;
 }
 
 // Interval [call-start, call-end] from the hook engine's captured rdtsc stamps
@@ -1022,14 +1058,20 @@ Profiler::Profiler() {
         [](int ret, ibv_qp* qp, ibv_qp_attr* attr, int mask, auto...) {
             if (ret != 0 || !qp || !attr)
                 return;
+            const QpPort port = local_port(qp, attr, mask);
+            const Gids   g = rtr_gids(qp, attr, mask, port.port);
             rec().record(rr::IbModifyQp{
                 {},
                 {},
+                g.src_prefix,
+                g.src_iface,
+                g.dest_prefix,
+                g.dest_iface,
                 h(qp),
                 qp->qp_num,
                 (mask & IBV_QP_DEST_QPN) ? attr->dest_qp_num : 0u,
                 (mask & IBV_QP_AV) ? static_cast<std::uint32_t>(attr->ah_attr.dlid) : 0u,
-                local_lid(qp, attr, mask),
+                port.lid,
                 static_cast<std::uint8_t>((mask & IBV_QP_STATE) ? attr->qp_state : 0xFF)});
         });
 
@@ -1217,7 +1259,7 @@ Profiler::Profiler() {
     // capture cannot see at all, which is the defect this whole stage removes.
     //
     // Calling back into libibverbs from a post callback is established here:
-    // local_lid() does exactly this with ibv_query_port on the modify_qp path.
+    // local_port() does exactly this with ibv_query_port on the modify_qp path.
     // ibv_query_srq is not a door we interpose, so there is no recursion.
     this->register_post<create_srq_tag>(
         [](ibv_srq* srq, ibv_pd* pd, ibv_srq_init_attr* a, auto...) {
@@ -1604,7 +1646,7 @@ void ibv::ensure_installed(ibv_context* ctx, const char* door) {
 // tied to any single API entry point is a fact most contexts never carry.
 //
 // We call ibv_query_device ourselves rather than waiting to observe someone
-// else's call. That is the same move local_lid() makes with ibv_query_port on
+// else's call. That is the same move local_port() makes with ibv_query_port on
 // the modify_qp path: the fact is one call away and asking for it is cheaper
 // than hoping the application asks. ibv_query_device IS a door we interpose, so
 // this call re-enters our own interposer — harmless, because ensure_installed

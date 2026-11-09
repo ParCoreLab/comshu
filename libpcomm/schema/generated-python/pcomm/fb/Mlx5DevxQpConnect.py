@@ -11,7 +11,7 @@ class Mlx5DevxQpConnect(object):
 
     @classmethod
     def SizeOf(cls):
-        return 88
+        return 104
 
     # Mlx5DevxQpConnect
     def Init(self, buf, pos):
@@ -27,24 +27,30 @@ class Mlx5DevxQpConnect(object):
     # Mlx5DevxQpConnect
     def DestGidIface(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(56))
     # Mlx5DevxQpConnect
-    def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
+    def SrcGidPrefix(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
     # Mlx5DevxQpConnect
-    def DestQpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(68))
+    def SrcGidIface(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
     # Mlx5DevxQpConnect
-    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
+    def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # Mlx5DevxQpConnect
-    def SrcLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
+    def DestQpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
     # Mlx5DevxQpConnect
-    def PortNum(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
+    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    # Mlx5DevxQpConnect
+    def SrcLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
+    # Mlx5DevxQpConnect
+    def PortNum(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(96))
 
-def CreateMlx5DevxQpConnect(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, destGidPrefix, destGidIface, qpNum, destQpNum, destLid, srcLid, portNum):
-    builder.Prep(8, 88)
+def CreateMlx5DevxQpConnect(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, destGidPrefix, destGidIface, srcGidPrefix, srcGidIface, qpNum, destQpNum, destLid, srcLid, portNum):
+    builder.Prep(8, 104)
     builder.Pad(7)
     builder.PrependUint8(portNum)
     builder.PrependUint32(srcLid)
     builder.PrependUint32(destLid)
     builder.PrependUint32(destQpNum)
     builder.PrependUint32(qpNum)
+    builder.PrependUint64(srcGidIface)
+    builder.PrependUint64(srcGidPrefix)
     builder.PrependUint64(destGidIface)
     builder.PrependUint64(destGidPrefix)
     builder.Prep(8, 48)

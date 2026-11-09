@@ -65,7 +65,9 @@ using DoorbellSink = void (*)(void* uar_ptr, std::uint32_t qp_num, std::uint32_t
 using DeviceSendSink = void (*)(std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                                 std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr,
                                 std::uint32_t rkey, std::uint32_t length, std::uint32_t dest_dct,
-                                std::uint16_t dest_lid, std::uint8_t decode, std::uint8_t av_ds, std::uint8_t submitter,
+                                std::uint16_t dest_lid, std::uint64_t dest_gid_prefix,
+                                std::uint64_t dest_gid_iface, std::uint8_t decode, std::uint8_t av_ds,
+                                std::uint8_t submitter,
                                 std::uint64_t ticks_lo, std::uint64_t ticks_hi);
 
 // What the WQE copy-out needs to read a send queue: its GPU address and shape.
@@ -473,6 +475,7 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
         std::uint64_t raddr = 0, laddr = 0;
         std::uint32_t rkey = 0, lkey = 0, length = 0, dest_dct = 0;
         std::uint16_t dest_lid = 0;
+        std::uint64_t dest_gid_prefix = 0, dest_gid_iface = 0;
 
         auto seg_at = [&](std::uint32_t which_ds) {
             return wqe + static_cast<std::size_t>(which_ds) * 16;
@@ -515,11 +518,28 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
                 av_ds = (dqp_dct & kExtendedAv) ? 3u : 1u;
                 dest_dct = dqp_dct & 0x00FFFFFFu;
                 // rlid, the be16 at AV offset 14 in both forms. With dest_dct
-                // it is the (LID, DCT) pair that names the target rank, since
-                // DCT numbers repeat across HCAs. 0 on RoCE (GID-addressed).
+                // it is the (LID, DCT) pair that names the target rank on
+                // InfiniBand, since DCT numbers repeat across HCAs. On RoCE v2
+                // mlx5 puts the UDP source port here instead, so it is kept raw
+                // and the GID below is what names the target.
                 dest_lid = be16toh(*reinterpret_cast<const std::uint16_t*>(seg_at(1) + 14));
-                if (!have(1, av_ds))
+                if (!have(1, av_ds)) {
                     decode = kDecodeTruncated;
+                } else if (av_ds == 3) {
+                    // The full form's second half (struct mlx5_wqe_av):
+                    // be32 grh_gid_fl at 28, whose bit 30 says a GRH is
+                    // present, then rgid[16] at 32 — AV units 2 and 3, which
+                    // have(1, av_ds) has just proven readable.
+                    const std::uint32_t grh_gid_fl =
+                        be32toh(*reinterpret_cast<const std::uint32_t*>(seg_at(2) + 12));
+                    if (grh_gid_fl & (1u << 30)) {
+                        std::uint64_t v = 0;
+                        std::memcpy(&v, seg_at(3), 8);
+                        dest_gid_prefix = be64toh(v);
+                        std::memcpy(&v, seg_at(3) + 8, 8);
+                        dest_gid_iface = be64toh(v);
+                    }
+                }
             }
         }
 
@@ -584,7 +604,8 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
         // boundary this provider is most likely to hit, and a capture that
         // quietly omits it is indistinguishable from a run that did not send.
         if (sink) {
-            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, dest_lid, decode,
+            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, dest_lid,
+                 dest_gid_prefix, dest_gid_iface, decode,
                  static_cast<std::uint8_t>(av_ds), submitter, ticks_lo, ticks_hi);
             state().sends_emitted.fetch_add(1, std::memory_order_relaxed);
             ++counts.rows;

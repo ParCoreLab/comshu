@@ -1816,6 +1816,10 @@ FLATBUFFERS_STRUCT_END(IbCompletionQueue, 72);
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
  private:
   pcomm::fb::Temporal temporal_;
+  uint64_t src_gid_prefix_;
+  uint64_t src_gid_iface_;
+  uint64_t dest_gid_prefix_;
+  uint64_t dest_gid_iface_;
   uint32_t qp_;
   uint32_t qp_num_;
   uint32_t dest_qp_num_;
@@ -1827,6 +1831,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
  public:
   IbModifyQp()
       : temporal_(),
+        src_gid_prefix_(0),
+        src_gid_iface_(0),
+        dest_gid_prefix_(0),
+        dest_gid_iface_(0),
         qp_(0),
         qp_num_(0),
         dest_qp_num_(0),
@@ -1838,8 +1846,12 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
     (void)padding0__;
     (void)padding1__;
   }
-  IbModifyQp(const pcomm::fb::Temporal &_temporal, uint32_t _qp, uint32_t _qp_num, uint32_t _dest_qp_num, uint32_t _dest_lid, uint32_t _src_lid, uint8_t _state)
+  IbModifyQp(const pcomm::fb::Temporal &_temporal, uint64_t _src_gid_prefix, uint64_t _src_gid_iface, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface, uint32_t _qp, uint32_t _qp_num, uint32_t _dest_qp_num, uint32_t _dest_lid, uint32_t _src_lid, uint8_t _state)
       : temporal_(_temporal),
+        src_gid_prefix_(::flatbuffers::EndianScalar(_src_gid_prefix)),
+        src_gid_iface_(::flatbuffers::EndianScalar(_src_gid_iface)),
+        dest_gid_prefix_(::flatbuffers::EndianScalar(_dest_gid_prefix)),
+        dest_gid_iface_(::flatbuffers::EndianScalar(_dest_gid_iface)),
         qp_(::flatbuffers::EndianScalar(_qp)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
         dest_qp_num_(::flatbuffers::EndianScalar(_dest_qp_num)),
@@ -1853,6 +1865,18 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
+  }
+  uint64_t src_gid_prefix() const {
+    return ::flatbuffers::EndianScalar(src_gid_prefix_);
+  }
+  uint64_t src_gid_iface() const {
+    return ::flatbuffers::EndianScalar(src_gid_iface_);
+  }
+  uint64_t dest_gid_prefix() const {
+    return ::flatbuffers::EndianScalar(dest_gid_prefix_);
+  }
+  uint64_t dest_gid_iface() const {
+    return ::flatbuffers::EndianScalar(dest_gid_iface_);
   }
   uint32_t qp() const {
     return ::flatbuffers::EndianScalar(qp_);
@@ -1873,7 +1897,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbModifyQp FLATBUFFERS_FINAL_CLASS {
     return ::flatbuffers::EndianScalar(state_);
   }
 };
-FLATBUFFERS_STRUCT_END(IbModifyQp, 72);
+FLATBUFFERS_STRUCT_END(IbModifyQp, 104);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbSharedRecvQueue FLATBUFFERS_FINAL_CLASS {
  private:
@@ -2895,6 +2919,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
   pcomm::fb::Temporal temporal_;
   uint64_t dest_gid_prefix_;
   uint64_t dest_gid_iface_;
+  uint64_t src_gid_prefix_;
+  uint64_t src_gid_iface_;
   uint32_t qp_num_;
   uint32_t dest_qp_num_;
   uint32_t dest_lid_;
@@ -2907,6 +2933,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
       : temporal_(),
         dest_gid_prefix_(0),
         dest_gid_iface_(0),
+        src_gid_prefix_(0),
+        src_gid_iface_(0),
         qp_num_(0),
         dest_qp_num_(0),
         dest_lid_(0),
@@ -2919,10 +2947,12 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
     (void)padding1__;
     (void)padding2__;
   }
-  Mlx5DevxQpConnect(const pcomm::fb::Temporal &_temporal, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface, uint32_t _qp_num, uint32_t _dest_qp_num, uint32_t _dest_lid, uint32_t _src_lid, uint8_t _port_num)
+  Mlx5DevxQpConnect(const pcomm::fb::Temporal &_temporal, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface, uint64_t _src_gid_prefix, uint64_t _src_gid_iface, uint32_t _qp_num, uint32_t _dest_qp_num, uint32_t _dest_lid, uint32_t _src_lid, uint8_t _port_num)
       : temporal_(_temporal),
         dest_gid_prefix_(::flatbuffers::EndianScalar(_dest_gid_prefix)),
         dest_gid_iface_(::flatbuffers::EndianScalar(_dest_gid_iface)),
+        src_gid_prefix_(::flatbuffers::EndianScalar(_src_gid_prefix)),
+        src_gid_iface_(::flatbuffers::EndianScalar(_src_gid_iface)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
         dest_qp_num_(::flatbuffers::EndianScalar(_dest_qp_num)),
         dest_lid_(::flatbuffers::EndianScalar(_dest_lid)),
@@ -2944,6 +2974,12 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
   uint64_t dest_gid_iface() const {
     return ::flatbuffers::EndianScalar(dest_gid_iface_);
   }
+  uint64_t src_gid_prefix() const {
+    return ::flatbuffers::EndianScalar(src_gid_prefix_);
+  }
+  uint64_t src_gid_iface() const {
+    return ::flatbuffers::EndianScalar(src_gid_iface_);
+  }
   uint32_t qp_num() const {
     return ::flatbuffers::EndianScalar(qp_num_);
   }
@@ -2960,7 +2996,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
     return ::flatbuffers::EndianScalar(port_num_);
   }
 };
-FLATBUFFERS_STRUCT_END(Mlx5DevxQpConnect, 88);
+FLATBUFFERS_STRUCT_END(Mlx5DevxQpConnect, 104);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5QueuePair FLATBUFFERS_FINAL_CLASS {
  private:
@@ -3069,6 +3105,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   uint8_t submitter_;
   uint16_t dest_lid_;
   uint16_t pad_;
+  uint64_t dest_gid_prefix_;
+  uint64_t dest_gid_iface_;
 
  public:
   Mlx5DeviceSend()
@@ -3086,9 +3124,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         av_ds_(0),
         submitter_(0),
         dest_lid_(0),
-        pad_(0) {
+        pad_(0),
+        dest_gid_prefix_(0),
+        dest_gid_iface_(0) {
   }
-  Mlx5DeviceSend(const pcomm::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint32_t _dest_dct, uint8_t _opcode, uint8_t _decode, uint8_t _av_ds, uint8_t _submitter, uint16_t _dest_lid, uint16_t _pad)
+  Mlx5DeviceSend(const pcomm::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint32_t _dest_dct, uint8_t _opcode, uint8_t _decode, uint8_t _av_ds, uint8_t _submitter, uint16_t _dest_lid, uint16_t _pad, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface)
       : temporal_(_temporal),
         laddr_(::flatbuffers::EndianScalar(_laddr)),
         raddr_(::flatbuffers::EndianScalar(_raddr)),
@@ -3103,7 +3143,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         av_ds_(::flatbuffers::EndianScalar(_av_ds)),
         submitter_(::flatbuffers::EndianScalar(_submitter)),
         dest_lid_(::flatbuffers::EndianScalar(_dest_lid)),
-        pad_(::flatbuffers::EndianScalar(_pad)) {
+        pad_(::flatbuffers::EndianScalar(_pad)),
+        dest_gid_prefix_(::flatbuffers::EndianScalar(_dest_gid_prefix)),
+        dest_gid_iface_(::flatbuffers::EndianScalar(_dest_gid_iface)) {
   }
   const pcomm::fb::Temporal &temporal() const {
     return temporal_;
@@ -3150,8 +3192,14 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   uint16_t pad() const {
     return ::flatbuffers::EndianScalar(pad_);
   }
+  uint64_t dest_gid_prefix() const {
+    return ::flatbuffers::EndianScalar(dest_gid_prefix_);
+  }
+  uint64_t dest_gid_iface() const {
+    return ::flatbuffers::EndianScalar(dest_gid_iface_);
+  }
 };
-FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 96);
+FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 112);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5SendCoverage FLATBUFFERS_FINAL_CLASS {
  private:

@@ -59,12 +59,12 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 CSV
 
 cat > "$WORK/mlx5_device_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad
-0,1,0,1500,0,0,0,1,4096,7,0,1,2,10,0,8,0,0,2,0,0
-0,1,0,1900,0,0,0,1,4096,7,1,1,2,20,0,8,0,0,2,0,0
-0,1,0,2500,0,0,0,1,4096,7,2,1,2,40,0,8,0,0,2,0,0
-0,1,0,4000,0,0,0,1,4096,7,3,1,2,80,0,8,0,0,2,0,0
-0,1,0,1500,0,0,0,1,4096,9,0,1,2,160,0,8,0,0,2,0,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad,dest_gid_prefix,dest_gid_iface
+0,1,0,1500,0,0,0,1,4096,7,0,1,2,10,0,8,0,0,2,0,0,0,0
+0,1,0,1900,0,0,0,1,4096,7,1,1,2,20,0,8,0,0,2,0,0,0,0
+0,1,0,2500,0,0,0,1,4096,7,2,1,2,40,0,8,0,0,2,0,0,0,0
+0,1,0,4000,0,0,0,1,4096,7,3,1,2,80,0,8,0,0,2,0,0,0,0
+0,1,0,1500,0,0,0,1,4096,9,0,1,2,160,0,8,0,0,2,0,0,0,0
 CSV
 
 "$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1

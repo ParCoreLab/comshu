@@ -434,6 +434,33 @@ FROM (
 GROUP BY lid, qp_num
 )sql"},
 
+    // (GID, qp_num) -> the rank that owns it: _owner for ports whose LID is 0.
+    //
+    // On RoCE every LID is 0, so _owner has no row for any queue pair there and
+    // nothing on a RoCE fabric resolved to a peer — not RC, not DC. A GID names
+    // one port exactly as a LID does, and qp_num is unique within one HCA, so
+    // the pair is unique for the same reason (lid, qp_num) is. Two ranks on ONE
+    // port share its GID (case 25's RoCE leg is a loopback over one port) and
+    // still never share a qp_num, so that is not a collision.
+    //
+    // The GID is the queue pair's OWN, recorded at RTR from the caller's
+    // sgid_index (ib_modify_qp) or the path's src_addr_index (DEVX). 0 means it
+    // was not GID-addressed or the lookup failed, and is never a key.
+    {"_owner_gid", R"sql(
+CREATE OR REPLACE VIEW _owner_gid AS
+SELECT gid_prefix, gid_iface, qp_num, min(rank) AS rank, count(DISTINCT rank) AS claimants
+FROM (
+    SELECT src_gid_prefix AS gid_prefix, src_gid_iface AS gid_iface, qp_num, rank
+      FROM ib_modify_qp
+      WHERE src_gid_prefix <> 0 OR src_gid_iface <> 0
+    UNION ALL
+    SELECT src_gid_prefix, src_gid_iface, qp_num, rank
+      FROM mlx5_devx_qp_connect
+      WHERE src_gid_prefix <> 0 OR src_gid_iface <> 0
+)
+GROUP BY gid_prefix, gid_iface, qp_num
+)sql"},
+
     // --- the UCX lane: rank space without a queue pair ----------------------
     //
     // Everything above resolves a peer through (lid, qp_num), which exists only
@@ -805,12 +832,15 @@ QUALIFY row_number() OVER (PARTITION BY r.rank, r.seq
     // no equivalent.
     {"_rtr", R"sql(
 CREATE OR REPLACE VIEW _rtr AS
-SELECT rank, qp_num, max(dest_lid) AS dest_lid, max(dest_qp_num) AS dest_qp_num
+SELECT rank, qp_num, max(dest_lid) AS dest_lid, max(dest_qp_num) AS dest_qp_num,
+       max(dest_gid_prefix) AS dest_gid_prefix, max(dest_gid_iface) AS dest_gid_iface
 FROM (
-    SELECT rank, qp_num, dest_lid, dest_qp_num FROM ib_modify_qp
+    SELECT rank, qp_num, dest_lid, dest_qp_num, dest_gid_prefix, dest_gid_iface
+      FROM ib_modify_qp
       WHERE state = 2 AND dest_qp_num <> 0
     UNION ALL
-    SELECT rank, qp_num, dest_lid, dest_qp_num FROM mlx5_devx_qp_connect
+    SELECT rank, qp_num, dest_lid, dest_qp_num, dest_gid_prefix, dest_gid_iface
+      FROM mlx5_devx_qp_connect
       WHERE dest_qp_num <> 0
 )
 GROUP BY rank, qp_num
@@ -1226,12 +1256,21 @@ GROUP BY 1, 2, 3
     // end of this queue pair", which is the join most likely to be got subtly
     // wrong: the key is the PAIR (lid, qp_num), since qp_num is allocated per
     // HCA and repeats across nodes.
+    //
+    // Where the RTR named a remote GID, (GID, qp_num) is tried first: on RoCE it
+    // is the only name the peer has (dest_lid is 0 there and is not joined).
+    // On InfiniBand with a GRH both are genuine and agree, so the LID remains
+    // the fallback for a peer whose own GID was not recorded.
     {"_peer_of_qp", R"sql(
 CREATE OR REPLACE VIEW _peer_of_qp AS
-SELECT r.rank, r.qp_num, o_peer.rank AS peer_rank
+SELECT r.rank, r.qp_num, coalesce(g_peer.rank, o_peer.rank) AS peer_rank
 FROM _rtr r
 LEFT JOIN _owner o_peer
-       ON o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
+       ON r.dest_lid <> 0 AND o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
+LEFT JOIN _owner_gid g_peer
+       ON (r.dest_gid_prefix <> 0 OR r.dest_gid_iface <> 0)
+      AND g_peer.gid_prefix = r.dest_gid_prefix AND g_peer.gid_iface = r.dest_gid_iface
+      AND g_peer.qp_num = r.dest_qp_num
 )sql"},
 
     // The rank a device-initiated send went to, PER SEND.
@@ -1247,17 +1286,26 @@ LEFT JOIN _owner o_peer
     // peer, so every one went to dst_rank -1: on MN5 job 45925495's DC leg
     // (case 25) 1,347 decoded sends and comm_edges named no peer for any.
     //
-    // A DC send with dest_lid 0 is RoCE-addressed (by GID) and stays unresolved
-    // here, counted by link_health.unresolved_sends rather than guessed.
+    // A DC send whose address vector carries a GID (the full form with a GRH;
+    // always so on RoCE) is resolved by (dest_gid, dest_dct) through
+    // _owner_gid, and ONLY that way: on RoCE v2 the AV's rlid is the UDP source
+    // port (60060 and 60325 in MN5 job 48818283), so joining it to _owner
+    // would be a coincidence waiting to happen. Before the GID was decoded,
+    // that leg's 20,515 + 20,512 sends all went to -1.
     {"_devx_send_peer", R"sql(
 CREATE OR REPLACE VIEW _devx_send_peer AS
 SELECT s.*,
-       CASE WHEN s.dest_dct <> 0 THEN dc.rank ELSE e.peer_rank END AS peer_rank
+       CASE WHEN s.dest_dct = 0 THEN e.peer_rank
+            WHEN s.dest_gid_prefix <> 0 OR s.dest_gid_iface <> 0 THEN dg.rank
+            ELSE dc.rank END AS peer_rank
 FROM mlx5_device_send s
 LEFT JOIN _peer_of_qp e
        ON e.rank = s.rank AND e.qp_num = s.qp_num
 LEFT JOIN _owner dc
        ON s.dest_dct <> 0 AND dc.lid = s.dest_lid AND dc.qp_num = s.dest_dct
+LEFT JOIN _owner_gid dg
+       ON s.dest_dct <> 0 AND dg.gid_prefix = s.dest_gid_prefix
+      AND dg.gid_iface = s.dest_gid_iface AND dg.qp_num = s.dest_dct
 )sql"},
 
     // Traffic per local endpoint, both planes. `transport` survives into the
@@ -2960,13 +3008,14 @@ UNION ALL
 SELECT 'colliding_endpoints' AS finding,
        'defect'              AS severity,
        count(*)              AS n,
-       'two ranks claim one (lid, qp_num) — impossible on a sane fabric' AS note
-FROM _owner WHERE claimants > 1
+       'two ranks claim one (lid, qp_num) or (gid, qp_num) — impossible on a sane fabric' AS note
+FROM (SELECT claimants FROM _owner UNION ALL SELECT claimants FROM _owner_gid)
+WHERE claimants > 1
 UNION ALL
 SELECT 'unresolved_sends',
        'defect',
        coalesce(sum(sends), 0)::BIGINT,
-       'sends whose peer rank could not be resolved: no RTR transition for an RC queue, no (LID, DCT) owner for a DC send'
+       'sends whose peer rank could not be resolved: no RTR transition for an RC queue, no (LID or GID, DCT) owner for a DC send'
 FROM (
     SELECT s.sends
     FROM _sends s

@@ -11,7 +11,7 @@ class IbModifyQp(object):
 
     @classmethod
     def SizeOf(cls):
-        return 72
+        return 104
 
     # IbModifyQp
     def Init(self, buf, pos):
@@ -23,20 +23,28 @@ class IbModifyQp(object):
         return obj
 
     # IbModifyQp
-    def Qp(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(48))
+    def SrcGidPrefix(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(48))
     # IbModifyQp
-    def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(52))
+    def SrcGidIface(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(56))
     # IbModifyQp
-    def DestQpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(56))
+    def DestGidPrefix(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
     # IbModifyQp
-    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(60))
+    def DestGidIface(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
     # IbModifyQp
-    def SrcLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
+    def Qp(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # IbModifyQp
-    def State(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(68))
+    def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    # IbModifyQp
+    def DestQpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    # IbModifyQp
+    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
+    # IbModifyQp
+    def SrcLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(96))
+    # IbModifyQp
+    def State(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(100))
 
-def CreateIbModifyQp(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, qp, qpNum, destQpNum, destLid, srcLid, state):
-    builder.Prep(8, 72)
+def CreateIbModifyQp(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, srcGidPrefix, srcGidIface, destGidPrefix, destGidIface, qp, qpNum, destQpNum, destLid, srcLid, state):
+    builder.Prep(8, 104)
     builder.Pad(3)
     builder.PrependUint8(state)
     builder.PrependUint32(srcLid)
@@ -44,6 +52,10 @@ def CreateIbModifyQp(builder, temporal_kind, temporal_a_domain, temporal_a_ticks
     builder.PrependUint32(destQpNum)
     builder.PrependUint32(qpNum)
     builder.PrependUint32(qp)
+    builder.PrependUint64(destGidIface)
+    builder.PrependUint64(destGidPrefix)
+    builder.PrependUint64(srcGidIface)
+    builder.PrependUint64(srcGidPrefix)
     builder.Prep(8, 48)
     builder.PrependUint64(temporal_value)
     builder.Prep(8, 16)

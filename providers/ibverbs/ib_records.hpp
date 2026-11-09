@@ -125,6 +125,17 @@ PCOMM_RECORD(IbCompletionQueue, RecordKind::Entity, 104, "ib_completion_queue") 
 // EVENT — a QP state transition (ibv_modify_qp). The ->RTR transition carries
 // the remote endpoint (dest_qp_num/dest_lid), giving the connection topology.
 PCOMM_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
+    // The GIDs, host order, set on the ->RTR row when the caller's address
+    // handle is global (ah_attr.is_global), 0 otherwise. On RoCE they are the
+    // ONLY name a queue pair has: every LID is 0 there, so (src_lid, qp_num)
+    // collapses and no peer resolves. (src_gid, qp_num) is unique for the same
+    // reason (src_lid, qp_num) is — a GID belongs to one port, and qp_num is
+    // unique within one HCA. src_gid is OUR GID, read back with ibv_query_gid
+    // from grh.sgid_index; dest_gid is grh.dgid as the caller gave it.
+    std::uint64_t src_gid_prefix;
+    std::uint64_t src_gid_iface;
+    std::uint64_t dest_gid_prefix;
+    std::uint64_t dest_gid_iface;
     Handle        qp;
     std::uint32_t qp_num;
     std::uint32_t dest_qp_num;  // remote QP  (set only under IBV_QP_DEST_QPN)

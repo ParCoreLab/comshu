@@ -72,14 +72,29 @@ CSV
 # resolve to min(rank) = rank 0 — an edge from a rank to itself, which is what
 # link_health's colliding_endpoints row exists to name.
 cat > "$WORK/ib_modify_qp.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,qp,qp_num,dest_qp_num,dest_lid,src_lid,state
-0,1,0,200,0,0,0,1,5,5,20,10,2
-1,1,0,200,0,0,0,2,6,7,20,10,2
-2,1,0,200,0,0,0,3,5,5,10,20,2
-3,1,0,200,0,0,0,4,7,6,10,20,2
-2,1,0,300,0,0,0,9,900,0,0,20,2
-0,1,0,300,0,0,0,8,900,0,0,10,2
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,src_gid_prefix,src_gid_iface,dest_gid_prefix,dest_gid_iface,qp,qp_num,dest_qp_num,dest_lid,src_lid,state
+0,1,0,200,0,0,0,0,0,0,0,1,5,5,20,10,2
+1,1,0,200,0,0,0,0,0,0,0,2,6,7,20,10,2
+2,1,0,200,0,0,0,0,0,0,0,3,5,5,10,20,2
+3,1,0,200,0,0,0,0,0,0,0,4,7,6,10,20,2
+2,1,0,300,0,0,0,0,0,0,0,9,900,0,0,20,2
+0,1,0,300,0,0,0,0,0,0,0,8,900,0,0,10,2
+2,1,0,400,0,0,0,0,281470849220610,0,281470849220611,10,50,51,0,0,2
+3,1,0,400,0,0,0,0,281470849220611,0,281470849220610,11,51,50,0,0,2
+3,1,0,400,0,0,0,0,281470849220611,0,0,12,901,0,0,0,2
+0,1,0,400,0,0,0,0,0,0,0,13,901,0,0,60060,2
 CSV
+
+# RoCE, where every LID is 0 and a GID is the only name a queue pair has.
+# GIDs are IPv4-mapped (prefix 0, iface 0x0000FFFF0A0000nn): Gn = rank n's
+# port, G9 = a port no captured rank owns.
+#
+#   rank 2 qp 50 <-> rank 3 qp 51   verbs RC over RoCE: resolves by (GID, qp)
+#   rank 3 DCT 901, RTR on G3       a RoCE DCT, named by (G3, 901)
+#   rank 0 "qp 901" on LID 60060    a DECOY: 60060 is what a RoCE v2 AV carries
+#                                   in rlid (the UDP source port, MN5 job
+#                                   48818283). A send naming DCT 901 by GID that
+#                                   resolved through its rlid would land here.
 
 # rank 3's qp_num 9 never transitioned to RTR, so nothing names its peer. Five
 # sends that must be COUNTED as unresolved rather than dropped into silence or
@@ -98,6 +113,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 3,2,0,1800,0,1810,0,9,9,4096,7,8,9,2,0,1
 3,2,0,1900,0,1910,0,9,10,4096,7,256,9,2,0,1
 3,2,0,2000,0,2010,0,9,11,4096,7,256,9,2,0,1
+2,2,0,2050,0,2060,0,10,13,4096,7,11,50,2,0,1
 CSV
 
 # The DEVX plane, carrying its own connect record and its own sends. Both are
@@ -105,21 +121,33 @@ CSV
 # consumer of comm_edges never learn which plane a run used — while `transport`
 # survives so it can still be asked.
 cat > "$WORK/mlx5_devx_qp_connect.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,dest_gid_prefix,dest_gid_iface,qp_num,dest_qp_num,dest_lid,src_lid,port_num
-1,1,0,300,0,0,0,0,0,30,31,20,10,1
-3,1,0,300,0,0,0,0,0,31,30,10,20,1
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,dest_gid_prefix,dest_gid_iface,src_gid_prefix,src_gid_iface,qp_num,dest_qp_num,dest_lid,src_lid,port_num
+1,1,0,300,0,0,0,0,0,0,0,30,31,20,10,1
+3,1,0,300,0,0,0,0,0,0,0,31,30,10,20,1
+1,1,0,400,0,0,0,0,281470849220608,0,281470849220609,60,61,0,0,1
+0,1,0,400,0,0,0,0,281470849220609,0,281470849220608,61,60,0,0,1
 CSV
 
 cat > "$WORK/mlx5_device_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad
-1,2,0,2100,0,2110,0,8192,4096,30,0,3,7,200,0,8,0,0,1,0,0
-1,2,0,2200,0,2210,0,8192,4096,30,1,3,7,200,0,8,0,0,1,0,0
-1,2,0,2300,0,2310,0,8192,0,30,2,3,0,0,0,35,0,0,1,0,0
-1,2,0,2400,0,2410,0,0,0,30,3,0,0,0,0,200,3,0,1,0,0
-1,1,0,2500,0,0,0,8192,4096,40,0,3,7,30,900,8,0,1,2,20,0
-1,1,0,2600,0,0,0,8192,4096,40,1,3,7,40,900,8,0,1,2,10,0
-1,1,0,2700,0,0,0,8192,4096,40,2,3,7,50,900,8,0,3,2,0,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad,dest_gid_prefix,dest_gid_iface
+1,2,0,2100,0,2110,0,8192,4096,30,0,3,7,200,0,8,0,0,1,0,0,0,0
+1,2,0,2200,0,2210,0,8192,4096,30,1,3,7,200,0,8,0,0,1,0,0,0,0
+1,2,0,2300,0,2310,0,8192,0,30,2,3,0,0,0,35,0,0,1,0,0,0,0
+1,2,0,2400,0,2410,0,0,0,30,3,0,0,0,0,200,3,0,1,0,0,0,0
+1,1,0,2500,0,0,0,8192,4096,40,0,3,7,30,900,8,0,1,2,20,0,0,0
+1,1,0,2600,0,0,0,8192,4096,40,1,3,7,40,900,8,0,1,2,10,0,0,0
+1,1,0,2700,0,0,0,8192,4096,40,2,3,7,50,900,8,0,3,2,0,0,0,0
+1,1,0,2800,0,0,0,8192,4096,40,3,3,7,60,901,8,0,3,2,60060,0,0,281470849220611
+1,1,0,2900,0,0,0,8192,4096,40,4,3,7,5,901,8,0,3,2,60060,0,0,281470849220617
+1,2,0,2950,0,2960,0,8192,4096,60,0,3,7,13,0,8,0,0,1,0,0,0,0
 CSV
+
+# The RoCE rows above, from the send side:
+#   rank 1 qp 60 (RC, DEVX, RoCE)   -> rank 0          1>0  devx  +1 / +13
+#   rank 1 DCI 40 -> (G3, DCT 901)  -> rank 3, NOT the decoy rank 0
+#                                                      1>3  devx  +1 / +60
+#   rank 1 DCI 40 -> (G9, DCT 901)  -> nobody owns G9  1>-1 devx  +1 / +5
+#   rank 2 qp 50 (verbs, RoCE)      -> rank 3          2>3  verbs +1 / +11
 
 # --- the UCX lane -----------------------------------------------------------
 #
@@ -387,7 +415,7 @@ expect() {  # <label> <sql> <expected>
 # filter adds 999 bytes to some edge.
 expect "the matrix" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||transport||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges" \
-    "-1>-1:cudamemcpy:2:14 0>1:cudamemcpy:2:300 1>0:cudamemcpy:1:50 2>3:cudamemcpy:1:64 3>2:cudamemcpy:1:32 5>6:cudamemcpy:1:16 6>5:cudamemcpy:1:24 1>-1:devx:1:50 1>0:devx:1:40 1>2:devx:1:30 1>3:devx:2:400 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 3>-1:verbs:5:536"
+    "-1>-1:cudamemcpy:2:14 0>1:cudamemcpy:2:300 1>0:cudamemcpy:1:50 2>3:cudamemcpy:1:64 3>2:cudamemcpy:1:32 5>6:cudamemcpy:1:16 6>5:cudamemcpy:1:24 1>-1:devx:2:55 1>0:devx:2:53 1>2:devx:1:30 1>3:devx:3:460 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 2>3:verbs:1:11 3>-1:verbs:5:536"
 
 # Stated again as the invariant rather than as a value, because it is the clause
 # no capture in the corpus can exercise: a Load moves bytes FROM the peer, so the
@@ -398,26 +426,43 @@ expect "a Load makes the peer the source, not the actor" \
 
 # qp_num 5 is two queue pairs on two HCAs. One claimant each, or the pair key
 # has been dropped somewhere.
-expect "no (lid, qp_num) is claimed twice" \
+expect "no (lid, qp_num) or (gid, qp_num) is claimed twice" \
     "SELECT n FROM link_health WHERE finding = 'colliding_endpoints'" "0"
 
 # Rank 2 and rank 1 both own a 'device 1'. The edge must follow the node.
 expect "device ordinals are scoped by node" \
     "SELECT dst_rank FROM comm_edges WHERE src_rank = 2 AND transport = 'nvlink'" "3"
 
-# Five sends on a queue pair that never reached RTR. Counted, not hidden.
+# Five sends on a queue pair that never reached RTR, one IB DC send with no
+# LID (av_ds 3, no GID), and one RoCE DC send to a GID nobody owns (G9).
+# Counted, not hidden.
 expect "sends with no resolvable peer are counted" \
-    "SELECT n FROM link_health WHERE finding = 'unresolved_sends'" "6"
+    "SELECT n FROM link_health WHERE finding = 'unresolved_sends'" "7"
 
 # Rank 4 has traffic and no node. The hole is reported rather than guessed at.
+# (That expect sits below.)
+#
+# RoCE verbs RC: neither end has a LID, so only (GID, qp_num) can name the
+# peer. Before _owner_gid it went to -1 like every RoCE send.
+expect "a RoCE RC peer resolves by (GID, qp_num)" \
+    "SELECT dst_rank||':'||sends||':'||bytes FROM comm_edges WHERE src_rank = 2 AND transport = 'verbs' AND dst_rank = 3" \
+    "3:1:11"
+
+expect "a RoCE DC send never resolves through its rlid" \
+    "SELECT count(*) FROM comm_edges WHERE src_rank = 1 AND dst_rank = 0 AND transport = 'devx' AND bytes <> 53" \
+    "0"
+
 # DC. Rank 1's DCI (qp 40) has no connection at all; each send names its own
 # target in the address vector. DCT 900 exists on BOTH HCAs — rank 2's at LID 20
 # and rank 0's at LID 10 — so the number alone cannot say which, and resolving by
-# it would credit one rank with the other's bytes. The third send is RoCE-shaped
-# (LID 0) and must stay unresolved, counted in unresolved_sends above (6 = 5 + 1).
-expect "a DC send's peer is the owner of its (LID, DCT), per send" \
+# it would credit one rank with the other's bytes. The third send carries
+# neither a LID nor a GID and must stay unresolved. Then the RoCE rows: by
+# (GID, DCT) to rank 3 — never by their rlid 60060 to the decoy on rank 0 — and
+# one to an unowned GID, unresolved (unresolved_sends above: 7 = 5 + 1 + 1).
+# The RoCE RC send on qp 60 adds 13 bytes to 1>0.
+expect "a DC send's peer is the owner of its (LID or GID, DCT), per send" \
     "SELECT string_agg(dst_rank||':'||bytes, ' ' ORDER BY dst_rank) FROM comm_edges WHERE src_rank = 1 AND transport = 'devx'" \
-    "-1:50 0:40 2:30 3:400"
+    "-1:55 0:53 2:30 3:460"
 
 expect "NVLink with no node identity is counted" \
     "SELECT n FROM link_health WHERE finding = 'unresolved_nvlink'" "2"
@@ -553,7 +598,7 @@ expect "am payload joins the edge and its header does not" \
 # executable is to restate it here whenever a lane is added.
 expect "the verbs/devx subset is untouched by the new lane" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges WHERE transport IN ('verbs','devx')" \
-    "1>-1:1:50 1>0:1:40 1>2:1:30 1>3:2:400 0>2:3:300 1>3:2:100 2>0:2:64 3>-1:5:536"
+    "1>-1:2:55 1>0:2:53 1>2:1:30 1>3:3:460 0>2:3:300 1>3:2:100 2>0:2:64 2>3:1:11 3>-1:5:536"
 
 # --- edge_sizes: the same edges, one group-by deeper -------------------------
 #

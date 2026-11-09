@@ -375,8 +375,8 @@ The vocabulary is closed. These are all of them:
 
 | finding | severity | fires when |
 |---|---|---|
-| `colliding_endpoints` | defect | two ranks claim one `(lid, qp_num)` |
-| `unresolved_sends` | defect | a send whose peer no RTR transition names |
+| `colliding_endpoints` | defect | two ranks claim one `(lid, qp_num)`, or one `(gid, qp_num)` where LIDs are 0 (RoCE) |
+| `unresolved_sends` | defect | a send whose peer nothing names: no RTR transition for an RC queue, no `(LID or GID, DCT)` owner for a DC send |
 | `unresolved_nvlink` | defect | an NVLink access with no peer rank — usually no node identity at all |
 | `unresolved_ucx` | defect | a UCX op with no dialled address, or a prefix hash two workers share |
 | `unnamed_uct_transport` | defect | a UCT op whose `tl_name` did not resolve |

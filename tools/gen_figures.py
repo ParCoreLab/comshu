@@ -186,7 +186,7 @@ b.append(box(300, 525, "ib_mem_region_iova", 130, "ART", "mr · rkey · iova", "
 b.append(box(620, 40, "ib_req_notify_cq", 116, "EVT", "cq · solicited_only", "ib"))
 b.append(box(620, 110, "ib_poll_cq", 112, "EVT", "cq · wr_id · qp_num · status", "ib"))
 b.append(box(620, 180, "ib_recv_cqe", 124, "EVT", "cq · srq · wqe_counter", "ib"))
-b.append(box(620, 250, "ib_modify_qp", 106, "EVT", "qp · src_lid → dest_lid", "ib"))
+b.append(box(620, 250, "ib_modify_qp", 106, "EVT", "src_lid|gid → dest_lid|gid", "ib"))
 b.append(box(620, 320, "ib_post_send", 110, "EVT", "qp · wr_id · remote_addr", "ib"))
 b.append(box(620, 390, "ib_post_send_sg", 128, "EVT", "qp_num · wr_id · addr · lkey", "ib"))
 b.append(box(620, 460, "ib_post_recv", 114, "EVT", "subject · wr_id · addr · lkey", "ib"))
@@ -216,7 +216,7 @@ b.append(box(10, 130, "mlx5_uar", 202, "ENT", "uar · reg_addr · page_id", "mlx
 b.append(box(320, 40, "mlx5_devx_qp", 206, "ENT", "obj · qp_num · wq_umem_id", "mlx"))
 b.append(box(320, 130, "mlx5_devx_cmd", 204, "EVT", "obj · opcode · decoded", "mlx"))
 b.append(box(320, 220, "mlx5_doorbell", 212, "EVT", "uar · qp_num · prod_idx", "mlx"))
-b.append(box(630, 40, "mlx5_devx_qp_connect", 208, "EVT", "qp_num · src_lid → dest_lid", "mlx"))
+b.append(box(630, 40, "mlx5_devx_qp_connect", 208, "EVT", "src_lid|gid → dest_lid|gid", "mlx"))
 b.append(box(630, 130, "mlx5_device_send", 214, "EVT", "qp_num · wqe_idx · laddr/raddr", "mlx"))
 b.append(box(630, 220, "mlx5_devx_cq", 216, "ENT", "obj · cqn · cq_base", "mlx"))
 b.append(box(630, 310, "mlx5_send_coverage", 218, "ART", "published · decoded · lapped", "mlx"))
@@ -336,7 +336,7 @@ b.append(band(8, 30, 250, 470, "int", "rank 3"))
 b.append(band(602, 30, 250, 470, "int", "rank 11 — another node"))
 rows = [
  (56, "ib_modify_qp", 106, "ib", "src_lid 42 · qp_num 71", "dest_lid 42 · dest_qp 71",
-  "(dest_lid, dest_qp_num) = (lid, qp_num)", "the fabric's own identity — qp_num alone is per-HCA"),
+  "(dest_lid, dest_qp_num) = (lid, qp_num)", "qp_num alone is per-HCA; on RoCE (LID 0) the GID stands in"),
  (146, "node_identity", 524, "int", "node_hash A · device 2", "node_hash B · device 2",
   "(node_hash, device) → rank", "a device ordinal is node-local; 'device 2' is two GPUs"),
  (236, "nccl_comm", 900, "ncc", "comm_hash H · rank 3", "comm_hash H · rank 11",
@@ -371,7 +371,7 @@ for i, (n, t, f) in enumerate(srcs):
     y = 40 + i * 54
     b.append(box(20, y, n, t, "", "", f, w=196))
     sy.append((216, y + 23))
-views = ["_sends", "_rtr  ·  _owner", "_peer_of_qp", "_wr_pairable  ·  _wr_flight",
+views = ["_sends", "_rtr  ·  _owner  ·  _owner_gid", "_peer_of_qp", "_wr_pairable  ·  _wr_flight",
          "_nvlink_sends", "_node  ·  _device_owner", "_ucx_sends  ·  _ucx_peer_of_ep",
          "_intern_name  ·  _uct_scoped", "_ucp_tag_flow  ·  _uct_tag_flow",
          "_ucx_msg_recv  ·  _ucx_probe_of_recv", "_recv_attr", "_mr_plain  ·  _mr_rebase", "_tl_raw", "_clock"]

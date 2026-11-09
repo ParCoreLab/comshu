@@ -501,6 +501,12 @@ struct IbCompletionQueue {
 // which is what makes the connection topology recoverable.
 struct IbModifyQp {
   temporal:Temporal;
+  // GIDs, host order, set at ->RTR when the address handle is global (always
+  // on RoCE, where the LIDs are 0 and these are what name a queue pair).
+  src_gid_prefix:uint64;   // our own GID, from ah_attr.grh.sgid_index
+  src_gid_iface:uint64;
+  dest_gid_prefix:uint64;  // the remote GID, ah_attr.grh.dgid
+  dest_gid_iface:uint64;
   qp:uint32;
   qp_num:uint32;
   dest_qp_num:uint32;
@@ -730,6 +736,8 @@ struct Mlx5DevxQpConnect {
   temporal:Temporal;
   dest_gid_prefix:uint64;
   dest_gid_iface:uint64;
+  src_gid_prefix:uint64;  // our own GID, from the path's src_addr_index
+  src_gid_iface:uint64;
   qp_num:uint32;
   dest_qp_num:uint32;
   dest_lid:uint32;
@@ -775,8 +783,10 @@ struct Mlx5DeviceSend {
   decode:uint8;     // SendDecode: 0 full, 1 partial, 2 truncated, 3 unknown opcode
   av_ds:uint8;      // address-vector width in 16 B units: 0 none (RC), 1 compact, 3 full
   submitter:uint8;  // SendSubmitter: 0 unknown, 1 GPU doorbell, 2 host doorbell, 3 send-queue watch
-  dest_lid:uint16;  // DC target's LID from the address vector's rlid; 0 on RC and on RoCE
+  dest_lid:uint16;  // the AV's rlid: the DC target's LID on IB; on RoCE v2 it is the UDP source port
   pad:uint16;
+  dest_gid_prefix:uint64;  // DC target's GID from a full AV with a GRH; 0 otherwise
+  dest_gid_iface:uint64;
 }
 
 // type 218, Artifact. The send-queue watcher's coverage, one row per rank:

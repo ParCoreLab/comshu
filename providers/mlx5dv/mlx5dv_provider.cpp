@@ -245,18 +245,32 @@ static std::uint32_t port_lid(ibv_context* ctx, std::uint8_t port_num) {
 // decoded correctly as 17 — the path was right, the field is simply not set
 // there. src_lid came back 0 everywhere as a result, which is the collision
 // (src_lid, qp_num) exists to prevent, reintroduced.
-static std::mutex                                       g_lid_mutex;
-static std::unordered_map<std::uint32_t, std::uint32_t> g_qp_src_lid;
+//
+// The port is remembered with the LID because INIT2RTR needs it to turn the
+// path's src_addr_index into our GID, which is what names the queue pair on
+// RoCE, where the LID is 0.
+struct SrcPort {
+    std::uint32_t lid = 0;
+    std::uint8_t  port = 0;
+};
+static std::mutex                                g_lid_mutex;
+static std::unordered_map<std::uint32_t, SrcPort> g_qp_src_lid;
 
-static void remember_src_lid(std::uint32_t qp_num, std::uint32_t lid) {
+static void remember_src_port(std::uint32_t qp_num, SrcPort p) {
     std::lock_guard<std::mutex> lk(g_lid_mutex);
-    g_qp_src_lid[qp_num] = lid;
+    g_qp_src_lid[qp_num] = p;
 }
 
-static std::uint32_t src_lid_of(std::uint32_t qp_num) {
+static SrcPort src_port_of(std::uint32_t qp_num) {
     std::lock_guard<std::mutex> lk(g_lid_mutex);
     auto                        it = g_qp_src_lid.find(qp_num);
-    return it == g_qp_src_lid.end() ? 0u : it->second;
+    return it == g_qp_src_lid.end() ? SrcPort{} : it->second;
+}
+
+static ibv_context* ctx_of(const void* obj) {
+    std::lock_guard<std::mutex> lk(g_obj_mutex);
+    auto                        it = g_obj_ctx.find(obj);
+    return it == g_obj_ctx.end() ? nullptr : it->second;
 }
 
 static void decode_rst2init(mlx5dv_devx_obj* obj, const void* cmd_in) {
@@ -265,14 +279,8 @@ static void decode_rst2init(mlx5dv_devx_obj* obj, const void* cmd_in) {
     const auto* path = DEVX_ADDR_OF(qpc, qpc, primary_address_path);
     const auto  port_num = DEVX_GET(ads, path, vhca_port_num);
 
-    ibv_context* ctx = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(g_obj_mutex);
-        auto                        it = g_obj_ctx.find(obj);
-        if (it != g_obj_ctx.end())
-            ctx = it->second;
-    }
-    remember_src_lid(qp_num, port_lid(ctx, static_cast<std::uint8_t>(port_num)));
+    const auto port = static_cast<std::uint8_t>(port_num);
+    remember_src_port(qp_num, {port_lid(ctx_of(obj), port), port});
 }
 
 // --- DEVX decoding ---------------------------------------------------------
@@ -489,14 +497,35 @@ static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
     // from this command — see decode_rst2init. port_num is still reported from
     // here so a capture shows what INIT2RTR actually carried (0 on this stack)
     // rather than silently borrowing the INIT value and looking consistent.
+    const SrcPort src = src_port_of(qp_num);
+
+    // Our GID: the path names it by index into the port's GID table, so it is
+    // read back. Only when the path is GID-addressed — the grh bit, or a remote
+    // GID present (RoCE always is) — since otherwise src_addr_index is not the
+    // caller's and a lookup would name a GID nobody chose. 0 when the port or
+    // context is unknown, which the reader treats as unknown.
+    std::uint64_t src_prefix = 0, src_iface = 0;
+    if (DEVX_GET(ads, path, grh) || gid_prefix != 0 || gid_iface != 0) {
+        const auto   idx = DEVX_GET(ads, path, src_addr_index);
+        ibv_context* ctx = ctx_of(obj);
+        ibv_gid      mine{};
+        if (ctx && src.port && ibv_query_gid(ctx, src.port, static_cast<int>(idx), &mine) == 0) {
+            std::memcpy(&src_prefix, &mine.raw[0], 8);
+            std::memcpy(&src_iface, &mine.raw[8], 8);
+            src_prefix = be64toh(src_prefix);
+            src_iface = be64toh(src_iface);
+        }
+    }
     rec().record(rr::Mlx5DevxQpConnect{{},
                                        {},
                                        be64toh(gid_prefix),
                                        be64toh(gid_iface),
+                                       src_prefix,
+                                       src_iface,
                                        qp_num,
                                        dest_qp_num,
                                        static_cast<std::uint32_t>(dest_lid),
-                                       src_lid_of(qp_num),
+                                       src.lid,
                                        static_cast<std::uint8_t>(port_num)});
 }
 
@@ -539,13 +568,14 @@ Profiler::Profiler() {
             [](std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr, std::uint32_t rkey,
                std::uint32_t length, std::uint32_t dest_dct, std::uint16_t dest_lid,
+               std::uint64_t dest_gid_prefix, std::uint64_t dest_gid_iface,
                std::uint8_t decode,
                std::uint8_t av_ds, std::uint8_t submitter, std::uint64_t ticks_lo,
                std::uint64_t ticks_hi) {
-                const rr::Mlx5DeviceSend r{{},      {},     laddr, raddr,    qp_num,
-                                           wqe_idx, lkey,   rkey,  length,   dest_dct,
-                                           opcode,  decode, av_ds, submitter,
-                                           dest_lid, 0};
+                const rr::Mlx5DeviceSend r{{},       {},     laddr, raddr,    qp_num,
+                                           wqe_idx,  lkey,   rkey,  length,   dest_dct,
+                                           opcode,   decode, av_ds, submitter,
+                                           dest_lid, 0,      dest_gid_prefix, dest_gid_iface};
                 // A doorbell path calls this at the doorbell: the time is now.
                 if (ticks_hi == 0) {
                     rec().record(r);

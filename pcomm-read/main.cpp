@@ -631,11 +631,18 @@ template<> struct Table<ibr::IbCompletionQueue> {
 
 template<> struct Table<ibr::IbModifyQp> {
     static constexpr const char* name = "ib_modify_qp";
-    static constexpr const char* cols = "ticks,qp,qp_num,dest_qp_num,dest_lid,src_lid,state";
+    static constexpr const char* cols =
+        "ticks,qp,qp_num,dest_qp_num,dest_lid,src_lid,state,src_gid_prefix,src_gid_iface,"
+        "dest_gid_prefix,dest_gid_iface";
     static void row(std::FILE* f, const Stamped<ibr::IbModifyQp>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,%s", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.qp, s.payload.qp_num, s.payload.dest_qp_num, s.payload.dest_lid,
-                     s.payload.src_lid, qp_state_name(s.payload.state).c_str());
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,%s,0x%llx,0x%llx,0x%llx,0x%llx",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.qp, s.payload.qp_num,
+                     s.payload.dest_qp_num, s.payload.dest_lid, s.payload.src_lid,
+                     qp_state_name(s.payload.state).c_str(),
+                     (unsigned long long)s.payload.src_gid_prefix,
+                     (unsigned long long)s.payload.src_gid_iface,
+                     (unsigned long long)s.payload.dest_gid_prefix,
+                     (unsigned long long)s.payload.dest_gid_iface);
     }
 };
 
@@ -838,13 +845,17 @@ template<> struct Table<mxr::Mlx5DevxQp> {
 template<> struct Table<mxr::Mlx5DevxQpConnect> {
     static constexpr const char* name = "mlx5_devx_qp_connect";
     static constexpr const char* cols =
-        "ticks,qp_num,dest_qp_num,dest_lid,src_lid,port_num,dest_gid_prefix,dest_gid_iface";
+        "ticks,qp_num,dest_qp_num,dest_lid,src_lid,port_num,dest_gid_prefix,dest_gid_iface,"
+        "src_gid_prefix,src_gid_iface";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxQpConnect>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,0x%llx,0x%llx", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.qp_num, s.payload.dest_qp_num, s.payload.dest_lid, s.payload.src_lid,
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,0x%llx,0x%llx,0x%llx,0x%llx",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num,
+                     s.payload.dest_qp_num, s.payload.dest_lid, s.payload.src_lid,
                      s.payload.port_num, (unsigned long long)s.payload.dest_gid_prefix,
-                     (unsigned long long)s.payload.dest_gid_iface);
+                     (unsigned long long)s.payload.dest_gid_iface,
+                     (unsigned long long)s.payload.src_gid_prefix,
+                     (unsigned long long)s.payload.src_gid_iface);
     }
 };
 
@@ -978,11 +989,12 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
     static constexpr const char* name = "mlx5_device_send";
     static constexpr const char* cols =
         "ticks,qp_num,wqe_idx,opcode,opcode_name,laddr,lkey,raddr,rkey,length,dest_dct,dest_lid,"
-        "decode,decode_name,av_ds,submitter,submitter_name,ticks_hi";
+        "decode,decode_name,av_ds,submitter,submitter_name,ticks_hi,dest_gid_prefix,dest_gid_iface";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DeviceSend>& s,
                     const rec::InternDictionary&) {
         std::fprintf(
-            f, "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%u,%s,%u,%u,%s,%llu",
+            f,
+            "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%u,%s,%u,%u,%s,%llu,0x%llx,0x%llx",
             (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
             s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
             (unsigned long long)s.payload.laddr, s.payload.lkey,
@@ -990,7 +1002,8 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
             s.payload.dest_dct, s.payload.dest_lid, s.payload.decode,
             mlx5_send_decode_name(s.payload.decode),
             s.payload.av_ds, s.payload.submitter, mlx5_send_submitter_name(s.payload.submitter),
-            (unsigned long long)s.temporal.b.ticks);
+            (unsigned long long)s.temporal.b.ticks, (unsigned long long)s.payload.dest_gid_prefix,
+            (unsigned long long)s.payload.dest_gid_iface);
     }
 };
 
@@ -1769,14 +1782,27 @@ struct CsvAgg {
     // of {0,2,3,6} for eight ranks. qp_num IS unique within one HCA, so adding
     // the LID makes the key exact rather than merely better.
     std::map<std::pair<std::uint32_t, std::uint32_t>, int> qp_owner;
-    // (rank, qp_num) -> (dest_lid, dest_qp_num) from the RTR transition.
-    std::map<std::pair<int, std::uint32_t>, std::pair<std::uint32_t, std::uint32_t>> rtr_dest;
+    // (gid_prefix, gid_iface, qp_num) -> rank: qp_owner for ports whose LID is
+    // 0 (RoCE), where a GID is the only name a queue pair has. link_sql.hpp's
+    // _owner_gid.
+    using Gid = std::pair<std::uint64_t, std::uint64_t>;
+    std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint32_t>, int> gid_owner;
+    // (rank, qp_num) -> the remote end from the RTR transition.
+    struct RtrDest {
+        std::uint32_t lid{0}, qp_num{0};
+        Gid           gid{0, 0};
+    };
+    std::map<std::pair<int, std::uint32_t>, RtrDest> rtr_dest;
     std::map<std::pair<int, std::uint32_t>, std::pair<long, long>>
                 send_by_qp;  // (rank,qp_num)->(sends,bytes), verbs and RC devx
     // DC device sends, whose peer is per SEND, not per queue: (rank, dest_lid,
-    // dest_dct) -> (sends, bytes). Resolved through qp_owner like an RC peer,
-    // since a DCT is a queue pair its owner moved to RTR on a port.
-    std::map<std::tuple<int, std::uint32_t, std::uint32_t>, std::pair<long, long>> send_by_dct;
+    // dest_gid, dest_dct) -> (sends, bytes). Resolved through gid_owner when
+    // the send carried a GID (dest_lid is then forced to 0: on RoCE v2 it is
+    // the UDP source port), else through qp_owner like an RC peer, since a DCT
+    // is a queue pair its owner moved to RTR on a port.
+    std::map<std::tuple<int, std::uint32_t, std::uint64_t, std::uint64_t, std::uint32_t>,
+             std::pair<long, long>>
+        send_by_dct;
     std::size_t n_access = 0, n_send = 0;
 
     // --- memory attribution -------------------------------------------------
@@ -1941,8 +1967,12 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbModifyQp>& s) {
     // re-introduce the very collision this replaces, so it is skipped.
     if (s.payload.src_lid)
         a.qp_owner[{s.payload.src_lid, s.payload.qp_num}] = r.rank;
+    if (s.payload.src_gid_prefix || s.payload.src_gid_iface)
+        a.gid_owner[{s.payload.src_gid_prefix, s.payload.src_gid_iface, s.payload.qp_num}] = r.rank;
     if (s.payload.state == 2 /*RTR*/ && s.payload.dest_qp_num)
-        a.rtr_dest[{r.rank, s.payload.qp_num}] = {s.payload.dest_lid, s.payload.dest_qp_num};
+        a.rtr_dest[{r.rank, s.payload.qp_num}] = {
+            s.payload.dest_lid, s.payload.dest_qp_num,
+            {s.payload.dest_gid_prefix, s.payload.dest_gid_iface}};
 }
 
 // DEVX queue pairs connect through DEVX, not ibv_modify_qp, so their side of
@@ -1954,8 +1984,12 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbModifyQp>& s) {
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DevxQpConnect>& s) {
     if (s.payload.src_lid)
         a.qp_owner[{s.payload.src_lid, s.payload.qp_num}] = r.rank;
+    if (s.payload.src_gid_prefix || s.payload.src_gid_iface)
+        a.gid_owner[{s.payload.src_gid_prefix, s.payload.src_gid_iface, s.payload.qp_num}] = r.rank;
     if (s.payload.dest_qp_num)
-        a.rtr_dest[{r.rank, s.payload.qp_num}] = {s.payload.dest_lid, s.payload.dest_qp_num};
+        a.rtr_dest[{r.rank, s.payload.qp_num}] = {
+            s.payload.dest_lid, s.payload.dest_qp_num,
+            {s.payload.dest_gid_prefix, s.payload.dest_gid_iface}};
 }
 
 // The same traffic filter as link_sql.hpp's _sends, and it must stay the same:
@@ -1964,9 +1998,12 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DevxQpConnect
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DeviceSend>& s) {
     if (s.payload.decode > 1 || s.payload.opcode == 35)
         return;
-    auto& agg = s.payload.dest_dct
-                    ? a.send_by_dct[{r.rank, s.payload.dest_lid, s.payload.dest_dct}]
-                    : a.send_by_qp[{r.rank, s.payload.qp_num}];
+    const bool has_gid = s.payload.dest_gid_prefix || s.payload.dest_gid_iface;
+    auto&      agg = s.payload.dest_dct
+                         ? a.send_by_dct[{r.rank, has_gid ? 0u : s.payload.dest_lid,
+                                          s.payload.dest_gid_prefix, s.payload.dest_gid_iface,
+                                          s.payload.dest_dct}]
+                         : a.send_by_qp[{r.rank, s.payload.qp_num}];
     agg.first += 1;
     agg.second += s.payload.length;
     a.n_send++;
@@ -2279,9 +2316,10 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     // with total sends and bytes. This is the table topology assertions query,
     // so tests never touch run-specific identifiers.
     //
-    // Keyed on (lid, qp_num), which is exact across HCAs. Covers verbs, RC
-    // device sends (through their DEVX connect) and DC device sends (through
-    // the (dest_lid, dest_dct) each one names) — the same rules as link_sql.hpp,
+    // Keyed on (lid, qp_num) or, where LIDs are 0 (RoCE), (gid, qp_num); both
+    // are exact across HCAs. Covers verbs, RC device sends (through their DEVX
+    // connect) and DC device sends (through the (dest_lid or dest_gid,
+    // dest_dct) each one names) — the same rules as link_sql.hpp,
     // and tests/comm_edges_rule.sh compares the two.
     std::FILE* edges = std::fopen((outdir / "comm_edges.csv").c_str(), "w");
     std::fputs("src_rank,dst_rank,sends,bytes\n", edges);
@@ -2289,21 +2327,34 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     for (const auto& [key, sb] : agg.send_by_qp) {
         auto [src_rank, qp_num] = key;
         int dst_rank = -1;
-        if (auto it = agg.rtr_dest.find({src_rank, qp_num}); it != agg.rtr_dest.end())
-            if (auto o = agg.qp_owner.find(it->second); o != agg.qp_owner.end())
-                dst_rank = o->second;
+        if (auto it = agg.rtr_dest.find({src_rank, qp_num}); it != agg.rtr_dest.end()) {
+            const auto& d = it->second;
+            // The GID first where the RTR named one, then the LID — _peer_of_qp.
+            if (d.gid != CsvAgg::Gid{0, 0})
+                if (auto o = agg.gid_owner.find({d.gid.first, d.gid.second, d.qp_num});
+                    o != agg.gid_owner.end())
+                    dst_rank = o->second;
+            if (dst_rank < 0 && d.lid)
+                if (auto o = agg.qp_owner.find({d.lid, d.qp_num}); o != agg.qp_owner.end())
+                    dst_rank = o->second;
+        }
         auto& e = edge_agg[{src_rank, dst_rank}];
         e.first += sb.first;
         e.second += sb.second;
     }
-    // DC: the owner of the (LID, DCT) the send named. LID 0 is a RoCE target,
-    // addressed by GID, and stays -1 as link_sql.hpp's _devx_send_peer leaves it.
+    // DC: the owner of the (GID, DCT) the send named when it carried a GID,
+    // else of its (LID, DCT) — link_sql.hpp's _devx_send_peer. A send with
+    // neither stays -1.
     for (const auto& [key, sb] : agg.send_by_dct) {
-        auto [src_rank, lid, dct] = key;
+        auto [src_rank, lid, gp, gi, dct] = key;
         int dst_rank = -1;
-        if (lid)
+        if (gp || gi) {
+            if (auto o = agg.gid_owner.find({gp, gi, dct}); o != agg.gid_owner.end())
+                dst_rank = o->second;
+        } else if (lid) {
             if (auto o = agg.qp_owner.find({lid, dct}); o != agg.qp_owner.end())
                 dst_rank = o->second;
+        }
         auto& e = edge_agg[{src_rank, dst_rank}];
         e.first += sb.first;
         e.second += sb.second;
