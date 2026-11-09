@@ -1328,16 +1328,38 @@ LEFT JOIN _owner o_peer
     //   unknown  the key names a zero-based region we cannot translate — its
     //            dmabuf fd was never resolved, so it has no VA (base 0) — or an
     //            rkey reused across regions at least one of which is re-based,
-    //            so without joining the send's time to each region's lifetime
-    //            the right translation cannot be chosen. A send naming it is
-    //            DROPPED, never resolved as a plain address: its raddr is an
-    //            offset, and an offset like 10 lands in any object that happens
-    //            to sit at a low address with exact = TRUE. link_health counts
-    //            these as unplaced_offset_sends.
+    //            so the key alone does not say which translation applies.
+    //
+    // An 'unknown' send is resolved as a plain address ONLY when that address
+    // lies inside an ORDINARY region registered under the same key
+    // (_mr_plain): then it is a VA into that region, whatever else the key was
+    // reused for. Otherwise it is DROPPED, never resolved as a plain address: its
+    // raddr may be an offset, and an offset like 10 lands in any object that
+    // happens to sit at a low address with exact = TRUE. link_health counts
+    // those as unplaced_offset_sends.
+    //
+    // The containment rescue is not a nicety. NCCL reuses rkeys between its
+    // proxy plane's ordinary 4 KiB registrations and GIN's short-lived zero-
+    // based dmabuf ones; on MN5 job 48812008 (case 26) that left 40 ordinary
+    // verbs sends per run in 'unknown' keys, every one of them a VA inside an
+    // ordinary region of its own key.
     //
     // A key that names only ordinary regions has no row, and a send naming it
     // resolves exactly as it always did — including the common case of an rkey
     // reused across ordinary registrations, which this view must not disturb.
+    // The ORDINARY regions per (rank, rkey): registered at their own base, with a
+    // recovered VA. A send whose remote address lies inside one of these is a
+    // plain VA, however else its key was used. See _mr_rebase.
+    {"_mr_plain", R"sql(
+CREATE OR REPLACE VIEW _mr_plain AS
+SELECT DISTINCT m.rank, m.rkey, m.range_base AS base, m.range_size AS size
+FROM ib_mem_region m
+LEFT JOIN ib_mem_region_iova i
+  ON i.rank = m.rank AND i.mr = m.mr AND i.rkey = m.rkey
+WHERE i.mr IS NULL
+  AND m.range_base <> 0
+)sql"},
+
     {"_mr_rebase", R"sql(
 CREATE OR REPLACE VIEW _mr_rebase AS
 WITH r AS (
@@ -1715,23 +1737,31 @@ LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
 -- region registered at another iova (see _mr_rebase). HUGEINT because the
 -- subtraction can go negative for a malformed send, and UBIGINT would raise.
 verbs_target AS (
-    SELECT s.rank, s.length, e.peer_rank,
-           CASE WHEN rb.mode = 'rebase'
-                THEN rb.base + (s.remote_addr::HUGEINT - rb.iova)
-                ELSE s.remote_addr::HUGEINT
-           END AS target
-    FROM ib_post_send s
-    JOIN _peer_of_qp e
-      ON e.rank = s.rank AND e.qp_num = s.qp_num
-    LEFT JOIN _mr_rebase rb
-      ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
+    SELECT q.rank, q.length, q.peer_rank,
+           CASE WHEN q.mode = 'rebase' THEN q.base + (q.addr - q.iova) ELSE q.addr END AS target
+    FROM (
+        SELECT s.rank, s.length, e.peer_rank, s.remote_addr::HUGEINT AS addr, rb.base, rb.iova,
+               -- an address inside an ordinary region of this key is a VA:
+               -- plain, whatever else the key was reused for
+               CASE WHEN rb.mode IS NULL THEN NULL
+                    WHEN EXISTS (SELECT 1 FROM _mr_plain p
+                                 WHERE p.rank = e.peer_rank AND p.rkey = s.rkey
+                                   AND s.remote_addr >= p.base
+                                   AND s.remote_addr <  p.base + p.size) THEN NULL
+                    ELSE rb.mode END AS mode
+        FROM ib_post_send s
+        JOIN _peer_of_qp e
+          ON e.rank = s.rank AND e.qp_num = s.qp_num
+        LEFT JOIN _mr_rebase rb
+          ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
+        WHERE e.peer_rank IS NOT NULL
+    ) q
     -- remote_addr = 0 is a control send with no target buffer (41 of them on
     -- one rank of the case 07 capture). Left in, they drag the window to zero
     -- and every real access collapses into the last bin. EXCEPT on a re-based
     -- region, where 0 is the region's first byte and a real target.
-    WHERE (s.remote_addr > 0 OR rb.mode = 'rebase')
-      AND coalesce(rb.mode, 'plain') <> 'unknown'
-      AND e.peer_rank IS NOT NULL
+    WHERE (q.addr > 0 OR q.mode = 'rebase')
+      AND coalesce(q.mode, 'plain') <> 'unknown'
 ),
 verbs AS (
     SELECT t.peer_rank                              AS owner_rank,
@@ -1797,21 +1827,28 @@ devx_qp_device AS (
 -- Same translation as verbs_target: NCCL GIN's puts name offsets into a
 -- zero-based window, NVSHMEM's name VAs, and only the rkey says which.
 devx_target AS (
-    SELECT s.rank, s.qp_num, s.length, e.peer_rank,
-           CASE WHEN rb.mode = 'rebase'
-                THEN rb.base + (s.raddr::HUGEINT - rb.iova)
-                ELSE s.raddr::HUGEINT
-           END AS target
-    FROM mlx5_device_send s
-    JOIN _peer_of_qp e
-      ON e.rank = s.rank AND e.qp_num = s.qp_num
-    LEFT JOIN _mr_rebase rb
-      ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
-    WHERE (s.raddr > 0 OR rb.mode = 'rebase')
-      AND coalesce(rb.mode, 'plain') <> 'unknown'
-      AND s.decode <= 1
-      AND s.opcode != 35
-      AND e.peer_rank IS NOT NULL
+    SELECT q.rank, q.qp_num, q.length, q.peer_rank,
+           CASE WHEN q.mode = 'rebase' THEN q.base + (q.addr - q.iova) ELSE q.addr END AS target
+    FROM (
+        SELECT s.rank, s.qp_num, s.length, e.peer_rank, s.raddr::HUGEINT AS addr,
+               rb.base, rb.iova,
+               CASE WHEN rb.mode IS NULL THEN NULL
+                    WHEN EXISTS (SELECT 1 FROM _mr_plain p
+                                 WHERE p.rank = e.peer_rank AND p.rkey = s.rkey
+                                   AND s.raddr >= p.base
+                                   AND s.raddr <  p.base + p.size) THEN NULL
+                    ELSE rb.mode END AS mode
+        FROM mlx5_device_send s
+        JOIN _peer_of_qp e
+          ON e.rank = s.rank AND e.qp_num = s.qp_num
+        LEFT JOIN _mr_rebase rb
+          ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
+        WHERE s.decode <= 1
+          AND s.opcode != 35
+          AND e.peer_rank IS NOT NULL
+    ) q
+    WHERE (q.addr > 0 OR q.mode = 'rebase')
+      AND coalesce(q.mode, 'plain') <> 'unknown'
 ),
 devx AS (
     SELECT t.peer_rank                              AS owner_rank,
@@ -3017,15 +3054,18 @@ SELECT 'unplaced_offset_sends',
        coalesce(count(*), 0)::BIGINT,
        'sends naming a zero-based region whose VA pcomm never recovered (or an ambiguous rkey); object_access cannot place them'
 FROM (
-    SELECT e.peer_rank, s.rkey FROM ib_post_send s
+    SELECT e.peer_rank, s.rkey, s.remote_addr AS addr FROM ib_post_send s
     JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
     UNION ALL
-    SELECT e.peer_rank, s.rkey FROM mlx5_device_send s
+    SELECT e.peer_rank, s.rkey, s.raddr FROM mlx5_device_send s
     JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
     WHERE s.decode <= 1 AND s.opcode != 35
 ) x
 JOIN _mr_rebase rb ON rb.rank = x.peer_rank AND rb.rkey = x.rkey
 WHERE rb.mode = 'unknown'
+  AND NOT EXISTS (SELECT 1 FROM _mr_plain p
+                  WHERE p.rank = x.peer_rank AND p.rkey = x.rkey
+                    AND x.addr >= p.base AND x.addr < p.base + p.size)
 UNION ALL
 SELECT 'self_edges',
        'defect',
