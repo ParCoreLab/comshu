@@ -65,7 +65,7 @@ using DoorbellSink = void (*)(void* uar_ptr, std::uint32_t qp_num, std::uint32_t
 using DeviceSendSink = void (*)(std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                                 std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr,
                                 std::uint32_t rkey, std::uint32_t length, std::uint32_t dest_dct,
-                                std::uint8_t decode, std::uint8_t av_ds, std::uint8_t submitter,
+                                std::uint16_t dest_lid, std::uint8_t decode, std::uint8_t av_ds, std::uint8_t submitter,
                                 std::uint64_t ticks_lo, std::uint64_t ticks_hi);
 
 // What the WQE copy-out needs to read a send queue: its GPU address and shape.
@@ -472,6 +472,7 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
 
         std::uint64_t raddr = 0, laddr = 0;
         std::uint32_t rkey = 0, lkey = 0, length = 0, dest_dct = 0;
+        std::uint16_t dest_lid = 0;
 
         auto seg_at = [&](std::uint32_t which_ds) {
             return wqe + static_cast<std::size_t>(which_ds) * 16;
@@ -513,6 +514,10 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
                     be32toh(*reinterpret_cast<const std::uint32_t*>(seg_at(1) + 8));
                 av_ds = (dqp_dct & kExtendedAv) ? 3u : 1u;
                 dest_dct = dqp_dct & 0x00FFFFFFu;
+                // rlid, the be16 at AV offset 14 in both forms. With dest_dct
+                // it is the (LID, DCT) pair that names the target rank, since
+                // DCT numbers repeat across HCAs. 0 on RoCE (GID-addressed).
+                dest_lid = be16toh(*reinterpret_cast<const std::uint16_t*>(seg_at(1) + 14));
                 if (!have(1, av_ds))
                     decode = kDecodeTruncated;
             }
@@ -579,7 +584,7 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
         // boundary this provider is most likely to hit, and a capture that
         // quietly omits it is indistinguishable from a run that did not send.
         if (sink) {
-            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, decode,
+            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, dest_lid, decode,
                  static_cast<std::uint8_t>(av_ds), submitter, ticks_lo, ticks_hi);
             state().sends_emitted.fetch_add(1, std::memory_order_relaxed);
             ++counts.rows;

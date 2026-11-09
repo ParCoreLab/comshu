@@ -257,6 +257,15 @@ PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     // one query, on any capture, forever.
     std::uint8_t av_ds;
     std::uint8_t submitter;  // SendSubmitter: which door saw it, so what its time means
+    // The destination LID of a DC send, from the address vector's rlid (AV
+    // offset 14, in both the compact and the full form). 0 on RC, and 0 on a
+    // RoCE port, which addresses by GID. dest_dct alone does not name a peer:
+    // a DCT number is allocated per HCA and repeats across nodes exactly as
+    // qp_num does, so the owner is the PAIR (dest_lid, dest_dct), looked up the
+    // way an RC peer is, through _owner. MN5 job 45925495's DC leg (case 25)
+    // decoded 1,347 sends and its comm_edges had no row naming a peer.
+    std::uint16_t dest_lid;
+    std::uint16_t pad;
 };
 
 // ARTIFACT — how much of the data plane one door saw, per rank: the send-queue

@@ -77,6 +77,8 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,1,0,200,0,0,0,2,6,7,20,10,2
 2,1,0,200,0,0,0,3,5,5,10,20,2
 3,1,0,200,0,0,0,4,7,6,10,20,2
+2,1,0,300,0,0,0,9,900,0,0,20,2
+0,1,0,300,0,0,0,8,900,0,0,10,2
 CSV
 
 # rank 3's qp_num 9 never transitioned to RTR, so nothing names its peer. Five
@@ -109,11 +111,14 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 CSV
 
 cat > "$WORK/mlx5_device_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter
-1,2,0,2100,0,2110,0,8192,4096,30,0,3,7,200,0,8,0,0,1
-1,2,0,2200,0,2210,0,8192,4096,30,1,3,7,200,0,8,0,0,1
-1,2,0,2300,0,2310,0,8192,0,30,2,3,0,0,0,35,0,0,1
-1,2,0,2400,0,2410,0,0,0,30,3,0,0,0,0,200,3,0,1
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad
+1,2,0,2100,0,2110,0,8192,4096,30,0,3,7,200,0,8,0,0,1,0,0
+1,2,0,2200,0,2210,0,8192,4096,30,1,3,7,200,0,8,0,0,1,0,0
+1,2,0,2300,0,2310,0,8192,0,30,2,3,0,0,0,35,0,0,1,0,0
+1,2,0,2400,0,2410,0,0,0,30,3,0,0,0,0,200,3,0,1,0,0
+1,1,0,2500,0,0,0,8192,4096,40,0,3,7,30,900,8,0,1,2,20,0
+1,1,0,2600,0,0,0,8192,4096,40,1,3,7,40,900,8,0,1,2,10,0
+1,1,0,2700,0,0,0,8192,4096,40,2,3,7,50,900,8,0,3,2,0,0
 CSV
 
 # --- the UCX lane -----------------------------------------------------------
@@ -382,7 +387,7 @@ expect() {  # <label> <sql> <expected>
 # filter adds 999 bytes to some edge.
 expect "the matrix" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||transport||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges" \
-    "-1>-1:cudamemcpy:2:14 0>1:cudamemcpy:2:300 1>0:cudamemcpy:1:50 2>3:cudamemcpy:1:64 3>2:cudamemcpy:1:32 5>6:cudamemcpy:1:16 6>5:cudamemcpy:1:24 1>3:devx:2:400 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 3>-1:verbs:5:536"
+    "-1>-1:cudamemcpy:2:14 0>1:cudamemcpy:2:300 1>0:cudamemcpy:1:50 2>3:cudamemcpy:1:64 3>2:cudamemcpy:1:32 5>6:cudamemcpy:1:16 6>5:cudamemcpy:1:24 1>-1:devx:1:50 1>0:devx:1:40 1>2:devx:1:30 1>3:devx:2:400 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 3>-1:verbs:5:536"
 
 # Stated again as the invariant rather than as a value, because it is the clause
 # no capture in the corpus can exercise: a Load moves bytes FROM the peer, so the
@@ -402,9 +407,18 @@ expect "device ordinals are scoped by node" \
 
 # Five sends on a queue pair that never reached RTR. Counted, not hidden.
 expect "sends with no resolvable peer are counted" \
-    "SELECT n FROM link_health WHERE finding = 'unresolved_sends'" "5"
+    "SELECT n FROM link_health WHERE finding = 'unresolved_sends'" "6"
 
 # Rank 4 has traffic and no node. The hole is reported rather than guessed at.
+# DC. Rank 1's DCI (qp 40) has no connection at all; each send names its own
+# target in the address vector. DCT 900 exists on BOTH HCAs — rank 2's at LID 20
+# and rank 0's at LID 10 — so the number alone cannot say which, and resolving by
+# it would credit one rank with the other's bytes. The third send is RoCE-shaped
+# (LID 0) and must stay unresolved, counted in unresolved_sends above (6 = 5 + 1).
+expect "a DC send's peer is the owner of its (LID, DCT), per send" \
+    "SELECT string_agg(dst_rank||':'||bytes, ' ' ORDER BY dst_rank) FROM comm_edges WHERE src_rank = 1 AND transport = 'devx'" \
+    "-1:50 0:40 2:30 3:400"
+
 expect "NVLink with no node identity is counted" \
     "SELECT n FROM link_health WHERE finding = 'unresolved_nvlink'" "2"
 
@@ -539,7 +553,7 @@ expect "am payload joins the edge and its header does not" \
 # executable is to restate it here whenever a lane is added.
 expect "the verbs/devx subset is untouched by the new lane" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges WHERE transport IN ('verbs','devx')" \
-    "1>3:2:400 0>2:3:300 1>3:2:100 2>0:2:64 3>-1:5:536"
+    "1>-1:1:50 1>0:1:40 1>2:1:30 1>3:2:400 0>2:3:300 1>3:2:100 2>0:2:64 3>-1:5:536"
 
 # --- edge_sizes: the same edges, one group-by deeper -------------------------
 #

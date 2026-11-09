@@ -127,17 +127,17 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 CSV
 
 cat > "$WORK/mlx5_device_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter
-0,1,0,2000,0,0,0,100,20500,7,0,1,2,8,0,20,1,0,2
-0,1,0,2010,0,0,0,100,8256,7,1,1,2,32,0,8,0,0,2
-0,1,0,2020,0,0,0,100,9100,9,0,1,2,4,0,8,0,0,2
-0,1,0,2030,0,0,0,100,4100,7,2,1,2,4,0,8,0,0,2
-0,1,0,2040,0,0,0,100,0,7,3,1,2,4,0,8,0,0,2
-0,1,0,2050,0,0,0,100,9000,7,4,1,2,4,0,35,0,0,2
-0,1,0,2060,0,0,0,100,9000,7,5,1,2,4,0,8,2,0,2
-0,1,0,2070,0,0,0,100,0,7,6,1,77,16,0,8,0,0,2
-0,1,0,2080,0,0,0,100,100,7,7,1,77,8,0,8,0,0,2
-0,1,0,2090,0,0,0,100,10,7,8,1,88,4,0,8,0,0,2
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad
+0,1,0,2000,0,0,0,100,20500,7,0,1,2,8,0,20,1,0,2,0,0
+0,1,0,2010,0,0,0,100,8256,7,1,1,2,32,0,8,0,0,2,0,0
+0,1,0,2020,0,0,0,100,9100,9,0,1,2,4,0,8,0,0,2,0,0
+0,1,0,2030,0,0,0,100,4100,7,2,1,2,4,0,8,0,0,2,0,0
+0,1,0,2040,0,0,0,100,0,7,3,1,2,4,0,8,0,0,2,0,0
+0,1,0,2050,0,0,0,100,9000,7,4,1,2,4,0,35,0,0,2,0,0
+0,1,0,2060,0,0,0,100,9000,7,5,1,2,4,0,8,2,0,2,0,0
+0,1,0,2070,0,0,0,100,0,7,6,1,77,16,0,8,0,0,2,0,0
+0,1,0,2080,0,0,0,100,100,7,7,1,77,8,0,8,0,0,2,0,0
+0,1,0,2090,0,0,0,100,10,7,8,1,88,4,0,8,0,0,2,0,0
 CSV
 
 # ZERO-BASED REGIONS — NCCL GIN's GDAKI window shape. A remote address naming

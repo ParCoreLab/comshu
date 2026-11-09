@@ -977,17 +977,18 @@ template<> struct Table<mxr::Mlx5DevxCq> {
 template<> struct Table<mxr::Mlx5DeviceSend> {
     static constexpr const char* name = "mlx5_device_send";
     static constexpr const char* cols =
-        "ticks,qp_num,wqe_idx,opcode,opcode_name,laddr,lkey,raddr,rkey,length,dest_dct,decode,"
-        "decode_name,av_ds,submitter,submitter_name,ticks_hi";
+        "ticks,qp_num,wqe_idx,opcode,opcode_name,laddr,lkey,raddr,rkey,length,dest_dct,dest_lid,"
+        "decode,decode_name,av_ds,submitter,submitter_name,ticks_hi";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DeviceSend>& s,
                     const rec::InternDictionary&) {
         std::fprintf(
-            f, "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%s,%u,%u,%s,%llu",
+            f, "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%u,%s,%u,%u,%s,%llu",
             (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
             s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
             (unsigned long long)s.payload.laddr, s.payload.lkey,
             (unsigned long long)s.payload.raddr, s.payload.rkey, s.payload.length,
-            s.payload.dest_dct, s.payload.decode, mlx5_send_decode_name(s.payload.decode),
+            s.payload.dest_dct, s.payload.dest_lid, s.payload.decode,
+            mlx5_send_decode_name(s.payload.decode),
             s.payload.av_ds, s.payload.submitter, mlx5_send_submitter_name(s.payload.submitter),
             (unsigned long long)s.temporal.b.ticks);
     }
@@ -1771,7 +1772,11 @@ struct CsvAgg {
     // (rank, qp_num) -> (dest_lid, dest_qp_num) from the RTR transition.
     std::map<std::pair<int, std::uint32_t>, std::pair<std::uint32_t, std::uint32_t>> rtr_dest;
     std::map<std::pair<int, std::uint32_t>, std::pair<long, long>>
-                send_by_qp;  // (rank,qp_num)->(sends,bytes)
+                send_by_qp;  // (rank,qp_num)->(sends,bytes), verbs and RC devx
+    // DC device sends, whose peer is per SEND, not per queue: (rank, dest_lid,
+    // dest_dct) -> (sends, bytes). Resolved through qp_owner like an RC peer,
+    // since a DCT is a queue pair its owner moved to RTR on a port.
+    std::map<std::tuple<int, std::uint32_t, std::uint32_t>, std::pair<long, long>> send_by_dct;
     std::size_t n_access = 0, n_send = 0;
 
     // --- memory attribution -------------------------------------------------
@@ -1938,6 +1943,33 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbModifyQp>& s) {
         a.qp_owner[{s.payload.src_lid, s.payload.qp_num}] = r.rank;
     if (s.payload.state == 2 /*RTR*/ && s.payload.dest_qp_num)
         a.rtr_dest[{r.rank, s.payload.qp_num}] = {s.payload.dest_lid, s.payload.dest_qp_num};
+}
+
+// DEVX queue pairs connect through DEVX, not ibv_modify_qp, so their side of
+// the owner and RTR maps comes from here. Without these two overloads the CSV
+// comm_edges carried NONE of the GPU-initiated traffic: case 12 (MN5 48812895)
+// exported an empty comm_edges.csv over 1,347 device sends, and case 26 showed
+// 96 verbs sends and none of GIN's 81,920 — while link_sql.hpp's comm_edges
+// had them all and the two were claimed to agree.
+void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DevxQpConnect>& s) {
+    if (s.payload.src_lid)
+        a.qp_owner[{s.payload.src_lid, s.payload.qp_num}] = r.rank;
+    if (s.payload.dest_qp_num)
+        a.rtr_dest[{r.rank, s.payload.qp_num}] = {s.payload.dest_lid, s.payload.dest_qp_num};
+}
+
+// The same traffic filter as link_sql.hpp's _sends, and it must stay the same:
+// decode <= 1 (full or partial) and not NVSHMEM's DUMP (opcode 0x23), which
+// moves no payload and names no peer.
+void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DeviceSend>& s) {
+    if (s.payload.decode > 1 || s.payload.opcode == 35)
+        return;
+    auto& agg = s.payload.dest_dct
+                    ? a.send_by_dct[{r.rank, s.payload.dest_lid, s.payload.dest_dct}]
+                    : a.send_by_qp[{r.rank, s.payload.qp_num}];
+    agg.first += 1;
+    agg.second += s.payload.length;
+    a.n_send++;
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
@@ -2247,10 +2279,10 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     // with total sends and bytes. This is the table topology assertions query,
     // so tests never touch run-specific identifiers.
     //
-    // NB qp_num is HCA-local, so across nodes two QPs can share a number; the
-    // owner map is exact for a single HCA / few ranks (pingpong, one node) and
-    // approximate at multinode scale until the local LID is captured directly
-    // (things-to-circle-back-to.md). Deterministic either way → golden-safe.
+    // Keyed on (lid, qp_num), which is exact across HCAs. Covers verbs, RC
+    // device sends (through their DEVX connect) and DC device sends (through
+    // the (dest_lid, dest_dct) each one names) — the same rules as link_sql.hpp,
+    // and tests/comm_edges_rule.sh compares the two.
     std::FILE* edges = std::fopen((outdir / "comm_edges.csv").c_str(), "w");
     std::fputs("src_rank,dst_rank,sends,bytes\n", edges);
     std::map<std::pair<int, int>, std::pair<long, long>> edge_agg;
@@ -2259,6 +2291,18 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
         int dst_rank = -1;
         if (auto it = agg.rtr_dest.find({src_rank, qp_num}); it != agg.rtr_dest.end())
             if (auto o = agg.qp_owner.find(it->second); o != agg.qp_owner.end())
+                dst_rank = o->second;
+        auto& e = edge_agg[{src_rank, dst_rank}];
+        e.first += sb.first;
+        e.second += sb.second;
+    }
+    // DC: the owner of the (LID, DCT) the send named. LID 0 is a RoCE target,
+    // addressed by GID, and stays -1 as link_sql.hpp's _devx_send_peer leaves it.
+    for (const auto& [key, sb] : agg.send_by_dct) {
+        auto [src_rank, lid, dct] = key;
+        int dst_rank = -1;
+        if (lid)
+            if (auto o = agg.qp_owner.find({lid, dct}); o != agg.qp_owner.end())
                 dst_rank = o->second;
         auto& e = edge_agg[{src_rank, dst_rank}];
         e.first += sb.first;

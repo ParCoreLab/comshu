@@ -1219,14 +1219,57 @@ WHERE c.src_device <> 65535 AND c.dst_device <> 65535
 GROUP BY 1, 2, 3
 )sql"},
 
+    // (rank, qp_num) -> the rank on the other end. Extracted from `endpoint`,
+    // which computed it inline, because object_access needs the same mapping and
+    // a kTable cannot reference another kTable — they are COPYed to Parquet, not
+    // registered. Both callers now share one definition of "who is at the other
+    // end of this queue pair", which is the join most likely to be got subtly
+    // wrong: the key is the PAIR (lid, qp_num), since qp_num is allocated per
+    // HCA and repeats across nodes.
+    {"_peer_of_qp", R"sql(
+CREATE OR REPLACE VIEW _peer_of_qp AS
+SELECT r.rank, r.qp_num, o_peer.rank AS peer_rank
+FROM _rtr r
+LEFT JOIN _owner o_peer
+       ON o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
+)sql"},
+
+    // The rank a device-initiated send went to, PER SEND.
+    //
+    // On RC the peer is a property of the queue pair (_peer_of_qp). On DC it is
+    // not: one DCI reaches every rank in turn, and each WQE names its own target
+    // in the address vector — the DCT number (dest_dct) and that DCT's LID
+    // (dest_lid). A DCT is a queue pair its owner moved to RTR on a port, so
+    // its (LID, number) is in _owner exactly as an RC queue pair's is; DCT
+    // numbers repeat across HCAs, so the pair is the key, never the number.
+    //
+    // Before this, DC sends resolved through the DCI's qp_num, which has no RTR
+    // peer, so every one went to dst_rank -1: on MN5 job 45925495's DC leg
+    // (case 25) 1,347 decoded sends and comm_edges named no peer for any.
+    //
+    // A DC send with dest_lid 0 is RoCE-addressed (by GID) and stays unresolved
+    // here, counted by link_health.unresolved_sends rather than guessed.
+    {"_devx_send_peer", R"sql(
+CREATE OR REPLACE VIEW _devx_send_peer AS
+SELECT s.*,
+       CASE WHEN s.dest_dct <> 0 THEN dc.rank ELSE e.peer_rank END AS peer_rank
+FROM mlx5_device_send s
+LEFT JOIN _peer_of_qp e
+       ON e.rank = s.rank AND e.qp_num = s.qp_num
+LEFT JOIN _owner dc
+       ON s.dest_dct <> 0 AND dc.lid = s.dest_lid AND dc.qp_num = s.dest_dct
+)sql"},
+
     // Traffic per local endpoint, both planes. `transport` survives into the
     // endpoint table so a run can still be *asked* which plane moved the bytes,
     // even though comm_edges no longer distinguishes them.
     {"_sends", R"sql(
 CREATE OR REPLACE VIEW _sends AS
-SELECT rank, qp_num, 'verbs' AS transport,
-       count(*) AS sends, sum(length)::BIGINT AS bytes
-FROM ib_post_send GROUP BY rank, qp_num
+SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank,
+       count(*) AS sends, sum(s.length)::BIGINT AS bytes
+FROM ib_post_send s
+LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+GROUP BY s.rank, s.qp_num, e.peer_rank
 UNION ALL
 -- Not every mlx5_device_send row is traffic. The WQE decoder emits a row for
 -- every work request that is not padding, which since the opcode table was
@@ -1236,9 +1279,11 @@ UNION ALL
 -- was sent). Both belong in the raw table and on the timeline; counting them
 -- here would add zero-byte "messages" to edges they never addressed. Atomics
 -- (decode = 1) do name a peer and stay.
-SELECT rank, qp_num, 'devx' AS transport,
+-- The peer is resolved PER SEND (_devx_send_peer): a DC sender talks to many
+-- peers through one queue, so grouping by qp_num alone would merge them.
+SELECT rank, qp_num, 'devx' AS transport, peer_rank,
        count(*) AS sends, sum(length)::BIGINT AS bytes
-FROM mlx5_device_send WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num
+FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank
 )sql"},
 
     // The same traffic, one more group-by deep: by SIZE CLASS.
@@ -1271,35 +1316,22 @@ FROM mlx5_device_send WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num
     // hazard into a checked invariant.
     {"_sends_sized", R"sql(
 CREATE OR REPLACE VIEW _sends_sized AS
-SELECT rank, qp_num, 'verbs' AS transport,
-       CASE WHEN length > 0 THEN (1::BIGINT << CAST(floor(log2(length)) AS INTEGER))
+SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank,
+       CASE WHEN s.length > 0 THEN (1::BIGINT << CAST(floor(log2(s.length)) AS INTEGER))
             ELSE 0 END AS size_class,
-       count(*) AS sends, sum(length)::BIGINT AS bytes
-FROM ib_post_send GROUP BY rank, qp_num, size_class
+       count(*) AS sends, sum(s.length)::BIGINT AS bytes
+FROM ib_post_send s
+LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+GROUP BY s.rank, s.qp_num, e.peer_rank, size_class
 UNION ALL
-SELECT rank, qp_num, 'devx' AS transport,
+SELECT rank, qp_num, 'devx' AS transport, peer_rank,
        CASE WHEN length > 0 THEN (1::BIGINT << CAST(floor(log2(length)) AS INTEGER))
             ELSE 0 END AS size_class,
        count(*) AS sends, sum(length)::BIGINT AS bytes
 -- Same exclusion as _sends, and it has to be the same one: the suite asserts
 -- that edge_sizes rolls up EXACTLY to comm_edges, so a row counted in one lane
 -- and not the other is a failed invariant rather than a quiet discrepancy.
-FROM mlx5_device_send WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, size_class
-)sql"},
-
-    // (rank, qp_num) -> the rank on the other end. Extracted from `endpoint`,
-    // which computed it inline, because object_access needs the same mapping and
-    // a kTable cannot reference another kTable — they are COPYed to Parquet, not
-    // registered. Both callers now share one definition of "who is at the other
-    // end of this queue pair", which is the join most likely to be got subtly
-    // wrong: the key is the PAIR (lid, qp_num), since qp_num is allocated per
-    // HCA and repeats across nodes.
-    {"_peer_of_qp", R"sql(
-CREATE OR REPLACE VIEW _peer_of_qp AS
-SELECT r.rank, r.qp_num, o_peer.rank AS peer_rank
-FROM _rtr r
-LEFT JOIN _owner o_peer
-       ON o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
+FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank, size_class
 )sql"},
 
     // (rank, rkey) -> how to turn a remote address naming that region into a
@@ -1802,8 +1834,8 @@ verbs AS (
 -- whose raddr all lay inside the peer's symmetric heap, and none reached the
 -- Objects panel.
 --
--- Same rules as `verbs`, deliberately: the peer is the far end of the queue pair
--- (_peer_of_qp also covers DEVX queues through mlx5_devx_qp_connect), the
+-- Same rules as `verbs`, deliberately: the peer is the far end of the send
+-- (_devx_send_peer: the queue pair's peer on RC, the (LID, DCT) owner on DC), the
 -- address is resolved against the PEER's objects, innermost wins, raddr = 0 is
 -- not a target. Same exclusions as _sends too, so a row counted as traffic in
 -- comm_edges is the row that can appear here: decode <= 1 (full or partial; a
@@ -1830,22 +1862,20 @@ devx_target AS (
     SELECT q.rank, q.qp_num, q.length, q.peer_rank,
            CASE WHEN q.mode = 'rebase' THEN q.base + (q.addr - q.iova) ELSE q.addr END AS target
     FROM (
-        SELECT s.rank, s.qp_num, s.length, e.peer_rank, s.raddr::HUGEINT AS addr,
+        SELECT s.rank, s.qp_num, s.length, s.peer_rank, s.raddr::HUGEINT AS addr,
                rb.base, rb.iova,
                CASE WHEN rb.mode IS NULL THEN NULL
                     WHEN EXISTS (SELECT 1 FROM _mr_plain p
-                                 WHERE p.rank = e.peer_rank AND p.rkey = s.rkey
+                                 WHERE p.rank = s.peer_rank AND p.rkey = s.rkey
                                    AND s.raddr >= p.base
                                    AND s.raddr <  p.base + p.size) THEN NULL
                     ELSE rb.mode END AS mode
-        FROM mlx5_device_send s
-        JOIN _peer_of_qp e
-          ON e.rank = s.rank AND e.qp_num = s.qp_num
+        FROM _devx_send_peer s
         LEFT JOIN _mr_rebase rb
-          ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
+          ON rb.rank = s.peer_rank AND rb.rkey = s.rkey
         WHERE s.decode <= 1
           AND s.opcode != 35
-          AND e.peer_rank IS NOT NULL
+          AND s.peer_rank IS NOT NULL
     ) q
     WHERE (q.addr > 0 OR q.mode = 'rebase')
       AND coalesce(q.mode, 'plain') <> 'unknown'
@@ -1976,14 +2006,13 @@ WITH k AS (
     WHERE g.source <> 2
 ),
 s AS (
-    SELECT s.rank, s.length, e.peer_rank,
+    SELECT s.rank, s.length, s.peer_rank,
            q.device                                                      AS qdev,
            row_number() OVER ()                                          AS sid,
            (c.w0::HUGEINT + ((s.temporal_a_ticks::HUGEINT - c.t0::HUGEINT)::DOUBLE
                               * c.ns_per_tick)::HUGEINT)::BIGINT          AS t_ns
-    FROM mlx5_device_send s
+    FROM _devx_send_peer s
     JOIN _clock c ON c.rank = s.rank AND c.domain = s.temporal_a_domain
-    LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
     LEFT JOIN (SELECT rank, qp_num, max(device) AS device FROM mlx5_devx_qp
                WHERE device <> 65535 GROUP BY rank, qp_num
                HAVING count(DISTINCT device) = 1) q
@@ -2442,15 +2471,13 @@ SELECT e.src_rank, e.dst_rank, e.transport, e.unit,
        END AS scope,
        e.sends, e.bytes
 FROM (
-    SELECT s.rank               AS src_rank,
-           coalesce(o.rank, -1) AS dst_rank,
-           s.transport          AS transport,
-           'messages'           AS unit,
+    SELECT s.rank                    AS src_rank,
+           coalesce(s.peer_rank, -1) AS dst_rank,
+           s.transport               AS transport,
+           'messages'                AS unit,
            sum(s.sends)::BIGINT AS sends,
            sum(s.bytes)::BIGINT AS bytes
     FROM _sends s
-    LEFT JOIN _rtr   r ON r.rank = s.rank AND r.qp_num = s.qp_num
-    LEFT JOIN _owner o ON o.lid  = r.dest_lid AND o.qp_num = r.dest_qp_num
     GROUP BY 1, 2, 3
   UNION ALL
     SELECT src_rank, dst_rank, 'nvlink', 'accesses', sends, bytes
@@ -2562,14 +2589,13 @@ SELECT e.src_rank, e.dst_rank, e.transport, e.unit,
        e.size_class, e.sends, e.bytes
 FROM (
     SELECT s.rank                    AS src_rank,
-           coalesce(o.peer_rank, -1) AS dst_rank,
+           coalesce(s.peer_rank, -1) AS dst_rank,
            s.transport               AS transport,
            'messages'                AS unit,
            s.size_class              AS size_class,
            sum(s.sends)::BIGINT AS sends,
            sum(s.bytes)::BIGINT AS bytes
     FROM _sends_sized s
-    LEFT JOIN _peer_of_qp o ON o.rank = s.rank AND o.qp_num = s.qp_num
     GROUP BY 1, 2, 3, 4, 5
   UNION ALL
     SELECT src_rank, dst_rank, 'nvlink', 'accesses', size_class, sends, bytes
@@ -2940,13 +2966,11 @@ UNION ALL
 SELECT 'unresolved_sends',
        'defect',
        coalesce(sum(sends), 0)::BIGINT,
-       'sends whose peer rank could not be resolved from any RTR transition'
+       'sends whose peer rank could not be resolved: no RTR transition for an RC queue, no (LID, DCT) owner for a DC send'
 FROM (
     SELECT s.sends
     FROM _sends s
-    LEFT JOIN _rtr   r ON r.rank = s.rank AND r.qp_num = s.qp_num
-    LEFT JOIN _owner o ON o.lid  = r.dest_lid AND o.qp_num = r.dest_qp_num
-    WHERE o.rank IS NULL
+    WHERE s.peer_rank IS NULL
 )
 UNION ALL
 -- NVLink counted separately, because it fails for a different reason and needed
@@ -3133,9 +3157,8 @@ FROM (
     SELECT e.peer_rank, s.rkey, s.remote_addr AS addr FROM ib_post_send s
     JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
     UNION ALL
-    SELECT e.peer_rank, s.rkey, s.raddr FROM mlx5_device_send s
-    JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
-    WHERE s.decode <= 1 AND s.opcode != 35
+    SELECT s.peer_rank, s.rkey, s.raddr FROM _devx_send_peer s
+    WHERE s.decode <= 1 AND s.opcode != 35 AND s.peer_rank IS NOT NULL
 ) x
 JOIN _mr_rebase rb ON rb.rank = x.peer_rank AND rb.rkey = x.rkey
 WHERE rb.mode = 'unknown'
@@ -3178,9 +3201,7 @@ SELECT 'self_edges',
 FROM (
     SELECT s.rank
     FROM _sends s
-    LEFT JOIN _rtr   r ON r.rank = s.rank AND r.qp_num = s.qp_num
-    LEFT JOIN _owner o ON o.lid  = r.dest_lid AND o.qp_num = r.dest_qp_num
-    WHERE o.rank = s.rank
+    WHERE s.peer_rank = s.rank
 )
 UNION ALL
 -- The receive branch of object_access recovers a buffer through a wr_id, which

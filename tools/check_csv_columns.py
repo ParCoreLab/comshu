@@ -137,6 +137,7 @@ OMITTED = {
     ("nccl_coll_exec", "pad"): "explicit struct padding, not data",
     ("mlx5_send_coverage", "pad0"): "explicit struct padding, not data",
     ("mlx5_send_coverage", "pad1"): "explicit struct padding, not data",
+    ("mlx5_device_send", "pad"): "explicit struct padding, not data",
 }
 
 # --- a record with no Table<> at all ----------------------------------------

@@ -775,6 +775,8 @@ struct Mlx5DeviceSend {
   decode:uint8;     // SendDecode: 0 full, 1 partial, 2 truncated, 3 unknown opcode
   av_ds:uint8;      // address-vector width in 16 B units: 0 none (RC), 1 compact, 3 full
   submitter:uint8;  // SendSubmitter: 0 unknown, 1 GPU doorbell, 2 host doorbell, 3 send-queue watch
+  dest_lid:uint16;  // DC target's LID from the address vector's rlid; 0 on RC and on RoCE
+  pad:uint16;
 }
 
 // type 218, Artifact. The send-queue watcher's coverage, one row per rank:

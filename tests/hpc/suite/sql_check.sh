@@ -592,6 +592,33 @@ if [ "$PQ_MODE" -eq 1 ]; then
   done
 fi
 
+# --- the two comm_edges must agree ------------------------------------------
+#
+# comm_edges is computed twice: in C++ for the CSV export (CsvAgg,
+# pcomm-read/main.cpp) and in SQL for the derived layer (link_sql.hpp). The
+# second implementation exists to be an oracle, and for months it was not one
+# in practice: CsvAgg never read a device send, so case 12's CSV comm_edges was
+# EMPTY over 1,347 GPU-initiated sends (MN5 48812895) while the derived one had
+# them all, and nothing compared the two. Every assertion that reads comm_edges
+# on the sqlite path was checking the table that was missing the traffic.
+#
+# So the claim is now executed on every case with a Parquet export: the CSV
+# table must equal the derived table's verbs + devx rows, projected to
+# (src_rank, dst_rank, sends, bytes). Any difference is a red assertion.
+if [ "$PQ_MODE" -eq 1 ] && have_table comm_edges && pq_has_table comm_edges; then
+  csv_edges="$(sql "SELECT src_rank||'>'||dst_rank||':'||sends||':'||bytes FROM comm_edges ORDER BY CAST(src_rank AS INTEGER), CAST(dst_rank AS INTEGER);" | tr '\n' ' ')"
+  pq_edges="$(pq_sql "SELECT src_rank||'>'||dst_rank||':'||sends||':'||bytes FROM (SELECT src_rank, dst_rank, sum(sends) AS sends, sum(bytes) AS bytes FROM comm_edges WHERE transport IN ('verbs','devx') GROUP BY 1, 2) ORDER BY src_rank, dst_rank" | tail -n +2 | tr '\n' ' ')"
+  an=$((an+1))
+  if [ "$csv_edges" = "$pq_edges" ]; then
+    echo "  [ok ] comm_edges_csv_matches_derived"
+  else
+    echo "  [XX ] comm_edges_csv_matches_derived — the two implementations disagree:"
+    echo "        csv:     ${csv_edges:-<none>}"
+    echo "        derived: ${pq_edges:-<none>}"
+    afail=1
+  fi
+fi
+
 # ------------------------------------------------------------------ verdict --
 fail=$(( gfail || afail ))
 n=$((gn + an))
