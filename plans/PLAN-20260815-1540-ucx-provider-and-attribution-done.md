@@ -9,7 +9,7 @@
   sections below are kept in the order they were written, so the measurements
   read as they were made; **this header and the two sections that follow it are
   the current state.**
-- **Parent:** `PLAN-20260813-2238-the-gaps-are-in-the-records-not-the-providers-todo.md`,
+- **Parent:** `PLAN-20260813-2238-the-gaps-are-in-the-records-not-the-providers-done.md`,
   Stage B.
 - **Goal:** match every useful UCX fact SigmaTrace records, improve the facts it
   records incompletely, and connect UCX intent to the verbs traffic pcomm
@@ -617,7 +617,7 @@ position in a list.
 ## 1. SUPERSEDED (2026-08-27, later the same day): the sweep was right about
 ## symbols and wrong about doors
 
-**See `PLAN-20260827-1449-ucx-deep-uct-ops-table-in-progress.md`.** Everything
+**See `PLAN-20260827-1449-ucx-deep-uct-ops-table-done.md`.** Everything
 below this box is correct as measured and its conclusion does not follow.
 
 UCX exports no send symbol because `uct/api/uct.h` declares every UCT data

@@ -1,5 +1,7 @@
 # PLAN — what is next, now that the context-coverage gap is closed
 
+> **Closed 2026-11-09 (backlog triage).** Items 1-3 done; of item 4, the dmabuf inode identity and the cuMem* allocation doors moved to todos.txt. The status below is historical.
+
 - **Created:** 2026-08-07 01:30 +03
 - **Status:** IN PROGRESS. Items 1, 2 and 3 are done and measured; see each
   section for what the measurement said, including where this plan's own

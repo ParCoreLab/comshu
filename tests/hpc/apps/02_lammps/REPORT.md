@@ -10,7 +10,7 @@ captured (`ib,ucx` and `ib`, each × `gpu/aware on|off`).
 
 ## The findings, in order of value
 
-**1. LAMMPS/Kokkos on MN5 does NOT use managed memory. `plans/todos.txt` item 2
+**1. LAMMPS/Kokkos on MN5 does NOT use managed memory. `plans/todos.txt` item 1
 stays latent, and the reason it stays latent is stronger than "no workload of
 ours does it".** Four independent lines of evidence, none from the capture.
 
@@ -32,7 +32,7 @@ period read back off the wire.
 
 ## A. Managed memory — a clean negative, with the trap that would have faked a positive
 
-`plans/todos.txt` item 2 names LAMMPS/Kokkos as one of two applications that
+`plans/todos.txt` item 1 names LAMMPS/Kokkos as one of two applications that
 "would make this live on its first capture". For this build it does not, and the
 question is settled without a capture — which is the only honest way to settle
 it, since `mem_object` records no discriminator for the allocation door.

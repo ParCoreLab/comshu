@@ -1,14 +1,16 @@
 # PLAN — the UI is a query surface over derived tables, not a viewer of captures
 
+> **Closed 2026-11-09 (backlog triage).** Steps 1-5 shipped: Parquet export, `pcomm link`, `pcomm ui`, the Svelte panels, the chat panel. Step 6 (`--bundle`) moved to todos.txt. The status below is historical.
+
 - **Created:** 2026-08-07 17:18 +03
 - **Status:** TODO — direction agreed in discussion, nothing started. Step 0 is a
   hard prerequisite for every other step and is the only one that can begin
   today.
-- **Depends on:** `PLAN-20260729-1830-record-format-flatbuffers-todo.md` for the
+- **Depends on:** `PLAN-20260729-1830-record-format-flatbuffers-done.md` for the
   Parquet writer, which is this plan's input contract;
-  `PLAN-20260806-1329-generic-memory-attribution-todo.md` for the object views
+  `PLAN-20260806-1329-generic-memory-attribution-done.md` for the object views
   (5, 7) to have anything to show on ibverbs-only captures.
-- **Related:** `PLAN-20260803-2253-ibgda-device-initiated-capture-in-progress.md`
+- **Related:** `PLAN-20260803-2253-ibgda-device-initiated-capture-done.md`
   — under IBGDA the `ib_*` streams are empty and `comm_edges` is therefore
   *blank*, which is the single largest hole in the derived layer today.
 

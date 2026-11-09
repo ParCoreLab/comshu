@@ -1,7 +1,7 @@
 # UCX API coverage probes
 
 Stage-0 instruments for
-`plans/PLAN-20260815-1540-ucx-provider-and-attribution-in-progress.md`.
+`plans/PLAN-20260815-1540-ucx-provider-and-attribution-done.md`.
 They measure the public UCP surface before those calls become permanent pcomm
 records.
 

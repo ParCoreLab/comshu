@@ -103,7 +103,7 @@ network ones) share a single pass — no replay needed among them.
    ids 800-899 reserved for "ucTrace" are now the UCT-layer provider, which
    reaches UCX's data plane through the `uct_iface_ops_t` dispatch table rather
    than by reimplementing UCT internals — see
-   `plans/PLAN-20260827-1449-ucx-deep-uct-ops-table-in-progress.md`.)*
+   `plans/PLAN-20260827-1449-ucx-deep-uct-ops-table-done.md`.)*
 4. Test bed: `ssh a100` (du04, 4x A100). Multinode validation deferred until
    supercomputer access.
 
@@ -118,6 +118,14 @@ ctest --test-dir build
 Core + tests build with no CUDA/verbs installed; providers are enabled
 individually (`-DPCOMM_PROVIDER_GPUMEM=ON`, `-DPCOMM_PROVIDER_IBVERBS=ON`) and
 require their vendor SDKs.
+
+**Build the engine with gcc or clang, never NVHPC's `nvc++`.** nvc++ leaves
+`__builtin_ia32_rdtsc` as an undefined symbol instead of inlining it, so every
+hook dies at load and the capture is empty (`nm -D --undefined-only
+libpcomm_engine.so` shows it). This is why a gpumem-only tree, which configures
+under `nvidia-hpc-sdk`, installs only the provider (`PCOMM_INSTALL_CORE`
+defaults OFF there). The fix is `__rdtsc()` from `<x86intrin.h>` in the clock
+helpers, but that is on every hook's hot path, so it needs its own MN5 run.
 
 ## Install
 

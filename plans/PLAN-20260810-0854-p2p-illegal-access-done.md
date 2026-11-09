@@ -1,5 +1,7 @@
 # PLAN — instrumenting a multi-launch workload poisons the CUDA context
 
+> **Closed 2026-11-09 (backlog triage).** Root cause was our build: -astoolspatch never reached the injected function. Fixed in 0669f54; cases 13-15 pass. The status below is historical.
+
 - **Created:** 2026-08-10 08:54 +03
 - **Status:** ROOT CAUSE OPEN. Both teardown symptoms are fixed and shipped; the
   fault that causes them is not.

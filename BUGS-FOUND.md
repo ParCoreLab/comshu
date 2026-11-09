@@ -182,6 +182,24 @@ barrier.
 
 **Full investigation:** `tests/hpc/apps/04_llmc/REPORT.md`
 
+## 3. NVSHMEM's ibdevx transport deadlocks under sustained load, with no profiler loaded
+
+**One line.** NVSHMEM 3.3.24's ibdevx proxy intermittently stops seeing
+completions at ~20M WQEs per rank: the GPU waits on the proxy, the proxy spins
+waiting on the NIC, and the job never finishes — with or without pcomm.
+
+| | |
+|---|---|
+| Environment | du04 (4x A100), NVSHMEM 3.3.24 from HPC SDK 25.9, ibdevx transport; case 11's put-ring workload at `1024 20000` (20.5M WQEs per rank) |
+| What fired | A watchdog timeout while measuring the send-queue watcher's overhead: case 11 at `1024 20000` hung intermittently. `~/pcomm-parity/hang/hang_hunt.sh` on du04 backtraces every thread before it kills |
+| Evidence | Identical hang signature in every hung run, containing no pcomm frame. Main thread: spinning in `sched_yield` inside `cuLaunchKernel`, waiting for a kernel that never finishes. NVSHMEM proxy: spinning in `nvshmemi_proxy_progress → nvshmemt_ibdevx_quiet → check_poll_avail → progress_send`, taking and releasing its lock, waiting for completions that never come |
+| Excluded | *Not pcomm:* it hangs BARE, with no preload at all — 1 of 6 runs; 2 of 6 under pcomm with the watcher off; 0 of 3 with it on. *Not a lock deadlock:* the proxy takes and releases its lock; it spins, it does not block |
+| Threshold | Never seen at `1024 2` (the case) up to `1024 10000`; intermittent at `1024 20000` |
+| Impact | Any long ibdevx run can hang without warning. For pcomm's own measurements, a hung run shows up as a 580 s "cost" unless measurements at this size run under a watchdog and report hangs separately |
+| Reproduction | `tests/hpc/cases/11_ibdevx_peermem` workload at `1024 20000`, bare, repeated under a watchdog |
+| How found | By the watchdog that overhead measurement needed, not by suspicion; the bare control was run precisely to exclude pcomm, and it hung too |
+| Status | Not reported upstream. Not checked on later NVSHMEM releases or on MN5 |
+
 ## Template for the next entry
 
 ```

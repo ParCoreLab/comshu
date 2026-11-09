@@ -177,7 +177,7 @@ token is a comment. Put comments *after* the `SELECT`.
 Look for these. They are why this exercise exists, and finding one is a better
 outcome than a clean report.
 
-1. **Managed memory** (`plans/todos.txt` item 2). `mem_object.device` is one
+1. **Managed memory** (`plans/todos.txt` item 1). `mem_object.device` is one
    `DeviceId` fixed at allocation, and managed memory migrates by definition —
    so the column silently means "where it started". No workload of ours
    allocates managed memory. **QuantumESPRESSO** built with the NVIDIA HPC SDK
@@ -193,7 +193,7 @@ outcome than a clean report.
    been named. With `-p ib,ucx` on a real MPI app you have both layers in one
    capture: if a correspondence exists, its shape is visible here.
 
-3. **Unattributed GPU accesses** (`plans/todos.txt` item 4). 1.18M accesses on
+3. **Unattributed GPU accesses** (`plans/todos.txt` item 3). 1.18M accesses on
    case 05 land in no tracked object because NCCL's internal channel buffers
    arrive through a door `gpumem` does not record. Only relevant if you run a
    `gpumem` capture, which is expensive — do not do it on the first pass.

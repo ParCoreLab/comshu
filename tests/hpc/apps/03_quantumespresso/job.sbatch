@@ -122,7 +122,7 @@ qe_log() {  # qe_log <dir> — the application's OWN log, which is an oracle
 # BARE, and not optional (apps/README.md): a capture of a workload that did not
 # work is indistinguishable from a tracer that captured nothing.
 #
-# It also carries the managed-memory instrument. plans/todos.txt item 2 asks
+# It also carries the managed-memory instrument. plans/todos.txt item 1 asks
 # whether mem_object.device is a lie for migrating allocations. That question is
 # unanswerable FROM a capture — mem_object records no discriminator for which
 # door an allocation came through, so a managed and a device allocation are

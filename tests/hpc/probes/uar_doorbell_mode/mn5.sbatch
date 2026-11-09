@@ -2,7 +2,7 @@
 # Which doorbell mechanism does MN5 need? One ACC node, no network traffic.
 #
 # This answers the one claim in
-# plans/PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-todo.md
+# plans/PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-done.md
 # that was inferred from someone else's run notes rather than measured here:
 # that MN5's open kernel module refuses to map a NIC doorbell page into a GPU,
 # which is what forces NVSHMEM_IBGDA_NIC_HANDLER=cpu and is the entire reason

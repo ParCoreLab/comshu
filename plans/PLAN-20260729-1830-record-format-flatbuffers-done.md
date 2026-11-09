@@ -1,5 +1,7 @@
 # PLAN — record format: benchmark FlatBuffers against the raw-POD `.pcs`
 
+> **Closed 2026-11-09 (backlog triage).** Adopted: libpcomm/schema/pcomm.fbs with committed generated bindings, the schema_conformance test, and PLAN-20260730-1900-flatbuffers-gaps-done. The status below is historical.
+
 - **Created:** 2026-07-29 18:30 +03
 - **Status:** RECOMMEND ADOPT (FlatBuffers **structs**). Measured 2026-07-30.
 - **Why now:** part of the team is pushing for FlatBuffers. Settle it with

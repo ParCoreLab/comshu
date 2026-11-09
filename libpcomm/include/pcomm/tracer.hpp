@@ -128,8 +128,9 @@ public:
         // record flushed early whose Handles are undefined until teardown would
         // be no better than a lost one; these have none.
         //
-        // This does NOT make the capture crash-safe. Everything recorded after
-        // this point is still lost on a signal, which is todos.txt item 15.
+        // This alone does not make the capture crash-safe: what is recorded
+        // after this point is recovered on a CATCHABLE fatal signal by the
+        // engine's signal handler, and lost on SIGKILL, which nothing can catch.
         rec::ThreadBufferRegistry::instance().drain_all();
         m_sink->flush();
     }

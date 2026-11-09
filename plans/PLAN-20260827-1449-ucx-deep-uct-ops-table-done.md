@@ -1,7 +1,7 @@
 # PLAN — `ucx_deep`: the UCT ops table is the send door UCX does not export
 
 - **Created:** 2026-08-27 14:49 +03
-- **Parent:** `PLAN-20260815-1540-ucx-provider-and-attribution-in-progress.md`,
+- **Parent:** `PLAN-20260815-1540-ucx-provider-and-attribution-done.md`,
   *Future work 1*, which concluded that UCX "writes WQEs and rings the UAR
   inline, with no interposable symbol".
 - **Correction this plan makes:** that conclusion is right about *symbols* and

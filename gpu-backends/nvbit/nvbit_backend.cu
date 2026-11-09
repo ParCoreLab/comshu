@@ -936,7 +936,7 @@ void* recv_thread_fun(void* args) {
     std::vector<RawAccess> batch;
 
     // PCOMM_CHANNEL_DEBUG=1 — diagnostic for the NVBit deadlock (cases 05/07,
-    // plans/PLAN-20260727-1022-nvbit-channel-deadlock-backlog.md). The decisive
+    // plans/PLAN-20260727-1022-nvbit-channel-deadlock-done.md). The decisive
     // question is whether the device is stalled waiting on us.
     //
     // ChannelDev::flush() sets the doorbell and then spins *inside the kernel*

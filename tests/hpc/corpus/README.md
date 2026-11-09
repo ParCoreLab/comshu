@@ -1,6 +1,6 @@
 # tests/hpc/corpus — the capture corpus
 
-Step 0 of `plans/PLAN-20260807-1718-ui-backbone-todo.md`. The UI's derived
+Step 0 of `plans/PLAN-20260807-1718-ui-backbone-done.md`. The UI's derived
 tables, its partitioning, and every "is this fast enough" question are design
 decisions that need **real captures at real scale** to answer. Designing them
 against `tests/data/ib_pingpong-44578115` — 117 KB, two ranks — is how the

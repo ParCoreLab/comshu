@@ -1,11 +1,13 @@
 # PLAN — CPU-assisted IBGDA: the data plane MN5 can actually give us
 
+> **Closed 2026-11-09 (backlog triage).** Built as providers/mlx5dv/host_doorbell.hpp (`--enable-host-doorbell`); case 12 (NVSHMEM) and case 26 (NCCL GIN) capture their whole data plane through it on MN5. The status below is historical.
+
 - **Created:** 2026-09-05 12:24 +03
 - **Status:** TODO. Design settled from source; nothing built.
-- **Parent:** `PLAN-20260807-1746-ibgda-data-plane-hijack-todo` — this plan does
+- **Parent:** `PLAN-20260807-1746-ibgda-data-plane-hijack-done` — this plan does
   not replace the hijack. It covers the mode the hijack structurally cannot
   reach, which happens to be the only mode our largest cluster runs.
-- **Sibling:** `PLAN-20260807-2344-ibgda-on-gpu-repeater-todo` — Stage 3. Still
+- **Sibling:** `PLAN-20260807-2344-ibgda-on-gpu-repeater-backlog` — Stage 3. Still
   the right answer on du04. Useless on MN5, for the reason below.
 - **Evidence:** `reference/papers/NSDI_27______Dissecting_GPU_Initiated_Networking.pdf`
   §4.1 (edge case), §6.1 (platform table), and

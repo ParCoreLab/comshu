@@ -20,7 +20,7 @@ target_compile_features(pcomm INTERFACE cxx_std_20)
 # .so, which is what put 969 weakly-linked duplicate symbols (including the
 # Tracer / ThreadBufferRegistry / RecordIdTracker guards) into each provider and
 # made coexistence depend on which copy the linker happened to bind — see
-# 7a5b55a and plans/PLAN-20260727-0126-shared-engine-abi-todo.md. One .so means
+# 7a5b55a and plans/PLAN-20260727-0126-shared-engine-abi-done.md. One .so means
 # one Tracer, one buffer store, one set of intern tables, N providers.
 #
 # `dlsym` lives here for the same reason: only one object in a process may

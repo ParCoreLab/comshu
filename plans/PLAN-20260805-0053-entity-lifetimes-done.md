@@ -1,5 +1,7 @@
 # PLAN — entities have no close, so every capture counts calls, not lifetimes
 
+> **Closed 2026-11-09 (backlog triage).** Steps 1-3 shipped and step 4 subsumed, as its own 2026-08-10 section says; entity_close_accounted runs on every case and no case carries an expect_fail marker. The status below is historical.
+
 - **Created:** 2026-08-05 00:53 +03
 - **Status:** STEPS 1-3 SHIPPED. The decision was made (A) and implemented; this
   header was stale. Reviewed 2026-08-10 — what remains is below.

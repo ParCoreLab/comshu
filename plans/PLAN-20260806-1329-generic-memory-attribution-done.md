@@ -9,12 +9,12 @@
   scoped range resolution in the reader) is deferred with
   `PLAN-20260805-0053-entity-lifetimes`. The placement question this plan opened
   was settled by `PLAN-20260810-0505` (core registry, not a provider).
-- **Depends on:** `PLAN-20260805-0053-entity-lifetimes-todo.md` for the *time*
+- **Depends on:** `PLAN-20260805-0053-entity-lifetimes-done.md` for the *time*
   half. Steps 1-5 land without it and are useful without it; step 6 is what it
   unblocks.
 - **Related:** `PLAN-20260803-1448-nvshmem-heap-attribution-done.md` (the last
   time attribution was wrong and it inflated a whole capture);
-  `PLAN-20260803-2253-ibgda-device-initiated-capture-in-progress.md` (the
+  `PLAN-20260803-2253-ibgda-device-initiated-capture-done.md` (the
   `kAttrDeviceOrdinal` bug that motivated this).
 
 ## What is broken

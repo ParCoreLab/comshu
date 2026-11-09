@@ -143,7 +143,7 @@ Where a derived check finds a live bug.
 
 **`peer_fanout` is expected to FAIL when written**, against a golden that
 currently passes at 2. That is the plan working as intended: it is blocked on
-`PLAN-20260803-1448-nvshmem-heap-attribution-todo.md`. Land the assertion
+`PLAN-20260803-1448-nvshmem-heap-attribution-done.md`. Land the assertion
 `expect_fail`-marked, and let fixing attribution flip it green — the assertion
 becomes the acceptance test for that plan.
 

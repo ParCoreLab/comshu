@@ -10,7 +10,7 @@
   accesses against the `[open, close)` window for reused addresses (that half is
   `PLAN-20260805-0053-entity-lifetimes`, "What is actually left").
 - **Supersedes** the placement argument in
-  `PLAN-20260806-1329-generic-memory-attribution-todo.md` ("Where the
+  `PLAN-20260806-1329-generic-memory-attribution-done.md` ("Where the
   nvshmem_malloc interposer belongs"). That section concluded the current
   placement was fine and the trigger for moving it was "a second consumer". The
   measurement below shows the trigger already fired — it just was not a second

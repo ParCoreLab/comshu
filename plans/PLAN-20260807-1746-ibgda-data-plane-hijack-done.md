@@ -1,8 +1,10 @@
 # PLAN — the IBGDA data plane: doorbell hijack, to SigmaTrace parity
 
+> **Closed 2026-11-09 (backlog triage).** Stage 2 shipped as providers/mlx5dv/uar_hijack.hpp (case 12). Stage 3 is PLAN-20260807-2344-ibgda-on-gpu-repeater-backlog. The status below is historical.
+
 - **Created:** 2026-08-07 17:46 +03
 - **Status:** TODO. This is stages 2-4 of
-  `PLAN-20260803-2253-ibgda-device-initiated-capture-in-progress`, written out
+  `PLAN-20260803-2253-ibgda-device-initiated-capture-done`, written out
   now that stage 1 (the DEVX control plane) has shipped and the A-vs-B question
   is settled on measurement rather than argument. That plan stays the parent;
   this one is the implementation it deferred.

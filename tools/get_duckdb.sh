@@ -4,7 +4,7 @@
 # DuckDB is what makes `pcomm export --parquet` and `pcomm sql` possible: it writes
 # Parquet natively, so the reader needs no Arrow, and it is the same engine the
 # UI queries with. One dependency covers the writer, the query layer and the UI
-# server; see plans/PLAN-20260807-1718-ui-backbone-todo.md.
+# server; see plans/PLAN-20260807-1718-ui-backbone-done.md.
 #
 # NOT committed, and not a build dependency by default. The library is ~50 MB
 # and architecture-specific, and the working tree is syncthing-mirrored, so

@@ -6,7 +6,7 @@
   reasoning for deferring it is unchanged. What the build actually taught is at
   the bottom of this file; the plan body above it is left as written.
 - **Supersedes:** step 5 of
-  [`PLAN-20260807-1718-ui-backbone-todo.md`](PLAN-20260807-1718-ui-backbone-todo.md)
+  [`PLAN-20260807-1718-ui-backbone-done.md`](PLAN-20260807-1718-ui-backbone-done.md)
   ("the chat panel"), which is four bullets. Its constraints are inherited
   verbatim and are still non-negotiable; this plan is how they get honoured.
 - **Depends on:** the derived layer as it exists today (`comm_edges`,

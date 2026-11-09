@@ -5,7 +5,7 @@
   Phase 3 bb41c67 + 0eed85a (recursion fix); Phase 4 measured (bb424ee) and
   shipped as `kernel_sends`. Follow-ups below stay open.
 - **Related:** `PLAN-20260806-2140-dmabuf-registered-regions-done` (the fd → VA
-  table and the iova rule this extends); `PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-todo`
+  table and the iova rule this extends); `PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-done`
   (the host doorbell that produces these rows); case 12 and case 26.
 
 ## What is missing, measured

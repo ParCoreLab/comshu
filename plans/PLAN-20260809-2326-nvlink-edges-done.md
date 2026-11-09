@@ -121,9 +121,9 @@ opcodes needs the derived table `PLAN-20260807-1718` step 2 still owes, and
 `gpu_access.object` attribution (0 of 1.18M rows attributed) is its own gap.
 - **Depends on:** nothing built. Step 1 below is a capture-side change (a new
   record type); steps 2-4 are reader-side and land on the existing corpus.
-- **Related:** `PLAN-20260807-1718-ui-backbone-todo.md` (this is the correctness
+- **Related:** `PLAN-20260807-1718-ui-backbone-done.md` (this is the correctness
   hole under its headline panel, and its step 2 owes the derived tables this
-  extends); `PLAN-20260806-1329-generic-memory-attribution-todo.md` (the same
+  extends); `PLAN-20260806-1329-generic-memory-attribution-done.md` (the same
   captures show 75-96% of `mem_object.device` unresolved — a different gap in
   the same data, not fixed here).
 

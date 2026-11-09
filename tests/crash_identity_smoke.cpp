@@ -21,10 +21,10 @@
 // deliberately left unflushed, and requires those two streams to be readable
 // anyway.
 //
-// WHAT THIS DOES NOT CLAIM. It is not crash-safety. Everything recorded after
-// start() is still lost on a signal — that is todos.txt item 15 and it is a
-// signal handler, not a flush. What is asserted here is the floor: a killed
-// capture can still be placed on a node and on a clock.
+// WHAT THIS DOES NOT CLAIM. It is not crash-safety. What is recorded after
+// start() survives a catchable fatal signal only through the engine's signal
+// handler, and never survives SIGKILL. What is asserted here is the floor: a
+// killed capture can still be placed on a node and on a clock.
 
 #include <cassert>
 #include <cstdint>
@@ -231,7 +231,7 @@ int main() {
         std::fprintf(stderr,
                      "crash_identity_smoke: %zu of 8 mem_object rows recovered from a SIGSEGV,\n"
                      "  expected 8 — the fatal-signal handler did not flush the buffered\n"
-                     "  records, which is todos.txt item 15\n",
+                     "  records (the engine's fatal-signal handler)\n",
                      recovered);
         fail = 1;
     }

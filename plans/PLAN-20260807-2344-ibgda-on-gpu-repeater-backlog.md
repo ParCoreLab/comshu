@@ -1,11 +1,13 @@
 # PLAN — the on-GPU doorbell repeater: keep the fast path fast
 
+> **Backlog 2026-11-09 (triage).** Only useful where the GPU can map a doorbell page (du04, PeerMappingOverride=1); MN5 runs the host doorbell. Not next work.
+
 - **Created:** 2026-08-07 23:44 +03
 - **Status:** TODO, and deliberately not started. This is Stage 3 of the
   IBGDA data-plane work; Stages 1-2 (the CPU repeater + WQE decode) shipped and
   reach parity with *working* SigmaTrace. This stage is a capability neither
   codebase currently has.
-- **Parent:** `PLAN-20260807-1746-ibgda-data-plane-hijack-todo` — read its
+- **Parent:** `PLAN-20260807-1746-ibgda-data-plane-hijack-done` — read its
   "Stage 2 SHIPPED" close first; the numbers there are the whole justification
   for this plan, and the whole argument for not building it yet.
 - **Prior art / design source:** `../SigmaTrace/Profiler/Modules/GPUMemoryHijack/`

@@ -1,5 +1,7 @@
 # A GPU needs a stable identity, and it must be scoped by node
 
+> **Closed 2026-11-09 (backlog triage).** Steps 1-4 shipped (GpuDevice a7a9f3c, _device_key, link_health colliding_gpu_uuids). Step 5, measuring MIG and CUDA_VISIBLE_DEVICES remapping on hardware, moved to todos.txt. The status below is historical.
+
 **Status:** todo. Supersedes the widened UNION in `_rank_device`, which is a
 patch over the symptom.
 

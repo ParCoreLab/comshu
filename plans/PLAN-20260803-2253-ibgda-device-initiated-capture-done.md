@@ -1,5 +1,7 @@
 # PLAN — capture device-initiated IB (IBGDA), which pcomm currently records as silence
 
+> **Closed 2026-11-09 (backlog triage).** Stage 1 (DEVX control plane) shipped; the data plane shipped through the doorbell hijack (uar_hijack.hpp) and the host doorbell (host_doorbell.hpp). Cases 11, 12 and 26 pass on MN5 (jobs 48812895, 48813464). The on-GPU repeater stays in its own backlog plan. The status below is historical.
+
 - **Created:** 2026-08-03 22:53 +03
 - **Status:** STAGE 1 SHIPPED, stages 2-4 re-scoped by measurement. The
   mlx5dv/DEVX provider is in the tree, builds on MN5 and du04, and captures real
@@ -1002,6 +1004,6 @@ data plane needs.
 - Case 10, the `ibdevx`+peermem (`by_addr`) configuration — the one SigmaTrace's
   artifact uses, and the half of `umem_referential` currently only reasoned
   about.
-- Entity close records (`PLAN-20260805-0053-entity-lifetimes-todo.md`).
+- Entity close records (`PLAN-20260805-0053-entity-lifetimes-done.md`).
 - Case 08's unaccounted queue pair
-  (`PLAN-20260805-0053-perftest-qp-creation-todo.md`).
+  (`PLAN-20260805-0053-perftest-qp-creation-done.md`).

@@ -1,5 +1,7 @@
 # The gaps are in the records, not the providers
 
+> **Closed 2026-11-09 (backlog triage).** Stage A (send_flags, ib_post_send_sg, ib_port, ib_qp_signalling) and Stage B (the UCX provider) shipped and were validated on MN5. Nothing remains. The status below is historical.
+
 A coverage diff against SigmaTrace (`SigmaTrace-playground` @ `8d8141a`) turned
 up five things it records that we do not. Two of them are entire providers —
 libfabric and UCX — and they look like the headline. They are not, and this plan
@@ -190,7 +192,7 @@ SigmaTrace defines and reads `UcpEpQpMapping`, but the tree at `8d8141a` has no
 emitter for it. It is therefore evidence for the *needed relation*, not an
 implementation to copy or a parity oracle we can assume works. Stage B now has
 its own measurement-led plan:
-`PLAN-20260815-1540-ucx-provider-and-attribution-in-progress.md`.
+`PLAN-20260815-1540-ucx-provider-and-attribution-done.md`.
 
 **Status 2026-08-16: the provider is built and PAUSED at a defensible point.**
 29 UCP doors, 13 records (600-624), reader tables and byte-level conformance for

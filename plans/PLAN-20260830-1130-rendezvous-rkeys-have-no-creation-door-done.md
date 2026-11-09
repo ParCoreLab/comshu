@@ -1,5 +1,7 @@
 # Rendezvous rkeys are destroyed through a door we hook and created through one we don't
 
+> **Closed 2026-11-09 (backlog triage).** ucp_ep_rkey_unpack_internal is hooked with a runtime version gate (providers/ucx/ucx_provider.cpp); case 21 passes. The status below is historical.
+
 **Status:** todo. Case 21 is RED on `entity_close_accounted` because of this, and
 it is red for a true reason — pcomm really does not record these keys.
 

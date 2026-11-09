@@ -5,7 +5,7 @@
   (evidence below); Design A was taken. Four departures from the plan as
   written, all recorded under "What actually happened"; one open decision on
   case 05 that is not the implementer's to make.
-- **Blocks:** `PLAN-20260803-1021-gpumem-window-timestamps-todo.md` (the window
+- **Blocks:** `PLAN-20260803-1021-gpumem-window-timestamps-done.md` (the window
   change is parked because it perturbs the race this plan removes).
 - **Findings:** `things-to-circle-back-to.md` — "NVSHMEM heap attribution
   depends on when a record is drained" and "goldens that encode run-specific
@@ -393,7 +393,7 @@ reads at all, and the answer belongs in `ops.sql`'s comment either way.
 
 - **Re-landing `2bfb376`** (the window change) as the timing-perturbation probe
   for case 07 is the remaining acceptance item; it belongs to
-  `PLAN-20260803-1021-gpumem-window-timestamps-todo.md`, which this unblocks.
+  `PLAN-20260803-1021-gpumem-window-timestamps-done.md`, which this unblocks.
 - **The "NVSHMEM 3.7" in case 04's old comment** was never resolved — MN5 has
   3.2.5, and the comment is gone now. It no longer matters: the new scheme reads
   no version and asks for no layout, which was always the better argument.

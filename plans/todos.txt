@@ -6,6 +6,9 @@ the PLAN later does not mean re-deriving it. When one graduates, it becomes
 PLAN-{YYYYMMDD-HHMM}-{title}-todo.md per plans/README.md and its entry here is
 deleted — not left behind as a second copy that drifts.
 
+Triaged 2026-11-09: finished entries deleted (git has them); 1-4 are the
+original 2026-08-25 review's live seeds, 5-8 came from closing plans.
+
 Raised 2026-08-25, from a review of the record model while drawing
 demos/entity-map.html. Scope of that review: libpcomm/schema, core/records.hpp,
 core/ids.hpp, pcomm-read/link_sql.hpp, the provider greps. NOT reviewed: the
@@ -13,24 +16,7 @@ hook layer, the recorder hot path, ui/, agent/. Nothing here is a bug report —
 these are design questions, and a few may be answered "leave it alone".
 
 
-1. DONE (2026-08-25): the Edge rule is written down
-----------------------------------------------------------------------------
-Was: "Edge has no producer and the rule for earning one was never written
-down". The rule now lives in libpcomm/schema/README.md under "When a relation
-earns an Edge", with a pointer from EdgePredicate in core/vocab.hpp.
-
-Inline when 1:1, known at write time, and hot. Edge when 1:N, time-varying, or
-LEARNED LATER — the last being a property of the format and not a preference,
-since a stream is a packed array with no index and a field can never be filled
-in afterwards.
-
-Attribution stays. It is not dead code: records.hpp seeded one record of each
-archetype so the writer and reader exercise all four paths, and each of the four
-predicates was then correctly solved by an inline field or a reader-side join.
-What remains are items 2, 3 and 4 below — the two inline fields the rule says
-are already wrong, and the one prospective producer.
-
-2. Inlining a relation asserts 1:1 and time-invariant. Managed memory is neither
+1. Inlining a relation asserts 1:1 and time-invariant. Managed memory is neither
 -------------------------------------------------------------------------------
 `mem_object.device` is one DeviceId set at allocation. cuMemAllocManaged funnels
 into the same handle_alloc as cuMemAlloc (nvbit_backend.cu:1203), so a managed
@@ -103,7 +89,7 @@ ResidesOn and is a prerequisite for knowing whether ResidesOn is needed; it also
 wants a hash bump, so it pairs with item 7r.
 
 
-3. source_line is 1:1 pc -> line; inlined device functions are 1:N
+2. source_line is 1:1 pc -> line; inlined device functions are 1:N
 ------------------------------------------------------------------
 One source_line row per pc. With -lineinfo and inlined __device__ functions, a
 pc corresponds to a CHAIN of (file, line) frames, and the record can hold only
@@ -118,7 +104,7 @@ one line, not one pc mapping to several. That is consistent with the record's
 p2p_kernel.cu has no inlined __device__ call to produce one. A workload that
 does is what would settle it.
 
-4. The NCCL unattributed-access gap is Edge-shaped
+3. The NCCL unattributed-access gap is Edge-shaped
 --------------------------------------------------
 PLAN-20260817-0705 is blocked on naming an allocation the application never
 made: 1,179,948 accesses on case 05 land in no tracked object, because NCCL's
@@ -134,141 +120,7 @@ This does not unblock the plan — the blocker is still "there is nothing to joi
 on". It says that when the blocker lifts, the record to carry it already exists.
 
 
-5. DONE (2026-08-25): the five lifetime-less Entities are Artifacts
--------------------------------------------------------------------
-node_identity 524, ib_qp_signalling 126, ucx_worker_address 622,
-ucx_ep_connection 624 and nccl_dev_comm 910 are RecordKind::Artifact. Option (b),
-as the project's own preference dictated: take the better schema, re-run the
-corpus.
-
-The test, written down in libpcomm/schema/README.md under "The archetypes are a
-test, not a label": does anything ever close it? If no close path exists and
-none is missing, it is not an Entity.
-
-ONE THING THIS TURNED UP THAT WAS WORTH MORE THAN THE CHANGE. Reclassifying moves
-no layout, no size and no field, so the stride check cannot see it — and the
-SCHEMA HASH DOES NOT MOVE EITHER, because a record's kind lives in a pcomm.fbs
-comment rather than a declaration. Every stream header has carried `kind` since
-format 1 and nothing ever read it, so the reclassification would have been
-silent: old captures reading clean under the wrong archetype. stream_header_error
-validates `kind` now, and stream_format.cpp has the refusal case. That hole
-existed independently of this change and would have stayed open.
-
-Captures predating 2026-08-25 holding any of those five records are refused by
-name and must be re-captured.
-
-6. DONE (2026-08-25): entity_close's opener list is no longer enumerated
-------------------------------------------------------------------------
-The comment named four openers and was stale by twelve — sixteen record types
-are closed today across five modules. It no longer lists them: the list going
-stale IS the mechanism working, since "a provider added later needs nothing
-here" is the point of using a type_id instead of an enum. It names the grep
-instead.
-
-
-7. SETTLED (2026-08-25, du04): the stamp is load-bearing — keep it
--------------------------------------------------------------------
-Measured on hardware, which is what this entry asked for. du04, CUDA 13.0,
-driver 580, 4x A100, case 03's p2p_kernel rebuilt for sm_80, pcomm at 2a3f41d:
-
-    gpu_access rows                16384
-    launch = 0, cannot join         4096   25.0%
-    joins a gpu_kernel span        12288   75.0%
-
-So the record's own Temporal is the ONLY timing a quarter of the firehose has.
-Removing it would leave those rows unplaceable on the timeline. The 48 bytes
-stay. Question closed.
-
-What the measurement actually found is in the commit beside it: the 25% was a
-DEFECT, not a property. g_grid_launch_id started at 0, so the first launch of
-every process minted a real id equal to the sentinel both fields document as
-"unknown", and the reader's join could never match it. Starting at 1 took the
-same capture to 0.0% unjoinable, 4/4 kernels. The share was 1/N for an N-kernel
-run — small on long runs, never zero, and silent.
-
-The packing observation from the previous version of this entry still stands and
-is now the only live part: Temporal is 48 bytes carrying 29 bytes of content, of
-which `value` (8 B) is meaningful only for TimeKind::Counter, which nothing
-emits. That is a separate change, wants a hash bump, and is the same decision as
-item 11's "Counter has no producer".
-
-8. DONE (2026-08-25): the derived tables declare their columns
----------------------------------------------------------------
-Every kTables entry in pcomm-read/link_sql.hpp now carries a `columns` line —
-the columns it promises, in order — and link::columns_match checks it against
-what the SQL really produces. Renaming a column is loud now instead of blanking
-a panel.
-
-Checked on BOTH paths, which is the part that took a second try. It asks the
-SQL, not the catalog: `pcomm ui` defines the layer as views so a relation
-exists, but `pcomm link` COPYs each entry straight to Parquet and never CREATEs
-one, so a catalog lookup checked nothing on exactly the path that writes the
-fixture everything else reads. link_health fell into that same trap once — the
-comment beside it in main.cpp records it.
-
-Not a schema. A schema for these is still the larger job (types, nullability, a
-version), and the README's "what is still not covered" section still stands. But
-the names are pinned, which was the part that could silently rot.
-
-9. DONE (2026-08-25): comm_edges and object_access have local tests
--------------------------------------------------------------------
-tests/comm_edges_rule.sh and tests/object_access_rule.sh, on wr_flow_rule.sh's
-pattern, registered in ctest. Eleven mutations were used to check that each
-assertion can actually fail; one found a hole in the fixture itself. The
-original finding follows, since the reasoning still applies to whatever table
-comes next.
-
-9a. The original finding
-------------------------
-wr_flow, timeline_span and link_health have off-cluster ctests built from
-synthetic CSVs (flow_pairing_agree.sh, wr_flow_rule.sh). Those are the best
-tests in the tree — wr_flow_rule.sh exists because deleting a rule clause left
-the other one green TWICE.
-
-comm_edges and object_access — the two tables behind the headline panels — have
-ZERO local tests and are verifiable only on MN5, where the queue is slow and a
-red board has more than once been the harness rather than the tracer.
-
-The fixture pattern already exists and is pointed at the least-consumed tables.
-Point it at the most-consumed ones. Probably the highest value-per-hour item in
-this file.
-
-
-10. DONE (2026-08-26): the vendor-free rule is checked, and it is narrower
---------------------------------------------------------------------------
-`tools/check_vendor_free.py`, ctest `vendor_free`. libpcomm was already clean;
-what the check did was force the rule to be stated precisely enough to run.
-
-IT CANNOT BE A GREP. Vendor names are on nearly every page of libpcomm — in
-COMMENTS, which is where this codebase keeps its reasoning, and in dlsym string
-literals, which is HOW core stays vendor-free. A check over raw text flags all
-of those, and a check nobody can keep green gets deleted. So it strips comments
-and string literals first and judges what is left.
-
-THE RULE IS TYPES AND HEADERS, NOT NAMES. Core may name a vendor symbol, because
-interposition and dlsym work by name and need no header: engine.cpp defines five
-`extern "C"` doors — nvshmem_malloc/calloc/align/free and ibv_destroy_qp — whose
-signatures are `void*` and `size_t` throughout, and engine_abi.h already records
-why the QP close door can belong to neither provider. Those are allowlisted BY
-NAME in the script, so a sixth door drifting into core has to be written down;
-that is the layering violation worth catching, and it was invisible before.
-
-The two files nearest the line pass, and how is the rule in miniature:
-mem_attr.hpp declares libcuda's signature itself instead of including cuda.h,
-dmabuf_registry.hpp copies CUresult's ABI under the name `CuResult`. Twelve
-mutations were used to check each rule can fail and each exemption can not;
-removing one allowlist entry turns engine.cpp red, so the list is load-bearing.
-
-WHAT IT STILL CANNOT CHECK, and this half of the original finding stands:
-core/mem_attr.hpp hardcodes kAttrDeviceOrdinal = 9 — a vendor ABI constant with
-no vendor type in sight. Its own comment records that a wrong constant (4,
-CU_POINTER_ATTRIBUTE_HOST_POINTER) survived a provider's entire lifetime because
-every failure mode of device_of looks like kUnknownDevice. No regex can check a
-magic number against a header it is forbidden to include. That is the same
-ambiguity PLAN-20260817-0634 is about, and it is where the residue lives.
-
-
-11. Known and already written down, listed so they are not re-derived
+4. Known and already written down, listed so they are not re-derived
 ---------------------------------------------------------------------
   - pd is carried by four ibverbs entities and created by no record. A query can
     group by it and never name it.
@@ -281,334 +133,32 @@ ambiguity PLAN-20260817-0634 is about, and it is where the residue lives.
     ucx_deep 800-899.
 
 
-12. DONE (2026-08-25): the figures are checked against the declarations
-------------------------------------------------------------------------
-tools/check_figures.py, registered as ctest `figures_current`. Three lists
-checked against each other: the PCOMM_RECORD declarations (source of truth,
-parsed with schema_check.py's own parser), gen_figures.DRAWN (what the diagrams
-drew), and gen_figures.FAMILIES (what the index table lists). Catches a record
-that exists and is not drawn, one drawn and not declared, and a type_id or
-archetype that disagrees.
-
-The layout still is not derived from anything, and should not be — a figure is
-an argument about which relationships matter. Only the SET is checked.
-
-Worth remembering: it executes gen_figures.py from source instead of importing
-it, because Python validates a cached .pyc on (mtime, size) at one-second
-granularity — so a same-length edit in the same second reuses stale bytecode.
-That fooled this check during its own mutation test, which is how it was found.
-
-
-Raised 2026-08-27, from the four real-application studies in tests/hpc/apps/
-(GROMACS, LAMMPS, QuantumESPRESSO, llm.c). Each of these was found by an
-application nobody here wrote, and each is cross-cutting — the studies could
-not fix them, because a study that edits the tool it is validating proves
-nothing. Ordered by value per unit of effort.
-
-
-13. DONE (2026-08-27): ucp_worker_query is hooked
---------------------------------------------------
-FOUND INDEPENDENTLY BY THREE OF THE FOUR, from three different angles, which is
-the strongest signal this exercise produced. pcomm hooks `ucp_worker_create`
-(ucx_hooks.hpp:10) and `ucp_worker_get_address` (ucx_hooks.hpp:181, ucx.map:17).
-OpenMPI's `mca_pml_ucx.so` — the layer under every MPI_Send, MPI_Alltoall and
-halo exchange — imports `ucp_worker_query` and NOT `ucp_worker_get_address`.
-Only the one-sided `mca_osc_ucx` and `mca_spml_ucx` use the hooked door.
-
-So for EVERY OpenMPI point-to-point application, `ucx_worker_address` describes
-the wrong one of each rank's two workers — the one-sided worker, which carries
-no traffic — and `ucx_ep_connection.remote_prefix_hash`, which ucx_records.hpp
-:275-279 itself calls "the only thing in the UCX records that crosses a rank
-boundary", points at nothing.
-
-Measured consequences: LAMMPS `with_peer_rank` = 0 of 621 halo sends per rank;
-GROMACS's PP->PME edge reads 7 bytes instead of 25.76 GB; QE cannot produce a
-communication matrix for MPI p2p at all. Five of LAMMPS's assertions and two of
-GROMACS's flip from vacuous or xfail to real once it is hooked.
-
-Same shape as case 08's empty ib_queue_pair: an API hooked in one of its two
-spellings. Cheapest item in this file by a wide margin.
-
-FIXED, and the gate was the other half. tests/ucx_selftest.cpp called the same
-door the provider happened to hook, so ucx_records.sh was green throughout. It
-now asks through BOTH doors and asserts two rows agreeing on prefix_hash, plus a
-third query with the address field ABSENT and the attr struct poisoned with
-0xA5 — because ucp_worker_query fills only what the caller asks for, and a
-provider reading attr->address without checking the field mask would hash
-uninitialised stack into a deterministic, plausible, wrong join key. Two
-mutations red: no field-mask check (3 rows), handler disabled (1 row).
-
-
-14. DONE (2026-08-27): comm_edges has a UCX lane
-------------------------------------------------
-`_sends` (link_sql.hpp:532) is built from `ib_post_send` and `mlx5_device_send`
-and nothing else. On the HPC-X stack both are empty — see the door-sweep result
-now recorded in PLAN-20260815-1540 Future work 1 — so `comm_edges` has ZERO ROWS
-over captures holding tens of GB of correctly recorded traffic. LAMMPS: 51 MB
-and ~800 messages per rank captured, comm_edges empty. GROMACS: 24,452 tagged
-sends, comm_edges empty in both arms. QE: 18.7M sends, and on the default
-transport no verbs traffic at all.
-
-This is not the same item as 13, and fixing 13 does not fix it: 13 supplies the
-rank correspondence, and this is the absence of a lane that would use it. Both
-are needed before any HPC-X application has a rank matrix.
-
-Note what it is NOT: the traffic is captured. The derived layer cannot see it.
-
-FIXED. Three views plus one UNION ALL, with transport = 'ucx' as its own
-dimension so the verbs/devx oracle subset is untouched by construction, and
-unit = 'datatype-units' because UcxTagSend.count is not universally bytes. An
-ambiguous prefix resolves to neither rank; a get is emitted with its endpoints
-swapped; rejected sends and AM headers are excluded. link_health gains
-unresolved_ucx. Six mutations red.
-
-THE FIRST DRAFT WAS WRONG IN A WAY ONLY THE FIXTURE COULD SHOW: the predicates
-were written as status_class <> 'error' and op = 'put'. The derived layer mounts
-the RAW streams, where an enum is the integer that went on disk — the CSV export
-decodes for a human and nothing in link_sql ever sees those strings — so the
-lane matched no row at all. Item 9's argument for fixtures, demonstrated.
-
-
-15. DONE (2026-08-27): the crash keeps its capture
----------------------------------------------------
-No `sigaction`, no signal handler, no signal-path flush anywhere in the engine —
-the only SIGSEGV tokens in libpcomm/src are comments about a fault seen
-elsewhere. A process killed by a signal loses whatever is still buffered.
-
-QE's pw.x reaches JOB DONE and then faults in its own teardown (confirmed QE's
-own with a no-pcomm, no-preload control). The result is not a smaller capture.
-It is a capture that keeps 100% of the event volume and loses the records that
-make it interpretable, because high-volume streams flushed incrementally when
-their buffers filled and low-volume ones never did:
-
-    ib_post_send   18,700,773 rows   survived
-    ib_modify_qp           94 rows   lost
-    node_identity     2 of 4 ranks   lost
-    => 84% of sends land on dst_rank = -1; 6 edges reported where 12 exist
-
-THE BROKEN CAPTURE IS THE BIGGER ONE. That is the property that makes this worth
-more than its size suggests — every heuristic a human or a check uses to notice
-a bad capture points the wrong way. Anything that aborts, or is SLURM-cancelled
-after doing its work, lands here, and nothing says so.
-
-FIXED IN TWO PARTS. start() now flushes the clock anchor and node identity
-immediately — pure numbers, no intern dictionary needed, and the anchor of every
-join in the reader. Then a fatal-signal handler recovers the rest, DELIBERATELY
-not async-signal-safe because the alternative was never "a safe handler" but "no
-handler". Four guards bound it: the safe work is flushed before the risky
-emit_intern_records begins, a recursion guard, try_drain_all() rather than a
-blocking drain (the thread holding the lock may be the one that faulted), and an
-alarm(30) deadman so a wedged flush kills rather than hangs — a hang under SLURM
-costs the rest of the walltime. It declines to displace a handler the
-application installed itself, and re-raises with the default disposition so the
-process dies exactly as it would have.
-
-tests/crash_identity_smoke.cpp runs both arms over one workload: SIGKILL
-(uncatchable) keeps identity and 0 of 8 records, SIGSEGV keeps 8 of 8 plus the
-intern blob and still dies by SIGSEGV. The contrast IS the test.
-
-
-16. DONE (2026-08-27): a case can declare its own oracle names
+5. `pcomm ui --bundle`: one self-contained file for a capture
 ---------------------------------------------------------------
-`PARAM_COLS` is hard-coded, so a `meta.json` naming `npp`, `npme`, `nsteps`,
-`natoms` — or any oracle an application actually has — is rejected wholesale
-with "unknown workload key(s)". Found independently by GROMACS and LAMMPS; both
-shipped an in-case runner instead, and GROMACS's `asserts.sh` takes the column
-list from meta.json, which is where the fix belongs.
+Step 6 of the UI plan (PLAN-20260807-1718-ui-backbone-done), the only step not
+built: a capture's panels as one HTML file someone can open without pcomm.
+Opportunistic, and only worth it once `pcomm report` exists, because that is
+the thing people will actually pass around.
 
-FIXED. A case declares its own names in meta.json's "workload_params"; the
-shared list stays closed so a typo'd `msg_byte` is still caught, and writing the
-name twice is the deliberate act. Names are validated before being spliced into
-a CREATE TABLE. The four app metas declare 31 names between them.
+6. dmabuf fds are reused; key identity on the inode
+---------------------------------------------------
+From PLAN-20260807-0130-context-coverage-and-next-done item 4. The engine's
+fd -> range table (pcomm_engine_dmabuf_*) keys on the descriptor NUMBER, which
+the kernel reuses once closed — and NCCL GIN closes its fd right after
+registering. A later conversion replacing the entry is fine; a registration
+looking up a reused number before its own conversion would get the old range.
+Never observed. The durable key is fstat(fd).st_ino. Measure before building.
 
-AND THE SAME LINES HELD A REAL BUG. Both param substitutions had `2>&1` on its
-own line AFTER the heredoc terminator, where it is not a redirection on python
-at all — it parses as a separate null command inside the substitution, always
-succeeds, and so the substitution's status was always 0 and `||` could never
-fire. The comment beside it had recorded the symptom since it was written
-("its message was still lost once") without the cause ever being found.
+7. Allocation tracking through the CUDA door list
+-------------------------------------------------
+From the same item 4: cuMemAlloc*, cuMemFree*, cuMemMap, cuMemRelease, so a
+MemObject exists for buffers no provider registers. The export-table door
+(providers/mlx5dv/dmabuf_door.hpp) is now the proven route to cudart_static's
+calls, which is what made this impractical before.
 
+8. GPU identity under MIG and CUDA_VISIBLE_DEVICES remapping
+------------------------------------------------------------
+Step 5 of PLAN-20260831-0100-gpu-identity-is-node-scoped-done: the identity
+rules are built but neither case is exercised by the suite. Run both on real
+hardware (MN5 cannot do MIG; du04 can) before claiming either works.
 
-17. DONE (2026-08-27): ucx sends carry a device
-------------------------------------------------
-On the HPC-X stack the UCX layer is often the ONLY layer that saw the traffic
-(items 14, and the door sweep). It records no memory type, so it cannot say
-whether a send came from host or device memory — which is exactly the question
-GROMACS's direct-GPU-comm arms differ on, and the reason that study had to reach
-its central negative by inference from registration counts rather than measure
-it. `core::device_of()` already exists and the ibverbs provider already applies
-it. Related to PLAN-20260817-0634: the same call's four meanings of
-kUnknownDevice are what make the inference awkward.
-
-FIXED, on all three records that carry a local buffer (ucx_tag_send, ucx_rma,
-ucx_am_send) so the schema hash moves once rather than three times:
-0x6A1CF6FBB0B71348 -> 0x3961E4E2C84D593A. Captures predating it are refused by
-name. The gate's limit is recorded with it: in a process with no CUDA every
-address answers kUnknownDevice, so the local test distinguishes "wired up" from
-"fabricated" and not "the buffer" from "any pointer".
-
-
-18. DONE (2026-08-27): sigaction is interposed, and OpenMPI no longer wins
---------------------------------------------------------------------------
-Raised the same day by the re-run in tests/hpc/apps/RERUN-2026-08-27.md, and the
-first version of this entry was wrong. It read the 91% unresolved_ucx on Quantum
-ESPRESSO as an ENDPOINT-side gap -- endpoints created from a socket address or a
-connection request carrying no peer address for UcxEpConnection to record. That
-is not what happened, and the capture says so plainly: 8 endpoints, 8
-ep_connections. Every endpoint HAS its peer address.
-
-WHAT IS ACTUALLY WRONG. Only two of QE's four ranks recorded a worker address at
-all, so half the ranks are unnameable and every prefix dialled at them resolves
-to nothing:
-
-    rank  node_identity  clock_anchor  ucx_worker  ucx_tag_send  intern-blob
-     0          1             1             0          8,191       MISSING
-     1          1             2             1          8,147          52 B
-     2          1             1             0          4,095       MISSING
-     3          1             2             1          7,072          52 B
-
-Two anchors means finalize() ran; one means it did not. Ranks 0 and 2 kept their
-startup facts (the flush added for item 15), kept the one stream big enough to
-drain by filling its buffers, and lost everything in between -- 4 streams
-against 29. That IS item 15's inverted failure, still happening, and item 15's
-own fix should have caught it.
-
-WHY IT DID NOT. There is no intern-blob.bin on those ranks, so the fatal-signal
-handler never ran there. `libopen-pal.so` imports `sigaction`. pcomm installs
-its handlers from the provider's ELF constructor under LD_PRELOAD, which is
-BEFORE MPI_Init; OpenMPI then installs its own over the top. install_signal_
-handlers() is careful not to displace a handler the application already
-installed -- and the displacement runs the other way, at a time the check cannot
-see. The job exited 139 (SIGSEGV), so the signal was one we do handle.
-
-THE FIX IS INTERPOSITION, which is the thing this codebase is built out of.
-Hook `sigaction`/`signal` in the engine, keep the handler the application asks
-for, install ours in front, and chain to theirs after the flush. That preserves
-the application's semantics exactly -- it still sees its own handler on query,
-and its handler still runs -- while making ours survive being overwritten. Same
-shape as the doors engine.cpp already owns (nvshmem_free, ibv_destroy_qp): a
-door that belongs to no single provider.
-
-WHAT THIS MEANS FOR ITEM 15. The two-part fix there was right and is measurably
-working -- node_identity went from 2 of 4 ranks to 4 of 4 on this exact
-workload. What it could not survive was another library taking the signal away
-from it, which is a third failure mode neither part addressed.
-
-VALIDATED ON HARDWARE, job 45105406, same workload that exposed it:
-
-              before (45103790)        after (45105406)
-    streams   4 / 29 / 4 / 29          29 / 29 / 29 / 29
-    blob      MISSING on 0 and 2       52 B on all four
-    waddr     4                        8
-    edges     6, four with dst = -1    11, none unresolved
-    health    unresolved_ucx = 25,005  unresolved_ucx = 0
-
-and QE's pool structure is finally legible: intra-pool ~25 GB against
-inter-pool ~100-200 MB, a 100x separation across pools {0,1} and {2,3}. Three
-assertions flipped to XPASS and their expect_fail markers are removed.
-
-19. DONE (2026-08-27): check.sh reads the derived layer
---------------------------------------------------------
-Raised 2026-08-27, same re-run. `03_quantumespresso/check.sh` loads
-`<csv>/*.csv` into sqlite. Derived tables — comm_edges, link_health, wr_flow —
-are not CSVs: they are written by `pcomm link` into parquet. So the runner
-reported "comm_edges is EMPTY — unanswerable" for a table holding six rows, on
-three separate assertions.
-
-Not fixed in place, because it is that study's own harness and rewriting another
-agent's runner mid-flight makes its results unattributable. It belongs with
-item 16's decision: if an app study is ever promoted to a gate, it uses
-sql_check.sh, which reads the derived layer — and item 16 is what made that
-possible.
-
-
-20. Two of the three remaining app xfails are the tool being RIGHT
--------------------------------------------------------------------
-Raised 2026-08-27, chasing the "visible issues still open" list. Both were
-carrying marker text that described a mechanism the data does not support, and
-both turn out to need no code change. Recorded because the wrong text would
-otherwise send the next person after a door that is not missing.
-
-entity_close_accounted (01_gromacs). The marker said "3,726 entity_close rows
-against openers that were never recorded, opener 100". Measured on job 45103152:
-unmatched closes = 0. Every mem-region close names a region that was recorded.
-What actually fires is clause 3 -- 33 of 1,588 regions still live at exit, 3-5
-per rank evenly across all 8, all origin=1, i.e. the same door as the other
-1,508. An application exiting without deregistering. The assertion file already
-prescribes the answer and forbids the tempting one: scope per case, never a
-global exemption for opener 100, because that would hide the hcoll leak in
-BUGS-FOUND.md and the 474 unmatched closes it was written for.
-
-mem_owner_unambiguous (01_gromacs). The marker said UCX re-registers one base at
-growing lengths. That IS a containment chain and the reader already resolves it
-to the innermost object -- nested_refs, not ambiguous_refs, exactly as it does
-for NCCL's co-terminal sub-ranges. The real shape is a 16-BYTE PARTIAL OVERLAP:
-
-    0x10a2a480 + 88016  ends at 0x10a3fc50, and a region starts at 0x10a3fc40
-    0x112f6830 + 86288  ends at 0x1130b940, and a region starts at 0x1130b930
-
-Sixteen bytes each time, 198 rows. Neither region contains the other, so no rule
-picks a winner without inventing one -- which is the finding this assertion
-exists to deliver. And ZERO rows have devices > 1, so the emitters do not
-disagree about any device; an earlier reading of mine that they did was a
-column-index mistake.
-
-WORTH FOLLOWING UP AS A UCX QUESTION, not a pcomm one: a registration cache
-producing regions that overlap by a constant 16 bytes looks like an alignment
-rounding rather than intent. If it is a defect it belongs in BUGS-FOUND.md, and
-the evidence above is most of what such an entry needs. Not chased here because
-it is a claim about UCX and wants UCX sources open beside it.
-
-THE GENERAL POINT, which cost me two investigations to relearn: a marker is
-prose, and prose does not get re-measured when the code under it changes. Both
-of these were written against captures from a tracer that has since had five
-fixes. Re-measure before believing a marker, including your own.
-
-
-21. DONE (2026-08-27): UCX's send door is a TABLE, not a symbol
-----------------------------------------------------------------
-Item 14 gave the HPC-X class a comm_edges lane and PLAN-20260815-1540 Future
-work 1 explained why it had to be built out of UCP intent: `nm -D` finds no
-send symbol in libucp or libuct, and a probe job with -p ib,ucx,mlx5dv captured
-the ENTIRE DEVX control plane while mlx5_device_send stayed empty against
-24,452 tagged sends. The conclusion drawn was that this is the IBGDA problem and
-only the doorbell hijack could see it.
-
-That conclusion was wrong, and cheaply so. uct/api/uct.h declares every UCT data
-operation as UCT_INLINE_API over `ep->iface->ops.ep_am_short(...)`. There is no
-symbol because there is no function -- there is a function POINTER, in
-uct_iface_ops_t, declared in uct/api/tl.h, which UCX INSTALLS. MN5's HPC-X ships
-it; the file is byte-identical (md5 bef986ac) from v1.14.0 through
-origin/master; and its own doc comment says it exists "to allow creating
-interface/endpoint with custom operations". So no offset is guessed, no pointer
-is walked, and this is the exact shape of door ObjectOpsHookManager exists for.
-
-Confirmed on a laptop in 0.1s before any provider was written: interpose the
-EXPORTED uct_iface_open, overwrite the data slots of the returned iface's ops,
-run tests/ucx_selftest -- six interfaces patched (self, tcp x3, sysv, posix),
-five UCT operations observed beneath four UCP sends, workload unaffected.
-
-providers/ucx_deep/ (800-899), 4 records, 20 mutations red, +39 ns per UCT
-operation. THREE of those mutations survived the record gate first, because six
-interfaces and four endpoints never collide and nothing over `self` ever fails;
-that is what moved the lookup tables and the length rules into their own header
-with tests/ucx_deep_tables.cpp over them. Details in PLAN-20260827-1449.
-
-WHAT IT DID NOT CLOSE -- RESOLVED 2026-08-27, jobs 45113099 and 45115011.
-rc_mlx5, HW tag matching, zcopy and rendezvous are all exercised on MN5 by case
-21_ucx_deep, which pins the UCX thresholds and sweeps four sizes across them
-(the earlier all-active-messages result was the DEFAULTS, not the provider).
-uct_send.tag decodes to the workload's own MPI tags. The derived layer reads the
-transport through `transport_mix`, which needed `intern_text` -- the dictionary
-had never reached DuckDB, so every interned column below the reader was an
-opaque integer. Deliberately NOT a comm_edges lane; PLAN-20260827-1449 says why
-at length. STILL OPEN: nothing joins a ucx_tag_send to the uct_send rows it
-became -- PLAN-20260815-1540's Stage 3 -- and the short/bcopy RMA doors are
-unwitnessed because this workload's one-sided traffic is 1 MB, always zero-copy.
-
-AND ONE THING WORTH SOMEONE ELSE'S ATTENTION: rec().intern() is a call across
-the engine's C ABI into a table behind a per-domain mutex, measured at 86 ns
-against a 39 ns operation -- four fifths of this provider's cost before a
-per-thread cache removed it. Every provider that interns on its hot path is
-paying the same 86 ns per record. ucx_deep fixed it locally; the engine is where
-it should be fixed.

@@ -3,7 +3,7 @@
 **Status: DONE.** Verified on du04 (single node) and MN5 job 45360625
 (multi-node, 8 ranks over 2 nodes). Finding 9 is closed.
 
-**Finding 9** from `PLAN-20260902-0300-lammps-and-llm-scaleout-findings-backlog.md`,
+**Finding 9** from `PLAN-20260902-0300-lammps-and-llm-scaleout-findings-done.md`,
 the last one open. This is its own session because it is a new door, not a field
 on an existing record.
 

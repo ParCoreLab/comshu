@@ -102,7 +102,7 @@ WITH opens AS (
   -- runs, so a hook written against upstream would read the wrong register and
   -- intern a fabricated handle. It needs a runtime version gate. Left unhooked
   -- and left RED deliberately, per the paragraph above:
-  -- plans/PLAN-20260830-1130-rendezvous-rkeys-have-no-creation-door-todo.md
+  -- plans/PLAN-20260830-1130-rendezvous-rkeys-have-no-creation-door-done.md
   UNION ALL SELECT rank, rkey,     626 FROM ucx_rkey
   -- The two NCCL entities that emit a close (nccl_provider.cpp closes 900 at
   -- ncclCommDestroy/ncclCommAbort and 908 at ncclCommWindowDeregister). Added

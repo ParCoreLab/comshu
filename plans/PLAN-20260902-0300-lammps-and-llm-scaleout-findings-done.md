@@ -1,5 +1,7 @@
 # What the LAMMPS and LLM-scale-out round-2 studies found in the tool
 
+> **Closed 2026-11-09 (backlog triage).** All 14 findings closed, per its own header. The status below is historical.
+
 **Status: 14 of 14 closed.** Finding 9 closed 2026-09-03 — see
 `PLAN-20260902-1200-nccl-chose-the-algorithm-we-did-not-done.md`. Everything here
 is fixed, tested and on `main`.

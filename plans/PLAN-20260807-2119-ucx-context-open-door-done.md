@@ -1,5 +1,7 @@
 # PLAN — find the door UCX opens its ibv_contexts with
 
+> **Closed 2026-11-09 (backlog triage).** The door was mlx5dv_open_device, interposed in 197f633; the expect_fail markers came off in 82803a2. The status below is historical.
+
 - **Created:** 2026-08-07 21:19 +03
 - **Status:** TODO. Diagnosed to a hypothesis with two instruments already in
   the tree; the door itself is not yet named.

@@ -19,7 +19,7 @@ the capability whose absence makes all four IBGDA cases SKIP on MN5.
 `~/proj/pcomm` on du04 is a **partial, pre-suite deployment** (no `tests/`, no
 git). It needs the current tree before any of this runs; that sync is the first
 practical task, not part of the design.
-- **Related:** `PLAN-20260803-2253-ibgda-device-initiated-capture-in-progress.md`
+- **Related:** `PLAN-20260803-2253-ibgda-device-initiated-capture-done.md`
   (the doorbell hijack this validates); `tests/hpc/cases/12_ibgda_doorbell`
   (the capture side already exists).
 

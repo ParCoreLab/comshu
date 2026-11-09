@@ -33,7 +33,7 @@ Both platforms measured 2026-09-05, and they answer opposite:
 | **MN5** `as01r4b07` (H100, driver 595.71.05, `Dual MIT/GPL`) | `NOT_PERMITTED` | **1** | open kernel module, no PeerMappingOverride → host path |
 
 Job `45446991`. This retires the one claim in
-`plans/PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-todo.md`
+`plans/PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-done.md`
 that was inferred from the experiments repo's env notes rather than measured
 here: MN5 cannot do GPU-submitted IBGDA, and the host path arms there and only
 there. In the same job the GPU hijack correctly reports it cannot engage

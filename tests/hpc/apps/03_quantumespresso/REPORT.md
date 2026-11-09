@@ -17,7 +17,7 @@ every number below comes from it unless stated).
 | 1 | The comm matrix's block structure follows `-npool` exactly, and a transpose message size derived from QE's *own log* appears in the capture to the byte, in both configurations | claim 1 + 3 |
 | 2 | **An unclean exit silently destroys rank attribution while preserving 100 % of the event volume.** 15.68 M of 18.70 M sends land on `dst_rank = -1` | claim 2 |
 | 3 | **`ucx_worker_address` is never written for any OpenMPI point-to-point application.** The hooked door is `ucp_worker_get_address`; `mca_pml_ucx.so` uses `ucp_worker_query` | claim 4 |
-| 4 | QE does **not** allocate managed memory. `plans/todos.txt` item 2 stays latent — with the evidence, and with a warning about how *not* to test it | clean negative |
+| 4 | QE does **not** allocate managed memory. `plans/todos.txt` item 1 stays latent — with the evidence, and with a warning about how *not* to test it | clean negative |
 | 5 | On the default transport pcomm sees no wire traffic at all for this app; one documented UCX setting makes 18.7 M sends visible | claim 4 + reach |
 
 ---
@@ -209,7 +209,7 @@ were deliberately built to need only the local side.
 
 ## 4. Managed memory: QE does not use it, and here is how not to test that
 
-`plans/todos.txt` item 2 asks whether `mem_object.device` is a lie for migrating
+`plans/todos.txt` item 1 asks whether `mem_object.device` is a lie for migrating
 allocations. **For QE on MN5 the question does not arise**, and the defect stays
 latent. Three independent lines, none of which is a capture:
 

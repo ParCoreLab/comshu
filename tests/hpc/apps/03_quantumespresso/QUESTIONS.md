@@ -291,7 +291,7 @@ recipe for the DuckDB attach.
 ## 14. `mem_object` has no door discriminator — confirmed against a second application
 
 `apps/README.md` states this as a known gap; QE confirms it is decisive. The
-managed-memory question (`plans/todos.txt` item 2) **cannot be answered from a
+managed-memory question (`plans/todos.txt` item 1) **cannot be answered from a
 capture at all** — a managed allocation and a device allocation are
 byte-identical rows — so the evidence has to come from the binary. For QE it
 does, three independent ways (`meta-r2.json`'s `managed_memory_note`), and the

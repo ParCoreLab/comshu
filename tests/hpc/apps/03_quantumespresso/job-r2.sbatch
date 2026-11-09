@@ -94,7 +94,7 @@ for d in $(echo "$LD_LIBRARY_PATH" | tr ':' ' '); do
 done
 
 echo "=== managed memory: the link line, which is where this question is settled ==="
-# plans/todos.txt item 2 asks whether mem_object.device is a lie for migrating
+# plans/todos.txt item 1 asks whether mem_object.device is a lie for migrating
 # allocations, and apps/README.md nominates QE as the application that would
 # make it live. It does not, and this is the CHEAP half of the evidence — the
 # other half is in the source and is cited in meta-r2.json.

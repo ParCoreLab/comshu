@@ -4,7 +4,7 @@
 # Two questions, in one allocation (tests/hpc/apps/README.md: "do not spend a
 # slot on a single question"):
 #
-#   (A) Does this build allocate MANAGED memory?  plans/todos.txt item 2 says
+#   (A) Does this build allocate MANAGED memory?  plans/todos.txt item 1 says
 #       LAMMPS/Kokkos "has a CudaUVM backend" and would make mem_object.device's
 #       fixed-at-allocation residency a LIVE defect.  The capture cannot answer
 #       that — mem_object has no discriminator for the allocation door — so the
