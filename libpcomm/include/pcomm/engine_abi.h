@@ -145,6 +145,28 @@ int pcomm_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size, uint32
  * anything. */
 void pcomm_engine_note_qp(void* qp, uint16_t opener_type_id);
 
+/* The process-wide dmabuf fd -> GPU range table (core/dmabuf_registry.hpp).
+ *
+ * It was one table per provider, each filled by that provider's own
+ * interception, and that is exactly what kept NCCL GIN's window unresolved: the
+ * conversion is reachable only through the CUDA export table, which only the
+ * mlx5dv provider patches, while the region is registered through
+ * ibv_reg_dmabuf_mr, which only the ibverbs provider records. Two tables, and
+ * the fact lived in the wrong one. One table in the engine, filled by whichever
+ * door saw the conversion and read by whichever provider needs it.
+ *
+ * `door` names which interception delivered the fact (for the shutdown tally:
+ * 0 dlsym, 1 cuGetProcAddress, 2 cuGetProcAddress_v2, 3 export table).
+ * find returns 1 and fills the out params (any may be NULL) on a hit.
+ *
+ * Added without bumping PCOMM_ENGINE_ABI_VERSION, on pcomm_engine_note_qp's
+ * precedent and for its reasons. */
+void pcomm_engine_dmabuf_note(int fd, uint64_t base, uint64_t size, uint16_t device, uint8_t door);
+int  pcomm_engine_dmabuf_find(int fd, uint64_t* base, uint64_t* size, uint16_t* device);
+/* Counts for the shutdown line: conversions noted per door (4 entries), and
+ * lookups that hit and missed. Any pointer may be NULL. */
+void pcomm_engine_dmabuf_stats(uint64_t* per_door4, uint64_t* hits, uint64_t* misses);
+
 /* Record one kernel EXECUTION window. See core/records.hpp GpuKernel (530).
  *
  * The record is the ENGINE's, in its own 500-599 range, but the engine cannot

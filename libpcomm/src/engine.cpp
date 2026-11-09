@@ -1365,6 +1365,74 @@ extern "C" int pcomm_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* s
     return 1;
 }
 
+/* The one dmabuf fd -> range table. See engine_abi.h for why it moved here from
+ * a per-provider copy. A descriptor is only unique while open, so a later
+ * conversion that reuses the number simply replaces the entry — the same rule
+ * the per-provider tables had. */
+namespace {
+struct DmabufEntry {
+    uint64_t base{0};
+    uint64_t size{0};
+    uint16_t device{0xFFFF};
+};
+struct DmabufTable {
+    std::mutex                           mutex;
+    std::unordered_map<int, DmabufEntry> by_fd;
+    std::atomic<uint64_t>                per_door[4]{};
+    std::atomic<uint64_t>                hits{0}, misses{0};
+};
+DmabufTable& dmabuf_table() {
+    static DmabufTable* t = new DmabufTable;  // leaked: read from destructors
+    return *t;
+}
+}  // namespace
+
+extern "C" void pcomm_engine_dmabuf_note(int fd, uint64_t base, uint64_t size, uint16_t device,
+                                         uint8_t door) {
+    if (fd < 0)
+        return;
+    auto& t = dmabuf_table();
+    {
+        std::lock_guard<std::mutex> lk(t.mutex);
+        t.by_fd[fd] = DmabufEntry{base, size, device};
+    }
+    if (door < 4)
+        t.per_door[door].fetch_add(1, std::memory_order_relaxed);
+}
+
+extern "C" int pcomm_engine_dmabuf_find(int fd, uint64_t* base, uint64_t* size, uint16_t* device) {
+    auto&       t = dmabuf_table();
+    DmabufEntry e;
+    {
+        std::lock_guard<std::mutex> lk(t.mutex);
+        auto                        it = t.by_fd.find(fd);
+        if (it == t.by_fd.end()) {
+            t.misses.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        }
+        e = it->second;
+    }
+    t.hits.fetch_add(1, std::memory_order_relaxed);
+    if (base)
+        *base = e.base;
+    if (size)
+        *size = e.size;
+    if (device)
+        *device = e.device;
+    return 1;
+}
+
+extern "C" void pcomm_engine_dmabuf_stats(uint64_t* per_door4, uint64_t* hits, uint64_t* misses) {
+    auto& t = dmabuf_table();
+    if (per_door4)
+        for (int i = 0; i < 4; ++i)
+            per_door4[i] = t.per_door[i].load(std::memory_order_relaxed);
+    if (hits)
+        *hits = t.hits.load(std::memory_order_relaxed);
+    if (misses)
+        *misses = t.misses.load(std::memory_order_relaxed);
+}
+
 /* A provider recorded a queue-pair open; remember the handle so the engine's
  * ibv_destroy_qp closes THIS queue pair knowingly, and reports the door that
  * created it. See QpRegistry and pcomm_close_qp for what the two paths mean. */

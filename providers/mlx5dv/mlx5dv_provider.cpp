@@ -48,6 +48,7 @@
 #include "host_doorbell.hpp"
 #include "sq_watch.hpp"
 #include "uar_hijack.hpp"
+#include "dmabuf_door.hpp"
 
 namespace mlx5 {
 
@@ -509,6 +510,9 @@ Profiler::Profiler() {
     // never resolved, the callbacks never run, and every dmabuf umem reports the
     // unknown device it reported before.
     pcomm::core::dmabuf::install();
+    // ...and the route the dynamic doors cannot see: cudart_static's, through
+    // the driver export table. NCCL GIN's window conversion arrives only here.
+    dmabuf_door::install();
 
     // The doorbell hijack (cudaHost* interposers below) is opt-in and OFF by
     // default: it is the one pcomm mechanism that sits in the application's data
@@ -850,6 +854,7 @@ static void __attribute__((destructor)) pcomm_mlx5dv_unload() {
         mlx5::hijack::report_and_shutdown(pcomm::Config::from_env().rank);
     if (mlx5::hostdb::enabled())
         mlx5::hostdb::report_and_shutdown(pcomm::Config::from_env().rank);
+    mlx5::dmabuf_door::report(pcomm::Config::from_env().rank);
     pcomm_engine_drain_thread();
     pcomm_engine_release();
 }
