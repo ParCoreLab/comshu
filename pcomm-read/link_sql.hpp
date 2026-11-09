@@ -1935,6 +1935,82 @@ UNION ALL
 SELECT * FROM verbs_recv
 )sql"},
 
+    // Which KERNEL issued each GPU-initiated send: one row per kernel execution,
+    // with the device sends whose doorbell rang inside its window on the GPU
+    // that owns the sending queue.
+    //
+    // WHY A WINDOW JOIN IS ENOUGH, MEASURED BEFORE IT WAS WRITTEN. A device send
+    // carries the time its doorbell rang. Under the host doorbell that is a CPU
+    // proxy thread, after the GPU wrote the WQE, so the doorbell could have
+    // trailed its kernel past the kernel's end and been credited to the next
+    // one. MN5 job 48813620 (case 26, NCCL GIN put-ring, cupti beside the host
+    // doorbell): all 81,920 decoded sends fell inside exactly one kernel window
+    // on their rank, always put_ring, never fill or check; and each of the 40
+    // put_ring executions held exactly 2,048 — its own iteration's 1,024 puts
+    // and 1,024 signals. A put kernel that waits on its own completions (as
+    // GIN's and NVSHMEM's quiet/waitSignal do) outlives its doorbells by
+    // construction.
+    //
+    // WHAT IT DOES NOT CLAIM. A kernel that fires puts and exits without
+    // waiting can end before the proxy rings, and those sends then sit in no
+    // window — counted by link_health.device_sends_outside_kernels rather than
+    // credited to whichever kernel came next. Two kernels running at once on
+    // the queue's GPU both contain the doorbell: such a send is counted in
+    // BOTH rows and in `shared_sends` of both, never split by a guess.
+    //
+    // Times are aligned through _clock exactly as timeline_span aligns them,
+    // which is what makes a CUPTI window and a TSC doorbell comparable at all.
+    // source = 2 (HostSubmit) kernel rows are the launch call, not execution,
+    // and are excluded for the reason the timeline excludes them.
+    {"kernel_sends", "rank,device,kernel,t0_ns,t1_ns,sends,bytes,peers,shared_sends",
+     R"sql(
+WITH k AS (
+    SELECT g.rank, g.device, g.name,
+           row_number() OVER ()                                          AS kid,
+           (c.w0::HUGEINT + ((g.temporal_a_ticks::HUGEINT - c.t0::HUGEINT)::DOUBLE
+                              * c.ns_per_tick)::HUGEINT)::BIGINT          AS t0_ns,
+           (c.w0::HUGEINT + ((greatest(g.temporal_b_ticks, g.temporal_a_ticks)::HUGEINT
+                              - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT AS t1_ns
+    FROM gpu_kernel g
+    JOIN _clock c ON c.rank = g.rank AND c.domain = g.temporal_a_domain
+    WHERE g.source <> 2
+),
+s AS (
+    SELECT s.rank, s.length, e.peer_rank,
+           q.device                                                      AS qdev,
+           row_number() OVER ()                                          AS sid,
+           (c.w0::HUGEINT + ((s.temporal_a_ticks::HUGEINT - c.t0::HUGEINT)::DOUBLE
+                              * c.ns_per_tick)::HUGEINT)::BIGINT          AS t_ns
+    FROM mlx5_device_send s
+    JOIN _clock c ON c.rank = s.rank AND c.domain = s.temporal_a_domain
+    LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+    LEFT JOIN (SELECT rank, qp_num, max(device) AS device FROM mlx5_devx_qp
+               WHERE device <> 65535 GROUP BY rank, qp_num
+               HAVING count(DISTINCT device) = 1) q
+           ON q.rank = s.rank AND q.qp_num = s.qp_num
+    WHERE s.decode <= 1 AND s.opcode != 35
+),
+m AS (
+    -- A queue whose GPU is unknown matches any kernel on its rank; one whose
+    -- GPU is known matches only kernels on that GPU.
+    SELECT k.kid, s.sid, s.length, s.peer_rank
+    FROM s JOIN k
+      ON k.rank = s.rank
+     AND (s.qdev IS NULL OR k.device = s.qdev)
+     AND s.t_ns BETWEEN k.t0_ns AND k.t1_ns
+),
+shared AS (SELECT sid FROM m GROUP BY sid HAVING count(*) > 1)
+SELECT k.rank, k.device, coalesce(n.text, '?') AS kernel, k.t0_ns, k.t1_ns,
+       count(m.sid)::BIGINT                                AS sends,
+       coalesce(sum(m.length), 0)::BIGINT                  AS bytes,
+       count(DISTINCT m.peer_rank)::BIGINT                 AS peers,
+       count(m.sid) FILTER (WHERE m.sid IN (SELECT sid FROM shared))::BIGINT AS shared_sends
+FROM k
+LEFT JOIN m ON m.kid = k.kid
+LEFT JOIN _intern_name n ON n.rank = k.rank AND n.domain = 3 AND n.handle = k.name
+GROUP BY k.kid, k.rank, k.device, n.text, k.t0_ns, k.t1_ns
+)sql"},
+
     // One row per local endpoint that exists, whether or not it moved bytes.
     // peer_rank is NULL rather than -1 here: an endpoint that was never
     // connected has no peer, which is a different statement from "we could not
@@ -3066,6 +3142,34 @@ WHERE rb.mode = 'unknown'
   AND NOT EXISTS (SELECT 1 FROM _mr_plain p
                   WHERE p.rank = x.peer_rank AND p.rkey = x.rkey
                     AND x.addr >= p.base AND x.addr < p.base + p.size)
+UNION ALL
+-- GPU-initiated sends whose doorbell rang inside NO kernel window on their
+-- rank (any GPU — a looser test than kernel_sends' per-GPU one, so this is a
+-- floor on what kernel_sends leaves unattributed), on ranks where kernel windows were recorded at all (so a run
+-- without cupti does not count every send). kernel_sends cannot name their
+-- kernel. A note, not a defect: a kernel that fires puts and exits without
+-- waiting legitimately ends before a host proxy rings. 0 on MN5 48813620.
+SELECT 'device_sends_outside_kernels',
+       'note',
+       coalesce(count(*), 0)::BIGINT,
+       'device sends whose doorbell fell in no kernel window on their rank — kernel_sends does not attribute them'
+FROM (
+    SELECT s.rank,
+           (c.w0::HUGEINT + ((s.temporal_a_ticks::HUGEINT - c.t0::HUGEINT)::DOUBLE
+                              * c.ns_per_tick)::HUGEINT)::BIGINT AS t_ns
+    FROM mlx5_device_send s
+    JOIN _clock c ON c.rank = s.rank AND c.domain = s.temporal_a_domain
+    WHERE s.decode <= 1 AND s.opcode != 35
+      AND s.rank IN (SELECT DISTINCT rank FROM gpu_kernel WHERE source <> 2)
+) x
+WHERE NOT EXISTS (
+    SELECT 1 FROM gpu_kernel g
+    JOIN _clock c ON c.rank = g.rank AND c.domain = g.temporal_a_domain
+    WHERE g.rank = x.rank AND g.source <> 2
+      AND x.t_ns BETWEEN
+          (c.w0::HUGEINT + ((g.temporal_a_ticks::HUGEINT - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT
+      AND (c.w0::HUGEINT + ((greatest(g.temporal_b_ticks, g.temporal_a_ticks)::HUGEINT - c.t0::HUGEINT)::DOUBLE * c.ns_per_tick)::HUGEINT)::BIGINT
+)
 UNION ALL
 SELECT 'self_edges',
        'defect',

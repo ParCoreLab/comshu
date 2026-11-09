@@ -276,13 +276,32 @@ the capture's `min(t0_ns)` first and plot the offset.
 One row per access, normalised to a byte offset inside the object that owns it.
 `owner_rank`/`object` name the buffer, `actor_rank`/`actor_device` name who
 touched it (so an object with several distinct `actor_rank` values is
-multi-writer), `source` is which provider saw it (`verbs` or `p2p`).
+multi-writer), `source` is which provider saw it: `verbs` (ibv_post_send),
+`verbs_recv` (a two-sided send, placed from the receiver's posted buffer),
+`devx` (a send the GPU built itself — IBGDA, NCCL GIN — decoded at a doorbell;
+`actor_device` is then the sending queue's GPU, per send) or `p2p` (NVLink).
 
 **`exact` matters.** A `verbs` offset is anchored to the object's true base and
 is exact. A `p2p` offset is anchored to the lowest address observed, because the
 local mapping delta is not in the record — so it is the true offset only if the
 workload touched the start of the buffer. Never average or compare offsets
 across `exact = true` and `exact = false` without saying which is which.
+
+### `kernel_sends` — which kernel issued each GPU-initiated send
+`rank INT, device USMALLINT, kernel VARCHAR, t0_ns BIGINT, t1_ns BIGINT, sends BIGINT, bytes BIGINT, peers BIGINT, shared_sends BIGINT`
+
+One row per kernel **execution** (from `gpu_kernel`, so only when `cupti` or the
+gpumem backend ran), with the device sends (`mlx5_device_send`, IBGDA / NCCL
+GIN) whose doorbell rang inside its window **on the GPU that owns the sending
+queue**. Kernels that sent nothing are rows with `sends = 0`, which is how to
+tell a compute kernel from a communication kernel. `shared_sends` counts sends
+that also fell in another kernel's window on that GPU (concurrent kernels):
+they are counted in both rows, never split, so do not sum `sends` across
+overlapping kernels. Sends in no window are in
+`link_health.device_sends_outside_kernels`.
+
+Measured on NCCL GIN (MN5 48813620): every put_ring execution held exactly its
+own iteration's 1,024 puts + 1,024 signals.
 
 ### `run_provenance` — what the tracer was asked to do, and by which build
 `rank INT, pid UINT, argv VARCHAR, providers VARCHAR, build VARCHAR, images VARCHAR, env VARCHAR`
@@ -363,6 +382,7 @@ The vocabulary is closed. These are all of them:
 | `unnamed_uct_transport` | defect | a UCT op whose `tl_name` did not resolve |
 | `colliding_gpu_uuids` | defect | two PCI addresses on one node reporting one UUID |
 | `unattributed_p2p_accesses` | defect | a GPU access `object_access` could not place |
+| `device_sends_outside_kernels` | note | a GPU-initiated send whose doorbell rang in no kernel window on its rank (kernel windows recorded); `kernel_sends` cannot name its kernel |
 | `unplaced_offset_sends` | defect | a send naming a zero-based region (NCCL GIN) whose VA pcomm never recovered, or an rkey reused across regions that disagree; `object_access` drops it rather than misplace it |
 | `self_edges` | defect | a rank sending to itself — the qp_num-collision signature |
 | `ambiguous_recv_buffers` | defect | a `wr_id` naming more than one posted buffer |

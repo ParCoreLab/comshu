@@ -374,7 +374,7 @@ for i, (n, t, f) in enumerate(srcs):
 views = ["_sends", "_rtr  ·  _owner", "_peer_of_qp", "_wr_pairable  ·  _wr_flight",
          "_nvlink_sends", "_node  ·  _device_owner", "_ucx_sends  ·  _ucx_peer_of_ep",
          "_intern_name  ·  _uct_scoped", "_ucp_tag_flow  ·  _uct_tag_flow",
-         "_ucx_msg_recv  ·  _ucx_probe_of_recv", "_recv_attr", "_tl_raw", "_clock"]
+         "_ucx_msg_recv  ·  _ucx_probe_of_recv", "_recv_attr", "_mr_plain  ·  _mr_rebase", "_tl_raw", "_clock"]
 vy = []
 for i, n in enumerate(views):
     y = 42 + i * 45
@@ -384,7 +384,8 @@ for i, n in enumerate(views):
     vy.append((y + 19))
 tables = [("comm_edges", "src → dst, per transport"), ("edge_sizes", "the same edges, split by size class"),
           ("endpoint", "one row per local queue pair"),
-          ("object_access", "every touch, as an offset in an object"), ("wr_flow", "posted → retired, with latency"),
+          ("object_access", "every touch, as an offset in an object"),
+          ("kernel_sends", "which kernel issued a GPU send"), ("wr_flow", "posted → retired, with latency"),
           ("timeline_span", "every event on one wall clock"), ("rank_identity", "rank → node, device"),
           ("transport_mix", "which transport actually carried it"),
           ("tag_flow", "what a UCP send became on the wire"),
@@ -409,10 +410,13 @@ for i, (n, d) in enumerate(tables):
     ty.append((656, y + 23))
 b.append(bus(sy, 272, [(326, v) for v in vy]))
 b.append(bus([(552, v) for v in vy], 606, ty))
-b.append(note(20, 766, "records, as written", cls="collabel"))
-b.append(note(330, 766, "views — created in order", cls="collabel"))
-b.append(note(660, 766, "what the panels and the suite read", cls="collabel"))
-FIGS["derived"] = svg(930, 780, "".join(b),
+# The footer and canvas follow the longest column, so adding a table or a view
+# cannot run the figure off its own bottom edge (it did, at seventeen tables).
+_derived_bottom = max(24 + len(tables) * 50, 42 + len(views) * 45) + 16
+b.append(note(20, _derived_bottom, "records, as written", cls="collabel"))
+b.append(note(330, _derived_bottom, "views — created in order", cls="collabel"))
+b.append(note(660, _derived_bottom, "what the panels and the suite read", cls="collabel"))
+FIGS["derived"] = svg(930, _derived_bottom + 14, "".join(b),
     "How the reader turns raw per-rank records into the fifteen derived tables that the UI, the agent and the test suite query")
 
 # --------------------------------------------------- fig: the capture container

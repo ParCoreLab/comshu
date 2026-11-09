@@ -158,6 +158,11 @@ add_test(NAME comm_edges_rule
 add_test(NAME object_access_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_access_rule.sh $<TARGET_FILE:pcomm_launcher>)
 
+# Which kernel issued a GPU-initiated send: the window join, per GPU, with the
+# overlap and after-the-kernel cases MN5 job 48813620 could not produce.
+add_test(NAME kernel_sends_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/kernel_sends_rule.sh $<TARGET_FILE:pcomm_launcher>)
+
 # Transport attribution — the two joins the derived layer gained on 2026-08-27,
 # an intern handle to its string and a uct_send to its interface. It also covers
 # the op families NO HARDWARE CAPTURE HAS PRODUCED: MN5 job 45113099 recorded

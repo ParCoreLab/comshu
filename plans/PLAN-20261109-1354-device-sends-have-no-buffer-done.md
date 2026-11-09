@@ -1,8 +1,9 @@
 # PLAN — GPU-initiated sends reach comm_edges but no buffer, device or kernel
 
 - **Created:** 2026-11-09 13:54 +03
-- **Status:** IN PROGRESS. Phase 1 done (7755562). Phase 2 done (29c81e7).
-  Phase 3 code landed (bb41c67), MN5 measurement pending. Phase 4 not started.
+- **Status:** DONE (2026-11-09). Phase 1 7755562; Phase 2 29c81e7 + 980f7ee;
+  Phase 3 bb41c67 + 0eed85a (recursion fix); Phase 4 measured (bb424ee) and
+  shipped as `kernel_sends`. Follow-ups below stay open.
 - **Related:** `PLAN-20260806-2140-dmabuf-registered-regions-done` (the fd → VA
   table and the iova rule this extends); `PLAN-20260905-1224-cpu-assisted-ibgda-is-the-cluster-we-have-todo`
   (the host doorbell that produces these rows); case 12 and case 26.
@@ -159,3 +160,32 @@ the kernel ended. Not decided yet — see Phase 4.
   should count them.
 - DC targets (`dest_dct`) are not resolved by `_peer_of_qp` today. Out of scope;
   counted, not guessed.
+
+## What actually happened
+
+- **Phase 1.** Re-linked 45925495: case 12's 1,347 devx sends all placed, 640
+  puts = 81,920 B per rank in the peer's 4,096 B buffer. MN5 48812895 runs the
+  new assert on the cluster's own Parquet: ok.
+- **Phase 3, measured.** The export table IS the route: MN5 48812008/48812895
+  print `export_table=33` (GIN) and `export_table=20` (NVSHMEM), with
+  `registrations resolved=all unresolved=0`. The first version recursed on
+  case 12's control (SIGSEGV, one frame thirty deep): the door's own wrapper
+  came back from cuGetProcAddress and was adopted as real. Fixed by adopting
+  only pointers dladdr places in libcuda (0eed85a).
+- **Phase 2, refined.** With the VA recovered, 40 ordinary proxy-plane verbs
+  sends were still dropped: NCCL reuses rkeys between 4 KiB ordinary regions
+  and zero-based dmabuf ones. An address inside an ordinary region of its key
+  is now taken as a VA (_mr_plain, 980f7ee). 48812008 re-linked:
+  object_access = comm_edges exactly, unplaced_offset_sends = 0; MN5 48813464
+  runs case 26's gin_puts_land_in_the_window: ok (27 checks).
+- **Phase 4, measured then built.** MN5 48813620 (case 26 + cupti): all 81,920
+  doorbells fell inside exactly one kernel window, always put_ring, and each of
+  the 40 put_ring executions held exactly 2,048 sends — its own iteration. So a
+  window join on the queue's GPU is exact for kernels that wait on their own
+  puts. `kernel_sends` (one row per kernel execution, sends/bytes/peers,
+  `shared_sends` for overlaps, never split) and
+  `link_health.device_sends_outside_kernels` (a note: fire-and-exit kernels can
+  end before a host proxy rings). Fixture: tests/kernel_sends_rule.sh;
+  deleting the per-GPU match or the HostSubmit exclusion turns it red.
+- **Not yet measured:** NVSHMEM (case 12) with cupti — the same join should hold
+  for kernels that quiet, and does not for ones that do not.
