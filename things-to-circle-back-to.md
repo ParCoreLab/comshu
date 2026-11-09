@@ -21,6 +21,18 @@ published hijack costs (+68% forward, +86% with decode) may include it. **Next:*
 move the one-time emissions and the flush off any thread whose latency belongs
 to someone else, then measure the repeater path.
 
+## DC over RoCE names no peer
+
+A DC send's peer is the owner of its (LID, DCT) pair (`_devx_send_peer`, e76dd7e).
+On a RoCE port the address vector carries LID 0 and a GID, so the pair has no
+LID and the send stays unresolved. It's counted in `link_health.unresolved_sends`,
+not guessed. MN5 job 48818283, case 25: the IB DC leg resolves exactly like the
+RC leg (0→1 675 sends, 1→0 672), and the RoCE DC leg's 20,515 + 20,512 sends go
+to −1. **Next:** decode `rgid` from the full (48 B) address vector, record each
+port's GIDs at device open next to `ib_port`, and key `_owner` on (GID, qp_num)
+where the LID is 0. Case 25's RoCE leg is the test: it should match the other
+two legs.
+
 ## NCCL GIN's GDAKI plane is not captured on du04
 
 It is on MN5 (case 26, through the host doorbell). On du04 neither doorbell arm
