@@ -35,6 +35,9 @@
   //           It is the GPU whose memory the transfer came from, inferred from
   //           which device that rank owns — not from watching a kernel run.
   //           Carries exact addresses and message lengths instead.
+  //   devx    actor = the GPU that owns the sending queue (mlx5_devx_qp.device),
+  //           per send: the GPU built the WQE, a doorbell decoded it. Same
+  //           exact addresses and lengths as verbs, and addable to it.
   //
   // The distinction is stated in the caption too, because "GPU 2 moved 40 MB"
   // reads identically in both modes and is a weaker claim in one of them.
@@ -117,7 +120,11 @@
 
   $effect(() => {
     query(`${ND}
-      SELECT an.node_ix AS actor_node, an.device AS actor_device,
+      SELECT an.node_ix AS actor_node,
+             -- A devx row knows its GPU per send (the queue's device), which is
+             -- an observation; every other source falls back to the rank's GPU.
+             CASE WHEN a.source = 'devx' AND a.actor_device IS NOT NULL
+                  THEN a.actor_device ELSE an.device END AS actor_device,
              an.devices  AS actor_devices,
              ow.node_ix AS owner_node, ow.device AS owner_device,
              a.actor_rank, a.owner_rank, a.object, a.source,
@@ -147,7 +154,12 @@
       -- address, so unlike nvlink-vs-verbs they ARE addable. Keeping
       -- verbs_recv out was what made this panel report 4 peers for a rank that
       -- comm_edges credits with 13: the missing 9 were all two-sided.
-      WHERE a.source IN ('verbs', 'verbs_recv')
+      --
+      -- And devx, the GPU-initiated sends a doorbell decoded: the same quantity
+      -- again, with the address named by a WQE the GPU wrote rather than by an
+      -- ibv_post_send. Disjoint from verbs by construction (a send takes one
+      -- door), so still addable.
+      WHERE a.source IN ('verbs', 'verbs_recv', 'devx')
       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
       ORDER BY n DESC`)
       .then((r) => {
@@ -166,7 +178,11 @@
   // everywhere in the tool.
   $effect(() => {
     query(`${ND}
-      SELECT an.node_ix AS actor_node, an.device AS actor_device,
+      SELECT an.node_ix AS actor_node,
+             -- A devx row knows its GPU per send (the queue's device), which is
+             -- an observation; every other source falls back to the rank's GPU.
+             CASE WHEN a.source = 'devx' AND a.actor_device IS NOT NULL
+                  THEN a.actor_device ELSE an.device END AS actor_device,
              CASE WHEN a.size = 0       THEN 'empty'
                   WHEN a.size < 1024    THEN '<1 KB'
                   WHEN a.size < 65536   THEN '1–64 KB'
@@ -176,7 +192,7 @@
              sum(a.size)::BIGINT AS bytes
       FROM object_access a
       LEFT JOIN nd an ON an.rank = a.actor_rank
-      WHERE a.source IN ('verbs', 'verbs_recv')
+      WHERE a.source IN ('verbs', 'verbs_recv', 'devx')
       GROUP BY 1, 2, 3`)
       .then((r) => (vbSizes = r))
       .catch(() => (vbSizes = []));
@@ -469,8 +485,10 @@
                     style="border-color: var(--border); color: var(--text-3)"
                     title={r.source === 'verbs_recv'
                       ? 'two-sided send, address recovered from the receiver'
-                      : 'RDMA write, address named by the sender'}
-                >{r.source === 'verbs_recv' ? 'send' : 'write'}</td>
+                      : r.source === 'devx'
+                        ? 'GPU-initiated (IBGDA / NCCL GIN), address named by a WQE the GPU built'
+                        : 'RDMA write, address named by the sender'}
+                >{r.source === 'verbs_recv' ? 'send' : r.source === 'devx' ? 'gpu put' : 'write'}</td>
                 <td class="px-2.5 py-1 text-right border-b" style="border-color: var(--border)">{count(num(r.n))}</td>
                 <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{bytes(num(r.bytes))}</td>
               </tr>

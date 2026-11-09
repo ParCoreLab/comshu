@@ -1687,6 +1687,65 @@ verbs AS (
     WHERE s.remote_addr > 0
       AND e.peer_rank IS NOT NULL
 ),
+-- THE DEVICE-INITIATED HALF: sends the GPU built itself and a doorbell (GPU or
+-- host) or the send-queue watcher decoded. These never pass ibv_post_send, so
+-- the `verbs` branch cannot see them, and until 2026-11-09 nothing here read
+-- them at all. comm_edges counted them exactly while this view had zero rows:
+-- measured on MN5 job 45925495, case 12 (NVSHMEM IBGDA) had 1,347 decoded sends
+-- whose raddr all lay inside the peer's symmetric heap, and none reached the
+-- Objects panel.
+--
+-- Same rules as `verbs`, deliberately: the peer is the far end of the queue pair
+-- (_peer_of_qp also covers DEVX queues through mlx5_devx_qp_connect), the
+-- address is resolved against the PEER's objects, innermost wins, raddr = 0 is
+-- not a target. Same exclusions as _sends too, so a row counted as traffic in
+-- comm_edges is the row that can appear here: decode <= 1 (full or partial; a
+-- truncated or unknown WQE has no trustworthy address) and opcode != 35
+-- (NVSHMEM's DUMP ordering WQE names no buffer).
+--
+-- ACTOR_DEVICE IS THE QUEUE'S DEVICE, which the verbs branch cannot know. A
+-- DEVX queue's send buffer lives in one GPU's memory and mlx5_devx_qp.device
+-- records which; that is a per-send fact, where _rank_device is a per-rank
+-- guess that is wrong for a rank driving two GPUs. The rank's device is the
+-- fallback only for a queue whose buffer could not be placed (65535).
+devx_qp_device AS (
+    SELECT rank, qp_num, max(device) AS device
+    FROM mlx5_devx_qp
+    WHERE device <> 65535
+    GROUP BY rank, qp_num
+    -- A qp_num reused by a later queue on another GPU would be two devices for
+    -- one key; max() would then name one of them silently. Refuse instead.
+    HAVING count(DISTINCT device) = 1
+),
+devx AS (
+    SELECT e.peer_rank                              AS owner_rank,
+           m.id                                     AS object,
+           s.raddr - m.range_base                   AS obj_offset,
+           s.length                                 AS size,
+           'devx'                                   AS source,
+           s.rank::BIGINT                           AS actor_rank,
+           coalesce(qd.device, rd.device)::BIGINT   AS actor_device,
+           TRUE                                     AS exact
+    FROM mlx5_device_send s
+    JOIN _peer_of_qp e
+      ON e.rank = s.rank AND e.qp_num = s.qp_num
+    LEFT JOIN devx_qp_device qd
+      ON qd.rank = s.rank AND qd.qp_num = s.qp_num
+    LEFT JOIN _rank_device rd ON rd.rank = s.rank AND qd.device IS NULL
+    JOIN LATERAL (
+        SELECT o.id, o.range_base
+        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
+        WHERE o.rank = e.peer_rank
+          AND s.raddr >= o.range_base
+          AND s.raddr <  o.range_base + o.range_size
+        ORDER BY o.range_size
+        LIMIT 1
+    ) m ON TRUE
+    WHERE s.raddr > 0
+      AND s.decode <= 1
+      AND s.opcode != 35
+      AND e.peer_rank IS NOT NULL
+),
 -- THE TWO-SIDED HALF, read from the RECEIVER's records.
 --
 -- A SEND carries no remote address — the receiver picks the buffer, not the
@@ -1743,6 +1802,8 @@ verbs_recv AS (
 SELECT * FROM p2p
 UNION ALL
 SELECT * FROM verbs
+UNION ALL
+SELECT * FROM devx
 UNION ALL
 SELECT * FROM verbs_recv
 )sql"},
