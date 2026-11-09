@@ -34,6 +34,7 @@ extern "C" {
 #include "link_sql.hpp"      // ... and the derived layer, as views
 #include "ui_assets.hpp"     // generated from ui/dist: the built app, embedded
 #include "../pcomm/cli.hpp"
+#include "query_guard.hpp"     // the read-only first-token check
 
 namespace fs = std::filesystem;
 
@@ -46,29 +47,8 @@ constexpr int         kRowCap = 100000;
 constexpr const char* kReadOnlyErr =
     "this endpoint answers SELECT only; use `pcomm export` to write anything";
 
-// Cheap first-token check, and it is the ONLY thing stopping a write — an
-// in-memory DuckDB cannot be opened in READ_ONLY access mode, so there is no
-// engine-level guard behind this one. Stated plainly because a comment claiming
-// a safety property the code does not have is worse than no comment.
-//
-// What actually bounds the risk is the trust boundary: the server binds
-// loopback and serves one local capture to the person who started it, so a
-// caller who can POST here can already run pcomm itself. Note the same reasoning
-// covers the larger hole — DuckDB's own table functions mean a SELECT can read
-// any file the user can (`read_csv('/etc/passwd')`). That is acceptable at
-// loopback and would NOT be if this ever grew a bind address, which is the
-// moment to add `SET enable_external_access=false` and a real parser.
-//
-// It has now grown one (`--bind`), so that condition is honoured below: binding
-// anywhere other than loopback turns external access OFF and refuses to serve a
-// Parquet export at all. See bind_is_loopback / harden_for_network.
-bool looks_like_select(const std::string& sql) {
-    const std::size_t i = sql.find_first_not_of(" \t\r\n");
-    if (i == std::string::npos)
-        return false;
-    const std::string head = sql.substr(i);
-    return strncasecmp(head.c_str(), "SELECT", 6) == 0 || strncasecmp(head.c_str(), "WITH", 4) == 0;
-}
+// The read-only check, and why it is enough, is in query_guard.hpp.
+using pcomm::ui::looks_like_select;
 
 std::string json_escape(const char* s) {
     std::string out;

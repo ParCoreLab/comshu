@@ -27,6 +27,13 @@ target_link_libraries(core_smoke PRIVATE pcomm::pcomm pcomm::engine)
 pcomm_add_test(core_smoke)
 add_test(NAME core_smoke COMMAND core_smoke)
 
+# pcomm-ui's read-only guard. Header-only, so it needs neither DuckDB nor the
+# server, and runs in every configuration.
+add_executable(query_guard_test query_guard_test.cpp)
+target_include_directories(query_guard_test PRIVATE ${CMAKE_SOURCE_DIR}/pcomm-ui)
+pcomm_add_test(query_guard_test)
+add_test(NAME query_guard_test COMMAND query_guard_test)
+
 add_executable(hook_smoke hook_smoke.cpp)
 target_link_libraries(hook_smoke PRIVATE pcomm::pcomm pcomm::hook)
 pcomm_add_test(hook_smoke)

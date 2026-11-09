@@ -59,13 +59,6 @@ assertion beside the golden that states the shape instead
 each golden that its assertions fully cover, case by case, and keep a golden
 only where it pins a number no assertion can derive.
 
-## `pcomm-ui`'s `/query` rejects a query that begins with a comment
-
-`looks_like_select` (`pcomm-ui/main.cpp`) checks the first token, and a
-leading `--` or `/* */` is not `SELECT`/`WITH`, so any commented query pasted
-into the Ask panel comes back 400 with a message about writes. `pcomm sql` and
-the agent path are unaffected. **Next:** skip leading comments before the check.
-
 ## `run_on_a100.sh` syncs from a syncthing-fed checkout
 
 A du04 board can run a mixed tree, because a provider and the assertion beside
