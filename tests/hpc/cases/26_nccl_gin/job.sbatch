@@ -105,13 +105,16 @@ export NCCL_GIN_GDAKI_NIC_HANDLER=1       # CPU_PROXY: a host thread rings the d
 export NCCL_DEBUG=WARN
 
 CHUNK=128 NPUT=1024 ITERS=20              # = meta.json's workload block
+# Overridable so a probe can run this exact case with more providers beside the
+# two it asserts on — tests/hpc/probes/kernel_attr adds cupti for kernel windows.
+PROVIDERS="${PCOMM_GIN_PROVIDERS:-ib,mlx5dv}"
 mpi() {  # mpi <out-dir> <extra pcomm args...>
   local out="$1"; shift
   rm -rf "$out" "$out.csv"; mkdir -p "$out"
   timeout 420 "$MPIRUN" -np 2 --map-by ppr:1:node ${PCOMM_MPIRUN_EXTRA:-} \
     -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
     -x NCCL_NET_PLUGIN -x NCCL_GIN_TYPE -x NCCL_GIN_GDAKI_NIC_HANDLER -x NCCL_DEBUG \
-    "$PCOMM" run -p ib,mlx5dv "$@" -o "$out" -- "$APP" "$CHUNK" "$NPUT" "$ITERS"
+    "$PCOMM" run -p "$PROVIDERS" "$@" -o "$out" -- "$APP" "$CHUNK" "$NPUT" "$ITERS"
 }
 
 # ---- control run: no door ---------------------------------------------------
