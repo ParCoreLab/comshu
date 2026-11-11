@@ -7,7 +7,7 @@ was checked against the C++ records, the C++ records were checked against
 themselves, and "other languages can read this" stayed an inference. This is
 the evidence — no libcomshu, no C++, no comshu-read, nothing hand-written about
 the layout. It opens a real `.pcs` from the suite with flatc-generated Python
-bindings and recomputes three of case 01's four goldens.
+bindings and recomputes the fixture's regions, traffic and completions (EXPECTED).
 
 A `.pcs` is a 32-byte StreamHeader followed by a packed array of one struct
 type, so reading it is: parse the header, take its stride, and Init() at each
@@ -16,8 +16,8 @@ filename and not from anything this script knows — which is the point of the
 header, and the reason this reader can check that what it opened is what it
 thinks it opened instead of assuming.
 
-The fourth golden (topology) is deliberately not reproduced: comm_edges is
-derived by comshu-read from QP state transitions, not a stream on disk.
+Topology is deliberately not reproduced: comm_edges is derived by comshu-read
+from QP state transitions, not a stream on disk.
 
     tools/read_pcs.py [capture_dir]
 
@@ -191,15 +191,23 @@ def load(capture):
     return ranks
 
 
-def golden(case_dir, name):
-    rows = (case_dir / "checks" / f"{name}.golden").read_text().strip().splitlines()
-    return [tuple(r.split(",")) for r in rows[1:]]      # drop the header row
+# What the committed fixture holds. It is a FROZEN capture
+# (tests/data/ib_pingpong-44578115), so these are constants of the fixture, not
+# of any run, and they live beside the check. They used to be read out of case
+# 01's goldens, which bound this test to a suite case's files: retiring those
+# goldens for assertions (c4f2e99) broke it, and only the pre-commit build
+# would have said so.
+EXPECTED = {
+    "regions": [("0", "1"), ("1", "1")],
+    "traffic": [("0", "send", "20", "81920"), ("1", "send", "20", "81920")],
+    "completions": [("0", "success", "recv", "20"), ("0", "success", "send", "20"),
+                    ("1", "success", "recv", "20"), ("1", "success", "send", "20")],
+}
 
 
 def main():
     capture = Path(sys.argv[1]) if len(sys.argv) > 1 else \
         ROOT / "tests/data/ib_pingpong-44578115"
-    case_dir = ROOT / "tests/hpc/cases/01_ib_pingpong"
     if not capture.exists():
         raise SystemExit(f"no capture at {capture}")
 
@@ -225,12 +233,12 @@ def main():
 
     def check(name, got):
         nonlocal failures
-        want = golden(case_dir, name)
+        want = EXPECTED[name]
         ok = got == want
         failures += not ok
         print(f"  [{'ok ' if ok else 'XX '}] {name}: {got}")
         if not ok:
-            print(f"         golden: {want}")
+            print(f"         expected: {want}")
 
     # regions — one MR per rank (the pingpong buffer).
     check("regions", [(str(r), str(len(s.get(100, [])))) for r, s in sorted(ranks.items())])
@@ -280,9 +288,9 @@ def main():
               ", ".join(hex(v) if v is not None else "UNRESOLVED" for v in resolved))
 
     if failures:
-        print(f"FAIL — {failures} golden(s) not reproduced from Python")
+        print(f"FAIL — {failures} expected table(s) not reproduced from Python")
         return 1
-    print("PASS — 3 of case 01's 4 goldens reproduced from .pcs with no C++")
+    print("PASS — the fixture's regions, traffic and completions reproduced from .pcs with no C++")
     return 0
 
 
