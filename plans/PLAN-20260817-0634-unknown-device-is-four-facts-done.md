@@ -1,6 +1,6 @@
 # `kUnknownDevice` is four different facts wearing one number
 
-Status: **in progress** — steps 1-4 and 7 landed 2026-11-11; steps 5-6 need MN5
+Status: **done** 2026-11-11
 
 **Progress 2026-11-11.** Steps 1-4 and 7 are done. Step 1: no stride change,
 `attr_status` sits in `MemObject`'s tail padding. Steps 2-3: `attribute()`
@@ -12,8 +12,13 @@ device some producer named itself (gpumem, the dma-buf registry) and could not.
 Step 4: `link_health.attribution_never_attempted` (note) and
 `attribution_failed` (defect), tested in comm_edges_rule.sh. Step 7: the Objects
 panel says host / not asked / failed, and shows `rank 9 · n2`.
-**Left:** step 5 (a corpus re-run should find the 487 as HostNotCuda) and step
-6 (a host-only run must report DriverAbsent), both on MN5.
+**Closed 2026-11-11.** Step 5, MN5 board 48929836: hubspoke_ib, pipeline_ib
+and skew_ib each record **487 HostNotCuda + 20 Device** — exactly the
+prediction, now read from the capture instead of from address shapes; both
+link_health findings are 0. Step 6: case 01 (no CUDA) records only
+DriverAbsent, asserted by `no_cuda_means_never_asked.sql`, and
+`suite/asserts/attribution_never_fails.sql` holds every case to zero failed
+attributions (board 48929438).
 Created: 2026-08-17 06:34
 Touches: `libcomshu/include/comshu/core/mem_attr.hpp`,
 `libcomshu/include/comshu/core/records.hpp`, `libcomshu/include/comshu/core/vocab.hpp`,
