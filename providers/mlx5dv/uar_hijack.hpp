@@ -539,6 +539,20 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
                     // the DCTs those sends targeted had recorded their GIDs.
                     const std::uint32_t grh_gid_fl =
                         be32toh(*reinterpret_cast<const std::uint32_t*>(seg_at(2) + 12));
+                    // COMSHU_HIJACK_DEBUG=1: the first four full AVs, raw. The
+                    // GRH/rgid layout above was assumed from rdma-core's struct
+                    // mlx5_wqe_av and has been wrong once already; this is how
+                    // the bytes NVSHMEM actually writes get read.
+                    if (debug_on()) {
+                        static std::atomic<int> dumped{0};
+                        if (dumped.fetch_add(1, std::memory_order_relaxed) < 4) {
+                            const auto* b = reinterpret_cast<const unsigned char*>(seg_at(1));
+                            char        hex[48 * 3 + 1];
+                            for (int k = 0; k < 48; ++k)
+                                std::snprintf(hex + 3 * k, 4, "%02x ", b[k]);
+                            std::fprintf(stderr, "[comshu] full AV qpn=%u: %s\n", qpn, hex);
+                        }
+                    }
                     if (grh_gid_fl & (kExtendedAv | (1u << 30))) {
                         std::uint64_t v = 0;
                         std::memcpy(&v, seg_at(3), 8);
