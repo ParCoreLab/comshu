@@ -35,7 +35,7 @@
     ibv_qp_to_qp_ex;
     ibv_reg_mr;
     ibv_reg_mr_iova2;
-    /* Not an ibv_* symbol, and the only one here that is not. mlx5dv_create_cq
+    /* Not an ibv_* symbol. mlx5dv_create_cq
      * lives in libmlx5, but it creates the entity ibv_destroy_cq closes, so its
      * open record has to come from the provider that emits that close —
      * otherwise the accounting depends on which providers were selected. The
@@ -45,6 +45,9 @@
      * the contexts UCX opens through it. Global for the same reason every ibv_*
      * entry here is — interposition is being the first global definition. */
     mlx5dv_open_device;
+    /* libmlx5's dma-buf door, which NCCL tries before ibv_reg_dmabuf_mr. Its
+     * record is an ib_mem_region, so it lives here; mlx5dv does not define it. */
+    mlx5dv_reg_dmabuf_mr;
     comshu_create_provider;
     comshu_abi_version;
   local:

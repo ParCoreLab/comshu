@@ -153,6 +153,16 @@ DEFINE_PRELOAD_HOOK(ibv, reg_mr, "ibv_reg_mr", ibv_mr*, ibv_pd*, void*, size_t, 
 // (verbs.h:2632), so a plain preload hook reaches it.
 DEFINE_PRELOAD_HOOK(ibv, reg_dmabuf_mr, "ibv_reg_dmabuf_mr", ibv_mr*, ibv_pd*, uint64_t, size_t,
                     uint64_t, int, int);
+// libmlx5's own dma-buf door: ibv_reg_dmabuf_mr plus an mlx5_access word
+// (MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT). NCCL TRIES IT FIRST for a GPU buffer
+// and falls back to ibv_reg_dmabuf_mr only when it fails, so on a data-direct
+// NIC every region it registers arrives here and the plain hook sees none —
+// GIN's window included, which is what makes its puts placeable. Exported
+// (`mlx5dv_reg_dmabuf_mr@@MLX5_1.25`), so a plain preload hook reaches it; and
+// kept in this provider for the reason mlx5dv_create_cq is: the record it
+// produces is an ib_mem_region.
+DEFINE_PRELOAD_HOOK(ibv, mlx5dv_reg_dmabuf_mr, "mlx5dv_reg_dmabuf_mr", ibv_mr*, ibv_pd*,
+                    uint64_t, size_t, uint64_t, int, int, int);
 // The two MEMORYLESS registration doors, and neither is a symbol. Both are
 // `static inline` over verbs_context function pointers (verbs.h:2807, 2830), so
 // no ELF reference names them, no dlsym resolves them, and every instrument that

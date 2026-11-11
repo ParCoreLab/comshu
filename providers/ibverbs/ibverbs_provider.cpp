@@ -217,6 +217,55 @@ static void record_iova_if_rebased(const ibv_mr* mr, std::uint64_t base, std::ui
                  rr::IbMemRegionIova{{}, {}, h(mr), mr->rkey, iova});
 }
 
+// Nonzero on this thread while mlx5dv_reg_dmabuf_mr is running; see its hook.
+static int& dmabuf_depth() noexcept {
+    static thread_local int depth = 0;
+    return depth;
+}
+
+// One dma-buf region, from either door: ibv_reg_dmabuf_mr or libmlx5's
+// mlx5dv_reg_dmabuf_mr. Both name memory by (fd, offset) and differ only in an
+// mlx5 access word the record has no use for, so both are origin Dmabuf.
+static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
+                                 std::size_t length, std::uint64_t iova, int fd, int access) {
+    if (!mr)
+        return;
+    comshu::core::dmabuf::Range  r{};
+    const bool                  resolved = comshu::core::dmabuf::lookup(fd, &r);
+    const std::uint64_t         base = resolved ? r.base + offset : iova;
+    const comshu::core::DeviceId device =
+        resolved ? r.device
+                 : (base ? comshu::core::device_of(reinterpret_cast<const void*>(base))
+                         : comshu::core::kUnknownDevice);
+
+    rec().record(comshu::core::Temporal::none(),
+                 rr::IbMemRegion{{},
+                                 {},
+                                 h(mr),
+                                 h(pd),
+                                 {base, length},
+                                 mr->lkey,
+                                 mr->rkey,
+                                 static_cast<std::uint32_t>(access),
+                                 fd,
+                                 static_cast<std::uint8_t>(rr::IbRegionOrigin::Dmabuf)});
+    // NCCL GIN registers its window here with iova 0, so its puts carry
+    // offsets. When the fd resolved, `base` is the VA and differs from the
+    // iova, and only this row keeps the fact that the region is zero-based.
+    // When it did not resolve, base IS the iova and there is nothing to say.
+    record_iova_if_rebased(mr, base, iova);
+
+    if (base)
+        rec().record(rec().now_instant(),
+                     comshu::core::records::MemObject{{},
+                                                     {},
+                                                     h(reinterpret_cast<const void*>(base)),
+                                                     comshu::core::kNullHandle,
+                                                     {base, length},
+                                                     device});
+}
+
+
 // Slots computed by the post_srq_recv PRE-hook, consumed by its post-hook.
 // Thread-local: the two halves run on one thread around one call, and this is
 // the hottest receive path in the capture, so a per-call allocation is not free.
@@ -973,42 +1022,17 @@ Profiler::Profiler() {
     this->register_post<reg_dmabuf_mr_tag>([](ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
                                               std::size_t length, std::uint64_t iova, int fd,
                                               int access, auto...) {
-        if (!mr)
+        // Inside mlx5dv_reg_dmabuf_mr, if libmlx5 routes through the exported
+        // door: that call records the region itself, once.
+        if (dmabuf_depth() > 0)
             return;
-        comshu::core::dmabuf::Range  r{};
-        const bool                  resolved = comshu::core::dmabuf::lookup(fd, &r);
-        const std::uint64_t         base = resolved ? r.base + offset : iova;
-        const comshu::core::DeviceId device =
-            resolved ? r.device
-                     : (base ? comshu::core::device_of(reinterpret_cast<const void*>(base))
-                             : comshu::core::kUnknownDevice);
-
-        rec().record(comshu::core::Temporal::none(),
-                     rr::IbMemRegion{{},
-                                     {},
-                                     h(mr),
-                                     h(pd),
-                                     {base, length},
-                                     mr->lkey,
-                                     mr->rkey,
-                                     static_cast<std::uint32_t>(access),
-                                     fd,
-                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::Dmabuf)});
-        // NCCL GIN registers its window here with iova 0, so its puts carry
-        // offsets. When the fd resolved, `base` is the VA and differs from the
-        // iova, and only this row keeps the fact that the region is zero-based.
-        // When it did not resolve, base IS the iova and there is nothing to say.
-        record_iova_if_rebased(mr, base, iova);
-
-        if (base)
-            rec().record(rec().now_instant(),
-                         comshu::core::records::MemObject{{},
-                                                         {},
-                                                         h(reinterpret_cast<const void*>(base)),
-                                                         comshu::core::kNullHandle,
-                                                         {base, length},
-                                                         device});
+        record_dmabuf_region(mr, pd, offset, length, iova, fd, access);
     });
+    this->register_post<mlx5dv_reg_dmabuf_mr_tag>(
+        [](ibv_mr* mr, ibv_pd* pd, std::uint64_t offset, std::size_t length, std::uint64_t iova,
+           int fd, int access, int /*mlx5_access*/, auto...) {
+            record_dmabuf_region(mr, pd, offset, length, iova, fd, access);
+        });
 
     // dereg_mr / destroy_qp -> the entity's lifetime ended.
     //
@@ -1842,6 +1866,20 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
         ibv::ensure_installed(pd->context, "reg_dmabuf_mr");
     auto* mr =
         ibv::Profiler::invoke_preload<ibv::reg_dmabuf_mr_tag>(pd, offset, length, iova, fd, access);
+    remember_mr(mr);
+    return mr;
+}
+extern "C" ibv_mr* mlx5dv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
+                                        uint64_t iova, int fd, int access, int mlx5_access) {
+    trace_mr_caller("mlx5dv_reg_dmabuf_mr", __builtin_return_address(0), (long)length);
+    if (pd)
+        ibv::ensure_installed(pd->context, "mlx5dv_reg_dmabuf_mr");
+    struct Depth {
+        Depth() noexcept { ++ibv::dmabuf_depth(); }
+        ~Depth() noexcept { --ibv::dmabuf_depth(); }
+    } depth;
+    auto* mr = ibv::Profiler::invoke_preload<ibv::mlx5dv_reg_dmabuf_mr_tag>(
+        pd, offset, length, iova, fd, access, mlx5_access);
     remember_mr(mr);
     return mr;
 }
