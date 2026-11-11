@@ -139,10 +139,23 @@ else
   skips+=("ucx + ucx_deep providers — no UCX headers (ucp/api/ucp.h, uct/api/tl.h) and libucp/libucs on this host; run tools/get_devheaders.sh")
 fi
 
+# DuckDB, when tools/get_duckdb.sh has put it in .tools/duckdb. Without it the
+# reader's derived layer is not even COMPILED, and every rule test over it —
+# comm_edges_rule, object_access_rule, kernel_sends_rule, sql_cli_rule and the
+# rest — answers "SKIP: build without DuckDB", which ctest counts as a pass.
+# The gate ran that way for its whole life: a green gate said nothing about
+# comm_edges, object_access, link_health or any derived table.
+duckdb_flag=""
+if [ -f "$ROOT/.tools/duckdb/duckdb.h" ] && [ -f "$ROOT/.tools/duckdb/libduckdb.so" ]; then
+  duckdb_flag="-DCOMSHU_DUCKDB=ON"
+else
+  skips+=("DuckDB — no .tools/duckdb (tools/get_duckdb.sh): the derived layer and its rule tests did not run")
+fi
+
 # --- the configurations -----------------------------------------------------
 # core is the one that must always work: header-only lib, engine, the comshu binary,
 # the launcher, every test, and the schema checks.
-run_config core
+run_config core $duckdb_flag
 
 if [ "$quick" -eq 0 ]; then
   [ "$have_ibverbs" -eq 1 ] && run_config ibverbs -DCOMSHU_PROVIDER_IBVERBS=ON $mlx5dv_flag

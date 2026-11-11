@@ -164,6 +164,18 @@ inline bool is_driver_fn(const void* fn) {
 // worst, as above, recurse. Shared by every entry-point door.
 template<Door D>
 inline void substitute_if_conversion(const char* symbol, void** pfn) {
+    // COMSHU_TRACE_DMABUF=1: every cuMem* a cuGetProcAddress door is asked for,
+    // with the door, so a conversion that no door counts can be traced to the
+    // lookup that would have carried it.
+    if (symbol && std::strncmp(symbol, "cuMem", 5) == 0) {
+        static const bool trace = [] {
+            const char* v = std::getenv("COMSHU_TRACE_DMABUF");
+            return v && *v && std::strcmp(v, "0") != 0;
+        }();
+        if (trace)
+            std::fprintf(stderr, "[comshu-dmabuf] getproc door=%u sym=%s found=%d\n",
+                         static_cast<unsigned>(D), symbol, pfn && *pfn ? 1 : 0);
+    }
     if (!symbol || !pfn || !*pfn || std::strcmp(symbol, "cuMemGetHandleForAddressRange") != 0)
         return;
     if (!is_driver_fn(*pfn))

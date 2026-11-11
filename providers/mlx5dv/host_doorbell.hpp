@@ -54,6 +54,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -147,7 +148,50 @@ inline bool debug_on() {
 // prove GPU mapping impossible leaves the UAR untouched. The cost of being
 // wrong in this direction is an empty table; in the other, it is a run that
 // took a different code path because it was being watched.
+// THE OPT-IN for a platform that CAN map the doorbell (du04): arm anyway when
+// the transport has been told, by its own configuration, to ring from the CPU.
+// Then it never probes for GPU mapping, so watching the page cannot change the
+// mode it picks — the property the probe below otherwise has to establish.
+//
+// Explicit AND verified. COMSHU_HOST_DOORBELL_CPU_HANDLER=1 states the intent;
+// the transport variable that pins the handler must also be set, or nothing
+// is armed and the reason is printed. A bare opt-in would let a run that left
+// the transport on its GPU default be watched on the wrong side of the PCIe
+// bus, which is exactly the run the probe exists to refuse.
+//
+//   NCCL GIN (GDAKI)   NCCL_GIN_GDAKI_NIC_HANDLER=1   (1 = CPU proxy)
+//   NVSHMEM IBGDA      NVSHMEM_IBGDA_NIC_HANDLER=cpu
+inline bool handler_pinned_to_cpu_by_opt_in() {
+    static const int answer = [] {
+        const char* v = std::getenv("COMSHU_HOST_DOORBELL_CPU_HANDLER");
+        if (!v || std::strcmp(v, "1") != 0)
+            return 0;
+        const char* nccl = std::getenv("NCCL_GIN_GDAKI_NIC_HANDLER");
+        const char* nvsh = std::getenv("NVSHMEM_IBGDA_NIC_HANDLER");
+        const bool  pinned = (nccl && std::strcmp(nccl, "1") == 0) ||
+                            (nvsh && strcasecmp(nvsh, "cpu") == 0);
+        if (!pinned) {
+            std::fprintf(stderr,
+                         "[comshu] host doorbell: COMSHU_HOST_DOORBELL_CPU_HANDLER=1, but no "
+                         "transport is pinned to a CPU NIC handler (NCCL_GIN_GDAKI_NIC_HANDLER=1 "
+                         "or NVSHMEM_IBGDA_NIC_HANDLER=cpu). NOT arming on its say-so alone.\n");
+            return 0;
+        }
+        std::fprintf(stderr,
+                     "[comshu] host doorbell: arming on a GPU-mappable platform because the "
+                     "transport's NIC handler is pinned to the CPU (%s), so it never probes GPU "
+                     "mapping and watching the page cannot change its mode.\n",
+                     nccl && std::strcmp(nccl, "1") == 0 ? "NCCL_GIN_GDAKI_NIC_HANDLER=1"
+                                                          : "NVSHMEM_IBGDA_NIC_HANDLER=cpu");
+        return 1;
+    }();
+    return answer == 1;
+}
+
 inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
+    if (handler_pinned_to_cpu_by_opt_in())
+        return true;
+
     // Only a DEFINITIVE answer is cached. A probe that could not run is not
     // evidence about the platform, and caching it as one is what made the first
     // real case-12 run leave all 96 UARs unarmed: the transport allocates its

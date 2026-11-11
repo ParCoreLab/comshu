@@ -21,18 +21,34 @@ published hijack costs (+68% forward, +86% with decode) may include it. **Next:*
 move the one-time emissions and the flush off any thread whose latency belongs
 to someone else, then measure the repeater path.
 
-## NCCL GIN's GDAKI plane is not captured on du04
+## NCCL GIN on du04: captured with the CPU handler, not placed, and the GPU arm is blind
 
-It is on MN5 (case 26, through the host doorbell). On du04 neither doorbell arm
-sees it: the GPU arm installs and remembers 32 UARs but sees
-`register_calls=0 getdevptr_calls=0`, and the host arm correctly refuses because
-du04 can map a UAR into the GPU. DOCA logs "Enabling CPU proxy mode" only when
-the handler is pinned to CPU. Case 26 skips on du04 and says why. **Next:** an
-explicit opt-in that arms the host path when the handler is pinned to CPU by
-configuration (safe, because DOCA then never probes for GPU mapping). Then
-re-check whether the GPU arm is now reached through the export-table door
-(`providers/mlx5dv/dmabuf_door.hpp` showed that is how cudart_static reaches the
-driver on MN5).
+**Captured** when the GDAKI handler is pinned to the CPU (2026-11-11): with
+`NCCL_GIN_GDAKI_NIC_HANDLER=1` and the opt-in `COMSHU_HOST_DOORBELL_CPU_HANDLER=1`,
+`--enable-host-doorbell` arms all 24 UARs and records 40,960 sends per rank
+(20,480 × 128 B writes = 2,621,440 B, as on MN5), every peer resolved,
+`unresolved_sends` 0, and the application verifies every byte. The probe is
+`/DATA/missa18/gin/du04_probe4.sh` (NCCL 2.28.9 from /usr; the SDK's 2.27.7
+has no device API, so case 26 itself still skips on du04).
+
+**Not placed:** all 81,920 puts are `unplaced_offset_sends`. The window is
+registered zero-based with dma-buf fd 98/99, and no door ever sees the
+conversion that made those fds. `COMSHU_TRACE_DMABUF=1` shows only DOCA's small
+4/8 KiB conversions arriving, all through `dlsym` (168). NO `cuGetProcAddress`
+door is ever asked for a `cuMem*` symbol, and the export-table door counts 0
+where MN5 counted 33. NCCL core's conversions take a route we don't patch on
+this host. **Next:** find that route (is the export-table patch installed
+before libnccl's static cudart reads the table on du04?).
+
+**GPU arm (handler on the GPU):** NCCL `dlsym`s `cuMemHostRegister_v2` and
+`cuMemHostUnregister` from libcuda's handle (`COMSHU_TRACE_DLSYM=1`: both
+UNHOOKED). It also never calls `cuMemHostGetDevicePointer`, because under UVA
+the registered UAR address IS the device address. So hooking the `dlsym` door
+is not enough: the hijack swaps the page at getdevptr time, a call that never
+comes. **Next:** a swap at REGISTER time. Move the UAR mapping aside
+(mremap), put a watched anonymous page at its address, and register that one
+instead. That needs its own plan; it moves a device mapping under a running
+transport.
 
 ## Instrumenting one local-memory load wedges NVSHMEM's IBRC proxy
 

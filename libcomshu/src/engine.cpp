@@ -1388,10 +1388,25 @@ DmabufTable& dmabuf_table() {
 }
 }  // namespace
 
+// COMSHU_TRACE_DMABUF=1: every conversion with its door, and every lookup that
+// found nothing. The per-door counts say HOW MANY conversions each door saw;
+// only this says which fd a registration asked about that no door produced.
+static bool trace_dmabuf() {
+    static const bool on = [] {
+        const char* v = std::getenv("COMSHU_TRACE_DMABUF");
+        return v && *v && std::strcmp(v, "0") != 0;
+    }();
+    return on;
+}
+
 extern "C" void comshu_engine_dmabuf_note(int fd, uint64_t base, uint64_t size, uint16_t device,
                                          uint8_t door) {
     if (fd < 0)
         return;
+    if (trace_dmabuf())
+        std::fprintf(stderr, "[comshu-dmabuf] note fd=%d base=%#llx size=%llu device=%u door=%u\n",
+                     fd, static_cast<unsigned long long>(base),
+                     static_cast<unsigned long long>(size), device, door);
     auto& t = dmabuf_table();
     {
         std::lock_guard<std::mutex> lk(t.mutex);
@@ -1409,6 +1424,8 @@ extern "C" int comshu_engine_dmabuf_find(int fd, uint64_t* base, uint64_t* size,
         auto                        it = t.by_fd.find(fd);
         if (it == t.by_fd.end()) {
             t.misses.fetch_add(1, std::memory_order_relaxed);
+            if (trace_dmabuf())
+                std::fprintf(stderr, "[comshu-dmabuf] MISS fd=%d\n", fd);
             return 0;
         }
         e = it->second;
