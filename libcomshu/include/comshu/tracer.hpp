@@ -50,6 +50,11 @@ struct Config {
 // two call sites. Idempotent: whichever site reaches it first wins.
 void maybe_emit_invocation();
 
+// Join the engine thread that runs the one-time emissions off the flush path
+// (src/engine.cpp). Called first thing in Tracer::finalize(), so anything that
+// thread recorded is in an arena before the final drain.
+void stop_one_time_emitter();
+
 class Tracer {
 public:
     // Deliberately leaked (never destroyed): backends invoke stop() from
@@ -158,6 +163,7 @@ public:
                 return;
             m_finalized = true;
         }
+        stop_one_time_emitter();
         emit_anchor();  // end-of-run anchor: reader fits offset + skew
         // Flush every thread's buffers, not just this one's (cross-thread
         // flush): multi-threaded targets (e.g. a CQ-poll thread) record on
@@ -288,6 +294,8 @@ public:
     // are ENTERED while the driver still answers is not derivable from reading
     // the tree; it was measured, per door, and the answer decided the call sites
     // below.
+    bool gpu_devices_done() const { return m_gpu_devices_done.load(std::memory_order_relaxed); }
+
     void maybe_emit_gpu_devices(const char* door = "arena_flush") {
         // The probe runs BEFORE the early-outs, on purpose. Printing only when
         // work is attempted cannot distinguish "this door never fired" from

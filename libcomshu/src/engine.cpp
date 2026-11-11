@@ -27,9 +27,12 @@
 #include <cstdlib>
 #include <ctime>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -145,6 +148,79 @@ ArenaMap& arenas_for_this_thread() {
 }  // namespace comshu
 
 static void warn_if_undeclared(std::uint16_t type_id);
+
+// --- the one-time emissions, OFF the recording thread ------------------------
+//
+// A full arena is the one in-run moment the engine reliably gets on any capture
+// that records anything. GpuDevice cannot be written at start (the application
+// may not have loaded CUDA yet) nor at finalize (the driver answers
+// CUDA_ERROR_DEINITIALIZED by then — job 45302619), so it is written once a
+// record buffer fills while the process is still alive. Invocation rides the
+// same moment: complete once every preloaded .so has declared itself, early
+// enough to beat teardown.
+//
+// They used to RUN on the thread whose arena filled, and that thread may not be
+// ours to stall. Measured on du04's send-queue watcher, the first flush took
+// 2.1-2.4 ms (a CUDA driver query, then argv/env and every mapped image)
+// against microseconds for every later one; on a doorbell repeater, which
+// records before it forwards, that was an application doorbell held for 2 ms.
+// So a flush only WAKES this thread, which runs them and exits once both are
+// done. Tracer::finalize joins it before the final drain.
+//
+// Heap-allocated and never destroyed: a process that exits without finalizing
+// must not run a joinable std::thread's destructor (std::terminate). After a
+// fork the child has none of the parent's threads, so its state starts fresh.
+namespace {
+struct OneTimeEmitter {
+    std::mutex              m;
+    std::condition_variable cv;
+    std::thread*            th = nullptr;
+    bool                    pending = false;
+    bool                    stop = false;
+};
+OneTimeEmitter*& one_time() {
+    static OneTimeEmitter* o = new OneTimeEmitter();
+    return o;
+}
+std::atomic<bool> g_one_time_done{false};
+
+void one_time_loop(OneTimeEmitter* o) {
+    std::unique_lock<std::mutex> lk(o->m);
+    for (;;) {
+        o->cv.wait(lk, [o] { return o->stop || o->pending; });
+        if (o->stop)
+            return;
+        o->pending = false;
+        lk.unlock();
+        comshu::Tracer::instance().maybe_emit_gpu_devices();
+        comshu::maybe_emit_invocation();
+        const bool done = comshu::Tracer::instance().gpu_devices_done();
+        lk.lock();
+        if (done) {
+            g_one_time_done.store(true, std::memory_order_relaxed);
+            return;
+        }
+        // GpuDevice keeps retrying until CUDA answers, one try per flush:
+        // "not loaded yet" and "no CUDA here" look the same at any one moment.
+    }
+}
+}  // namespace
+
+namespace comshu {
+void stop_one_time_emitter() {
+    OneTimeEmitter* o = one_time();
+    std::thread*    th = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(o->m);
+        o->stop = true;
+        th = std::exchange(o->th, nullptr);
+    }
+    o->cv.notify_all();
+    if (th && th->joinable())
+        th->join();
+    delete th;
+}
+}  // namespace comshu
 
 extern "C" {
 
@@ -379,19 +455,21 @@ void comshu_engine_note_cuda_live(const char* door) {
 void comshu_engine_arena_flush(comshu_arena* arena) {
     if (arena && arena->_owner)
         static_cast<comshu::Arena*>(arena->_owner)->drain();
-    // The one in-run moment the engine reliably gets on any capture that
-    // records anything. GpuDevice cannot be written at start (the application
-    // may not have loaded CUDA yet) nor at finalize (the driver answers
-    // CUDA_ERROR_DEINITIALIZED by then — job 45302619), so it is written the
-    // first time a record buffer fills while the process is still alive.
-    // A relaxed load on a path that has just done I/O.
-    comshu::Tracer::instance().maybe_emit_gpu_devices();
-    // Invocation rides the same path for a DIFFERENT reason. It could be
-    // written at start — nothing it reads changes — except for `providers`,
-    // which is only complete once every preloaded .so has declared itself, and
-    // for its interned handles, which the early flush cannot help anyway. Here
-    // it is late enough to be complete and early enough to beat teardown.
-    comshu::maybe_emit_invocation();
+    // A relaxed load on a path that has just done I/O; after the first wake,
+    // the cost on this thread is one uncontended lock and a notify per flush,
+    // and nothing at all once both emissions are done.
+    if (g_one_time_done.load(std::memory_order_relaxed))
+        return;
+    OneTimeEmitter* o = one_time();
+    {
+        std::lock_guard<std::mutex> lk(o->m);
+        if (o->stop)
+            return;
+        o->pending = true;
+        if (!o->th)
+            o->th = new std::thread(one_time_loop, o);
+    }
+    o->cv.notify_one();
 }
 
 void comshu_engine_drain_thread(void) {
@@ -400,6 +478,11 @@ void comshu_engine_drain_thread(void) {
 }
 
 void comshu_engine_reset_arenas_for_fork(void) {
+    // The parent's emitter thread does not exist here. Leak its state (its
+    // mutex may have been held at fork) and start fresh.
+    one_time() = new OneTimeEmitter();
+    g_one_time_done.store(false, std::memory_order_relaxed);
+
     // Only the forking thread exists in the child, so its map is the only one
     // that can still be reached — and it is the one holding the parent's
     // buffered records.

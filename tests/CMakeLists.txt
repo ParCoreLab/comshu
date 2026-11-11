@@ -45,6 +45,11 @@ target_link_libraries(thread_flush_smoke PRIVATE comshu::comshu comshu::engine T
 comshu_add_test(thread_flush_smoke)
 add_test(NAME thread_flush_smoke COMMAND thread_flush_smoke)
 
+add_executable(first_flush_latency first_flush_latency.cpp)
+target_link_libraries(first_flush_latency PRIVATE comshu::comshu comshu::engine Threads::Threads)
+comshu_add_test(first_flush_latency)
+add_test(NAME first_flush_latency COMMAND first_flush_latency)
+
 add_executable(fork_smoke fork_smoke.cpp)
 target_link_libraries(fork_smoke PRIVATE comshu::comshu comshu::engine Threads::Threads)
 comshu_add_test(fork_smoke)

@@ -8,18 +8,17 @@ that cite it for a FIXED or closed entry refer to that full version:
 `git show c135365:things-to-circle-back-to.md` (1,561 lines).
 Defects in other people's software go to `BUGS-FOUND.md`; designs go to `plans/`.
 
-## The first full arena stalls the thread that fills it for ~2 ms
+## A flush still writes on the thread that filled the arena
 
-`comshu_engine_arena_flush` runs inline on the recording thread
-(`libcomshu/src/engine.cpp`), and the first flush also does the one-time
-`GpuDevice` (a CUDA driver query) and `Invocation` emission. Measured on du04 on
-the send-queue watcher: that batch took 2.1–2.4 ms, and every other batch took
-microseconds. On an application thread that's harmless. On a doorbell repeater
-it isn't: the repeaters record before they forward (`memory_repeater.hpp`), so
-the first full arena holds one of the application's doorbells for ~2 ms. The
-published hijack costs (+68% forward, +86% with decode) may include it. **Next:**
-move the one-time emissions and the flush off any thread whose latency belongs
-to someone else, then measure the repeater path.
+The one-time emissions (GpuDevice and Invocation, 2.1–2.4 ms on du04's
+send-queue watcher) moved to an engine thread on 2026-11-11, so the FIRST flush
+is no longer special. On university-base, `first_flush_latency` measures the
+first flush at 243–290 µs (it was 418–462 µs) against 177–246 µs for later ones.
+What remains is the flush's own write, which every batch pays on whatever thread
+filled it. On a doorbell repeater that is still an application doorbell held
+for the length of a write. **Next:** measure the repeater's per-flush hold on
+du04 and decide whether it needs an asynchronous writer (hand the full arena to
+an engine thread and swap in an empty one).
 
 ## NCCL GIN on du04: captured with the CPU handler, not placed, and the GPU arm is blind
 
