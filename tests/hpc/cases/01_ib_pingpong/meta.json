@@ -2,7 +2,7 @@
   "case": "01_ib_pingpong",
   "providers": ["ib"],
   "topology": "2 nodes, ibv_rc_pingpong over NDR IB",
-  "golden": "committed (verified)",
+  "golden": "none — retired 2026-11-11; every claim is an assertion (asserts/)",
   "workload": {
     "ranks": 2, "nodes": 2,
     "iters": 20, "msg_bytes": 4096, "rx_depth": 500,

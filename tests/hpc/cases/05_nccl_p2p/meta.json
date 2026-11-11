@@ -4,7 +4,7 @@
     "p2p"
   ],
   "topology": "1 node x4 H100, ncclAllReduce over NVLink",
-  "golden": "committed (verified across two independent filter=all runs at N=262144, job 43971039)",
+  "golden": "none — retired 2026-11-11; ops and objects_symmetric assert what the goldens pinned",
   "why": "NCCL is the collective library most users actually run. This is the gpumem/NVBit provider against a real persistent-kernel collective, as opposed to case 03's discrete kernel.",
   "cost_note": "The run takes ~435s, and that is a FIXED cost of NVBit processing NCCL's module (223 device-function specializations, 434k instructions) — not a property of the workload. Measured at N=100/1024/16384/65536/262144: 433-443s in every case while the capture scales 0.6 MB -> 47 MB. Uninstrumented is 6s. Neither restricting instrumentation to the one launched kernel (438s vs 436s) nor skipping the per-launch arming of unfiltered functions changes it. DEADLINE is 600s for that reason; do not try to shrink the message, which was tested across a 2621x range and does nothing.",
   "oracle_note": "The checks assert structure, not volume, because volume is genuinely not repeatable here: NCCL's LL protocol spins on flag polling, so two identical runs recorded 295,044 and 550,064 loads on rank 0. The exact (run_dev, mem_dev) peer pairs are unstable too — (3,0) vs (2,8) across those runs, even with a >1000-access floor — which is consistent with the known-approximate device attribution in things-to-circle-back-to.md. What is invariant, and what is asserted: one tracked allocation per rank, both load and store present on every rank, and peer traffic (run_dev != mem_dev) present on every rank. That last one is the signal only the p2p provider can see and is empty in the pure-IB case 02.",

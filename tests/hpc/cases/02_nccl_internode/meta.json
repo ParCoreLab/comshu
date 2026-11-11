@@ -4,7 +4,7 @@
     "ib"
   ],
   "topology": "2 nodes x4 H100, ncclAllReduce, P2P off (pure IB)",
-  "golden": "pending pinned run",
+  "golden": "none — retired 2026-11-11; symmetric_participation asserts the shape the goldens pinned as numbers",
   "workload": {
     "ranks": 8,
     "nodes": 2,

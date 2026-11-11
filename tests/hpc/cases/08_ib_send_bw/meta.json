@@ -6,7 +6,7 @@
   ],
   "topology": "2 nodes, perftest ib_send_bw over NDR IB",
   "why": "perftest takes the newer entry points for both sends and registrations: ibv_wr_* (bypassing ctx->ops.post_send) and ibv_reg_mr_iova2 (bypassing the legacy ibv_reg_mr symbol). Before those hooks this capture had zero ib_post_send and zero ib_mem_region rows, and every other case stayed green",
-  "golden": "derived from the -n/-s arguments, not from our own output",
+  "golden": "checks/regions only: perftest's own buffer size and access flags, which no argument derives; the rest is asserted",
   "workload": {
     "ranks": 2,
     "nodes": 2,

@@ -61,16 +61,6 @@ it could be NVBit's, NVSHMEM's or ours. **Next:** a minimal NVBit tool that
 injects a call before that one load, outside comshu. If it hangs, it goes to
 NVBit/NVSHMEM with the reproducer.
 
-## Goldens still encode run-specific identifiers
-
-26 goldens remain, in cases 01–08 and 20. Several have failed on identifiers the
-allocation happened to hand out (both ranks given `qp_num 449`, a peer order
-moving), not on anything the tool did. Each affected case already has an
-assertion beside the golden that states the shape instead
-(`PLAN-20260803-1520-correctness-checks-not-goldens-done`). **Next:** retire
-each golden that its assertions fully cover, case by case, and keep a golden
-only where it pins a number no assertion can derive.
-
 ## `run_on_a100.sh` syncs from a syncthing-fed checkout
 
 A du04 board can run a mixed tree, because a provider and the assertion beside

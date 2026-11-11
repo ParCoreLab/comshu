@@ -2,7 +2,7 @@
   "case": "03_p2p_kernel",
   "providers": ["p2p"],
   "topology": "1 node x4 H100, custom ring peer-write kernel over NVLink",
-  "golden": "pending first verified run",
+  "golden": "none — retired 2026-11-11; every claim is an assertion (asserts/)",
   "workload": {
     "ranks": 1, "nodes": 1, "gpus": 4,
     "iters": 4, "elems": 4096, "elem_bytes": 4

@@ -47,4 +47,12 @@ SELECT * FROM (
 )
 WHERE peer_stores = 0     -- a rank that pushed nothing lost its instrumentation
    OR peer_loads  > 0     -- a peer read means the pinning changed, or attribution regressed
-ORDER BY rank;
+
+UNION ALL
+
+-- And each rank's stores reach ANOTHER GPU's memory: that is what a p2p send
+-- is. (Replaces the peer_traffic golden.)
+SELECT r, -1, 0 FROM expected
+WHERE NOT EXISTS (
+    SELECT 1 FROM gpu_access g
+    WHERE CAST(g.rank AS INTEGER) = r AND g.run_dev != g.mem_dev AND g.op = 'store');

@@ -1,5 +1,0 @@
-rank,status,opcode,n
-0,success,recv,20
-0,success,send,20
-1,success,recv,20
-1,success,send,20

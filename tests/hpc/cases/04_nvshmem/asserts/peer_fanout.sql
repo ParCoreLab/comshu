@@ -1,26 +1,33 @@
--- requires: gpu_access params.gpus
--- EXPECTED TO FAIL — see meta.json's expect_fail_asserts. This is the
--- acceptance test for PLAN-20260803-1448-nvshmem-heap-attribution, not a
--- description of what we currently emit.
+-- requires: gpu_access params.gpus params.iters params.elems
+-- putget is a ring: each PE puts to exactly one neighbour, (dev + 1) mod gpus,
+-- elems ints per iteration. So every remote store lands on that neighbour and
+-- each ring edge carries exactly iters x elems of them.
 --
--- putget is a ring: each PE puts to exactly one neighbour, so each device
--- writes into exactly one other device's memory. Fan-out is 1.
---
--- The golden beside this file asserts 2, and passes, and has passed since it
--- was committed. Its own comment says "the ring put has each PE store to one
--- neighbor" — a one-neighbour ring cannot have fan-out 2. The golden had
--- captured the attribution bug and turned it into the expected result, which no
--- golden can ever detect, because the golden IS the defect. Measured: run_dev 0
--- attributed to mem_dev 65 and 66 (job 44113361) and to 238 and 239 (44111484),
--- 196608 accesses each — one real edge, split across two adjacent phantom
--- devices as the fragmented NVSHMEM 3.7 heap slides the positional lookup by
--- one region.
---
--- Do not make this pass by asserting 2. It goes green when attribution is
--- fixed, with no edit to this file — that is the whole point of writing it now.
-SELECT run_dev, count(DISTINCT mem_dev) AS peers
+-- History worth keeping. A golden once asserted fan-out 2 here and passed for
+-- weeks: it had captured an attribution bug — one real edge split across two
+-- phantom devices as the fragmented NVSHMEM 3.7 heap slid the positional
+-- lookup by one region (jobs 44111484, 44113361) — and turned it into the
+-- expected result. This file was written as the failing acceptance test for
+-- PLAN-20260803-1448-nvshmem-heap-attribution, went green when that landed, and
+-- now replaces the peer_topology golden, which encoded the same ring as
+-- numbers from one run.
+WITH RECURSIVE devs(d) AS (
+  SELECT 0
+  UNION ALL SELECT d + 1 FROM devs WHERE d + 1 < (SELECT gpus FROM params)
+)
+SELECT 'wrong neighbour' AS problem, CAST(run_dev AS INTEGER) AS run_dev,
+       CAST(mem_dev AS INTEGER) AS mem_dev, count(*) AS accesses
 FROM gpu_access
 WHERE run_dev != mem_dev
-GROUP BY run_dev
-HAVING peers != 1
-ORDER BY CAST(run_dev AS INTEGER);
+GROUP BY run_dev, mem_dev
+HAVING CAST(mem_dev AS INTEGER) != (CAST(run_dev AS INTEGER) + 1) % (SELECT gpus FROM params)
+    OR count(*) != (SELECT iters * elems FROM params)
+
+UNION ALL
+
+SELECT 'ring edge missing', d, (d + 1) % (SELECT gpus FROM params), 0
+FROM devs
+WHERE NOT EXISTS (
+    SELECT 1 FROM gpu_access g
+    WHERE CAST(g.run_dev AS INTEGER) = d
+      AND CAST(g.mem_dev AS INTEGER) = (d + 1) % (SELECT gpus FROM params));

@@ -4,7 +4,7 @@
     "nccl"
   ],
   "topology": "1 node x4 H100, NCCL over NVLink, host-API capture only (no NVBit)",
-  "golden": "pending pinned run",
+  "golden": "checks/api_surface only: the per-op element counts the workload fixes; lifecycle is asserted (comms_close_and_groups_are_flat)",
   "why": "The suite ran NCCL twice and captured the collective layer neither time. Case 02 sees the verbs underneath an all-reduce, case 05 sees GPU accesses that land in NCCL's internal channel buffers and attribute to nothing. Which collective ran, over which buffers, between which peers, was in no capture. This case is that layer, and it is the only NCCL point-to-point in the suite.",
   "cost_note": "Seconds, not minutes. No NVBit, one node, small messages — the provider hooks host API calls and touches no CUDA context. Case 05's 481 s is fixed NVBit module-processing cost and is unrelated.",
   "workload": {

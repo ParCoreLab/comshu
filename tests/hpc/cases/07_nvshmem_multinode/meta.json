@@ -5,7 +5,7 @@
     "p2p"
   ],
   "topology": "2 nodes x4 H100, NVSHMEM put-ring over 8 PEs, both providers in one process",
-  "golden": "committed (verified, determinism gate: gate runs A/B in job 43964192 plus the independent suite job 43920698 — all three byte-identical)",
+  "golden": "none — retired 2026-11-11; cross_transport_shape and ib_carries_the_crossing cover it",
   "why": "the unified NVLink+IB TRAFFIC timeline: the ring's 6 intra-node hops go over NVLink and its 2 inter-node hops over IB, in ONE execution. This is the capture that makes cross-transport causality recoverable — replay cannot express it, since its passes are different executions.",
   "history": "was xfail from 2026-07-21 to 2026-07-28: multinode NVSHMEM hung under NVBit. Root cause was instrumenting LOCAL-memory accesses (per-thread stack / spilled registers) in NVSHMEM's inlined proxy-enqueue path; bisected to a single LDL.64 in nvshmemi_transfer_rma_p<int>. Fixed in 3c5d55f by instrumenting only GLOBAL/GENERIC/GLOBAL_TO_SHARED. The mechanism — why instrumenting a stack reload wedges the proxy handshake — is still unexplained; see things-to-circle-back-to.md.",
   "workload": {

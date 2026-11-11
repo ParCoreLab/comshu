@@ -2,7 +2,7 @@
   "case": "04_nvshmem",
   "providers": ["p2p"],
   "topology": "1 node x4 H100, NVSHMEM put-ring (kernel-filtered to put_to_next)",
-  "golden": "committed (verified); exact peer ring — see peer_topology",
+  "golden": "none — retired 2026-11-11; peer_fanout asserts the exact ring, objects_symmetric the object shape",
   "workload": {
     "ranks": 4, "nodes": 1, "gpus": 4,
     "iters": 3, "elems": 65536, "elem_bytes": 4,
