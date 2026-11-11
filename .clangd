@@ -1,4 +1,4 @@
+# Flags come from the compilation database CMake writes into the build tree
+# (CMakeLists.txt turns it on). Point this at your own build directory.
 CompileFlags:
-  Add:
-    - -std=c++20
-    - -I/home/mktips/pockt/uni/lab/pcomm/libpcomm/include
+  CompilationDatabase: build-full
