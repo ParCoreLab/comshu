@@ -245,7 +245,10 @@ public:
         auto&      rec = recorder();
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
         rec.record(rec.now_instant(),
-                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev,
+                                            dev == core::kUnknownDevice
+                                                ? core::AttrStatus::NotQueried
+                                                : core::AttrStatus::Device});
         return object;
     }
 
@@ -285,7 +288,10 @@ public:
         auto&      rec = recorder();
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
         rec.record(rec.now_instant(),
-                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev,
+                                            dev == core::kUnknownDevice
+                                                ? core::AttrStatus::NotQueried
+                                                : core::AttrStatus::Device});
         m_allocs.add(base, size, dev, object);
     }
 
@@ -330,7 +336,10 @@ public:
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
         m_allocs.add(base, size, dev, object);
         rec.record(rec.now_instant(),  // lifetime open until free-tracking lands
-                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev});
+                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev,
+                                            dev == core::kUnknownDevice
+                                                ? core::AttrStatus::NotQueried
+                                                : core::AttrStatus::Device});
     }
 
     // One process's mapping of a fabric-shared allocation.

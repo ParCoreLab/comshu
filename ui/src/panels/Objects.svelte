@@ -48,9 +48,14 @@
   $effect(() => {
     query(`
       SELECT m.rank, m.id, m.range_base AS base, m.range_size AS size, m.device,
+             m.attr_status, ri.node_ix,
              coalesce(a.n, 0) AS accesses, coalesce(a.touched_by, '') AS touched_by,
              coalesce(a.sources, '') AS sources
-      FROM (SELECT DISTINCT rank, id, range_base, range_size, device FROM mem_object) m
+      -- min(attr_status): where two emitters saw one object, the most definite
+      -- answer wins — Device (0) over a host answer over never-asked.
+      FROM (SELECT rank, id, range_base, range_size, device, min(attr_status) AS attr_status
+            FROM mem_object GROUP BY ALL) m
+      LEFT JOIN rank_identity ri ON ri.rank = m.rank
       LEFT JOIN (
         SELECT owner_rank, object, count(*) AS n,
                array_to_string(array_agg(DISTINCT 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '')), ', ')
@@ -137,7 +142,21 @@
   const colorOf = $derived(logScale(bins.map((b) => num(b.n))));
   const steps = $derived(ramp());
   const covered = $derived(bins.length ? num(bins[0].covered) : 0);
-  const dev = (d) => (num(d) === 65535 ? 'unknown' : `GPU ${d}`);
+  // An object with no device says WHY (mem_object.attr_status, AttrStatus in
+  // vocab.hpp): host memory, never asked, or a failure. They used to be one
+  // word, 'unknown', which read as a failure for 487 healthy host buffers.
+  const NO_DEVICE = {
+    1: 'host',
+    2: 'host (CUDA-visible)',
+    3: 'not asked',
+    4: 'failed (null)',
+    5: 'failed',
+    6: 'not named',
+  };
+  const dev = (d, st) =>
+    num(d) === 65535 ? (NO_DEVICE[num(st)] ?? 'unknown') : `GPU ${d}`;
+  // rank 9 · n2: the node is where host memory lives, and one fact with the rank.
+  const where = (o) => (o.node_ix == null ? `rank ${o.rank}` : `rank ${o.rank} · n${o.node_ix}`);
 
   function onMove(ev) {
     const i = ev.target?.dataset?.b;
@@ -183,7 +202,7 @@
     {#if sel && bins.length}
       <div class="mb-4">
         <div class="text-[13px] mb-1">
-          <b>{bytes(num(sel.size))}</b> object on rank {sel.rank}, {dev(sel.device)}
+          <b>{bytes(num(sel.size))}</b> object on {where(sel)}, {dev(sel.device, sel.attr_status)}
           <span style="color: var(--text-3)">— {count(num(sel.accesses))} accesses</span>
         </div>
         <div class="overflow-x-auto" onmousemove={onMove} onmouseleave={() => (tip = null)}>
@@ -272,9 +291,9 @@
                          color: var(--text-2)"
                 >{active ? 'shown' : 'view'}</button>
               </td>
-              <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{o.rank}</td>
+              <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">{o.node_ix == null ? o.rank : `${o.rank} · n${o.node_ix}`}</td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
-                <span style="color: {num(o.device) === 65535 ? 'var(--text-3)' : 'var(--text-1)'}">{dev(o.device)}</span>
+                <span style="color: {num(o.device) === 65535 ? 'var(--text-3)' : 'var(--text-1)'}">{dev(o.device, o.attr_status)}</span>
               </td>
               <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">0x{num(o.base).toString(16)}</td>
               <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{bytes(num(o.size))}</td>
@@ -297,9 +316,11 @@
       normal case for a single-process multi-GPU run.
       <b>via</b> names which of them saw it, and an object seen by both is not
       double-counted so much as observed twice. <code>rank</code> is the process
-      that recorded the row, which is neither of the above. <code>unknown</code> is device id 65535 — attribution failed,
-      which is not the same as host memory and is deliberately not merged with
-      GPU 0. Objects with no recorded accesses are listed but not viewable: the
+      that recorded the row, which is neither of the above, and the node it ran on.
+      With no GPU, the device says why: <code>host</code> (CUDA says it is not
+      GPU memory), <code>not asked</code> (registered before CUDA was loaded),
+      or <code>failed</code> — the only one that is a problem. None of them is
+      merged with GPU 0. Objects with no recorded accesses are listed but not viewable: the
       transport registers buffers the instrumented kernels never touch.
     </p>
   {/if}

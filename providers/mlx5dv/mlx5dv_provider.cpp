@@ -171,10 +171,15 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
 
     const std::uint64_t gpu_base =
         by_dmabuf ? (resolved ? dmabuf_range.base : 0) : reinterpret_cast<std::uint64_t>(addr);
+    const comshu::core::Attribution attr =
+        by_dmabuf ? comshu::core::Attribution{resolved ? dmabuf_range.device : kUnknownDevice,
+                                              resolved ? comshu::core::status_of_named(
+                                                             dmabuf_range.device)
+                                                       : comshu::core::AttrStatus::NotQueried}
+                  : comshu::core::attribute(addr);
     UmemInfo info{reinterpret_cast<std::uint64_t>(addr),
                   size,
-                  by_dmabuf ? (resolved ? dmabuf_range.device : kUnknownDevice)
-                            : comshu::core::device_of(addr),
+                  attr.device,
                   by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress,
                   dmabuf_fd,
                   gpu_base,
@@ -214,7 +219,8 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
         rec().record(
             rec().now_instant(),
             comshu::core::records::MemObject{
-                {}, {}, h(addr), comshu::core::kNullHandle, {info.addr, info.size}, info.device});
+                {}, {}, h(addr), comshu::core::kNullHandle, {info.addr, info.size}, info.device,
+                attr.status});
     } else if (resolved) {
         const std::uint64_t base = dmabuf_range.base + reinterpret_cast<std::uint64_t>(addr);
         rec().record(rec().now_instant(),
@@ -223,7 +229,8 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
                                                      h(reinterpret_cast<const void*>(base)),
                                                      comshu::core::kNullHandle,
                                                      {base, info.size},
-                                                     info.device});
+                                                     info.device,
+                                                     attr.status});
     }
 }
 

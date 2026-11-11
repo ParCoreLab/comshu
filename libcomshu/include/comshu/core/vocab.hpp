@@ -18,6 +18,35 @@ using DeviceId = std::uint16_t;
 // providers/mlx5dv/mlx5_records.hpp when mlx5dv was the only one that did.
 inline constexpr DeviceId kUnknownDevice = 0xFFFF;
 
+// WHY a MemObject's device is what it is. kUnknownDevice alone was five
+// different facts wearing one number (PLAN-20260817-0634): "we asked and it is
+// host memory", "we never asked because libcuda was not loaded yet", and "it
+// is device memory whose GPU we could not read" imply nothing, a load-order
+// fix and a driver bug respectively, and were byte-identical on disk. That
+// ambiguity is what let a wrong attribute constant survive a provider's whole
+// life (core/mem_attr.hpp). Recorded beside the device, never folded into it:
+// a sentinel in `device` would make every `device <> 65535` filter count
+// driver-absent objects as GPUs.
+//
+//   Device         resolved; `device` is the ordinal (whoever resolved it)
+//   HostNotCuda    cuPointerGetAttribute said "not a CUDA pointer": host memory
+//   HostCudaKnown  CUDA knows the pointer and its memory type is not DEVICE
+//                  (pinned host, managed, array)
+//   DriverAbsent   no libcuda in the process when asked — we NEVER asked
+//   NullAddr       the emitter had a null address
+//   OrdinalFailed  device memory, and the ordinal query failed: a real failure
+//   NotQueried     the producer named the device itself and could not name one
+//                  (gpumem, an unresolved dma-buf) — no query was made here
+enum class AttrStatus : std::uint8_t {
+    Device = 0,
+    HostNotCuda = 1,
+    HostCudaKnown = 2,
+    DriverAbsent = 3,
+    NullAddr = 4,
+    OrdinalFailed = 5,
+    NotQueried = 6,
+};
+
 // Where a GpuKernel's [start, end] came from. Carried as a field rather than
 // split into two record types, because it is one measurement with two possible
 // instruments — the "independent emitters, dedup by identity" rule.

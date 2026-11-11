@@ -131,6 +131,10 @@ COMSHU_RECORD(MemObject, RecordKind::Entity, 520, "mem_object") {
     Handle   name;  // interned symbol/type name
     MemRange range;
     DeviceId device;
+    // Why `device` is what it is — above all, whether a kUnknownDevice means
+    // "host memory" or "we never asked". See AttrStatus in vocab.hpp. Sits in
+    // the record's tail padding, so the stride does not change.
+    AttrStatus attr_status;
 };
 
 // EVENT — an entity's lifetime ended: dereg_mr, destroy_qp, devx_umem_dereg,

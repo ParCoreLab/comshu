@@ -2211,7 +2211,14 @@ SELECT * FROM (VALUES
     ('MemResidency', 6, 'DeviceStatic'),
     ('MemResidency', 7, 'ManagedStatic'),
     ('CopySource', 0, 'Cupti'),
-    ('CopySource', 1, 'HostApi')
+    ('CopySource', 1, 'HostApi'),
+    ('AttrStatus', 0, 'Device'),
+    ('AttrStatus', 1, 'HostNotCuda'),
+    ('AttrStatus', 2, 'HostCudaKnown'),
+    ('AttrStatus', 3, 'DriverAbsent'),
+    ('AttrStatus', 4, 'NullAddr'),
+    ('AttrStatus', 5, 'OrdinalFailed'),
+    ('AttrStatus', 6, 'NotQueried')
 ) AS v(vocab, value, name)
 )sql"},
 
@@ -3049,6 +3056,31 @@ SELECT 'unresolved_device_copy',
        coalesce(sum(sends), 0)::BIGINT,
        'peer copies whose src or dst rank is unknown — no node identity, or no rank claims that device'
 FROM _memcpy_edges WHERE src_rank = -1 OR dst_rank = -1
+UNION ALL
+-- WHY an object has no device (mem_object.attr_status; AttrStatus in vocab.hpp).
+-- kUnknownDevice used to be five facts in one number, so "these 487 objects
+-- are host memory" was believed from address shapes, never recorded
+-- (PLAN-20260817-0634). Host answers (HostNotCuda, HostCudaKnown) are NOT
+-- findings: they are the healthy answer for transport buffers, and a health
+-- view that counts them teaches people to ignore it.
+--
+-- Never attempted: no libcuda was loaded when the object was registered, so
+-- nobody asked. Usually bootstrap buffers registered before CUDA init, which
+-- cannot be GPU memory, so a note rather than a defect; but it is the row that
+-- says "unknown" and "host" are not the same claim here.
+SELECT 'attribution_never_attempted',
+       'note',
+       count(*)::BIGINT,
+       'memory objects whose device was never queried: libcuda was not loaded yet when they were registered'
+FROM mem_object WHERE attr_status = 3
+UNION ALL
+-- Failed: device memory whose GPU could not be read (OrdinalFailed), or an
+-- emitter that asked about a null address (NullAddr). Either is a real loss.
+SELECT 'attribution_failed',
+       'defect',
+       count(*)::BIGINT,
+       'memory objects whose device query failed: device memory with no readable GPU ordinal, or a null address'
+FROM mem_object WHERE attr_status IN (4, 5)
 UNION ALL
 -- THE ABSENT-VERSUS-EMPTY ROW, and it is the one this whole lane most needs.
 --

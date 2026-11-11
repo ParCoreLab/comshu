@@ -882,10 +882,11 @@ void comshu_note_object(void* p, std::size_t size) {
      * mlx5dv and gpumem use, so the same buffer mints the same id everywhere
      * and the rows merge instead of doubling. */
     const auto object = rec.intern(comshu::rec::InternDomain::Pointer, base);
-    const auto device = comshu::core::device_of(p);
+    const auto attr = comshu::core::attribute(p);
+    const auto device = attr.device;
     rec.record(rec.now_instant(),
                comshu::core::records::MemObject{
-                   {}, {}, object, comshu::core::kNullHandle, {base, size}, device});
+                   {}, {}, object, comshu::core::kNullHandle, {base, size}, device, attr.status});
     comshu::core::ObjectRegistry::instance().add(base, size, object, device);
 }
 

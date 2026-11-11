@@ -180,6 +180,13 @@ COMSHU_SCHEMA_ENUM(comshu::core::MemResidency::ManagedStatic, fb::MemResidency_M
 
 COMSHU_SCHEMA_ENUM(comshu::core::CopySource::Cupti, fb::CopySource_Cupti);
 COMSHU_SCHEMA_ENUM(comshu::core::CopySource::HostApi, fb::CopySource_HostApi);
+COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::Device, fb::AttrStatus_Device);
+COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::HostNotCuda, fb::AttrStatus_HostNotCuda);
+COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::HostCudaKnown, fb::AttrStatus_HostCudaKnown);
+COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::DriverAbsent, fb::AttrStatus_DriverAbsent);
+COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::NullAddr, fb::AttrStatus_NullAddr);
+COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::OrdinalFailed, fb::AttrStatus_OrdinalFailed);
+COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::NotQueried, fb::AttrStatus_NotQueried);
 
 COMSHU_SCHEMA_ENUM(comshu::core::EdgePredicate::TouchedObject, fb::EdgePredicate_TouchedObject);
 COMSHU_SCHEMA_ENUM(comshu::core::EdgePredicate::MapsToSourceLine, fb::EdgePredicate_MapsToSourceLine);
@@ -682,9 +689,11 @@ int main() {
         c.payload.name = 0xCCDD;
         c.payload.range = {0x1000, 0x2000};
         c.payload.device = 0x33;
+        c.payload.attr_status = comshu::core::AttrStatus::OrdinalFailed;
         fb::MemObject f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x111),
                                      fb::TimePoint(2, 0x222), 0),
-                        0xAABB, 0xCCDD, fb::MemRange(0x1000, 0x2000), 0x33);
+                        0xAABB, 0xCCDD, fb::MemRange(0x1000, 0x2000), 0x33,
+                        fb::AttrStatus_OrdinalFailed);
         expect_identical("MemObject", &c, &f, sizeof(c));
     }
     {

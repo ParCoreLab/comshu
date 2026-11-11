@@ -1,6 +1,19 @@
 # `kUnknownDevice` is four different facts wearing one number
 
-Status: **todo**
+Status: **in progress** — steps 1-4 and 7 landed 2026-11-11; steps 5-6 need MN5
+
+**Progress 2026-11-11.** Steps 1-4 and 7 are done. Step 1: no stride change,
+`attr_status` sits in `MemObject`'s tail padding. Steps 2-3: `attribute()`
+returns `{device, status}` from every return site, `device_of()` survives as
+`attribute().device` for records that carry no status (UCX, Mlx5Umem), and all
+MemObject emitters carry the status: ibverbs reg_mr/iova2/both dma-buf doors,
+mlx5dv umems, nvshmem_malloc, gpumem. A seventh state, `NotQueried`, covers a
+device some producer named itself (gpumem, the dma-buf registry) and could not.
+Step 4: `link_health.attribution_never_attempted` (note) and
+`attribution_failed` (defect), tested in comm_edges_rule.sh. Step 7: the Objects
+panel says host / not asked / failed, and shows `rank 9 · n2`.
+**Left:** step 5 (a corpus re-run should find the 487 as HostNotCuda) and step
+6 (a host-only run must report DriverAbsent), both on MN5.
 Created: 2026-08-17 06:34
 Touches: `libcomshu/include/comshu/core/mem_attr.hpp`,
 `libcomshu/include/comshu/core/records.hpp`, `libcomshu/include/comshu/core/vocab.hpp`,

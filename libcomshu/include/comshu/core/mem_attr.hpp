@@ -77,24 +77,46 @@ inline void trace_device_attr(const char* stage, int rc, unsigned int type) {
     std::fflush(stderr);
 }
 
-// Owning device of a host-visible address, or kUnknownDevice.
-inline DeviceId device_of(const void* addr) {
+// The owning device of an address AND why it is what it is. Every return site
+// names its own AttrStatus, which is the point: kUnknownDevice comes back from
+// five of them, and a MemObject records which.
+struct Attribution {
+    DeviceId   device = kUnknownDevice;
+    AttrStatus status = AttrStatus::NotQueried;
+};
+
+inline Attribution attribute(const void* addr) {
+    if (!addr) {
+        trace_device_attr("null-addr", -1, 0);
+        return {kUnknownDevice, AttrStatus::NullAddr};
+    }
     auto* fn = cu_pointer_get_attribute();
-    if (!fn || !addr) {
-        trace_device_attr(fn ? "null-addr" : "unresolved", -1, 0);
-        return kUnknownDevice;
+    if (!fn) {
+        trace_device_attr("unresolved", -1, 0);
+        return {kUnknownDevice, AttrStatus::DriverAbsent};
     }
     unsigned int type = 0;
     const int    rc = fn(&type, kAttrMemoryType, reinterpret_cast<unsigned long long>(addr));
     trace_device_attr("called", rc, type);
     if (rc != 0)
-        return kUnknownDevice;  // not a CUDA pointer: host memory
+        return {kUnknownDevice, AttrStatus::HostNotCuda};
     if (static_cast<int>(type) != kMemoryTypeDevice)
-        return kUnknownDevice;
+        return {kUnknownDevice, AttrStatus::HostCudaKnown};
     int ordinal = -1;
-    if (fn(&ordinal, kAttrDeviceOrdinal, reinterpret_cast<unsigned long long>(addr)) != 0)
-        return kUnknownDevice;
-    return static_cast<DeviceId>(ordinal);
+    if (fn(&ordinal, kAttrDeviceOrdinal, reinterpret_cast<unsigned long long>(addr)) != 0 ||
+        ordinal < 0)
+        return {kUnknownDevice, AttrStatus::OrdinalFailed};
+    return {static_cast<DeviceId>(ordinal), AttrStatus::Device};
+}
+
+// The device alone, for records that carry no status (UCX's, Mlx5Umem). A
+// MemObject emitter uses attribute(): that record is where the reason lives.
+inline DeviceId device_of(const void* addr) { return attribute(addr).device; }
+
+// The status to record beside a device some PRODUCER named (gpumem, the dma-buf
+// registry) rather than one asked for here.
+inline AttrStatus status_of_named(DeviceId device) {
+    return device == kUnknownDevice ? AttrStatus::NotQueried : AttrStatus::Device;
 }
 
 }  // namespace comshu::core

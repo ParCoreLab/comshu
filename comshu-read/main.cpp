@@ -106,6 +106,27 @@ const char* memop_name(core::MemOp op) {
 // 'Global'/'Local'/'Shared'. The two exports already disagree on MemOp's casing
 // ('Load' there, "load" here), so there is no consistency to preserve across
 // them — only within a row, where `op` and `space` sit side by side.
+// The schema's own names, so the CSV and the `vocabulary` table agree.
+const char* attr_status_name(core::AttrStatus st) {
+    switch (st) {
+        case core::AttrStatus::Device:
+            return "Device";
+        case core::AttrStatus::HostNotCuda:
+            return "HostNotCuda";
+        case core::AttrStatus::HostCudaKnown:
+            return "HostCudaKnown";
+        case core::AttrStatus::DriverAbsent:
+            return "DriverAbsent";
+        case core::AttrStatus::NullAddr:
+            return "NullAddr";
+        case core::AttrStatus::OrdinalFailed:
+            return "OrdinalFailed";
+        case core::AttrStatus::NotQueried:
+            return "NotQueried";
+    }
+    return "?";
+}
+
 const char* memspace_name(core::MemSpace sp) {
     switch (sp) {
         case core::MemSpace::Global:
@@ -232,11 +253,12 @@ template<> struct Table<GpuAccess> {
 
 template<> struct Table<MemObject> {
     static constexpr const char* name = "mem_object";
-    static constexpr const char* cols = "ticks,id,name,base,size,device";
+    static constexpr const char* cols = "ticks,id,name,base,size,device,attr_status";
     static void row(std::FILE* f, const Stamped<MemObject>& s, const rec::InternDictionary& in) {
-        std::fprintf(f, "%llu,%u,%s,0x%llx,%llu,%u", (unsigned long long)s.temporal.a.ticks,
+        std::fprintf(f, "%llu,%u,%s,0x%llx,%llu,%u,%s", (unsigned long long)s.temporal.a.ticks,
                      s.payload.id, in.str(s.payload.name), (unsigned long long)s.payload.range.base,
-                     (unsigned long long)s.payload.range.size, s.payload.device);
+                     (unsigned long long)s.payload.range.size, s.payload.device,
+                     attr_status_name(s.payload.attr_status));
     }
 };
 

@@ -233,10 +233,12 @@ static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
     comshu::core::dmabuf::Range  r{};
     const bool                  resolved = comshu::core::dmabuf::lookup(fd, &r);
     const std::uint64_t         base = resolved ? r.base + offset : iova;
-    const comshu::core::DeviceId device =
-        resolved ? r.device
-                 : (base ? comshu::core::device_of(reinterpret_cast<const void*>(base))
-                         : comshu::core::kUnknownDevice);
+    // The registry's device when the fd resolved (status_of_named: it named the
+    // GPU, or could not); else the iova, asked about like any address.
+    const comshu::core::Attribution attr =
+        resolved ? comshu::core::Attribution{r.device, comshu::core::status_of_named(r.device)}
+        : base   ? comshu::core::attribute(reinterpret_cast<const void*>(base))
+                 : comshu::core::Attribution{};
 
     rec().record(comshu::core::Temporal::none(),
                  rr::IbMemRegion{{},
@@ -262,7 +264,8 @@ static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
                                                      h(reinterpret_cast<const void*>(base)),
                                                      comshu::core::kNullHandle,
                                                      {base, length},
-                                                     device});
+                                                     attr.device,
+                                                     attr.status});
 }
 
 
@@ -689,13 +692,15 @@ Profiler::Profiler() {
         // so the duplicate is detectable and mergeable instead of doubling a
         // count — the shape that hooking both ibv_reg_mr and ibv_reg_mr_iova2
         // produced in case 01.
+        const auto attr = comshu::core::attribute(addr);
         rec().record(rec().now_instant(), comshu::core::records::MemObject{
                                               {},
                                               {},
                                               h(addr),
                                               comshu::core::kNullHandle,
                                               {reinterpret_cast<std::uint64_t>(addr), length},
-                                              comshu::core::device_of(addr)});
+                                              attr.device,
+                                              attr.status});
     });
 
     // reg_mr -> the legacy registration door, and the same entity. Identical
@@ -731,13 +736,15 @@ Profiler::Profiler() {
                                          static_cast<std::uint32_t>(access),
                                          -1,
                                          static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
+            const auto attr = comshu::core::attribute(addr);
             rec().record(rec().now_instant(), comshu::core::records::MemObject{
                                                   {},
                                                   {},
                                                   h(addr),
                                                   comshu::core::kNullHandle,
                                                   {reinterpret_cast<std::uint64_t>(addr), length},
-                                                  comshu::core::device_of(addr)});
+                                                  attr.device,
+                                                  attr.status});
         });
 
     // reg_dm_mr / alloc_null_mr -> the two MEMORYLESS registration doors.

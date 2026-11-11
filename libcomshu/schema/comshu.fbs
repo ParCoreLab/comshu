@@ -95,6 +95,12 @@ enum MemResidency : uint8 {
 // see core/vocab.hpp for why it is declared before it exists.
 enum CopySource : uint8 { Cupti = 0, HostApi = 1 }
 
+// Why a MemObject's device is what it is (vocab.hpp has the full story).
+enum AttrStatus : uint8 {
+  Device = 0, HostNotCuda = 1, HostCudaKnown = 2, DriverAbsent = 3,
+  NullAddr = 4, OrdinalFailed = 5, NotQueried = 6
+}
+
 // Predicates for Edge records.
 enum EdgePredicate : uint8 {
   TouchedObject = 0,     // access -> mem object
@@ -219,6 +225,7 @@ struct MemObject {
   name:uint32;         // interned symbol/type name
   range:MemRange;
   device:uint16;
+  attr_status:AttrStatus;  // why `device` is what it is: host, never asked, failed...
 }
 
 // type 522, Event. An entity's lifetime ended — dereg_mr, destroy_qp,

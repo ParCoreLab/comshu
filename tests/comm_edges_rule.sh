@@ -57,12 +57,23 @@ CSV
 # and rank 2's stores to device 1 would resolve to nobody — which is exactly the
 # nvshmem_multinode case the view's comment records.
 cat > "$WORK/mem_object.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device
-0,2,0,100,0,900,0,1,0,4096,1024,0
-1,2,0,100,0,900,0,1,0,4096,1024,1
-2,2,0,100,0,900,0,1,0,4096,1024,0
-3,2,0,100,0,900,0,1,0,4096,1024,1
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device,attr_status
+0,2,0,100,0,900,0,1,0,4096,1024,0,0
+1,2,0,100,0,900,0,1,0,4096,1024,1,0
+2,2,0,100,0,900,0,1,0,4096,1024,0,0
+3,2,0,100,0,900,0,1,0,4096,1024,1,0
+0,2,0,100,0,900,0,2,0,268435456,64,65535,1
+0,2,0,100,0,900,0,3,0,268439552,64,65535,3
+1,2,0,100,0,900,0,2,0,268435456,64,65535,3
+2,2,0,100,0,900,0,2,0,268435456,64,65535,5
+3,2,0,100,0,900,0,2,0,268435456,64,65535,4
 CSV
+
+# The five rows after the first four carry no device, and say why (attr_status,
+# AttrStatus in vocab.hpp): rank 0's first is host memory, which is healthy and
+# no finding at all; two were never asked about (DriverAbsent, 3); one is
+# device memory whose ordinal failed (5) and one a null address (4). Far from
+# every access address, so no lane resolves anything against them.
 
 # state 2 is RTR — the only transition that carries the remote endpoint.
 #
@@ -438,6 +449,14 @@ expect "device ordinals are scoped by node" \
 # Counted, not hidden.
 expect "sends with no resolvable peer are counted" \
     "SELECT n FROM link_health WHERE finding = 'unresolved_sends'" "7"
+
+# An object with no device is host memory, never-asked, or a failure — and only
+# the last two are findings. Host answers must not be counted: 487 healthy host
+# buffers per capture reported as a problem is how a health view gets ignored.
+expect "objects never asked about are a note, counted" \
+    "SELECT severity||':'||n FROM link_health WHERE finding = 'attribution_never_attempted'" "note:2"
+expect "failed attributions are a defect, counted; host memory is not" \
+    "SELECT severity||':'||n FROM link_health WHERE finding = 'attribution_failed'" "defect:2"
 
 # Rank 4 has traffic and no node. The hole is reported rather than guessed at.
 # (That expect sits below.)

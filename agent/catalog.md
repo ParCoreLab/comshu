@@ -383,6 +383,8 @@ The vocabulary is closed. These are all of them:
 | `colliding_gpu_uuids` | defect | two PCI addresses on one node reporting one UUID |
 | `unattributed_p2p_accesses` | defect | a GPU access `object_access` could not place |
 | `device_sends_outside_kernels` | note | a GPU-initiated send whose doorbell rang in no kernel window on its rank (kernel windows recorded); `kernel_sends` cannot name its kernel |
+| `attribution_never_attempted` | note | a memory object registered before libcuda was loaded, so its device was never asked (`mem_object.attr_status` = DriverAbsent) |
+| `attribution_failed` | defect | a memory object whose device query failed: device memory with no readable ordinal, or a null address |
 | `unplaced_offset_sends` | defect | a send naming a zero-based region (NCCL GIN) whose VA comshu never recovered, or an rkey reused across regions that disagree; `object_access` drops it rather than misplace it |
 | `self_edges` | defect | a rank sending to itself — the qp_num-collision signature |
 | `ambiguous_recv_buffers` | defect | a `wr_id` naming more than one posted buffer |
@@ -435,7 +437,7 @@ The ones worth knowing, by what they record:
 | `ib_mem_region` | a registered MR: `range_base`, `range_size`, `lkey`, `rkey`, `access`, `dmabuf_fd` |
 | `ib_mem_region_iova` | the `iova` an MR was registered at, by `mr`/`rkey`, **only** when it differs from `range_base`. A zero-based MR (NCCL GIN) is addressed by offset: VA = `range_base + (remote_addr - iova)`. `object_access` already applies it |
 | `ib_device`, `ib_port` | the HCA and its ports; `lid` lives here |
-| `mem_object` | an application allocation: `id`, `range_base`, `range_size`, `device` |
+| `mem_object` | an application allocation: `id`, `range_base`, `range_size`, `device`, and `attr_status` — WHY the device is what it is (0 Device, 1 HostNotCuda, 2 HostCudaKnown, 3 DriverAbsent, 4 NullAddr, 5 OrdinalFailed, 6 NotQueried; names in `vocabulary`). `device = 65535` with status 1 or 2 is host memory, not a failure |
 | `gpu_access` | one GPU memory access (p2p provider): `address`, `size`, `op`, `space`, `run_device`, `mem_device`, `thread`, `pc` |
 | `gpu_kernel` | a kernel launch: grid/block dims, `stream`, `device`, `correlation` |
 | `mlx5_device_send`, `mlx5_devx_*`, `mlx5_doorbell`, `mlx5_uar`, `mlx5_umem`, `mlx5_send_coverage` | the DEVX path (IBGDA, ibdevx) — decoded send WQEs, whose `submitter` says which door saw them (`gpu_doorbell`, `host_doorbell`, `sq_watch`), the objects behind them, and the send-queue watcher's per-rank coverage (`published = decoded + lapped + dropped`) |

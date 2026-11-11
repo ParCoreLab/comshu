@@ -60,16 +60,16 @@ CSV
 # way wr_flow_rule.sh found that its own fixture could not see a dropped
 # clause.
 cat > "$WORK/mem_object.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device
-0,2,0,100,0,900,0,5,0,20480,4096,0
-1,2,0,100,0,900,0,9,0,20480,4096,1
-2,2,0,100,0,900,0,7,0,20480,4096,2
-1,2,0,100,0,900,0,1,0,8192,2048,1
-1,2,0,100,0,900,0,2,0,8192,512,1
-1,2,0,100,0,900,0,4,0,0,256,1
-1,2,0,100,0,900,0,6,0,30000,2048,1
-1,2,0,100,0,900,0,8,0,60000,1024,1
-0,2,0,100,0,900,0,3,0,4096,1024,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device,attr_status
+0,2,0,100,0,900,0,5,0,20480,4096,0,0
+1,2,0,100,0,900,0,9,0,20480,4096,1,0
+2,2,0,100,0,900,0,7,0,20480,4096,2,0
+1,2,0,100,0,900,0,1,0,8192,2048,1,0
+1,2,0,100,0,900,0,2,0,8192,512,1,0
+1,2,0,100,0,900,0,4,0,0,256,1,0
+1,2,0,100,0,900,0,6,0,30000,2048,1,0
+1,2,0,100,0,900,0,8,0,60000,1024,1,0
+0,2,0,100,0,900,0,3,0,4096,1024,0,0
 CSV
 
 cat > "$WORK/ib_modify_qp.csv" <<'CSV'

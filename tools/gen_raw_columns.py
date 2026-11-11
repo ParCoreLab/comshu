@@ -62,7 +62,8 @@ SCALARS = {
 # table that looks complete. That is why adding CudaMemcpy's three enums here is
 # a required step and not a courtesy.
 ENUMS = {"TimeKind", "MemOp", "MemSpace", "EdgePredicate", "RecordKind",
-         "MemcpyKind", "MemResidency", "CopySource"}
+         "MemcpyKind", "MemResidency", "CopySource",
+         "AttrStatus"}
 
 
 def flatten(fields, structs, prefix, expr):

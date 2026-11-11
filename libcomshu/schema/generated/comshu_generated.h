@@ -443,6 +443,51 @@ inline const char *EnumNameCopySource(CopySource e) {
   return EnumNamesCopySource()[index];
 }
 
+enum AttrStatus : uint8_t {
+  AttrStatus_Device = 0,
+  AttrStatus_HostNotCuda = 1,
+  AttrStatus_HostCudaKnown = 2,
+  AttrStatus_DriverAbsent = 3,
+  AttrStatus_NullAddr = 4,
+  AttrStatus_OrdinalFailed = 5,
+  AttrStatus_NotQueried = 6,
+  AttrStatus_MIN = AttrStatus_Device,
+  AttrStatus_MAX = AttrStatus_NotQueried
+};
+
+inline const AttrStatus (&EnumValuesAttrStatus())[7] {
+  static const AttrStatus values[] = {
+    AttrStatus_Device,
+    AttrStatus_HostNotCuda,
+    AttrStatus_HostCudaKnown,
+    AttrStatus_DriverAbsent,
+    AttrStatus_NullAddr,
+    AttrStatus_OrdinalFailed,
+    AttrStatus_NotQueried
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesAttrStatus() {
+  static const char * const names[8] = {
+    "Device",
+    "HostNotCuda",
+    "HostCudaKnown",
+    "DriverAbsent",
+    "NullAddr",
+    "OrdinalFailed",
+    "NotQueried",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameAttrStatus(AttrStatus e) {
+  if (::flatbuffers::IsOutRange(e, AttrStatus_Device, AttrStatus_NotQueried)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesAttrStatus()[index];
+}
+
 enum EdgePredicate : uint8_t {
   EdgePredicate_TouchedObject = 0,
   EdgePredicate_MapsToSourceLine = 1,
@@ -961,7 +1006,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
   uint32_t name_;
   comshu::fb::MemRange range_;
   uint16_t device_;
-  int16_t padding0__;  int32_t padding1__;
+  uint8_t attr_status_;
+  int8_t padding0__;  int32_t padding1__;
 
  public:
   MemObject()
@@ -970,17 +1016,19 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
         name_(0),
         range_(),
         device_(0),
+        attr_status_(0),
         padding0__(0),
         padding1__(0) {
     (void)padding0__;
     (void)padding1__;
   }
-  MemObject(const comshu::fb::Temporal &_temporal, uint32_t _id, uint32_t _name, const comshu::fb::MemRange &_range, uint16_t _device)
+  MemObject(const comshu::fb::Temporal &_temporal, uint32_t _id, uint32_t _name, const comshu::fb::MemRange &_range, uint16_t _device, comshu::fb::AttrStatus _attr_status)
       : temporal_(_temporal),
         id_(::flatbuffers::EndianScalar(_id)),
         name_(::flatbuffers::EndianScalar(_name)),
         range_(_range),
         device_(::flatbuffers::EndianScalar(_device)),
+        attr_status_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_attr_status))),
         padding0__(0),
         padding1__(0) {
     (void)padding0__;
@@ -1000,6 +1048,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
   }
   uint16_t device() const {
     return ::flatbuffers::EndianScalar(device_);
+  }
+  comshu::fb::AttrStatus attr_status() const {
+    return static_cast<comshu::fb::AttrStatus>(::flatbuffers::EndianScalar(attr_status_));
   }
 };
 FLATBUFFERS_STRUCT_END(MemObject, 80);
