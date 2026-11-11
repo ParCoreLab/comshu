@@ -530,19 +530,19 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
                     // be32 grh_gid_fl at 28, then rgid[16] at 32 — AV units 2
                     // and 3, which have(1, av_ds) has just proven readable.
                     //
-                    // "A GRH is present" has TWO spellings in grh_gid_fl. The
-                    // kernel's mlx5_ib sets bit 30; userspace rdma-core's
-                    // mlx5_create_ah — where NVSHMEM's AVs come from, through
-                    // mlx5dv_init_obj — sets MLX5_EXTENDED_UD_AV, bit 31.
-                    // Gating on bit 30 alone decoded dest_gid = 0 on every one
-                    // of 41,027 RoCE sends (MN5 job 48840501, case 25), while
-                    // the DCTs those sends targeted had recorded their GIDs.
-                    const std::uint32_t grh_gid_fl =
-                        be32toh(*reinterpret_cast<const std::uint32_t*>(seg_at(2) + 12));
-                    // COMSHU_HIJACK_DEBUG=1: the first four full AVs, raw. The
-                    // GRH/rgid layout above was assumed from rdma-core's struct
-                    // mlx5_wqe_av and has been wrong once already; this is how
-                    // the bytes NVSHMEM actually writes get read.
+                    // rgid is read unconditionally — a zero rgid simply decodes
+                    // as "no GID" — and NOT gated on a GRH flag. Read off the wire (COMSHU_HIJACK_DEBUG,
+                    // MN5 job 48929358, NVSHMEM over RoCE v2): grh_gid_fl was
+                    // 00 30 00 00 — sgid index 3 << 20 and NO flag bit at all; on
+                    // Ethernet the GRH is implied and rdma-core does not mark it.
+                    // A bit-30 gate (the kernel's spelling) decoded dest_gid = 0
+                    // on all 41,027 RoCE sends of case 25, and so did adding bit
+                    // 31. An AV without a GRH has a zeroed rgid, so nonzero is
+                    // the test that holds on both link layers.
+                    //
+                    // That makes this the one place the AV's raw bytes are
+                    // trusted, so they stay inspectable:
+                    // COMSHU_HIJACK_DEBUG=1 prints the first four full AVs.
                     if (debug_on()) {
                         static std::atomic<int> dumped{0};
                         if (dumped.fetch_add(1, std::memory_order_relaxed) < 4) {
@@ -553,7 +553,7 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
                             std::fprintf(stderr, "[comshu] full AV qpn=%u: %s\n", qpn, hex);
                         }
                     }
-                    if (grh_gid_fl & (kExtendedAv | (1u << 30))) {
+                    {
                         std::uint64_t v = 0;
                         std::memcpy(&v, seg_at(3), 8);
                         dest_gid_prefix = be64toh(v);
