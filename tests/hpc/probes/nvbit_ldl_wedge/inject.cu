@@ -29,3 +29,36 @@ extern "C" __device__ __noinline__ void wedge_channel(int pred, uint64_t pchanne
         reinterpret_cast<ChannelDev*>(pchannel)->push(rec, sizeof(rec));
     }
 }
+
+// comshu's own injected body, copied: 32 warp shuffles gathering every lane's
+// address, then the first active lane pushes the whole record (~300 B). This is
+// the shape the original bisect ran (gpu-backends/nvbit/inject_funcs.cu), with
+// the record type spelled out here so the probe still includes nothing of
+// comshu. If 'channel' completes and this hangs, the trigger is the record
+// size, the shuffles, or the register pressure they bring.
+struct WedgeRecord {
+    int      dev_id, lane_id, opcode_id;
+    uint32_t instr_index, access_size;
+    uint64_t addrs[32];
+    uint64_t thread_index, launch_id;
+};
+
+extern "C" __device__ __noinline__ void wedge_shfl(int pred, uint64_t addr, uint64_t pchannel) {
+    if (!pred)
+        return;
+    const int active = __ballot_sync(__activemask(), 1);
+    int       lane;
+    asm volatile("mov.u32 %0, %%laneid;" : "=r"(lane));
+    WedgeRecord r;
+    for (int i = 0; i < 32; i++)
+        r.addrs[i] = (active & (1 << i)) ? __shfl_sync(active, addr, i) : 0;
+    r.dev_id = 0;
+    r.lane_id = lane;
+    r.opcode_id = 0;
+    r.instr_index = 1006;
+    r.access_size = 8;
+    r.thread_index = threadIdx.x;
+    r.launch_id = 0;
+    if (lane == __ffs(active) - 1)
+        reinterpret_cast<ChannelDev*>(pchannel)->push(&r, sizeof(r));
+}

@@ -12,7 +12,8 @@
 #   none      NVBit loaded, target JIT'd, no call  does NVBit's patching alone hang?
 #   empty     a call that does nothing             does splicing a call in hang?
 #   atomic    a global atomicAdd per lane          a side effect, no channel
-#   channel   NVBit's stock channel push           what comshu's push() does
+#   channel   NVBit's stock channel push (16 B)
+#   shfl      comshu's injected body, copied: 32 shuffles, ~300 B push
 #
 # comshu's bisect said: hangs with push, completes with -DCOMSHU_INJECT_NO_PUSH.
 # If `channel` hangs here and `empty` does not, the reproducer belongs to
@@ -84,12 +85,18 @@ arm() {  # arm <label> <mode|bare> [extra env...]
 # bisect's offset names an LDL.64 in THIS build of NVSHMEM.
 arm dump none WEDGE_DUMP=1
 grep -ah "\[wedge\] .*nvshmemi_transfer_rma_p" "$WORK/dump.log" | sort -u | head -40
-OFF=${WEDGE_OFF:-19680}
-
+# THE LADDER, over every LDL in the function. The bisect named one instruction
+# (+0x19680) in the NVSHMEM 3.7 build of August; MN5's current NVSHMEM has no
+# LDL there (job 48931785's dump), so an offset-pinned arm instruments nothing.
+# WEDGE_OFF=<hex> still pins one instruction when a build has it.
 arm bare           bare
-arm none_one       none    WEDGE_OFF=$OFF
-arm empty_one      empty   WEDGE_OFF=$OFF
-arm atomic_one     atomic  WEDGE_OFF=$OFF
-arm channel_one    channel WEDGE_OFF=$OFF
-arm channel_allldl channel
+arm none_all       none
+arm empty_all      empty
+arm atomic_all     atomic
+arm channel_all    channel
+# comshu's own injected body (32 shuffles + a ~300 B record) — the closest this
+# probe gets to the original configuration. Twice, because a hang that needs a
+# race may not show on one run.
+arm shfl_all       shfl
+arm shfl_all_2     shfl
 echo "=== logs in $WORK"

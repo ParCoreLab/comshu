@@ -8,7 +8,7 @@
 // this tool reproduces it, the defect is NVBit's or NVSHMEM's, not comshu's.
 //
 // Environment:
-//   WEDGE_MODE    none | empty | atomic | channel   (default none)
+//   WEDGE_MODE    none | empty | atomic | channel | shfl   (default none)
 //   WEDGE_KERNEL  instrument launches of kernels whose name contains this
 //                 (default put_to_next — case 04/07's workload)
 //   WEDGE_FN      ...and, among their related functions, only those whose name
@@ -51,7 +51,7 @@ static void* recv_thread(void*) {
     char* buf = static_cast<char*>(std::malloc(kChannelBytes));
     while (g_recv_running) {
         const uint32_t n = g_channel_host.recv(buf, kChannelBytes);
-        g_received += n / 16;
+        g_received += n;  // bytes
     }
     std::free(buf);
     return nullptr;
@@ -74,7 +74,7 @@ void nvbit_at_init() {
 }
 
 void nvbit_at_ctx_init(CUcontext) {
-    if (g_mode == "channel") {
+    if (g_mode == "channel" || g_mode == "shfl") {
         void* mem = nullptr;
         cudaMallocManaged(&mem, sizeof(ChannelDev));
         g_channel_dev = new (mem) ChannelDev();
@@ -116,6 +116,11 @@ static void instrument(CUcontext ctx, CUfunction kernel) {
                 nvbit_insert_call(i, "wedge_channel", IPOINT_BEFORE);
                 nvbit_add_call_arg_guard_pred_val(i);
                 nvbit_add_call_arg_const_val64(i, reinterpret_cast<uint64_t>(g_channel_dev));
+            } else if (g_mode == "shfl") {
+                nvbit_insert_call(i, "wedge_shfl", IPOINT_BEFORE);
+                nvbit_add_call_arg_guard_pred_val(i);
+                nvbit_add_call_arg_mref_addr64(i, 0);
+                nvbit_add_call_arg_const_val64(i, reinterpret_cast<uint64_t>(g_channel_dev));
             } else {
                 continue;  // none: considered, not instrumented
             }
@@ -148,7 +153,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 }
 
 void nvbit_at_term() {
-    std::fprintf(stderr, "[wedge] done: mode=%s instrumented=%d atomics=%llu channel_records=%llu\n",
+    std::fprintf(stderr, "[wedge] done: mode=%s instrumented=%d atomics=%llu channel_bytes=%llu\n",
                  g_mode.c_str(), g_instrumented, g_counter ? *g_counter : 0ull, g_received);
     g_recv_running = false;
 }
