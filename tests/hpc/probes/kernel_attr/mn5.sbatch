@@ -15,12 +15,12 @@
 #
 #   sbatch --account=etur02 --qos=acc_debug tests/hpc/probes/kernel_attr/mn5.sbatch
 #
-#SBATCH --job-name=pcomm-kattr
+#SBATCH --job-name=comshu-kattr
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:15:00
 #SBATCH --output=kattr_%j.out
-export PCOMM_GIN_PROVIDERS=ib,mlx5dv,cupti
-exec bash "${PCOMM_ROOT:-$HOME/proj/pcomm}/tests/hpc/cases/26_nccl_gin/job.sbatch"
+export COMSHU_GIN_PROVIDERS=ib,mlx5dv,cupti
+exec bash "${COMSHU_ROOT:-$HOME/proj/comshu}/tests/hpc/cases/26_nccl_gin/job.sbatch"

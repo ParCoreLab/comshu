@@ -1,11 +1,11 @@
-# probes/kerneltime — how should pcomm capture kernel lifetimes?
+# probes/kerneltime — how should comshu capture kernel lifetimes?
 
 Not a suite case. It answered one architectural question and is kept as the
 record behind `plans/PLAN-20260813-0600-kernel-lifetimes-belong-to-the-engine`.
 
 ## The question
 
-pcomm captures no kernel record at all. SigmaTrace does (`CudaKernelLaunch =
+comshu captures no kernel record at all. SigmaTrace does (`CudaKernelLaunch =
 300` / `CudaKernelExit`). A comm-only timeline can show that a rank went quiet
 and can never say whether it was computing or blocked, so the gap is worth
 closing — but *where* it closes (engine or provider) depends on facts about
@@ -51,7 +51,7 @@ On du04 (A100, CUDA 13.0) use `-arch=sm_80` and
 
 | source | how | result |
 |---|---|---|
-| CUPTI | `pcomm run -p cupti` | 1402 rows, 0 dropped, domain 1 fits at **1.0000000** ns/tick — no calibration needed |
+| CUPTI | `comshu run -p cupti` | 1402 rows, 0 dropped, domain 1 fits at **1.0000000** ns/tick — no calibration needed |
 | NVBit globaltimer | gpumem preloaded, no CUPTI in the process | **502 spans, 0 incomplete**, domain 2, fits at **−7.6 ppm** |
 
 The globaltimer path needed one non-obvious fix. Its domain first fitted at

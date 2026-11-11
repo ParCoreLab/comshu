@@ -11,16 +11,16 @@
 #include <thread>
 #include <vector>
 
-#include "pcomm/core/records.hpp"
-#include "pcomm/rec/recorder.hpp"
-#include "pcomm/rec/sink.hpp"
-#include "pcomm/rec/stream_header.hpp"
-#include "pcomm/rec/thread_buffer_registry.hpp"
-#include "pcomm/rec/thread_local_buffer.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/rec/recorder.hpp"
+#include "comshu/rec/sink.hpp"
+#include "comshu/rec/stream_header.hpp"
+#include "comshu/rec/thread_buffer_registry.hpp"
+#include "comshu/rec/thread_local_buffer.hpp"
+#include "comshu/tracer.hpp"
 
 namespace fs = std::filesystem;
-using namespace pcomm;
+using namespace comshu;
 using core::records::MemObject;
 
 int main() {
@@ -28,7 +28,7 @@ int main() {
     constexpr int kPerThread = 1000;  // < buffer_capacity (4096): every record
                                       // relies entirely on the central flush.
 
-    fs::path dir = fs::temp_directory_path() / "pcomm-thread-flush";
+    fs::path dir = fs::temp_directory_path() / "comshu-thread-flush";
     fs::remove_all(dir);
 
     // Records go into engine-owned arenas (engine_abi.h), not into a sink this

@@ -21,7 +21,7 @@
 # `timeout` stays as a guard so a regression self-reports instead of burning the
 # wall clock — but it is now a real failure, not an expected one.
 #
-#SBATCH --job-name=pcomm-07-nvshmem-multinode
+#SBATCH --job-name=comshu-07-nvshmem-multinode
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -32,27 +32,27 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 # Same workload binary as case 04 — the ring spans whatever PE count it is given,
 # so the only difference here is 8 PEs across 2 nodes instead of 4 on one.
-APP="$HOME/nvshmem_putget-li-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)"
+APP="$HOME/nvshmem_putget-li-$(sha1sum "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
     -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # AFTER the build block, not before it, and this line has already cost a job.
 #
 # NVSHMEM_HOME is globbed to the NEWEST SDK (26.5 on MN5) while
-# pcomm_load_build/pcomm_load_runtime do `module load nvidia-hpc-sdk/25.7` — and
+# comshu_load_build/comshu_load_runtime do `module load nvidia-hpc-sdk/25.7` — and
 # each of those PREPENDS 25.7's lib dir. Setting this before the build block
 # therefore puts 26.5 first, the build block shoves 25.7 in front of it, and the
 # loader hands the binary a libnvshmem_host it was not linked against:
@@ -71,16 +71,16 @@ export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 export NVSHMEM_REMOTE_TRANSPORT=ibrc
 export NVSHMEM_IB_ENABLE_IBGDA=0
 
-OUT=$(pcomm_out nvshmem_multinode); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out nvshmem_multinode); rm -rf "$OUT"; mkdir -p "$OUT"
 
-# PCOMM_KERNEL_NAME restricts NVBit instrumentation to our put kernel; without it
+# COMSHU_KERNEL_NAME restricts NVBit instrumentation to our put kernel; without it
 # NVBit instruments all of NVSHMEM's internal device code (spin/retry loops),
 # which is enormous and not byte-repeatable. See case 04.
 timeout 300 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
+  -x COMSHU_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
   -x NVSHMEM_REMOTE_TRANSPORT -x NVSHMEM_IB_ENABLE_IBGDA \
-  -x PCOMM_KERNEL_NAME=put_to_next \
-  "$PCOMM" run -p ib,p2p -o "$OUT" -- "$APP" 65536 3
+  -x COMSHU_KERNEL_NAME=put_to_next \
+  "$COMSHU" run -p ib,p2p -o "$OUT" -- "$APP" 65536 3
 rc=$?; echo "mpirun exit=$rc"
 if [ $rc -ne 0 ]; then
   echo "FAILED: workload did not complete (rc=$rc; 124 = timed out)."
@@ -92,8 +92,8 @@ if [ $rc -ne 0 ]; then
   exit 1
 fi
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/07_nvshmem_multinode"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/07_nvshmem_multinode"

@@ -1,4 +1,4 @@
-# pcomm house style, derived from the tree rather than picked.
+# comshu house style, derived from the tree rather than picked.
 #
 # Measured over tracked C++ (excluding third_party/ and the vendored NVBit):
 #   indent      4 spaces  (leading-space histogram is a clean 4/8/12)
@@ -28,7 +28,7 @@ NamespaceIndentation: None
 ReflowComments: false
 
 # DO NOT set to true. Includes are grouped on purpose and several carry
-# trailing comments explaining the grouping (e.g. pcomm-read's
+# trailing comments explaining the grouping (e.g. comshu-read's
 # `#include "ib_records.hpp"  // provider record schemas (reader knows all
 # types)`). Sorting reorders across those boundaries and strands the comments.
 SortIncludes: false

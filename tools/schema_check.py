@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Cross-check every C++ record declaration against libpcomm/schema/pcomm.fbs.
+"""Cross-check every C++ record declaration against libcomshu/schema/comshu.fbs.
 
 tests/schema_conformance.cpp proves the ten records we *named* in it are
 byte-identical to their schema structs. It cannot prove anything about a record
-nobody named: add an eleventh PCOMM_RECORD, write no schema entry, add no test
+nobody named: add an eleventh COMSHU_RECORD, write no schema entry, add no test
 line, and every check in the tree still passes while every non-C++ reader
 silently misses the new stream. Absence is invisible — the same failure shape as
 the case 07 label mismatch.
 
-So this walks the *sources* rather than a list: every PCOMM_RECORD in the repo
-must have a struct in pcomm.fbs whose fields match one-for-one in name, order
+So this walks the *sources* rather than a list: every COMSHU_RECORD in the repo
+must have a struct in comshu.fbs whose fields match one-for-one in name, order
 and type, must carry the type_id and kind the schema claims for it, and must be
 covered by both halves of the conformance test. Every enum a record field uses
 must be declared in the schema with the same values, and every schema struct
@@ -53,14 +53,14 @@ SCALARS = {
 # C++ headers holding the shared vocabulary (structs and enums records refer to)
 # and the file framing. StreamHeader is checked exactly like a record: it is on
 # disk in every capture, so it is part of the format whether or not it is a
-# PCOMM_RECORD.
-VOCAB_HEADERS = ["libpcomm/include/pcomm/core/vocab.hpp",
-                 "libpcomm/include/pcomm/core/time.hpp",
-                 "libpcomm/include/pcomm/core/ids.hpp",
-                 "libpcomm/include/pcomm/rec/stream_header.hpp"]
+# COMSHU_RECORD.
+VOCAB_HEADERS = ["libcomshu/include/comshu/core/vocab.hpp",
+                 "libcomshu/include/comshu/core/time.hpp",
+                 "libcomshu/include/comshu/core/ids.hpp",
+                 "libcomshu/include/comshu/rec/stream_header.hpp"]
 
 # Where the schema hash constant lives, and what it hashes.
-STREAM_HEADER_HPP = "libpcomm/include/pcomm/rec/stream_header.hpp"
+STREAM_HEADER_HPP = "libcomshu/include/comshu/rec/stream_header.hpp"
 
 # This walk is over the *filesystem*, not `git ls-files`, and that is deliberate
 # (see parse_records) — so it also descends into anything else living under the
@@ -68,7 +68,7 @@ STREAM_HEADER_HPP = "libpcomm/include/pcomm/rec/stream_header.hpp"
 # same repo: without skipping it, every record is "declared twice" and the check
 # fails with 24 problems that are all one directory.
 SKIP_DIRS = {"build", "build-all", "build-x", "third_party", ".tools", ".git",
-             ".cache", "pcomm-out", ".claude"}
+             ".cache", "comshu-out", ".claude"}
 # Records declared here are fixtures, not format. See parse_records.
 TEST_DIRS = {"tests"}
 
@@ -114,24 +114,24 @@ def parse_fields(body):
     return fields
 
 
-# Matches PCOMM_RECORD(...) and PCOMM_RECORD_V(..., Version). The version group
-# is absent for the plain form, which means 1 — see PCOMM_RECORD_V in
+# Matches COMSHU_RECORD(...) and COMSHU_RECORD_V(..., Version). The version group
+# is absent for the plain form, which means 1 — see COMSHU_RECORD_V in
 # core/record.hpp for what a version is and how ids relate to it.
 RECORD_RE = re.compile(
-    r"PCOMM_RECORD(_V)?\(\s*(\w+)\s*,\s*(?:\w+::)?RecordKind::(\w+)\s*,\s*(\d+)\s*,"
+    r"COMSHU_RECORD(_V)?\(\s*(\w+)\s*,\s*(?:\w+::)?RecordKind::(\w+)\s*,\s*(\d+)\s*,"
     r'\s*"([^"]+)"\s*(?:,\s*(\d+)\s*)?\)\s*\{(.*?)\s*\};',
     re.S)
 
 
 def parse_records(root):
-    """Every PCOMM_RECORD in the tree, wherever it is declared.
+    """Every COMSHU_RECORD in the tree, wherever it is declared.
 
     .cpp as well as .hpp: a record declared in a translation unit is just as
     much on disk as one in a header, and scanning only headers would leave a
     way to add a record type that no check ever sees.
 
     Test directories are exempt, and that exemption is the point rather than an
-    oversight — libpcomm/tests/record_versioning.cpp declares a demo family to
+    oversight — libcomshu/tests/record_versioning.cpp declares a demo family to
     prove the versioning mechanism, and inventing a real record (and a real
     type_id, and a schema entry) purely to have something to bump would put a
     permanent fiction in the on-disk format. Test records live at ids 900+,
@@ -147,7 +147,7 @@ def parse_records(root):
         for m in RECORD_RE.finditer(text):
             versioned, name, kind, type_id, wire, version, body = m.groups()
             if versioned and version is None:
-                fail(f"{path}:{name}: PCOMM_RECORD_V without a version argument")
+                fail(f"{path}:{name}: COMSHU_RECORD_V without a version argument")
             if name in records:
                 fail(f"record {name} declared twice ({records[name]['path']} and {path})")
             records[name] = {
@@ -263,9 +263,9 @@ def schema_hash(fbs_path):
 def parse_conformance(path):
     text = path.read_text()
     return {
-        "sizes": set(re.findall(r"PCOMM_SCHEMA_MATCH\(\s*\w+::(\w+)", text)),
+        "sizes": set(re.findall(r"COMSHU_SCHEMA_MATCH\(\s*\w+::(\w+)", text)),
         "bytes": set(re.findall(r'expect_identical\(\s*"(\w+)"', text)),
-        "enums": set(re.findall(r"PCOMM_SCHEMA_ENUM\(\s*[\w:]*::(\w+::\w+)", text)),
+        "enums": set(re.findall(r"COMSHU_SCHEMA_ENUM\(\s*[\w:]*::(\w+::\w+)", text)),
     }
 
 
@@ -273,8 +273,8 @@ def parse_conformance(path):
 
 def main():
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
-    fbs_path = root / "libpcomm/schema/pcomm.fbs"
-    conf_path = root / "libpcomm/tests/schema_conformance.cpp"
+    fbs_path = root / "libcomshu/schema/comshu.fbs"
+    conf_path = root / "libcomshu/tests/schema_conformance.cpp"
 
     records = parse_records(root)
     vocab_structs, vocab_enums = parse_vocab(root)
@@ -282,11 +282,11 @@ def main():
     conf = parse_conformance(conf_path)
 
     if not records:
-        fail("no PCOMM_RECORD declarations found — the walk is broken, not the tree")
+        fail("no COMSHU_RECORD declarations found — the walk is broken, not the tree")
 
     def unqualify(ctype):
         """`core::RecordKind` and `RecordKind` are the same type to the schema."""
-        for prefix in ("pcomm::core::", "core::", "pcomm::rec::", "rec::"):
+        for prefix in ("comshu::core::", "core::", "comshu::rec::", "rec::"):
             if ctype.startswith(prefix):
                 return ctype[len(prefix):]
         return ctype
@@ -308,24 +308,24 @@ def main():
             expected.append((name, fbs_type_of(ctype, where)))
         actual = fb_structs[fb_name]
         if len(expected) != len(actual):
-            fail(f"{where}: {len(cpp_fields)} C++ fields but pcomm.fbs struct "
+            fail(f"{where}: {len(cpp_fields)} C++ fields but comshu.fbs struct "
                  f"{fb_name} has {len(actual)}"
                  + (" (+ the temporal stamp)" if prefix_temporal else ""))
             return
         for i, ((cn, ct), (fn, ft)) in enumerate(zip(expected, actual)):
             if cn != fn:
                 fail(f"{where}: field {i} is '{cn}' in C++ but '{fn}' in "
-                     f"pcomm.fbs struct {fb_name} — order and names must match")
+                     f"comshu.fbs struct {fb_name} — order and names must match")
             elif ct is not None and ct != ft:
                 fail(f"{where}: field '{cn}' is {ct} in C++ but {ft} in "
-                     f"pcomm.fbs struct {fb_name}")
+                     f"comshu.fbs struct {fb_name}")
 
     # 1. Every record is in the schema, with matching shape, id and kind.
     for name, rec in sorted(records.items()):
         where = f"{rec['path']}:{name}"
         if name not in fb_structs:
             fail(f"{where} (type {rec['type_id']}, \"{rec['wire']}\") has no struct "
-                 f"in libpcomm/schema/pcomm.fbs — every record must be in the "
+                 f"in libcomshu/schema/comshu.fbs — every record must be in the "
                  f"schema or no non-C++ reader can see it")
             continue
         # A .pcs file is an array of Stamped<R>, so the schema struct is the
@@ -333,22 +333,22 @@ def main():
         check_fields(rec["fields"], name, True, where)
 
         if name not in fb_types:
-            fail(f"{where}: pcomm.fbs struct {name} has no '// type <id>, <Kind>' "
+            fail(f"{where}: comshu.fbs struct {name} has no '// type <id>, <Kind>' "
                  f"annotation — that comment is the only place the schema states "
                  f"which stream the struct describes")
         else:
             fb_id, fb_kind, fb_version = fb_types[name]
             if fb_id != rec["type_id"]:
-                fail(f"{where}: type_id {rec['type_id']} in C++ but {fb_id} in pcomm.fbs")
+                fail(f"{where}: type_id {rec['type_id']} in C++ but {fb_id} in comshu.fbs")
             if fb_kind != rec["kind"]:
-                fail(f"{where}: RecordKind::{rec['kind']} in C++ but {fb_kind} in pcomm.fbs")
+                fail(f"{where}: RecordKind::{rec['kind']} in C++ but {fb_kind} in comshu.fbs")
             if fb_version != rec["version"]:
                 fail(f"{where}: version {rec['version']} in C++ but v{fb_version} in "
-                     f"pcomm.fbs — annotate the struct '// type {rec['type_id']}, "
+                     f"comshu.fbs — annotate the struct '// type {rec['type_id']}, "
                      f"{rec['kind']}, v{rec['version']}'")
 
         if name not in conf["sizes"]:
-            fail(f"{where}: no PCOMM_SCHEMA_MATCH line in schema_conformance.cpp — "
+            fail(f"{where}: no COMSHU_SCHEMA_MATCH line in schema_conformance.cpp — "
                  f"the size assertion is not automatic, add it")
         if name not in conf["bytes"]:
             fail(f"{where}: no expect_identical(\"{name}\", ...) case in "
@@ -365,7 +365,7 @@ def main():
                          f"vocabulary struct {name}")
             checked_vocab.append(name)
             continue
-        fail(f"pcomm.fbs declares struct {name} with no PCOMM_RECORD and no C++ "
+        fail(f"comshu.fbs declares struct {name} with no COMSHU_RECORD and no C++ "
              f"vocabulary struct behind it — dead schema, or a record that was "
              f"deleted without removing its entry")
 
@@ -379,7 +379,7 @@ def main():
     for name in sorted(used):
         if name not in fb_enums:
             fail(f"C++ enum {name} is used by a record field but is not declared "
-                 f"in pcomm.fbs — declare it, do not describe it in a comment")
+                 f"in comshu.fbs — declare it, do not describe it in a comment")
             continue
         if vocab_enums[name] != fb_enums[name]:
             fail(f"enum {name} differs:\n"
@@ -387,12 +387,12 @@ def main():
                  f"      .fbs: {fb_enums[name]}")
         for member, _value in vocab_enums[name]:
             if f"{name}::{member}" not in conf["enums"]:
-                fail(f"enum {name}::{member} has no PCOMM_SCHEMA_ENUM line in "
+                fail(f"enum {name}::{member} has no COMSHU_SCHEMA_ENUM line in "
                      f"schema_conformance.cpp")
     for name in sorted(set(fb_enums) - used):
         notes.append(f"schema enum {name} is declared but no record field uses it")
 
-    # 4. The versioning convention (PCOMM_RECORD_V in core/record.hpp). None of
+    # 4. The versioning convention (COMSHU_RECORD_V in core/record.hpp). None of
     #    this is enforceable by the compiler: two records can happily claim the
     #    same type_id in different headers, and the writer would then produce two
     #    different layouts in one filename. These are the rules that make "a new
@@ -431,7 +431,7 @@ def main():
 
     # 5. The schema hash every capture is stamped with actually identifies this
     #    schema. Left to a human to update, it would be wrong the first time
-    #    someone edited pcomm.fbs in a hurry — and a stale hash is worse than
+    #    someone edited comshu.fbs in a hurry — and a stale hash is worse than
     #    none, since it asserts sameness that is not true.
     want_hash = schema_hash(fbs_path)
     header_src = (root / STREAM_HEADER_HPP).read_text()
@@ -440,16 +440,16 @@ def main():
         fail(f"{STREAM_HEADER_HPP}: no kSchemaHash constant found")
     elif int(m.group(1), 16) != want_hash:
         fail(f"{STREAM_HEADER_HPP}: kSchemaHash is 0x{int(m.group(1), 16):016X} but "
-             f"pcomm.fbs hashes to 0x{want_hash:016X} — the schema changed; set it to "
+             f"comshu.fbs hashes to 0x{want_hash:016X} — the schema changed; set it to "
              f"0x{want_hash:016X}ull")
     else:
         notes.append(f"schema hash 0x{want_hash:016X} matches "
-                     f"pcomm/rec/stream_header.hpp")
+                     f"comshu/rec/stream_header.hpp")
 
     # 5b. The derived layer PUBLISHES the vocabularies, and this holds that
     #     publication equal to the schema.
     #
-    #     `pcomm export --csv` decodes enums; `--parquet` does not; and the
+    #     `comshu export --csv` decodes enums; `--parquet` does not; and the
     #     derived layer is Parquet-only. So the export carrying comm_edges and
     #     link_health is exactly the one that shows `3` where the other shows
     #     `Prefetch`. link_sql.hpp's `vocabulary` table closes that — one row
@@ -457,14 +457,14 @@ def main():
     #     hand-written table inside a C++ string it is precisely the kind of
     #     list this repo has watched go stale five times.
     #
-    #     So it is parsed back out and compared. A value renamed in pcomm.fbs
+    #     So it is parsed back out and compared. A value renamed in comshu.fbs
     #     now fails the build rather than publishing a wrong name to every
     #     reader of every capture. Same bargain as tools/check_figures.py.
-    link_sql = (root / "pcomm-read/link_sql.hpp").read_text()
+    link_sql = (root / "comshu-read/link_sql.hpp").read_text()
     m = re.search(r'\{"vocabulary",\s*"vocab,value,name",\s*R"sql\((.*?)\)sql"',
                   link_sql, re.S)
     if not m:
-        fail("pcomm-read/link_sql.hpp: no `vocabulary` derived table found — it "
+        fail("comshu-read/link_sql.hpp: no `vocabulary` derived table found — it "
              "moved or was renamed; update tools/schema_check.py")
     else:
         published = {}
@@ -477,7 +477,7 @@ def main():
             want = vocab_enums.get(vocab) or fb_enums.get(vocab)
             if want is None:
                 fail(f"link_sql.hpp vocabulary publishes {vocab!r}, which is "
-                     f"neither a C++ enum class nor a pcomm.fbs enum")
+                     f"neither a C++ enum class nor a comshu.fbs enum")
             elif rows != want:
                 fail(f"link_sql.hpp vocabulary disagrees with the schema for "
                      f"{vocab}:\n      published: {rows}\n      declared : {want}")
@@ -494,22 +494,22 @@ def main():
                          f"names across {len(published)} enums match the schema")
 
     # 6. The two readers name ibverbs enum values from two hand-written tables:
-    #    the switch statements in pcomm-read/main.cpp and the dicts in
+    #    the switch statements in comshu-read/main.cpp and the dicts in
     #    tools/read_pcs.py. The Python reader's entire claim is that it
     #    reproduces goldens computed from the C++ CSVs, so the tables must be
     #    equal — and they drifted once ("cmp_swp" where the CSV says
     #    "atomic_cmp_swp"), invisibly, because case 01 never posts an atomic.
-    #    Held equal here rather than generated from pcomm.fbs on purpose: the
+    #    Held equal here rather than generated from comshu.fbs on purpose: the
     #    schema hash seals every capture, and a naming table is not worth a
     #    capture-format event.
-    cpp_reader = (root / "pcomm-read/main.cpp").read_text()
+    cpp_reader = (root / "comshu-read/main.cpp").read_text()
     py_reader_path = root / "tools/read_pcs.py"
 
     def cpp_name_table(fn_name):
         m = re.search(rf'std::string\s+{fn_name}\s*\(unsigned\s+\w+\)\s*\{{(.*?)\n\}}',
                       cpp_reader, re.S)
         if not m:
-            fail(f"pcomm-read/main.cpp: cannot find {fn_name}() — the reader "
+            fail(f"comshu-read/main.cpp: cannot find {fn_name}() — the reader "
                  f"moved; update tools/schema_check.py")
             return None
         return {int(n): s for n, s in
@@ -541,7 +541,7 @@ def main():
             notes.append(f"{py_var}: {len(py_tab)} names match the reader's {cpp_fn}()")
 
     # --- report
-    print("schema check: C++ records vs libpcomm/schema/pcomm.fbs")
+    print("schema check: C++ records vs libcomshu/schema/comshu.fbs")
     for name in sorted(records):
         rec = records[name]
         mark = "ok " if not any(name in e for e in errors) else "XX "

@@ -21,5 +21,5 @@
     "gpu_access",
     "mem_object"
   ],
-  "history": "was xfail, filed as 'NCCL's persistent kernel starves NVBit's bounded channel -> producer/consumer deadlock'. Refuted by measurement: the channel is empty during the slow phase, and the run completes given time. The launched kernel is ncclDevKernel_AllReduce_Sum_f32_RING_LL — RING_LL despite the job pinning NCCL_PROTO=Simple, since NCCL selects protocol by message size (found with PCOMM_LAUNCH_DUMP, cb7fce7)."
+  "history": "was xfail, filed as 'NCCL's persistent kernel starves NVBit's bounded channel -> producer/consumer deadlock'. Refuted by measurement: the channel is empty during the slow phase, and the run completes given time. The launched kernel is ncclDevKernel_AllReduce_Sum_f32_RING_LL — RING_LL despite the job pinning NCCL_PROTO=Simple, since NCCL selects protocol by message size (found with COMSHU_LAUNCH_DUMP, cb7fce7)."
 }

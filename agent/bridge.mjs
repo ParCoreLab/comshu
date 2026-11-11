@@ -9,7 +9,7 @@
 // through its own `query()`, exactly as every curated panel does. That is what
 // keeps one derived layer instead of two.
 //
-// Loopback by default, like `pcomm ui`: this is one person's capture, on one
+// Loopback by default, like `comshu ui`: this is one person's capture, on one
 // person's machine, and it has no authentication because it must never be
 // reachable by anything that would need to authenticate.
 //
@@ -17,7 +17,7 @@
 // `--allow-remote` — because the failure mode is silent and total: anyone who
 // can route to the address gets an unauthenticated agent with a live query
 // connection to the capture. The second flag exists so that no one reaches this
-// state by copying a command they did not read. `pcomm ui --bind` takes the
+// state by copying a command they did not read. `comshu ui --bind` takes the
 // same position and hardens DuckDB when it does.
 
 import { createServer } from 'node:http';
@@ -26,7 +26,7 @@ import { buildSystemPrompt } from './lib/prompt.mjs';
 import { PiSession, DEFAULT_MODEL } from './lib/session.mjs';
 
 const opts = {
-  ui: process.env.PCOMM_UI_URL ?? 'http://127.0.0.1:8777',
+  ui: process.env.COMSHU_UI_URL ?? 'http://127.0.0.1:8777',
   port: 8778,
   bind: '127.0.0.1',
   allowRemote: false,
@@ -82,7 +82,7 @@ if (!isLoopback(opts.bind) && isLoopback(new URL(opts.ui).hostname)) {
 
 const capture = new Capture(opts.ui);
 
-// The page is served by `pcomm ui` on a different port, so this is a genuine
+// The page is served by `comshu ui` on a different port, so this is a genuine
 // cross-origin fetch. Allow exactly the origins that can legitimately hold the
 // page: the UI itself, and vite in dev.
 //
@@ -117,7 +117,7 @@ let startupError = null;
 async function ensureSession() {
   if (session) return session;
   // Rebuilt per session, not cached from startup. A long-lived bridge outlives
-  // the `pcomm ui` it points at, and when that server is restarted on a
+  // the `comshu ui` it points at, and when that server is restarted on a
   // different capture the port stays the same while everything behind it
   // changes. Caching the prompt meant the model kept being told "2 ranks" about
   // a 64-rank capture — its queries still ran against the real data, so the
@@ -257,7 +257,7 @@ try {
   systemPrompt = await buildSystemPrompt(capture);
 } catch (e) {
   startupError = `cannot read the capture at ${opts.ui}: ${e.message}`;
-  process.stderr.write(`${startupError}\nis \`pcomm ui <capture>\` running?\n`);
+  process.stderr.write(`${startupError}\nis \`comshu ui <capture>\` running?\n`);
 }
 
 // Loudly, because the failure it prevents is subtle: a bridge left running from
@@ -277,7 +277,7 @@ server.on('error', (e) => {
 
 server.listen(opts.port, opts.bind, () => {
   process.stdout.write(
-    `pcomm agent bridge: http://${opts.bind}:${opts.port}  ->  capture ${opts.ui}\n` +
+    `comshu agent bridge: http://${opts.bind}:${opts.port}  ->  capture ${opts.ui}\n` +
       `  model: ${opts.model ?? DEFAULT_MODEL} (provider: ${opts.provider ?? "pi's default"})\n` +
       `  prompt: ${systemPrompt ? `${systemPrompt.length} chars` : 'NOT BUILT — capture unreachable'}\n`,
   );

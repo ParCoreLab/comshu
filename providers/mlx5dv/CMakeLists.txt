@@ -34,14 +34,14 @@ target_include_directories(mlx5dv_trace PRIVATE
   ${MLX5DV_INCLUDE_DIR}
   ${CMAKE_SOURCE_DIR}/third_party/mlx5/include)
 target_link_libraries(mlx5dv_trace PRIVATE
-  pcomm::pcomm pcomm::hook ${MLX5_LIB} ${IBVERBS_LIB_FOR_MLX5} ${CMAKE_DL_LIBS}
+  comshu::comshu comshu::hook ${MLX5_LIB} ${IBVERBS_LIB_FOR_MLX5} ${CMAKE_DL_LIBS}
   Threads::Threads)
 
 # Same RPATH reasoning as the ibverbs provider: the .so has a DT_NEEDED on
-# libpcomm_engine.so and must find it in both the build and installed layouts.
+# libcomshu_engine.so and must find it in both the build and installed layouts.
 set_target_properties(mlx5dv_trace PROPERTIES
-  BUILD_RPATH "$ORIGIN/../../libpcomm"
-  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
+  BUILD_RPATH "$ORIGIN/../../libcomshu"
+  INSTALL_RPATH "$ORIGIN;${COMSHU_INSTALL_RPATH_EXTRA}")
 target_link_options(mlx5dv_trace PRIVATE -Wl,--enable-new-dtags)
 # A shared library links happily with undefined symbols and fails at RUNTIME, on
 # every rank, with "undefined symbol". That is exactly what a definition placed
@@ -49,7 +49,7 @@ target_link_options(mlx5dv_trace PRIVATE -Wl,--enable-new-dtags)
 # the build printed a warning nobody was grepping for and reported success.
 # --no-undefined turns that into a link error on the dev box instead.
 target_link_options(mlx5dv_trace PRIVATE -Wl,--no-undefined)
-install(TARGETS mlx5dv_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
+install(TARGETS mlx5dv_trace LIBRARY DESTINATION ${COMSHU_INSTALL_LIBDIR}
         COMPONENT mlx5dv)
 
 target_link_options(mlx5dv_trace PRIVATE

@@ -23,7 +23,7 @@
 # peermem module. This file has to work on both, and self-skip on the one that
 # cannot.
 #
-#SBATCH --job-name=pcomm-11-ibdevx-peermem
+#SBATCH --job-name=comshu-11-ibdevx-peermem
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -35,8 +35,8 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
 # BEFORE the mpirun check below, not after it, and this ordering has cost a red
 # board (job 45630290). common.sh purges the module environment when an ACC job
 # inherits a GPP one — which is every job since the default login node moved to
@@ -50,9 +50,9 @@ source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
 # So `command -v mpirun` in that window tests the module environment, not the
 # host, and reports FAIL for a cluster that runs MPI perfectly well. Cases
 # 04/06/07 call this first and have never had the problem.
-pcomm_load_runtime
-CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/11_ibdevx_peermem"
-OUT=$(pcomm_out ibdevx_peermem)
+comshu_load_runtime
+CASE_DIR="$COMSHU_ROOT/tests/hpc/cases/11_ibdevx_peermem"
+OUT=$(comshu_out ibdevx_peermem)
 
 # ---- prerequisites --------------------------------------------------------
 # IBGDA needs the NIC to be allowed to expose its doorbell page to the GPU. That
@@ -111,31 +111,31 @@ lsmod 2>/dev/null | grep -qE "nvidia_peermem|nv_peer_mem" || \
 # See meta.json prerequisite_answer; the narrow prerequisite this case was built
 # with stands, and stands for the reason it was written.
 
-MPIRUN="${PCOMM_MPIRUN:-mpirun}"
+MPIRUN="${COMSHU_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
 # ---- workload -------------------------------------------------------------
 # Same binary as cases 04/06/07 — the ring spans whatever PE count it is given.
-APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
+APP="${COMSHU_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   # Everything below is a harness problem on a host that already proved it can
   # do IBGDA, so each one fails rather than skips.
-  command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || \
-    fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
+  command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || \
+    fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
   [ -n "${NVSHMEM_HOME:-}" ] && [ -d "$NVSHMEM_HOME" ] || \
-    fail "NVSHMEM_HOME did not resolve (PCOMM_SDK=${PCOMM_SDK:-unset})"
-  ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
+    fail "NVSHMEM_HOME did not resolve (COMSHU_SDK=${COMSHU_SDK:-unset})"
+  ${COMSHU_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
     -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart || fail "workload did not build"
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # AFTER the build block, not before it — the order case 04 documents and case
-# 12 learned. The block's pcomm_load_build/pcomm_load_runtime PREPEND SDK 25.7's
+# 12 learned. The block's comshu_load_build/comshu_load_runtime PREPEND SDK 25.7's
 # lib dir while NVSHMEM_HOME globs to the newest SDK (26.5 on MN5), so exported
 # above it, 25.7 ends up first and the fresh binary gets a libnvshmem_host it
 # was not linked against: "undefined symbol: nvshmem_selected_device_transport",
@@ -167,7 +167,7 @@ export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBR
 #
 # ibdevx is SigmaTrace's published artifact configuration, and matching it is
 # the point of this case: it is the one setup where that tool's results and
-# pcomm's can be compared directly.
+# comshu's can be compared directly.
 #
 # Note what this case does NOT claim. ibdevx drives the DEVX control plane from
 # the CPU, so there is no GPU-initiated data plane here and ibgda_engaged is
@@ -217,7 +217,7 @@ export NVSHMEM_QP_DEPTH=8192
 #
 # `--watch-send-queues`, because without it this case had no data plane at all.
 # ibdevx never calls ibv_post_send and rings a BlueFlame UAR that neither
-# doorbell path watches, so until 2026-09-15 pcomm — and SigmaTrace, measured
+# doorbell path watches, so until 2026-09-15 comshu — and SigmaTrace, measured
 # side by side in parity/ — recorded not one byte of the 16,384 this workload
 # moves. The watcher reads each DEVX queue's doorbell record and send queue from
 # outside the path (providers/mlx5dv/sq_watch.hpp): it touches no doorbell, so it
@@ -228,11 +228,11 @@ export NVSHMEM_QP_DEPTH=8192
 # no puts but are watched and counted all the same.
 rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 
-timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
-  -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
+timeout 300 "$MPIRUN" -np 2 ${COMSHU_MPIRUN_EXTRA:-} \
+  -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
   -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
   -x NVSHMEM_IB_DISABLE_DMABUF -x NVSHMEM_QP_DEPTH \
-  "$PCOMM" run -p ib,mlx5dv --watch-send-queues -o "$OUT" -- "$APP" 1024 2 2>&1 | tee "$OUT.run.log"
+  "$COMSHU" run -p ib,mlx5dv --watch-send-queues -o "$OUT" -- "$APP" 1024 2 2>&1 | tee "$OUT.run.log"
 rc=${PIPESTATUS[0]}; echo "mpirun exit=$rc"
 
 # A run the transport declined to serve is a skip, not a failure: NVSHMEM exits
@@ -255,7 +255,7 @@ if [ $rc -ne 0 ]; then
   exit 1
 fi
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"

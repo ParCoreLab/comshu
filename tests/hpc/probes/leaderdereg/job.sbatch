@@ -29,7 +29,7 @@
 # THREE EXPLANATIONS, and reasoning cannot separate them:
 #   (a) the owning library registers these and leaks them at exit;
 #   (b) it deregisters them through a door we do not hook;
-#   (c) it deregisters them after pcomm has already finalized.
+#   (c) it deregisters them after comshu has already finalized.
 #
 # WHAT THIS PROBE CHANGES: exactly one variable, twice, in ONE allocation.
 # Section A is the 64-rank job's configuration shrunk to 2 nodes. Section B is
@@ -48,17 +48,17 @@
 #   neither leaks           -> it needs scale to appear, which is itself the
 #                              finding and says the 16-node run must be reread.
 #
-# PCOMM_TRACE_MR_CALLERS=1 dladdr's the caller at each MR door, so if a region
+# COMSHU_TRACE_MR_CALLERS=1 dladdr's the caller at each MR door, so if a region
 # leaks this also NAMES the library that registered it — and whether that same
 # library ever calls dereg_mr. That is what separates (a) from (b): a library
 # under reg only is a leak; a library under neither is a door we do not hook.
 #
-# POSITIVE CONTROL: any [pcomm-mrcaller] line at all, and a nonzero unclosed
+# POSITIVE CONTROL: any [comshu-mrcaller] line at all, and a nonzero unclosed
 # count in at least one section. If BOTH sections report zero unclosed regions
 # AND zero mrcaller lines, the diagnostic did not run and nothing here is a
 # finding — an earlier probe in this directory mis-stated its own control.
 #
-#SBATCH --job-name=pcomm-probe-leaderdereg
+#SBATCH --job-name=comshu-probe-leaderdereg
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -69,13 +69,13 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
-PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-PCOMM_SM=${PCOMM_SM:-90}
-APP="$HOME/asym_patterns-sm$PCOMM_SM"
+COMSHU_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+COMSHU_SM=${COMSHU_SM:-90}
+APP="$HOME/asym_patterns-sm$COMSHU_SM"
 [ -x "$APP" ] || { echo "!! no $APP — run a 13-18 case or the scale job first" >&2; exit 1; }
 
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
@@ -88,7 +88,7 @@ NODES="${SLURM_NNODES:-2}"
 NP=$((NODES * 4))
 echo "=== bisect point: $NODES nodes x 4 = $NP ranks ==="
 
-ROOT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/probe-leaderdereg-${SLURM_JOB_ID:-local}"
+ROOT="${COMSHU_OUT_ROOT:-$HOME/comshu-suite}/probe-leaderdereg-${SLURM_JOB_ID:-local}"
 rm -rf "$ROOT"; mkdir -p "$ROOT"
 
 # One section. $1 = label, rest = extra -x flags for mpirun.
@@ -96,11 +96,11 @@ section() {
   label="$1"; shift
   out="$ROOT/$label"; mkdir -p "$out"
   mpirun -np "$NP" --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-    -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
-    -x PCOMM_TRACE_MR_CALLERS=1 "$@" \
-    "$PCOMM" run -p ib -o "$out/cap" -- "$APP" hub 4096 3 2>&1 | tee "$out/run.log"
+    -x COMSHU_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
+    -x COMSHU_TRACE_MR_CALLERS=1 "$@" \
+    "$COMSHU" run -p ib -o "$out/cap" -- "$APP" hub 4096 3 2>&1 | tee "$out/run.log"
   echo "[$label] mpirun exit=${PIPESTATUS[0]}"
-  "$PCOMM" export "$out/cap" --csv "$out/cap.csv" || return 1
+  "$COMSHU" export "$out/cap" --csv "$out/cap.csv" || return 1
 }
 
 echo "=== SECTION A — with NVSHMEM_DISABLE_P2P=1 (the 64-rank job's config) ==="
@@ -146,19 +146,19 @@ PY
 # the line that names the owner rather than the door.
 echo "=== callers of the LEAKED sizes (40 and 8388608) ==="
 for s in A B; do
-  grep -hE 'pcomm-mrcaller.*len=(40|8388608)$' "$ROOT/$s/run.log" 2>/dev/null |
+  grep -hE 'comshu-mrcaller.*len=(40|8388608)$' "$ROOT/$s/run.log" 2>/dev/null |
     sort -u | sed "s/^/  $s /" ||:
 done
 
 echo "=== which library calls which MR door (both sections) ==="
 for s in A B; do
-  printf '%s: mrcaller lines %s\n' "$s" "$(grep -c 'pcomm-mrcaller' "$ROOT/$s/run.log" 2>/dev/null)"
-  grep -h 'pcomm-mrcaller' "$ROOT/$s/run.log" 2>/dev/null | sort -u | sed "s/^/  $s /"
+  printf '%s: mrcaller lines %s\n' "$s" "$(grep -c 'comshu-mrcaller' "$ROOT/$s/run.log" 2>/dev/null)"
+  grep -h 'comshu-mrcaller' "$ROOT/$s/run.log" 2>/dev/null | sort -u | sed "s/^/  $s /"
 done
 
 echo "=== reg-only libraries: registered through a hooked door, never deregistered ==="
 for s in A B; do
-  awk -v s="$s" '/pcomm-mrcaller/ {door=$2; who=$4; if (door=="dereg_mr") d[who]=1; else r[who]=1}
+  awk -v s="$s" '/comshu-mrcaller/ {door=$2; who=$4; if (door=="dereg_mr") d[who]=1; else r[who]=1}
        END {n=0; for (w in r) if (!(w in d)) {print "  " s " REG-ONLY: " w; n++}
             if (n==0) print "  " s " (none — every registering library also deregisters)"}' \
     "$ROOT/$s/run.log" 2>/dev/null

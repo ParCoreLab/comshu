@@ -1,11 +1,11 @@
 # QUESTIONS — what the capture and its documentation could not tell me
 
 Round 2, Quantum ESPRESSO, black-box. Written from the allowed reading list
-only: `BRIEF-BLACKBOX.md`, `apps/README.md`, `libpcomm/schema/pcomm.fbs` and its
+only: `BRIEF-BLACKBOX.md`, `apps/README.md`, `libcomshu/schema/comshu.fbs` and its
 `README.md`, `demos/entity-map.html` and `demos/figures/*.svg`,
 `tests/hpc/cases/*/asserts/*.sql`, `tests/hpc/suite/README.md`, and QE's own
-source. No file under `providers/`, `libpcomm/` (beyond the schema),
-`pcomm-read/`, `tools/`, `plans/` or `BUGS-FOUND.md` was opened.
+source. No file under `providers/`, `libcomshu/` (beyond the schema),
+`comshu-read/`, `tools/`, `plans/` or `BUGS-FOUND.md` was opened.
 
 This is a deliverable, not an apology. Every item below cost real design effort
 in this study and each one will cost the next outside user the same.
@@ -47,8 +47,8 @@ nowhere I may read. Case 21 selects it and never compares it to a literal.
 
 So my headline assertion binds to `tl_name LIKE '%mlx5%' OR tl_name LIKE
 '%verbs%'` instead — i.e. to **UCX's** transport-name vocabulary rather than to
-pcomm's. That is strictly worse: it is a third party's namespace, it will not
-survive a transport family pcomm has not met, and it silently degrades to "no
+comshu's. That is strictly worse: it is a third party's namespace, it will not
+survive a transport family comshu has not met, and it silently degrades to "no
 fabric traffic" rather than erroring if `tl_name` is ever exported as an
 unresolved intern handle instead of a string. I designed the assertion so that
 degradation fails *loudly* in the arm where fabric traffic is predicted, but I
@@ -60,7 +60,7 @@ should not have had to.
 
 A sibling reported this; I checked it independently and it holds, precisely.
 
-`pcomm.fbs` declares exactly five enums — `TimeKind`, `RecordKind`, `MemOp`,
+`comshu.fbs` declares exactly five enums — `TimeKind`, `RecordKind`, `MemOp`,
 `MemSpace`, `EdgePredicate` — under a heading that argues *why* enums must be
 declared rather than described:
 
@@ -90,7 +90,7 @@ The repository says "fourteen doors"; I can name ten. Four op codes have no
 recoverable meaning from any readable file, and a query over them cannot be
 written at all.
 
-**Ask:** declare them in `pcomm.fbs`, by the schema's own stated argument.
+**Ask:** declare them in `comshu.fbs`, by the schema's own stated argument.
 
 ## 4. CSV decodes, Parquet does not — **CONFIRMED**, and documented in the wrong place
 
@@ -152,7 +152,7 @@ Round 1 flagged that and it is still unresolved.
 The sibling reports there is no documented join. I find a documented *chain* but
 no documented *table*, and the distinction matters:
 
-* `ucx_rma` names an `endpoint` (`pcomm.fbs` 610).
+* `ucx_rma` names an `endpoint` (`comshu.fbs` 610).
 * `ucx_ep_connection` (624) maps an endpoint to a `remote_prefix_hash`.
 * `demos/figures/11-cross-rank-keys.svg` names `prefix_hash` as one of exactly
   five cross-rank keys: "the dialled worker, found in the other rank's capture",
@@ -169,7 +169,7 @@ cross-rank joins. What is **not** documented is anything that walks it:
 
 And on the OpenMPI point-to-point path the key is **empty** regardless, for round
 1's measured reason (`mca_pml_ucx.so` publishes through `ucp_worker_query`;
-pcomm hooks `ucp_worker_get_address`). So a user follows a documented chain to a
+comshu hooks `ucp_worker_get_address`). So a user follows a documented chain to a
 key no capture of an MPI application contains.
 
 **Not testable on QE**: QE's parallel layer is two-sided and `ucx_rma` is
@@ -178,7 +178,7 @@ vacuously, with this reasoning in its header so the next reader finds it.
 
 ## 7. What `-m simple` keeps is undiscoverable from outside
 
-`pcomm run -m simple` is the documented way to cut volume, and round 1 used it
+`comshu run -m simple` is the documented way to cut volume, and round 1 used it
 to drop 1.9 M `ucx_worker_progress` rows — citing `core/vocab.hpp:79` for what
 `simple` retains. That file is not readable from outside the project, and no
 CLI help, schema comment, figure or README states whether `simple` keeps
@@ -189,18 +189,18 @@ and produces an empty table with an innocent-looking explanation. **So I run at
 the default mode and pay the volume**, which is the wrong trade made for the
 right reason.
 
-**Ask:** `pcomm run` with no arguments should list the modes and what each drops.
+**Ask:** `comshu run` with no arguments should list the modes and what each drops.
 
 ## 8. Whether `ucx_deep` will engage at all cannot be determined before the run
 
 `ucx_deep` patches `uct_iface_ops_t` and guards on the ops-table size;
-`pcomm.fbs` type 806 says "`accepted = 0` is why `uct_send` is empty". Case 21
+`comshu.fbs` type 806 says "`accepted = 0` is why `uct_send` is empty". Case 21
 measured runtime 1.18.0 against a 1.19.0 build.
 
 QE on MN5 loads **HPC-X 2.16 / UCX 1.15** — older than anything this provider
 has met — and the UCX provider must sit in front of *that* libucp, so the newer
 runtime is not an option (round 1's NOTES). Nothing tells me offline whether
-1.15's ops table is the size the guard wants. `pcomm list` is documented as
+1.15's ops table is the size the guard wants. `comshu list` is documented as
 saying "which providers exist, what each captures" — not what each *requires*.
 
 I designed around it: `uct_binding_accepted-r2.sql` runs first, `uct_send` and
@@ -209,11 +209,11 @@ I designed around it: `uct_binding_accepted-r2.sql` runs first, `uct_send` and
 should be able to ask "will this provider engage against UCX 1.15" without
 spending a queue slot.
 
-**Ask:** have `pcomm list` print each provider's supported runtime range.
+**Ask:** have `comshu list` print each provider's supported runtime range.
 
 ## 9. `UcxTagSend.device` cannot distinguish a host send from a device-0 send
 
-`pcomm.fbs` 606 gives `UcxTagSend` a `device:uint16` and says nothing about what
+`comshu.fbs` 606 gives `UcxTagSend` a `device:uint16` and says nothing about what
 it means or what value denotes "not on a device". The schema README says
 elsewhere, in a different context, that **"`device = 0` is a real device"**.
 
@@ -277,7 +277,7 @@ unwriteable.
 
 `apps/README.md` names claim type 3 — run twice with one knob changed, diff the
 captures — as "the headline: it is the thing a profiler is for". The CLI has no
-way to express it. `pcomm sql` takes one export.
+way to express it. `comshu sql` takes one export.
 
 Round 1 wrote its own `check.sh` to attach two SQLite databases; I wrote
 `check-r2.sh` for the same reason and solved it differently (each assertion
@@ -285,7 +285,7 @@ branches on `params.npool < params.nodes`, so the same file makes the opposite
 claim in each arm and stays a single-capture statement). Both are workarounds
 for a missing verb, and every future app study will write a third.
 
-**Ask:** `pcomm sql <exportA> <exportB>` with a `capture` column, or a documented
+**Ask:** `comshu sql <exportA> <exportB>` with a `capture` column, or a documented
 recipe for the DuckDB attach.
 
 ## 14. `mem_object` has no door discriminator — confirmed against a second application

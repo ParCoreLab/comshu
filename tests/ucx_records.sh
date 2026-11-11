@@ -29,21 +29,21 @@
 # asserts_fire.sh makes with sqlite3.
 set -uo pipefail
 
-PCOMM=${1:?usage: ucx_records.sh <pcomm-binary> <selftest-binary> <engine-so> <provider-so>}
-SELFTEST=${2:?usage: ucx_records.sh <pcomm-binary> <selftest-binary> <engine-so> <provider-so>}
-ENGINE=${3:?usage: ucx_records.sh <pcomm-binary> <selftest-binary> <engine-so> <provider-so>}
-PROVIDER=${4:?usage: ucx_records.sh <pcomm-binary> <selftest-binary> <engine-so> <provider-so>}
+COMSHU=${1:?usage: ucx_records.sh <comshu-binary> <selftest-binary> <engine-so> <provider-so>}
+SELFTEST=${2:?usage: ucx_records.sh <comshu-binary> <selftest-binary> <engine-so> <provider-so>}
+ENGINE=${3:?usage: ucx_records.sh <comshu-binary> <selftest-binary> <engine-so> <provider-so>}
+PROVIDER=${4:?usage: ucx_records.sh <comshu-binary> <selftest-binary> <engine-so> <provider-so>}
 
-for f in "$PCOMM" "$SELFTEST" "$ENGINE" "$PROVIDER"; do
+for f in "$COMSHU" "$SELFTEST" "$ENGINE" "$PROVIDER"; do
     [ -x "$f" ] || [ -f "$f" ] || { echo "SKIP: missing $f"; exit 0; }
 done
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-ucx-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-ucx-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # The engine must be FIRST in LD_PRELOAD or it is not the dlsym resolver and the
 # capture is silently incomplete — the provider warns about this itself.
-PCOMM_OUTPUT_DIR="$WORK/cap" PCOMM_TRACE_MODE=full \
+COMSHU_OUTPUT_DIR="$WORK/cap" COMSHU_TRACE_MODE=full \
     LD_PRELOAD="$ENGINE $PROVIDER" "$SELFTEST" > "$WORK/run.out" 2>&1
 rc=$?
 if [ "$rc" -eq 77 ]; then
@@ -55,7 +55,7 @@ if [ "$rc" -ne 0 ]; then
     cat "$WORK/run.out"; echo "FAIL: the UCX workload itself failed"; exit 1
 fi
 
-"$PCOMM" export "$WORK/cap" --csv "$WORK/csv" > "$WORK/export.out" 2>&1 || {
+"$COMSHU" export "$WORK/cap" --csv "$WORK/csv" > "$WORK/export.out" 2>&1 || {
     cat "$WORK/export.out"; echo "FAIL: export failed"; exit 1
 }
 # A capture the reader does not fully understand is a failure here, not a

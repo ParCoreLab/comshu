@@ -26,7 +26,7 @@
 #
 #   sbatch tests/hpc/cases/21_ucx_deep/job.sbatch
 #
-#SBATCH --job-name=pcomm-21-ucx_deep
+#SBATCH --job-name=comshu-21-ucx_deep
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -37,16 +37,16 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 # ONE RANK PER NODE, case 19's reason unchanged: UCX picks shared memory for a
 # same-node pair, and a shm-only run would exercise the doors without ever
 # reaching the rc/dc transports whose protocol choices this case is about.
 MPI_BIN="$(dirname "$(command -v mpirun)")"
 APP="$HOME/uct_path_coverage"
-SRC="$PCOMM_ROOT/tests/hpc/probes/uct_path_coverage/size_sweep.c"
+SRC="$COMSHU_ROOT/tests/hpc/probes/uct_path_coverage/size_sweep.c"
 
 if [ ! -x "$APP" ] || [ "$SRC" -nt "$APP" ]; then
   "$MPI_BIN/mpicc" -O2 -Wall -Wextra -Werror -o "$APP" "$SRC" \
@@ -56,9 +56,9 @@ fi
 # The UCX tree belonging to the MPI THAT WILL ACTUALLY RUN. The provider
 # interposes public UCP symbols and patches a UCT ops table read out of the
 # loaded library; build against one libucp and run against another and the
-# interposition silently does not engage. pcomm_find_ucx is the one definition,
+# interposition silently does not engage. comshu_find_ucx is the one definition,
 # shared with run_on_mn5.sh's build.
-UCX_HOME_RESOLVED="$(pcomm_find_ucx)" || {
+UCX_HOME_RESOLVED="$(comshu_find_ucx)" || {
   echo "!! no HPC-X UCX tree found beside this MPI ($(command -v mpirun))" >&2
   exit 1; }
 UCX_LIB="$UCX_HOME_RESOLVED/lib"
@@ -101,7 +101,7 @@ UCX_ARM_ENV=(
 
 # The output directory is computed by the CALLER and passed in, rather than
 # echoed back out of the function. A function that returns a path through stdout
-# has to be called in a subshell, and every diagnostic it prints — `pcomm read`,
+# has to be called in a subshell, and every diagnostic it prints — `comshu read`,
 # the mpirun exit status, the export's own report — is then captured instead of
 # logged. That is the whole value of the job output file, swallowed to avoid one
 # variable.
@@ -109,12 +109,12 @@ run_arm() {   # <out-dir> <extra -x flags...>
   local out="$1"; shift
   rm -rf "$out"; mkdir -p "$out"
   mpirun -np 2 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH \
-    -x PCOMM_PROVIDER_PATH --mca osc ucx "$@" \
-    "$PCOMM" run -p ucx,ucx_deep -o "$out" -- "$APP"
+    -x COMSHU_PROVIDER_PATH --mca osc ucx "$@" \
+    "$COMSHU" run -p ucx,ucx_deep -o "$out" -- "$APP"
   echo "arm=$(basename "$out") mpirun exit=$?"
-  echo "=== captured streams ($out) ==="; "$PCOMM" read "$out"
-  "$PCOMM" export "$out" --csv "$out.csv"
-  pcomm_derive "$out"
+  echo "=== captured streams ($out) ==="; "$COMSHU" read "$out"
+  "$COMSHU" export "$out" --csv "$out.csv"
+  comshu_derive "$out"
 }
 
 # --mca osc ucx: MPI_Put/MPI_Get reach UCT's Put*/Get* doors only through the
@@ -128,13 +128,13 @@ run_arm() {   # <out-dir> <extra -x flags...>
 # `ucx_deep_tm_on` cost a full queue slot — job 45114566 ran correctly, passed
 # every assertion it had, and came back as `21_ucx_deep ---- no result` because
 # the aggregator was looking for a directory nobody had written.
-PRIMARY="$(pcomm_out ucx_deep)"
+PRIMARY="$(comshu_out ucx_deep)"
 run_arm "$PRIMARY" "${UCX_ARM_ENV[@]}"
 
 # The contrast arm: same thresholds, tag offload OFF. Everything else identical,
 # so a difference in the tag doors is attributable to the knob and to nothing
 # else. Not checked by sql_check.sh — printed, for the record.
-CONTRAST="$(pcomm_out ucx_deep_tm_off)"
+CONTRAST="$(comshu_out ucx_deep_tm_off)"
 run_arm "$CONTRAST" \
   -x UCX_ZCOPY_THRESH=2048 -x UCX_RNDV_THRESH=32768 -x UCX_TM_THRESH=1024 \
   -x UCX_RC_MLX5_TM_ENABLE=n -x UCX_DC_MLX5_TM_ENABLE=n
@@ -143,7 +143,7 @@ echo "=== the two arms, side by side ==="
 for a in "$PRIMARY" "$CONTRAST"; do
   echo "--- $a"
   if [ -d "$a.pq" ]; then
-    "$PCOMM" sql "$a.pq" \
+    "$COMSHU" sql "$a.pq" \
       "SELECT scope, tl_name, op, sum(ops) AS ops, sum(out_bytes) AS out_bytes,
               sum(in_bytes) AS in_bytes, sum(advertised_bytes) AS advertised
        FROM transport_mix GROUP BY 1,2,3 ORDER BY 1,2,3" 2>&1
@@ -151,7 +151,7 @@ for a in "$PRIMARY" "$CONTRAST"; do
     # uct_ops_patch_refused, and a refusal printed without the word 'defect'
     # beside it is what let a correct guard read as an empty capture for two
     # days. See link_sql.hpp's severity paragraph.
-    "$PCOMM" sql "$a.pq" \
+    "$COMSHU" sql "$a.pq" \
       "SELECT finding, severity, n FROM link_health WHERE n > 0
        ORDER BY severity, finding" 2>&1
   else
@@ -162,5 +162,5 @@ for a in "$PRIMARY" "$CONTRAST"; do
   fi
 done
 
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$PRIMARY.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/21_ucx_deep"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$PRIMARY.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/21_ucx_deep"

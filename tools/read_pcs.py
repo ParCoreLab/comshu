@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Read a pcomm capture from Python, using only pcomm.fbs and flatc.
+"""Read a comshu capture from Python, using only comshu.fbs and flatc.
 
 The stated reason for adopting FlatBuffers is that a capture can be read from
 any language flatc supports. Nothing in the tree demonstrated that: the schema
 was checked against the C++ records, the C++ records were checked against
 themselves, and "other languages can read this" stayed an inference. This is
-the evidence — no libpcomm, no C++, no pcomm-read, nothing hand-written about
+the evidence — no libcomshu, no C++, no comshu-read, nothing hand-written about
 the layout. It opens a real `.pcs` from the suite with flatc-generated Python
 bindings and recomputes three of case 01's four goldens.
 
@@ -17,7 +17,7 @@ header, and the reason this reader can check that what it opened is what it
 thinks it opened instead of assuming.
 
 The fourth golden (topology) is deliberately not reproduced: comm_edges is
-derived by pcomm-read from QP state transitions, not a stream on disk.
+derived by comshu-read from QP state transitions, not a stream on disk.
 
     tools/read_pcs.py [capture_dir]
 
@@ -30,32 +30,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "third_party/flatbuffers/python"))
-sys.path.insert(0, str(ROOT / "libpcomm/schema/generated-python"))
+sys.path.insert(0, str(ROOT / "libcomshu/schema/generated-python"))
 
-from pcomm.fb.StreamHeader import StreamHeader  # noqa: E402
-from pcomm.fb.BlobHeader import BlobHeader      # noqa: E402
-from pcomm.fb.InternKey import InternKey        # noqa: E402
-from pcomm.fb.InternString import InternString  # noqa: E402
-from pcomm.fb.IbMemRegion import IbMemRegion    # noqa: E402
-from pcomm.fb.IbQueuePair import IbQueuePair    # noqa: E402
-from pcomm.fb.IbPostSend import IbPostSend      # noqa: E402
-from pcomm.fb.IbPollCq import IbPollCq          # noqa: E402
+from comshu.fb.StreamHeader import StreamHeader  # noqa: E402
+from comshu.fb.BlobHeader import BlobHeader      # noqa: E402
+from comshu.fb.InternKey import InternKey        # noqa: E402
+from comshu.fb.InternString import InternString  # noqa: E402
+from comshu.fb.IbMemRegion import IbMemRegion    # noqa: E402
+from comshu.fb.IbQueuePair import IbQueuePair    # noqa: E402
+from comshu.fb.IbPostSend import IbPostSend      # noqa: E402
+from comshu.fb.IbPollCq import IbPollCq          # noqa: E402
 
-STREAM_MAGIC = 0x0A534D4D4F435089
-BLOB_MAGIC = 0x0A424F4C42435089
+STREAM_MAGIC = 0x0A5548534D4F4389
+BLOB_MAGIC = 0x0A424F4C42534389
 STREAM_FORMAT_VERSION = 1
 
-# rec::InternDomain, from pcomm/rec/intern_table.hpp.
+# rec::InternDomain, from comshu/rec/intern_table.hpp.
 DOMAIN_PC, DOMAIN_POINTER, DOMAIN_STRING = 0, 1, 2
 
-# type_id -> generated struct, mirroring the PCOMM_RECORD ids. tools/
+# type_id -> generated struct, mirroring the COMSHU_RECORD ids. tools/
 # schema_check.py keeps the schema honest about these; here they only pick the
 # file to open.
 STREAMS = {100: IbMemRegion, 102: IbQueuePair, 110: IbPostSend, 112: IbPollCq,
            510: InternKey, 512: InternString}
 
-# ibverbs enums, decoded the way pcomm-read decodes them for the CSV the golden
-# queries run against (pcomm-read/main.cpp: wr_opcode_name / wc_opcode_name).
+# ibverbs enums, decoded the way comshu-read decodes them for the CSV the golden
+# queries run against (comshu-read/main.cpp: wr_opcode_name / wc_opcode_name).
 # tools/schema_check.py holds these tables equal to the C++ ones at build time:
 # they drifted once ("cmp_swp" where the CSV says "atomic_cmp_swp"), invisibly,
 # because case 01 never posts an atomic.
@@ -76,11 +76,11 @@ class StaleCapture(Exception):
 
 
 def wr_opcode_name(op):
-    return WR_OPCODE.get(op, f"op{op}")     # same fallback as pcomm-read
+    return WR_OPCODE.get(op, f"op{op}")     # same fallback as comshu-read
 
 
 def wc_opcode_name(op):
-    return WC_OPCODE.get(op, f"wc{op}")     # same fallback as pcomm-read
+    return WC_OPCODE.get(op, f"wc{op}")     # same fallback as comshu-read
 
 
 def schema_hash(fbs_path):
@@ -114,7 +114,7 @@ def read_stream(path, cls, expected_type):
     h = StreamHeader()
     h.Init(buf, 0)
     if h.Magic() != STREAM_MAGIC:
-        raise SystemExit(f"{path}: not a pcomm stream (magic {h.Magic():#018x}) — "
+        raise SystemExit(f"{path}: not a comshu stream (magic {h.Magic():#018x}) — "
                          f"a pre-format-1 capture has no header and must be re-captured")
     if h.FormatVersion() != STREAM_FORMAT_VERSION:
         raise SystemExit(f"{path}: .pcs format version {h.FormatVersion()}, "
@@ -129,8 +129,8 @@ def read_stream(path, cls, expected_type):
         #
         # Raised as StaleCapture so the caller can skip loudly instead of
         # reporting a failure it cannot fix without an HCA. Records are edited
-        # in place while pcomm is pre-alpha (see the PRE-ALPHA EXCEPTION in
-        # pcomm.fbs), so this is expected after any layout change and is cleared
+        # in place while comshu is pre-alpha (see the PRE-ALPHA EXCEPTION in
+        # comshu.fbs), so this is expected after any layout change and is cleared
         # by re-capturing the fixture.
         raise StaleCapture(f"{path}: stride {h.Stride()} but the schema's "
                            f"{cls.__name__} is {cls.SizeOf()} B — capture and schema "
@@ -169,7 +169,7 @@ def load_intern(rank_dir):
         h = BlobHeader()
         h.Init(raw, 0)
         if h.Magic() != BLOB_MAGIC:
-            raise SystemExit(f"{blob_file}: not a pcomm intern blob")
+            raise SystemExit(f"{blob_file}: not a comshu intern blob")
         body = raw[BlobHeader.SizeOf():]
         if h.ByteCount() != len(body):
             raise SystemExit(f"{blob_file}: byte_count {h.ByteCount()} but "
@@ -205,12 +205,12 @@ def main():
 
     ranks = load(capture)
     print(f"python reader: {capture.name}, {len(ranks)} ranks, "
-          f"schema libpcomm/schema/pcomm.fbs via flatc")
+          f"schema libcomshu/schema/comshu.fbs via flatc")
 
     # What the capture says wrote it, checked against the schema in the tree.
     # Not fatal: an unrelated record changing moves the hash without changing
     # these streams. Saying nothing, though, is what the header exists to end.
-    want = schema_hash(ROOT / "libpcomm/schema/pcomm.fbs")
+    want = schema_hash(ROOT / "libcomshu/schema/comshu.fbs")
     seen = set()
     for rank_dir in sorted(capture.glob("rank-*")):
         for f in sorted(rank_dir.glob("*.pcs")):
@@ -262,7 +262,7 @@ def main():
     # from, and reading it here is what makes the schema claim end-to-end.
     qps = {r: len(s.get(102, [])) for r, s in sorted(ranks.items())}
     print(f"  [--- ] queue_pairs per rank: {qps} (topology is derived by "
-          f"pcomm-read, not a stream)")
+          f"comshu-read, not a stream)")
 
     # The dictionary, from Python. A Handle in a record means nothing without
     # it, so "another language can read a capture" is only true end to end if

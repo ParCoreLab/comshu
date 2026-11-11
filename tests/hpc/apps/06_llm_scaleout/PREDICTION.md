@@ -10,8 +10,8 @@ NCCL over NVLink inside a node and NDR InfiniBand between them.
 
 Everything below is derived from llm.c's source, from its command line, and from
 the derived-table contracts in `apps/BRIEF-BLACKBOX.md`. Nothing is read off a
-capture. Black-box: no file under `providers/`, `libpcomm/` (bar `schema/`),
-`pcomm-read/`, `pcomm-ui/`, `gpu-backends/`, `tools/`, `plans/` or
+capture. Black-box: no file under `providers/`, `libcomshu/` (bar `schema/`),
+`comshu-read/`, `comshu-ui/`, `gpu-backends/`, `tools/`, `plans/` or
 `BUGS-FOUND.md` was read.
 
 ---
@@ -45,7 +45,7 @@ the question the whole project has never asked can be asked at all:
 > all-reduce on the correct side of `comm_edges.scope`?**
 
 Round 1 pointed `-p nccl,ib` at two nodes and read `ib_post_send` **raw**. It
-never ran `pcomm link` on that capture, so `comm_edges`, `endpoint`,
+never ran `comshu link` on that capture, so `comm_edges`, `endpoint`,
 `rank_identity` and `link_health` have never been built for NCCL-over-InfiniBand
 at all — and `comm_edges.scope` did not exist when it ran.
 
@@ -153,7 +153,7 @@ if the arm fails to load the backend, that is recorded and the rest stands.
 ### 3.1 What must be true of the wire
 
 NCCL uses peer-to-peer over NVLink for GPUs inside a node and its `net` (IB)
-transport between nodes. Neither fact is pcomm's; both are visible in NCCL's own
+transport between nodes. Neither fact is comshu's; both are visible in NCCL's own
 `NCCL_DEBUG=INFO` output, which prints one line per connection saying
 `via P2P/direct pointer` or `via NET/IB/<hca>`. The bare arm collects that, so
 the oracle exists before the capture is read.
@@ -175,18 +175,18 @@ been exercised on NCCL traffic.
 **P4.2 — for every ordered pair `(a,b)` in `comm_edges`, `a/4 != b/4`.** Stated
 in rank arithmetic so that it does not consult `scope` at all: this is the same
 claim as P4.1 checked against the *launcher's* placement instead of against
-pcomm's own node derivation. If P4.1 passes and P4.2 fails, `scope` is
+comshu's own node derivation. If P4.1 passes and P4.2 fails, `scope` is
 self-consistent and wrong.
 
 **P4.3 — the ordered pairs in `comm_edges` are a subset of the connections NCCL
 itself reports as `via NET/IB`,** and every rank in `comm_edges` appears in
 `nccl_comm` with the one shared `comm_hash`. This is the cross-layer agreement
-in its strongest available form: the row set of a derived pcomm table judged
+in its strongest available form: the row set of a derived comshu table judged
 against a graph printed by NCCL.
 
 I do **not** predict which pairs those are. NCCL owns ring construction, tree
 shape and channel count; it discloses them at run time and llm.c never names
-them. Predicting them would be predicting NCCL, not pcomm.
+them. Predicting them would be predicting NCCL, not comshu.
 
 **P4.4 — `transport_mix` is empty of NCCL traffic, and the `z0u` arm proves
 it rather than assuming it.** `transport_mix` is built from the UCT layer, and
@@ -256,14 +256,14 @@ times the scale.
 
 ### `gpu_device`, type 528 — predicted absent, and I would rather be wrong
 
-`libpcomm/schema/pcomm.fbs:210` declares `GpuDevice` at type 528: *"What a
+`libcomshu/schema/comshu.fbs:210` declares `GpuDevice` at type 528: *"What a
 device ORDINAL actually refers to, on this rank"*, carrying a UUID and a PCI
-address. Measured on the login node **before any capture existed**: `pcomm types`
+address. Measured on the login node **before any capture existed**: `comshu types`
 for this build prints 58 rows and **528 is not one of them**, though 524
 (`node_identity`), 526 (`peer_mapping`) and 530 (`gpu_kernel`) all are.
 
-**P5.2 — no `gpu_device` stream in `pcomm read` and no `gpu_device` table in the
-export.** If it appears anyway, then `pcomm types` — documented as
+**P5.2 — no `gpu_device` stream in `comshu read` and no `gpu_device` table in the
+export.** If it appears anyway, then `comshu types` — documented as
 *"type-id -> table name, for this build"* — is incomplete, which is a worse
 finding than the table being missing, because it is the one place a user is told
 to look.

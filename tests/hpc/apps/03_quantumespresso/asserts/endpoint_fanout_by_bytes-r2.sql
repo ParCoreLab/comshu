@@ -27,7 +27,7 @@
 -- STATED OVER ENDPOINTS, NEVER PEER RANKS, and that is a measured constraint
 -- rather than a preference: round 1 established that ucx_worker_address is never
 -- written for an OpenMPI point-to-point application, because mca_pml_ucx.so
--- publishes its worker address through ucp_worker_query while pcomm hooks
+-- publishes its worker address through ucp_worker_query while comshu hooks
 -- ucp_worker_get_address. The only cross-rank UCX key is therefore empty and
 -- the peer of an endpoint is not recoverable. Every claim in this study that
 -- could have been about ranks is about endpoints for this reason.

@@ -54,7 +54,7 @@
     "ib_mem_region",
     "mem_object"
   ],
-  "not_covered": "ib_post_send and ib_poll_cq are expected EMPTY and are deliberately not in expect_tables. UCX's mlx5 transports build their send WQEs and ring the doorbell themselves, so ibv_post_send is not on the path; this is the same measurement PLAN-20260815-1540 Stage 3 recorded for job 44635003, reproduced here by a third-party application rather than by a microbenchmark. The consequence is that `comm_edges` \u2014 built in pcomm-read/link_sql.hpp:1112 from ib_post_send / mlx5_device_send / gpu_access only \u2014 is EMPTY for this workload, and the rank matrix has to be assembled from the UCX records by hand. gpumem/p2p is not run: NVBit costs ~8 min of module processing and this case is about the network layer.",
+  "not_covered": "ib_post_send and ib_poll_cq are expected EMPTY and are deliberately not in expect_tables. UCX's mlx5 transports build their send WQEs and ring the doorbell themselves, so ibv_post_send is not on the path; this is the same measurement PLAN-20260815-1540 Stage 3 recorded for job 44635003, reproduced here by a third-party application rather than by a microbenchmark. The consequence is that `comm_edges` \u2014 built in comshu-read/link_sql.hpp:1112 from ib_post_send / mlx5_device_send / gpu_access only \u2014 is EMPTY for this workload, and the rank matrix has to be assembled from the UCX records by hand. gpumem/p2p is not run: NVBit costs ~8 min of module processing and this case is about the network layer.",
   "cost_note": "Four captured runs plus two bare runs in one allocation. LAMMPS itself is seconds; the allocation is sized by the export and the SQL, not the science.",
   "expect_fail_asserts": {},
   "vacuous_without": {

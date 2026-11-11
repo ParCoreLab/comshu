@@ -7,7 +7,7 @@
 -- nothing to say. On two, "repeats across nodes" and "appears twice" are the
 -- same observation. Four nodes of four make the three quantities pull apart:
 -- there are 16 GPUs, 4 ordinals, and — because the four nodes are the same
--- machine — 4 bus addresses. `libpcomm/schema/pcomm.fbs:210` says the record
+-- machine — 4 bus addresses. `libcomshu/schema/comshu.fbs:210` says the record
 -- exists precisely because "the bus id repeats across nodes", and nothing in
 -- this project had measured that on an application.
 --

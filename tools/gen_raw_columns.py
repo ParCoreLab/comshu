@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the raw record -> DuckDB column tables for `pcomm export --parquet`.
+"""Generate the raw record -> DuckDB column tables for `comshu export --parquet`.
 
 Why generated rather than written: a raw table is a mechanical projection of a
 record struct — one column per field, the field's own type — and hand-writing
@@ -22,7 +22,7 @@ uint32, not that it is an interned handle. This script links nothing and claims
 no semantics: it emits the *raw* columns, with the enum decoding and handle
 resolution left to SQL above. `--csv` keeps the semantic layer, unchanged.
 
-Build-time only, and only when PCOMM_DUCKDB=ON, so the header is never committed
+Build-time only, and only when COMSHU_DUCKDB=ON, so the header is never committed
 and cannot go stale — the third-generated-artifact cost gap 7 warned about is
 not paid here.
 
@@ -78,7 +78,7 @@ def flatten(fields, structs, prefix, expr):
     for name, ctype in fields:
         col = f"{prefix}{name}"
         acc = f"{expr}.{name}"
-        # A provider's records live outside `pcomm::core`, so they must spell the
+        # A provider's records live outside `comshu::core`, so they must spell the
         # shared vocabulary qualified: `core::DeviceId` where core's own records
         # write `DeviceId`. Same word, same type, same column — the namespace is
         # a property of where the struct is declared, not of the vocabulary.
@@ -116,11 +116,11 @@ def flatten(fields, structs, prefix, expr):
 # be 3. Emitted as-is that produced CREATE TABLE nccl_comm(... "rank" ... "rank"
 # ...), which DuckDB refuses: "Column with name rank already exists". So the
 # table did not mount, and nccl_comm was absent from every DuckDB consumer — the
-# UI, the agent, `pcomm sql` — while --csv exported it fine, because the CSV
+# UI, the agent, `comshu sql` — while --csv exported it fine, because the CSV
 # writer had already hit this and renamed it by hand.
 #
 # The two paths disagreeing is the actual defect; this makes them agree, on the
-# name --csv chose (pcomm-read/main.cpp, Table<NcclComm>::cols).
+# name --csv chose (comshu-read/main.cpp, Table<NcclComm>::cols).
 #
 # CLOSED BY CONSTRUCTION. A collision not listed here is a hard error, not a
 # silently duplicated column: the failure mode is a table that vanishes with one
@@ -144,7 +144,7 @@ def rename_collisions(rec, cols):
             if key not in RENAMES:
                 sc.fail(f"{rec['wire']}.{c} collides with the injected `{c}` column "
                         f"and has no entry in RENAMES — add one, and match the "
-                        f"--csv column name in pcomm-read/main.cpp for it")
+                        f"--csv column name in comshu-read/main.cpp for it")
                 continue  # the run dies below; do not index past the failure
             c = RENAMES[key]
         out.append((c, t, suffix, acc))
@@ -175,12 +175,12 @@ def main():
     # include every header that declares one. Derived from where the records
     # actually live rather than hard-coded, so a record declared somewhere new
     # is included automatically instead of failing to compile in whichever
-    # consumer did not already include it by luck. (pcomm-read did; pcomm-ui did
+    # consumer did not already include it by luck. (comshu-read did; comshu-ui did
     # not, which is how this was found.)
     includes = set()
     for rec in records.values():
         p = rec["path"].as_posix()
-        marker = "libpcomm/include/"
+        marker = "libcomshu/include/"
         includes.add(p[p.index(marker) + len(marker):] if marker in p else pathlib.Path(p).name)
 
     lines = [
@@ -189,10 +189,10 @@ def main():
         "#pragma once",
         "#include <cstdint>",
         "#include <tuple>",
-        '#include "pcomm/rec/thread_local_buffer.hpp"',
+        '#include "comshu/rec/thread_local_buffer.hpp"',
         *(f'#include "{h}"' for h in sorted(includes)),
         "",
-        "namespace pcomm::raw {",
+        "namespace comshu::raw {",
         "",
         "template<class R> struct RawTable;",
         "",
@@ -218,7 +218,7 @@ def main():
             f'    static constexpr const char* table = "{rec["wire"]}";',
             f'    static constexpr const char* ddl = "CREATE TABLE \\"{rec["wire"]}\\"({ddl})";',
             f"    static void append(duckdb_appender ap, std::int32_t rank,",
-            f"                       const pcomm::rec::Stamped<{qualified}>& s) {{",
+            f"                       const comshu::rec::Stamped<{qualified}>& s) {{",
         ]
         for _c, _t, suffix, acc in cols:
             lines.append(f"        duckdb_append_{suffix}(ap, {acc});")
@@ -234,7 +234,7 @@ def main():
         ",\n".join(f"    {t}" for t in type_names),
         ">;",
         "",
-        "}  // namespace pcomm::raw",
+        "}  // namespace comshu::raw",
         "",
     ]
 

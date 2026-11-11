@@ -1,4 +1,4 @@
-# 04_llmc — llm.c under `pcomm -p nccl` and `-p nccl,ib`
+# 04_llmc — llm.c under `comshu -p nccl` and `-p nccl,ib`
 
 **Application:** [karpathy/llm.c](https://github.com/karpathy/llm.c), `train_gpt2.cu`,
 upstream `f1e2ace`. GPT-2 pretraining in C/CUDA, NCCL directly, MPI only to
@@ -158,7 +158,7 @@ ncclAllReduce(config->unified_buffer, config->unified_buffer, sizeof(float), ...
 
 Four bytes of managed memory, sixteen bytes written, on every
 `multi_gpu_barrier` and every `multi_gpu_cpu_float_sum` — a 12-byte heap
-overflow present at upstream `f1e2ace`. A bug in llm.c, not in pcomm, which is
+overflow present at upstream `f1e2ace`. A bug in llm.c, not in comshu, which is
 why it is here and not in `BUGS-FOUND.md`.
 
 The method matters more than the bug: **the assertion expects 4 and passes.** `4`
@@ -187,7 +187,7 @@ on the same capture that my assertion failed on.
 The assertion has been restated to claim what is actually true — *a zero-length
 send that is not a write-with-immediate is a decode error* — with the history in
 the file. This is **not** the forbidden move of editing an assertion to match
-what pcomm emitted: the emission is independently corroborated by the RDMA verb's
+what comshu emitted: the emission is independently corroborated by the RDMA verb's
 semantics, by `rdma_write`'s disjoint length range in the same capture, and by an
 assertion written months earlier for a different case. What was wrong was my
 claim about the protocol.
@@ -231,7 +231,7 @@ no all-reduces.
 
 ---
 
-## What pcomm got wrong or is missing
+## What comshu got wrong or is missing
 
 **In the `nccl` provider: nothing.** Every field checked — `op`, `datatype`,
 `count`, `redop`, `root`, `comm`, `stream`, `depth`, `nranks`, `nccl_rank`,
@@ -254,7 +254,7 @@ Three smaller things, none of them capture defects:
    not require its own table — and if that table were genuinely absent, the query
    would fail to parse and read as a pass. Same edge as case 20's job 44724071
    and case 08's empty `ib_queue_pair`. It bit nothing here only because
-   `pcomm export --csv` writes a header-only CSV for every known record type: the
+   `comshu export --csv` writes a header-only CSV for every known record type: the
    safety comes from the exporter, not from the assertion mechanism.
 
 3. **`meta.json`'s `workload` block cannot describe two topologies.** `PARAM_COLS`

@@ -30,7 +30,7 @@
 -- WHY NO UPPER BOUND IS ASSERTED. A flat ring over 16 GPUs would put
 -- 4 * 2 * (15/16) * S = 1.82 GB on the fabric and a tree or hierarchical
 -- algorithm less; which one NCCL picks is its business and llm.c never names it.
--- An upper bound here would be asserting NCCL, not pcomm. The measurement is
+-- An upper bound here would be asserting NCCL, not comshu. The measurement is
 -- printed by job.sbatch for the report instead.
 --
 -- rdma_write_imm CARRIES ITS PAYLOAD IN THE 32-BIT IMMEDIATE and reports

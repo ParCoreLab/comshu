@@ -38,22 +38,22 @@
 # to read. This probe needs the proxy path, which is the one case 09 exists to
 # avoid.
 #
-# PCOMM_ROOT IS EXPORTED BEFORE common.sh IS SOURCED, and skipping it cost two
-# runs here. common.sh defaults PCOMM_ROOT to $HOME/proj/pcomm, and du04 HAS a
+# COMSHU_ROOT IS EXPORTED BEFORE common.sh IS SOURCED, and skipping it cost two
+# runs here. common.sh defaults COMSHU_ROOT to $HOME/proj/comshu, and du04 HAS a
 # second, older checkout at that path — so sourcing it from the synced tree in
-# /DATA silently pointed PCOMM and PCOMM_PROVIDER_PATH at the stale one. The run
+# /DATA silently pointed COMSHU and COMSHU_PROVIDER_PATH at the stale one. The run
 # then worked perfectly and captured 12,303 ib_poll_cq records with an old
 # provider that has no probe in it, which reads exactly like "the CQE could not
 # be read". A positive control tells you the probe did not run; it cannot tell
 # you that you ran the wrong binary.
 #
-# POSITIVE CONTROL: any [pcomm-cqeprobe] line. Absence means the probe did not
+# POSITIVE CONTROL: any [comshu-cqeprobe] line. Absence means the probe did not
 # run, not that the CQE was unreadable.
 set -uo pipefail
 
-REMOTE="${PCOMM_A100:-missa18@172.20.31.90}"
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=25 ${PCOMM_SSH_OPTS:--J mktips@100.64.0.8}"
-RDIR="${PCOMM_A100_DIR:-/DATA/missa18/pcomm}"
+REMOTE="${COMSHU_A100:-missa18@172.20.31.90}"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=25 ${COMSHU_SSH_OPTS:--J mktips@100.64.0.8}"
+RDIR="${COMSHU_A100_DIR:-/DATA/missa18/comshu}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 
 say() { printf '\033[36m==\033[0m %s\n' "$*"; }
@@ -66,9 +66,9 @@ rsync -az --delete --exclude build --exclude 'build-*' --exclude .git \
       -e "$SSH" "$REPO_ROOT/" "$REMOTE:$RDIR/" || exit 1
 
 say "build the ibverbs provider (with the probe) + the workload"
-$SSH "$REMOTE" "cd $RDIR && cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON 2>&1 | grep -iE 'mlx5dv.h|error'; cmake --build build -j 2>&1 | tail -2" || exit 1
+$SSH "$REMOTE" "cd $RDIR && cmake -B build -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=ON -DCOMSHU_PROVIDER_MLX5DV=ON 2>&1 | grep -iE 'mlx5dv.h|error'; cmake --build build -j 2>&1 | tail -2" || exit 1
 
-$SSH "$REMOTE" "cd $RDIR && export PCOMM_ROOT=$RDIR && source tests/hpc/suite/common.sh && pcomm_load_runtime 2>/dev/null;
+$SSH "$REMOTE" "cd $RDIR && export COMSHU_ROOT=$RDIR && source tests/hpc/suite/common.sh && comshu_load_runtime 2>/dev/null;
   SM=\$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
   APP=\$HOME/asym_patterns-sm\$SM
   if [ ! -x \"\$APP\" ] || [ tests/hpc/asym_patterns.cu -nt \"\$APP\" ]; then
@@ -82,16 +82,16 @@ $SSH "$REMOTE" "cd $RDIR && export PCOMM_ROOT=$RDIR && source tests/hpc/suite/co
   echo \"app=\$APP\"" || exit 1
 
 say "run: 2 PEs, P2P disabled so every put crosses the NIC"
-$SSH "$REMOTE" "cd $RDIR && export PCOMM_ROOT=$RDIR && source tests/hpc/suite/common.sh && pcomm_load_runtime 2>/dev/null;
+$SSH "$REMOTE" "cd $RDIR && export COMSHU_ROOT=$RDIR && source tests/hpc/suite/common.sh && comshu_load_runtime 2>/dev/null;
   export LD_LIBRARY_PATH=\"\$NVSHMEM_HOME/lib:\${NCCL_HOME:+\$NCCL_HOME/lib:}\$LD_LIBRARY_PATH\"
   # IBGDA OFF: under it the kernel rings the doorbell and ibv_poll_cq is never
   # called, so there would be no completion to read.
-  export PCOMM_CQE_PROBE=1 NVSHMEM_DISABLE_P2P=1 NVSHMEM_IB_ENABLE_IBGDA=0
+  export COMSHU_CQE_PROBE=1 NVSHMEM_DISABLE_P2P=1 NVSHMEM_IB_ENABLE_IBGDA=0
   SM=\$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
-  OUT=/tmp/pcomm-cqeread-du04; rm -rf \$OUT; mkdir -p \$OUT
-  mpirun -np 2 --allow-run-as-root -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
-    -x PCOMM_CQE_PROBE -x NVSHMEM_DISABLE_P2P -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_BOOTSTRAP=MPI \
-    \$PCOMM run -p ib -o \$OUT -- \$HOME/asym_patterns-sm\$SM hub 4096 3 2>&1 |
-    grep -E '\[pcomm-cqeprobe\]|ERROR|error while loading' | tail -40" 2>&1
+  OUT=/tmp/comshu-cqeread-du04; rm -rf \$OUT; mkdir -p \$OUT
+  mpirun -np 2 --allow-run-as-root -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
+    -x COMSHU_CQE_PROBE -x NVSHMEM_DISABLE_P2P -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_BOOTSTRAP=MPI \
+    \$COMSHU run -p ib -o \$OUT -- \$HOME/asym_patterns-sm\$SM hub 4096 3 2>&1 |
+    grep -E '\[comshu-cqeprobe\]|ERROR|error while loading' | tail -40" 2>&1
 
 say "done — read the rank= summary lines above"

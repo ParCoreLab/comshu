@@ -1,5 +1,5 @@
 #pragma once
-// IbverbsEventSource — binds the ibverbs hook tags to pcomm's interception
+// IbverbsEventSource — binds the ibverbs hook tags to comshu's interception
 // engine. Ported from SigmaTrace/Ibtrace/IbverbsEventSource.hpp: the object-ops
 // contract (get_op) tells CompositeHookManager which ibv_context->ops slot
 // backs each object-ops tag; everything else is the tag list.
@@ -9,7 +9,7 @@
 #include <string_view>
 #include <type_traits>
 
-#include "pcomm/hook/CompositeHookManager.hpp"
+#include "comshu/hook/CompositeHookManager.hpp"
 
 #include "ib_hooks.hpp"
 
@@ -18,16 +18,16 @@ constexpr std::string_view LibPath{"libibverbs.so"};
 
 template<typename Derived>
 class IbverbsEventSource
-    : public pcomm::hook::CompositeHookManager<
-          Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag,
+    : public comshu::hook::CompositeHookManager<
+          Derived, comshu::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag,
           post_srq_recv_tag, req_notify_cq_tag, poll_cq_tag, create_qp_ex_tag, create_cq_ex_tag,
           create_srq_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag,
           reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag,
           create_cq_tag, destroy_cq_tag, mlx5dv_create_cq_tag, mlx5dv_open_device_tag,
           create_srq_tag, destroy_srq_tag, create_ah_tag, destroy_ah_tag, query_device_tag,
           create_qp_tag, qp_to_qp_ex_tag, modify_qp_tag> {
-    using Base = pcomm::hook::CompositeHookManager<
-        Derived, pcomm::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag,
+    using Base = comshu::hook::CompositeHookManager<
+        Derived, comshu::hook::DefaultHookManagerConfig, post_send_tag, post_recv_tag,
         post_srq_recv_tag, req_notify_cq_tag, poll_cq_tag, create_qp_ex_tag, create_cq_ex_tag,
         create_srq_ex_tag, reg_dm_mr_tag, alloc_null_mr_tag, open_device_tag, close_device_tag,
         reg_mr_iova2_tag, reg_mr_tag, reg_dmabuf_mr_tag, dereg_mr_tag, alloc_pd_tag, create_cq_tag,
@@ -44,7 +44,7 @@ public:
     // post_recv and poll_cq live in ibv_context->ops; the *_ex slots live one
     // struct out, in the verbs_context that ibv_context is embedded in, and go
     // through vctx_slot for the two guards that door needs.
-    template<pcomm::hook::ValidCallbackTag Tag> auto& get_op(ibv_context* ctx) const noexcept {
+    template<comshu::hook::ValidCallbackTag Tag> auto& get_op(ibv_context* ctx) const noexcept {
         if constexpr (std::is_same_v<Tag, post_send_tag>) {
             return ctx->ops.post_send;
         } else if constexpr (std::is_same_v<Tag, post_recv_tag>) {
@@ -118,7 +118,7 @@ private:
             if (!warned) {
                 warned = true;
                 std::fprintf(stderr,
-                             "[pcomm] ibverbs: no usable verbs_context::%s on this device; "
+                             "[comshu] ibverbs: no usable verbs_context::%s on this device; "
                              "calls through it will not be recorded\n",
                              what);
             }

@@ -18,7 +18,7 @@ module load quantumespresso/7.5-nvidia-nvhpcx
 nothing — `module list` still shows only `bsc/1.0` and `pw.x` is not on `PATH`.
 The QE module declares `prereq("nvidia-hpc-sdk","mkl")` and gives no error.
 
-**Do NOT use `pcomm_load_runtime` for QE.** It loads `nvidia-hpc-sdk/25.7`, whose
+**Do NOT use `comshu_load_runtime` for QE.** It loads `nvidia-hpc-sdk/25.7`, whose
 HPC-X is 2.22.1, while `pw.x` is linked against 23.11's HPC-X 2.16
 (`ldd` shows `.../hpcx-2.16/ompi/lib`). The UCX provider is symbol interposition
 and must sit in front of the libucp that is actually loaded.
@@ -33,7 +33,7 @@ itself: "NVPCX uses its own implementation of MPI that does not offer srun
 support." Also `export SLURM_CPU_BIND=none`.
 
 **Forgetting `module load gcc/13.2.0` makes a good capture look empty.**
-`pcomm read`/`export` die with `GLIBCXX_3.4.30 not found` and the export
+`comshu read`/`export` die with `GLIBCXX_3.4.30 not found` and the export
 directory is simply never created — which reads exactly like "the workload wrote
 nothing".
 
@@ -67,7 +67,7 @@ hcoll implements collectives on its own transport and never calls
 `ucp_tag_send_nbx`. Also pin `-mca pml ucx` (ob1 would leave every `ucx_*` table
 empty) and `-mca btl ^openib`.
 
-## pcomm usage
+## comshu usage
 
 **`-m simple` is almost always what you want on a real application.**
 `ucx_worker_progress` alone was 1 932 658 rows against 125 069 tagged sends — 94 %
@@ -88,8 +88,8 @@ is mostly `dst_rank = -1`, check `node_identity` row count against the rank coun
 **first** — it is not a fabric quirk.
 
 **`pw.x` always exits 139 on MN5.** It reaches `JOB DONE` and then takes SIGSEGV
-in teardown. Confirmed with a control run: no pcomm, no `LD_PRELOAD`, still 139.
-Do not chase it as a pcomm bug, and do not treat a nonzero exit as "the workload
+in teardown. Confirmed with a control run: no comshu, no `LD_PRELOAD`, still 139.
+Do not chase it as a comshu bug, and do not treat a nonzero exit as "the workload
 failed" — grep for `JOB DONE`.
 
 ## The suite harness
@@ -135,21 +135,21 @@ All of these cost nothing and each one saved or would have saved a job:
 - `ldd` on the application binary, for both the MPI it will load and the
   compiler runtime libraries it does or does not carry.
 - A 2-rank `mpirun` on the login node to validate any `UCX_TLS` string.
-- `pcomm run --dry-run` to confirm a provider set composes into one pass.
+- `comshu run --dry-run` to confirm a provider set composes into one pass.
 - `bash -n` on the job script — and note that `pw.x_path=...` is not a legal
   bash variable name, which `bash -n` does catch.
 
 ## Re-running the checks without a queue slot
 
-The CSV exports persist under `$HOME/pcomm-suite/`. Assertions can be iterated
+The CSV exports persist under `$HOME/comshu-suite/`. Assertions can be iterated
 entirely on the login node:
 
 ```bash
 module load gcc/13.2.0 nvidia-hpc-sdk/23.11
 bash tests/hpc/apps/03_quantumespresso/check.sh \
-     ~/pcomm-suite/qe-npool1-<jobid>.csv \
-     ~/pcomm-suite/qe-npool2-<jobid>.csv \
-     ~/pcomm-suite/qe-npool1-rcverbs-<jobid>.csv \
+     ~/comshu-suite/qe-npool1-<jobid>.csv \
+     ~/comshu-suite/qe-npool2-<jobid>.csv \
+     ~/comshu-suite/qe-npool1-rcverbs-<jobid>.csv \
      tests/hpc/apps/03_quantumespresso
 ```
 

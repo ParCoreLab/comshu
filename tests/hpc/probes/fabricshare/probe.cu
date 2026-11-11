@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
                 peer);
     std::fflush(stdout);
 
-    // Write into the PEER's memory, which is the access pcomm has to attribute.
+    // Write into the PEER's memory, which is the access comshu has to attribute.
     const int elems = (int)(N / sizeof(int));
     poke<<<(elems + 255) / 256, 256>>>((int*)peerptr, elems, g_rank + 1);
     DK(cuCtxSynchronize());

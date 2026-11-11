@@ -7,7 +7,7 @@ reads neither the schema nor the C++ declarations. That is deliberate for the
 LAYOUT, which is an argument about which relationships matter and cannot be
 derived from a struct. It is not defensible for the record SET.
 
-Without this check, adding a PCOMM_RECORD leaves the figure silently missing it,
+Without this check, adding a COMSHU_RECORD leaves the figure silently missing it,
 the index silently missing it, and every other check in the tree green. That is
 the exact failure schema_check.py exists to prevent, one layer out: absence is
 invisible, and a check you have to remember to run is no check against a mistake
@@ -15,7 +15,7 @@ made by forgetting.
 
 Three lists, checked against each other:
 
-    the PCOMM_RECORD declarations   <- the source of truth
+    the COMSHU_RECORD declarations   <- the source of truth
     gen_figures.DRAWN               <- what the diagrams drew
     gen_figures.FAMILIES            <- what the index table lists
 
@@ -76,11 +76,11 @@ def main():
         bad(f"{name} (type {r['type_id']}, {r['kind']}, {r['path']}) is declared "
             f"but missing from the index table")
     for name in sorted(set(indexed) - set(declared)):
-        bad(f"{name} is in the index table but no PCOMM_RECORD declares it")
+        bad(f"{name} is in the index table but no COMSHU_RECORD declares it")
     for name in sorted(set(declared) - set(drawn)):
         bad(f"{name} is declared but no family figure draws it")
     for name in sorted(set(drawn) - set(declared)):
-        bad(f"{name} is drawn in a figure but no PCOMM_RECORD declares it")
+        bad(f"{name} is drawn in a figure but no COMSHU_RECORD declares it")
 
     for name in sorted(set(declared) & set(indexed)):
         want = declared[name]

@@ -15,7 +15,7 @@
 --
 -- For both to be right, UCX must ALSO have made the corresponding choice: shared
 -- memory for the peers that share a node and mlx5 for the ones that do not. So
--- this file is simultaneously a check on pcomm and a check that the experiment
+-- this file is simultaneously a check on comshu and a check that the experiment
 -- happened -- and in the `cyclic` arm it demands that UCX made the OPPOSITE
 -- choice for the SAME peers, which no amount of caching or defaulting can fake.
 --

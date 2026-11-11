@@ -1,7 +1,7 @@
 # QUESTIONS — what the capture and its documentation could not tell me
 
 Round 2, 01_gromacs. Written under the black-box rule: `providers/`,
-`libpcomm/` (beyond `schema/`), `pcomm-read/`, `tools/`, `plans/` and
+`libcomshu/` (beyond `schema/`), `comshu-read/`, `tools/`, `plans/` and
 `BUGS-FOUND.md` were not read. Everything below is a place where I had a
 question, went to the documentation a real user has, and did not find the
 answer. Some I worked around; the workaround is recorded because its cost is the
@@ -18,11 +18,11 @@ Ordered by what they cost.
 ## Q1 — Six enum fields are declared as `uint8` with their vocabulary in files the reader does not have
 
 **Confirms the sibling report, and sharpens it.** The schema is not silent by
-oversight; it is silent *against its own stated principle*. `pcomm.fbs:45`
+oversight; it is silent *against its own stated principle*. `comshu.fbs:45`
 argues, at length and correctly, that enums must be declared rather than
 described:
 
-> These enums mirror `pcomm/core/vocab.hpp` [...] They are declared here rather
+> These enums mirror `comshu/core/vocab.hpp` [...] They are declared here rather
 > than described in a comment on purpose: a reordered C++ enumerator changes no
 > size and no field offset, so the byte-level conformance test cannot see it, and
 > prose cannot be checked at all.
@@ -64,7 +64,7 @@ to keep a wrong-export run from reporting success. Three of my eleven assertion
 files carry that canary. It is pure overhead created by an undocumented
 representation split.
 
-**Ask:** declare all six in `pcomm.fbs`, exactly as the file's own comment
+**Ask:** declare all six in `comshu.fbs`, exactly as the file's own comment
 argues. And state in one place which export decodes and which does not.
 
 ---
@@ -88,13 +88,13 @@ Three further things the sibling's version does not say:
    by edge, so it answers "how many bytes left this node" and never "to whom".
    That looks like a deliberate design choice and a defensible one — but it means
    that on the HPC-X stack, where `comm_edges` is structurally empty, **no table
-   in pcomm can name the far end of a transfer.**
-2. **For two-sided traffic there is a route around it, and it is not pcomm's.**
+   in comshu can name the far end of a transfer.**
+2. **For two-sided traffic there is a route around it, and it is not comshu's.**
    Open MPI encodes the peer in the tag: `PML_UCX_MAKE_SEND_TAG` puts
    `comm->c_my_rank` in bits 20-39 (`pml_ucx_request.h:42`). So `ucx_tag_send.tag`
    identifies the sender and `ucx_tag_recv.tag` identifies the requested source,
    with no cross-rank join at all. My topology assertion is built on this. It is
-   a fact about Open MPI, works for no other MPI, and is nowhere in pcomm's
+   a fact about Open MPI, works for no other MPI, and is nowhere in comshu's
    documentation — a user would have to go and read the MPI's source, as I did.
 3. **For one-sided traffic there is no such route**, because an RMA has no tag.
    So the sibling's gap (b) stands unmitigated, and it is the harder half.
@@ -193,9 +193,9 @@ shipped `asserts.sh` to fix that.
 The other half only appears once you query a *derived* table, which round 1 never
 did:
 
-* `pcomm export --csv` emits one CSV per **record type** — the raw 600s and 800s.
+* `comshu export --csv` emits one CSV per **record type** — the raw 600s and 800s.
 * `transport_mix`, `tag_flow`, `tag_recv_resolved` and `link_health` are built by
-  `pcomm link` and exist only in the **Parquet** export.
+  `comshu link` and exist only in the **Parquet** export.
 * `asserts.sh` loads CSV into **sqlite3**.
 
 So the four tables this entire round exists to test cannot be reached by the
@@ -204,7 +204,7 @@ params table. I wrote `run-asserts-r2.sh` (DuckDB over the parquet export, same
 `-- requires:` contract) to close it, which is a second private runner in one
 case directory and a sign the harness wants the change upstream.
 
-Related and unresolved: **does `pcomm sql` accept more than one statement?** If
+Related and unresolved: **does `comshu sql` accept more than one statement?** If
 it did, an assertion could materialise `params` itself as a CTE or a view and
 need no runner at all. Nothing says. My runner shells out to `duckdb` directly to
 avoid depending on the answer, which in turn hard-codes the assumption that the

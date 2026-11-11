@@ -1,5 +1,5 @@
 # libibverbs_trace.so — proof-of-concept network provider, ported from
-# SigmaTrace/Ibtrace. Validates the hook engine (pcomm::hook) against the new
+# SigmaTrace/Ibtrace. Validates the hook engine (comshu::hook) against the new
 # record model. Requires libibverbs headers (infiniband/verbs.h).
 
 find_library(IBVERBS_LIB NAMES ibverbs REQUIRED)
@@ -22,7 +22,7 @@ find_path(IBVERBS_INCLUDE_DIR infiniband/verbs.h REQUIRED)
 # and then decide mlx5dv.h is missing while it sits in the same directory.
 include(CheckIncludeFileCXX)
 set(CMAKE_REQUIRED_INCLUDES ${IBVERBS_INCLUDE_DIR})
-check_include_file_cxx("infiniband/mlx5dv.h" PCOMM_HAVE_MLX5DV_HEADER)
+check_include_file_cxx("infiniband/mlx5dv.h" COMSHU_HAVE_MLX5DV_HEADER)
 unset(CMAKE_REQUIRED_INCLUDES)
 
 add_library(ibverbs_trace SHARED
@@ -33,19 +33,19 @@ add_library(ibverbs_trace SHARED
 )
 set_target_properties(ibverbs_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "ibverbs_trace")
 target_include_directories(ibverbs_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${IBVERBS_INCLUDE_DIR})
-target_link_libraries(ibverbs_trace PRIVATE pcomm::pcomm pcomm::hook ${IBVERBS_LIB})
+target_link_libraries(ibverbs_trace PRIVATE comshu::comshu comshu::hook ${IBVERBS_LIB})
 target_compile_definitions(ibverbs_trace PRIVATE
-  PCOMM_HAVE_MLX5DV=$<BOOL:${PCOMM_HAVE_MLX5DV_HEADER}>)
+  COMSHU_HAVE_MLX5DV=$<BOOL:${COMSHU_HAVE_MLX5DV_HEADER}>)
 
-# The provider .so now has a DT_NEEDED on libpcomm_engine.so, so it must be
-# findable at runtime. $ORIGIN/../../libpcomm resolves correctly for both build
+# The provider .so now has a DT_NEEDED on libcomshu_engine.so, so it must be
+# findable at runtime. $ORIGIN/../../libcomshu resolves correctly for both build
 # layouts: build/providers/<p>/ (ibverbs, and gpumem after run_on_mn5.sh copies
 # it there from build-gpumem/). New dtags so LD_LIBRARY_PATH can still override.
-# In an *installed* tree the engine is a sibling in <prefix>/lib/pcomm, so
-# INSTALL_RPATH is $ORIGIN rather than the build tree's ../../libpcomm.
+# In an *installed* tree the engine is a sibling in <prefix>/lib/comshu, so
+# INSTALL_RPATH is $ORIGIN rather than the build tree's ../../libcomshu.
 set_target_properties(ibverbs_trace PROPERTIES
-  BUILD_RPATH "$ORIGIN/../../libpcomm"
-  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
+  BUILD_RPATH "$ORIGIN/../../libcomshu"
+  INSTALL_RPATH "$ORIGIN;${COMSHU_INSTALL_RPATH_EXTRA}")
 target_link_options(ibverbs_trace PRIVATE -Wl,--enable-new-dtags)
 # A shared library links happily with undefined symbols and fails at RUNTIME, on
 # every rank, with "undefined symbol". That is exactly what a definition placed
@@ -53,7 +53,7 @@ target_link_options(ibverbs_trace PRIVATE -Wl,--enable-new-dtags)
 # the build printed a warning nobody was grepping for and reported success.
 # --no-undefined turns that into a link error on the dev box instead.
 target_link_options(ibverbs_trace PRIVATE -Wl,--no-undefined)
-install(TARGETS ibverbs_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
+install(TARGETS ibverbs_trace LIBRARY DESTINATION ${COMSHU_INSTALL_LIBDIR}
         COMPONENT ibverbs)
 
 # Export only what must be exported (see ibverbs.map). Cuts the dynamic symbol

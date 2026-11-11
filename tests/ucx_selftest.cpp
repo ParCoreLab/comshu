@@ -96,7 +96,7 @@ int main(void) {
 
     /* BOTH SPELLINGS OF "give me this worker's address", because a provider that
      * hooks one of them looks identical to a provider that hooks both until an
-     * application picks the other. That is not hypothetical: pcomm hooked only
+     * application picks the other. That is not hypothetical: comshu hooked only
      * ucp_worker_get_address, OpenMPI's point-to-point path (mca_pml_ucx) uses
      * only ucp_worker_query, and three of the four studies in tests/hpc/apps/
      * independently found that ucx_worker_address was therefore describing the

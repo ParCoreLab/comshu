@@ -3,9 +3,9 @@
 // tool load and constructs the gpumem::Engine; this IProvider exists for the
 // control plane / provider registry (info, id ranges, explicit shutdown).
 
-#include "pcomm/provider/provider.hpp"
+#include "comshu/provider/provider.hpp"
 
-namespace pcomm::providers {
+namespace comshu::providers {
 
 class GpumemProvider final : public provider::IProvider {
 public:
@@ -22,6 +22,6 @@ public:
     void shutdown() override {}
 };
 
-}  // namespace pcomm::providers
+}  // namespace comshu::providers
 
-PCOMM_EXPORT_PROVIDER(pcomm::providers::GpumemProvider)
+COMSHU_EXPORT_PROVIDER(comshu::providers::GpumemProvider)

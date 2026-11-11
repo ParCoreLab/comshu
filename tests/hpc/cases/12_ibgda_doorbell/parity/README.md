@@ -2,7 +2,7 @@
 
 Design and full findings: `plans/PLAN-20260810-0102-sigmatrace-parity-done.md`.
 This directory holds the one piece of code that has to live somewhere: a dumper
-that turns SigmaTrace's binary event files into the same TSV shape the pcomm
+that turns SigmaTrace's binary event files into the same TSV shape the comshu
 side produces, so the comparison is TSV-vs-TSV and neither tool's analysis code
 sits in the loop.
 
@@ -31,9 +31,9 @@ clang++-20 -std=c++20 -O2 -I Events -I Profiler -I Profiler/Events \
   -I Modules/Helpers/include Tools/sigma_dump.cpp -o sigma_dump
 ./sigma_dump <out> > sigma.tsv
 
-# pcomm, same configuration
-pcomm run -p mlx5dv --enable-doorbell-hijack -o <out2> -- ~/nvshmem_putget_sm80 1024 20
-pcomm export <out2> --csv <out2>.csv
+# comshu, same configuration
+comshu run -p mlx5dv --enable-doorbell-hijack -o <out2> -- ~/nvshmem_putget_sm80 1024 20
+comshu export <out2> --csv <out2>.csv
 ```
 
 ## What to compare, and what not to
@@ -43,7 +43,7 @@ clock, so it needs no timing alignment. Compare the multiset of per-QP
 sequences, never keyed on `qp_num` — that is driver-assigned and differs per run.
 
 **Do not compare doorbell counts for equality.** They are not repeatable: two
-pcomm runs of the identical workload produced 168 and 162 doorbells, because
+comshu runs of the identical workload produced 168 and 162 doorbells, because
 NVSHMEM batches warp-combined writes and where a batch ends moves with timing.
 
 **Do not treat SigmaTrace's decoded fields as ground truth.** Measured

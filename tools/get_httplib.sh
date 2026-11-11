@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the pinned cpp-httplib header into .tools/httplib (gitignored).
 #
-# `pcomm ui` needs to serve a page and answer queries over HTTP. cpp-httplib is
+# `comshu ui` needs to serve a page and answer queries over HTTP. cpp-httplib is
 # a single header with no dependencies and an MIT licence, which is the whole
 # reason it is chosen over anything that would drag a build system with it.
 #

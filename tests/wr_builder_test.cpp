@@ -20,7 +20,7 @@
 
 #include "wr_builder.hpp"
 
-using namespace pcomm::providers::ibverbs;
+using namespace comshu::providers::ibverbs;
 
 namespace {
 

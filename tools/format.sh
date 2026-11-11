@@ -8,7 +8,7 @@
 #
 # Vendored and generated trees are excluded twice over, belt and braces:
 # by the path filter here, and by a `DisableFormat: true` .clang-format in
-# third_party/, gpu-backends/nvbit/nvbit-1.7.7.1/ and libpcomm/schema/generated/
+# third_party/, gpu-backends/nvbit/nvbit-1.7.7.1/ and libcomshu/schema/generated/
 # (which also stops an editor formatting them on save).
 #
 # .cu is deliberately included: clang-format handles CUDA as C++ well enough for
@@ -39,7 +39,7 @@ sources() {
     git ls-files -- '*.cpp' '*.hpp' '*.h' '*.cu'
   else
     git diff --cached --name-only --diff-filter=ACMR -- '*.cpp' '*.hpp' '*.h' '*.cu'
-  fi | grep -vE '^(third_party/|gpu-backends/nvbit/nvbit-1\.7\.7\.1/|libpcomm/schema/generated/)'
+  fi | grep -vE '^(third_party/|gpu-backends/nvbit/nvbit-1\.7\.7\.1/|libcomshu/schema/generated/)'
 }
 
 mapfile -t files < <(sources)

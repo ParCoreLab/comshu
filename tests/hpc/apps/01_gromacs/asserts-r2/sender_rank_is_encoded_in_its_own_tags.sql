@@ -25,7 +25,7 @@
 -- byte. The conclusion drawn was that rank-space topology is unavailable for an
 -- HPC-X application. It is not: for ANY Open MPI application the peer is inside
 -- the tag, and needs no join between rank directories at all. This assertion is
--- what establishes that the tag pcomm recorded is the tag Open MPI built, and
+-- what establishes that the tag comshu recorded is the tag Open MPI built, and
 -- halo_and_pme_peers_match_the_decomposition.sql is what then spends it.
 --
 -- THE SECOND CLAUSE IS A DECODE CANARY AND IT IS NOT OPTIONAL. The CSV export

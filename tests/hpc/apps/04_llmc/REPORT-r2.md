@@ -1,4 +1,4 @@
-# 04_llmc round 2 — llm.c under `-p nccl,kernel`, through `pcomm link`
+# 04_llmc round 2 — llm.c under `-p nccl,kernel`, through `comshu link`
 
 **Application:** [karpathy/llm.c](https://github.com/karpathy/llm.c), `train_gpt2.cu`,
 upstream `f1e2ace` + the CUDA-13 patch in this directory. GPT-2 pretraining in
@@ -7,8 +7,8 @@ C/CUDA, NCCL directly, MPI only to bootstrap.
 unreachable for this round, so everything here is P=4 single-node.
 **Prediction:** [`PREDICTION-r2.md`](PREDICTION-r2.md), committed in `66a02f5`
 **before** the first r2 capture existed.
-**Written black-box:** no file under `providers/`, `libpcomm/` (bar the schema),
-`pcomm-read/`, `tools/`, `plans/` or `BUGS-FOUND.md` was read. Every question
+**Written black-box:** no file under `providers/`, `libcomshu/` (bar the schema),
+`comshu-read/`, `tools/`, `plans/` or `BUGS-FOUND.md` was read. Every question
 that could not be answered from the capture and its documentation is in
 [`QUESTIONS.md`](QUESTIONS.md) rather than resolved by reading the source.
 
@@ -59,7 +59,7 @@ nothing in the project had ever asserted a property of the `kernel` provider.
 Three claims, all derived from llm.c's source before the capture existed.
 
 **(a) One group is one kernel.** llm.c says it — `zero.cuh:530`, *"NCCL group:
-aggregate all pointers in a single NCCL GPU kernel"* — and `pcomm.fbs` type 906
+aggregate all pointers in a single NCCL GPU kernel"* — and `comshu.fbs` type 906
 says it from the other side, *"N grouped sends are ONE launch"*. Neither is a
 capture. So, per rank, `launches = nccl_group/2 + ungrouped collectives`, and
 the ungrouped ones are exactly the float32 scalar reductions because all four
@@ -133,7 +133,7 @@ The same export answers the question twice:
     -- 0,0,0   1,1,1   2,2,2   3,3,3
 
 `rank_identity` is the table whose *purpose* is to hold (node, device) per rank —
-`pcomm.fbs`'s `NodeIdentity` comment states the need in as many words: *"a
+`comshu.fbs`'s `NodeIdentity` comment states the need in as many words: *"a
 device ordinal is node-local... resolving a peer device to a rank needs (node,
 device), and this is the node half"*. The node half is present and correct
 (one `node_hash`, shared, `node_ix` 0). The device half is null, `devices` is 0,
@@ -142,9 +142,9 @@ and the label prints a literal `?`.
 **Smallest reproduction** (about 90 s on du04, no queue):
 
 ```bash
-mpirun -np 4 pcomm run -p nccl -o OUT -- ./train_gpt2cu -e d6 -b 2 -t 1024 -x 1 -z 0 -d 8192
-pcomm export OUT --parquet OUT.pq && pcomm link OUT.pq
-pcomm sql OUT.pq "SELECT * FROM rank_identity"
+mpirun -np 4 comshu run -p nccl -o OUT -- ./train_gpt2cu -e d6 -b 2 -t 1024 -x 1 -z 0 -d 8192
+comshu export OUT --parquet OUT.pq && comshu link OUT.pq
+comshu sql OUT.pq "SELECT * FROM rank_identity"
 ```
 
 Any NCCL workload reproduces it; nothing about llm.c is needed beyond four ranks
@@ -171,7 +171,7 @@ finding; the finding is the null column and the silent `link_health`.
 `comm_edges` is **empty** for a run in which each rank pushed
 `4G x 2 B = 242.9 MB` of gradient through NVLink. That was predicted, and it is
 correct behaviour rather than a bug: llm.c calls `ncclSend`/`ncclRecv` zero
-times, `pcomm.fbs` type 904 says `NcclP2p` is *"the only NCCL call that names a
+times, `comshu.fbs` type 904 says `NcclP2p` is *"the only NCCL call that names a
 peer, and so the only one an exact edge follows from"*, and this study loaded no
 `ib`, no `ucx` and no `gpumem`. Inventing a ring from an `ncclAllReduce` would
 be a fabrication — NCCL owns algorithm, channel count and chunking — and
@@ -232,7 +232,7 @@ default arm reports **three different protocols within the same fused group** �
 every one. Yet each of those groups is exactly **one** kernel launch, which this
 study measured independently in §2. One kernel cannot be specialised for three
 protocols, so **the symbol NCCL launches names one compiled specialisation and
-not the protocol its work items actually take**. pcomm records the launched
+not the protocol its work items actually take**. comshu records the launched
 symbol faithfully — the proof is that `-z 1` shows three *different* NCCL kernel
 names in the same capture, so nothing is being cached or reused.
 
@@ -258,14 +258,14 @@ exercises (`timeline_unanchored`, `kernel_rows_submission_only`,
 `unresolved_nvlink`, `wr_flight_backwards`).
 
 **The two exporters disagree about empty tables, and the derived layer is a
-third behaviour.** `pcomm export --csv` writes a header-only file for every known
-record type (58 files here, 55 of them empty). `pcomm export --parquet` writes a
+third behaviour.** `comshu export --csv` writes a header-only file for every known
+record type (58 files here, 55 of them empty). `comshu export --parquet` writes a
 raw table only when it has rows, so `SELECT count(*) FROM nccl_p2p` is a hard
-`Catalog Error` on a Parquet export of the very same capture. `pcomm link`
+`Catalog Error` on a Parquet export of the very same capture. `comshu link`
 writes its derived tables out **even when empty** — `comm_edges` is a real table
 with zero rows in the same directory where `nccl_p2p` does not exist at all.
-Since `pcomm link` accepts only Parquet ("no raw .parquet tables in ...csv — run
-`pcomm export --parquet` first"), any assertion over the derived layer lives on
+Since `comshu link` accepts only Parquet ("no raw .parquet tables in ...csv — run
+`comshu export --parquet` first"), any assertion over the derived layer lives on
 the representation where an empty raw table is a parse error, and a parse error
 is the failure mode round 1 already flagged as reading like a pass. This is
 `apps/README.md`'s "four different nothings", made sharper: an empty table, a
@@ -282,7 +282,7 @@ missing table and a missing export format now all look different.
 Adding CUPTI costs ~2 % of step time and drops nothing; adding it changes no
 NCCL number (`z0` and `z0nk` agree row for row, which is what the `z0nk` arm is
 for). Bare and captured runs print identical losses to six decimals
-(`10.874087`, `9.528946`). `-p nccl,kernel` is **one pass** — pcomm says so
+(`10.874087`, `9.528946`). `-p nccl,kernel` is **one pass** — comshu says so
 (`2 providers -> 1 pass`) and llm.c's banner appears once — so the cross-layer
 join in §2 is within a single execution.
 
@@ -307,7 +307,7 @@ the other way.
 
 ```bash
 bash tests/hpc/apps/04_llmc/run-r2.sh                       # du04, no queue, ~2 min
-bash tests/hpc/apps/04_llmc/check-r2.sh /DATA/missa18/pcomm-apps-r2/z0.pq
+bash tests/hpc/apps/04_llmc/check-r2.sh /DATA/missa18/comshu-apps-r2/z0.pq
 ```
 
 `run-r2.sh` runs bare first, then `z0`, `z1`, `z0sim` (the NCCL protocol arm) and

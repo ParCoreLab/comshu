@@ -1,13 +1,13 @@
 -- requires: comm_edges params.ranks params.ranks_per_node params.nodes
 -- THE HEADLINE. On a capture whose only wire provider is ibverbs, every edge in
 -- comm_edges must have crossed the node boundary -- checked twice, once against
--- pcomm's own `scope` column and once against the launcher's placement.
+-- comshu's own `scope` column and once against the launcher's placement.
 --
--- WHY IT MUST BE TRUE, AND THE ARGUMENT IS NCCL'S, NOT PCOMM'S. NCCL moves data
+-- WHY IT MUST BE TRUE, AND THE ARGUMENT IS NCCL'S, NOT COMSHU'S. NCCL moves data
 -- between GPUs inside a node over NVLink peer-to-peer -- a device-side store,
 -- which posts no verbs work request and reaches no ibverbs door -- and between
 -- nodes over its `net` transport, which is libibverbs. Neither half is a claim
--- about pcomm; NCCL prints both, one line per connection, under
+-- about comshu; NCCL prints both, one line per connection, under
 -- NCCL_DEBUG=INFO: `via P2P/direct pointer` against `via NET/IB/<hca>`. The bare
 -- arm of job.sbatch collects exactly that, so the oracle exists on paper before
 -- this query is run.
@@ -21,10 +21,10 @@
 -- NODE MEMBERSHIP, not from the transport, so for it to read `network` the link
 -- must have resolved a chain nobody has ever exercised on NCCL traffic: queue
 -- pair -> LID/QPN -> peer rank -> which node that rank is on. Round 1 of
--- 04_llmc read `ib_post_send` raw and never ran `pcomm link` on a multi-node
+-- 04_llmc read `ib_post_send` raw and never ran `comshu link` on a multi-node
 -- capture at all, so this chain has no measurement behind it.
 --
--- CLAUSE 2 IS THE SAME CLAIM WITHOUT CONSULTING pcomm'S ANSWER. `--map-by
+-- CLAUSE 2 IS THE SAME CLAIM WITHOUT CONSULTING comshu'S ANSWER. `--map-by
 -- ppr:4:node` gives node(r) = r / ranks_per_node, confirmed independently by
 -- printing hostname from every rank of the bare run. If clause 1 passes and
 -- clause 2 fails, `scope` is self-consistent and wrong -- which is a defect a

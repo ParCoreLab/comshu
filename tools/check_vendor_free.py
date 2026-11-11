@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Refuse a vendor type that has leaked into libpcomm.
+"""Refuse a vendor type that has leaked into libcomshu.
 
-README states the layer rule absolutely: `libpcomm/` is L0-L2 core and is
+README states the layer rule absolutely: `libcomshu/` is L0-L2 core and is
 vendor-free -- no cuda*/hip*/ibv_*/Sanitizer_* types allowed; vendor types live
 in `providers/` and `gpu-backends/`. Until now that was a sentence in a README
 with nothing checking it, which is the same shape as items 8, 9 and 12 in
 plans/todos.txt: a convention held by discipline rather than by construction.
 
-WHY THIS IS NOT A GREP. Vendor names appear on nearly every page of libpcomm --
+WHY THIS IS NOT A GREP. Vendor names appear on nearly every page of libcomshu --
 in COMMENTS, which are where this codebase keeps its reasoning. `mem_attr.hpp`
 explains that its constants are hand-copied from cuda.h; `dmabuf_registry.hpp`
 cites nvshmem's cudawrap.cpp by line; `CompositeHookManager.hpp` names
@@ -52,15 +52,15 @@ import sys
 from pathlib import Path
 
 # The rule's scope. providers/ and gpu-backends/ are where vendor types belong.
-ROOT_DIR = "libpcomm"
+ROOT_DIR = "libcomshu"
 SOURCE_SUFFIXES = {".h", ".hpp", ".c", ".cc", ".cpp", ".cu", ".cuh", ".inc"}
 
-# Generated FlatBuffers bindings are machine-written from our own pcomm.fbs and
+# Generated FlatBuffers bindings are machine-written from our own comshu.fbs and
 # are checked at their source instead. They also carry schema FIELD names like
 # `cuda_dev` -- a field meaning "which CUDA device", which is vocabulary and not
 # a vendor type. Excluding the directory says that once, here, rather than
 # teaching every pattern below to spare it.
-EXCLUDE_DIRS = ("libpcomm/schema/generated/",)
+EXCLUDE_DIRS = ("libcomshu/schema/generated/",)
 
 # Vendor headers. Including one is a leak regardless of what is then used from
 # it, and it is the check that cannot be argued with: core must compile on a
@@ -127,7 +127,7 @@ ALLOWED_SYMBOLS = {
     # PLAN-20260810-0505: object tracking is not a provider concern), so these
     # four doors record and close mem objects for whichever providers are
     # loaded -- including none.
-    "libpcomm/src/engine.cpp": {
+    "libcomshu/src/engine.cpp": {
         "nvshmem_malloc",
         "nvshmem_calloc",
         "nvshmem_align",
@@ -158,8 +158,8 @@ def strip_comments_and_strings(text: str) -> list[str]:
 
     Hand-written rather than regex'd because the cases that matter are exactly
     the ones a regex gets wrong: a `//` inside a string, a quote inside a
-    comment, and `R"(...)"` raw strings (which pcomm-read uses for SQL, and
-    which nothing stops libpcomm from growing).
+    comment, and `R"(...)"` raw strings (which comshu-read uses for SQL, and
+    which nothing stops libcomshu from growing).
     """
     out = []
     i, n = 0, len(text)

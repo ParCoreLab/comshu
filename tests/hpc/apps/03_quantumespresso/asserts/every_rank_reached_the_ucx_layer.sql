@@ -3,7 +3,7 @@
 --
 -- The floor of the case, and the check that separates the four different
 -- "nothings" apps/README.md insists on distinguishing. pw.x is a 52 MB Fortran
--- binary launched through `pcomm run` under mpirun; an interposition that
+-- binary launched through `comshu run` under mpirun; an interposition that
 -- engages on three ranks and not the fourth looks exactly like a quiet rank, and
 -- every rank-space claim in this directory would then be measuring a hole rather
 -- than a decomposition.

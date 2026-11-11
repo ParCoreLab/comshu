@@ -6,7 +6,7 @@
 //
 //   1. NCCL 2.27+ has ncclCommWindowRegister(..., NCCL_WIN_COLL_SYMMETRIC).
 //      If a window registered that way lands at the SAME virtual address on
-//      every rank, then it has the one property NVSHMEM's heap has and pcomm's
+//      every rank, then it has the one property NVSHMEM's heap has and comshu's
 //      peer attribution already needs — object_access translates an actor's
 //      object id into the owner's namespace by matching (base, size), which
 //      works precisely when the buffer is symmetric. If the addresses differ,

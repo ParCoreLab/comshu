@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-#include "pcomm/hook/HookTrait.hpp"
+#include "comshu/hook/HookTrait.hpp"
 
 DEFINE_PRELOAD_HOOK(ucx, init_version, "ucp_init_version", ucs_status_t, unsigned, unsigned,
                     const ucp_params_t*, const ucp_config_t*, ucp_context_h*);

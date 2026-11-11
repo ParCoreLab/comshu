@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const EXTENSION = join(here, '..', 'pcomm-agent.ts');
+const EXTENSION = join(here, '..', 'comshu-agent.ts');
 
 /**
  * The model this agent is built and measured against.
@@ -29,14 +29,14 @@ const EXTENSION = join(here, '..', 'pcomm-agent.ts');
  * this agent's characteristic failure. The comparison, and how thin its
  * evidence is, is in the plan.
  *
- * Override per-run with `--model`, or globally with $PCOMM_AGENT_MODEL.
+ * Override per-run with `--model`, or globally with $COMSHU_AGENT_MODEL.
  */
-export const DEFAULT_MODEL = process.env.PCOMM_AGENT_MODEL ?? 'muse-glimmer-30b';
+export const DEFAULT_MODEL = process.env.COMSHU_AGENT_MODEL ?? 'muse-glimmer-30b';
 
 export class PiSession {
   /**
    * @param {object} opts
-   * @param {string} opts.uiUrl        base URL of the running `pcomm ui`
+   * @param {string} opts.uiUrl        base URL of the running `comshu ui`
    * @param {string} opts.systemPrompt catalog + this capture + conduct
    * @param {string} [opts.provider]   defaults to pi's configured provider
    * @param {string} [opts.model]
@@ -66,7 +66,7 @@ export class PiSession {
 
     this.child = spawn('pi', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PCOMM_UI_URL: this.uiUrl },
+      env: { ...process.env, COMSHU_UI_URL: this.uiUrl },
     });
     this.stderr = '';
     this.child.stderr.on('data', (d) => {

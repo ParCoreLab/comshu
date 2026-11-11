@@ -3,7 +3,7 @@
 //
 // The 600-699 family records what the application ASKED UCX for. This family
 // records what UCX then did about it, and on the HPC-X/mlx5 stack it is the
-// only layer of pcomm that sees the data plane at all: the 2026-08-27 door
+// only layer of comshu that sees the data plane at all: the 2026-08-27 door
 // sweep measured `ibv_post_send` and `mlx5_device_send` both empty against
 // 24,452 tagged sends, because UCX builds its WQE and rings its own UAR inside
 // a function nobody exports.
@@ -23,11 +23,11 @@
 
 #include <cstdint>
 
-#include "pcomm/core/record.hpp"
-#include "pcomm/core/vocab.hpp"
+#include "comshu/core/record.hpp"
+#include "comshu/core/vocab.hpp"
 
-namespace pcomm::providers::ucx_deep::records {
-using namespace pcomm::core;
+namespace comshu::providers::ucx_deep::records {
+using namespace comshu::core;
 
 // WHICH SLOT of uct_iface_ops_t carried this operation. Values are pinned: they
 // go on disk.
@@ -74,7 +74,7 @@ enum class UctInstrumented : std::uint8_t {
 // `tl_name`/`dev_name` are the fact this family exists to add. UCP knows only
 // that it sent something; the interface knows it went over `rc_mlx5` on
 // `mlx5_0:1`, or `cuda_ipc`, or `posix` — that is, whether the message left the
-// node at all. No other record in pcomm can answer that for a UCX application,
+// node at all. No other record in comshu can answer that for a UCX application,
 // and `comm_edges` has been counting shared-memory traffic as fabric traffic
 // for want of it.
 //
@@ -83,7 +83,7 @@ enum class UctInstrumented : std::uint8_t {
 // `UCT_IFACE_OPEN_MODE_DEVICE` is in `open_mode` — a client-server interface is
 // opened by socket address and genuinely has neither, where kNullHandle is the
 // truthful answer and an empty string would read as a measured empty name.
-PCOMM_RECORD(UctIface, RecordKind::Entity, 800, "uct_iface") {
+COMSHU_RECORD(UctIface, RecordKind::Entity, 800, "uct_iface") {
     std::uint64_t open_mode;  // uct_iface_open_mode bitmap, verbatim
     Handle        iface;
     Handle        worker;  // uct_worker_h
@@ -110,7 +110,7 @@ PCOMM_RECORD(UctIface, RecordKind::Entity, 800, "uct_iface") {
 // the exact thing this project refuses to parse. The public `uct_ep_query` does
 // not expose one. So the lane identity here is the uct_ep pointer, and a
 // capture that wanted a QP number must say it does not have one.
-PCOMM_RECORD(UctEndpoint, RecordKind::Entity, 802, "uct_ep") {
+COMSHU_RECORD(UctEndpoint, RecordKind::Entity, 802, "uct_ep") {
     Handle ep;
     Handle iface;
 };
@@ -142,7 +142,7 @@ PCOMM_RECORD(UctEndpoint, RecordKind::Entity, 802, "uct_ep") {
 // `remote_addr` is set only by Put*/Get*. It is the same object-heatmap key
 // `ib_post_send.remote_addr` provides for raw verbs, and until now the whole
 // HPC-X class had none.
-PCOMM_RECORD(UctSend, RecordKind::Event, 804, "uct_send") {
+COMSHU_RECORD(UctSend, RecordKind::Event, 804, "uct_send") {
     std::uint64_t payload;
     std::uint64_t header;
     std::uint64_t remote_addr;  // Put*/Get* only, else 0
@@ -168,14 +168,14 @@ PCOMM_RECORD(UctSend, RecordKind::Event, 804, "uct_send") {
 // `accepted = 0` is the honest empty capture: `uct_send` will have no rows and
 // this row says why, instead of leaving a reader to conclude the application
 // sent nothing.
-PCOMM_RECORD(UctBinding, RecordKind::Artifact, 806, "uct_binding") {
+COMSHU_RECORD(UctBinding, RecordKind::Artifact, 806, "uct_binding") {
     std::uint32_t compiled_version;  // (major << 16) | (minor << 8) | patch
     std::uint32_t runtime_version;   // from ucp_get_version(), same packing
     std::uint32_t ops_size;          // sizeof(uct_iface_ops_t) as compiled
     std::uint8_t  accepted;          // 1 = the guard allowed patching
-    std::uint8_t  forced;            // 1 = PCOMM_UCX_DEEP_FORCE overrode a refusal
+    std::uint8_t  forced;            // 1 = COMSHU_UCX_DEEP_FORCE overrode a refusal
     std::uint8_t  pad0;
     std::uint8_t  pad1;
 };
 
-}  // namespace pcomm::providers::ucx_deep::records
+}  // namespace comshu::providers::ucx_deep::records

@@ -1,4 +1,4 @@
-# pcomm — 20 minute lab talk
+# comshu — 20 minute lab talk
 
 Slide-by-slide content, the figure each one carries, and what to say over it.
 Figures are in [`figures/`](figures/) as SVG at 1600×900 (16:9, drops straight
@@ -16,7 +16,7 @@ repetition is what makes the deck feel like an argument instead of a tour.
 
 ## 1 — Title · 0:00
 
-> **pcomm**
+> **comshu**
 > one profiler for GPU communication
 > ParCore Lab
 
@@ -36,7 +36,7 @@ Two nodes, four H100 each, NVLink inside, NDR InfiniBand between. One
 > whose memory over NVLink, what went onto the wire as IB verbs, and which
 > collective caused both. Hold this picture — the rest of the talk is about it.
 
-Don't explain pcomm yet. This slide is the *problem statement*, and it works
+Don't explain comshu yet. This slide is the *problem statement*, and it works
 because everyone in the room has debugged exactly this job.
 
 ---
@@ -46,7 +46,7 @@ because everyone in the room has debugged exactly this job.
 **Figure:** `figures/02-coverage.svg`
 
 Coverage matrix: five layers across, four tools down, then two columns —
-*log format* and *viewer* — and the pcomm row beneath.
+*log format* and *viewer* — and the comshu row beneath.
 
 > We have built a tool for almost every row here. Snoopie sees GPU load/store
 > and NVLink. SigmaTrace sees the verbs. ComScribe sees the API level. UCTrace
@@ -90,7 +90,7 @@ That last sentence is the thesis of the talk. Land it.
 
 ---
 
-## 5 — pcomm · 5:30
+## 5 — comshu · 5:30
 
 **Figure:** `figures/03-architecture.svg`
 
@@ -192,7 +192,7 @@ The point isn't the SQL, it's that these two queries *look the same*. Say that.
 ## 8 — The views · 11:00
 
 **Figure:** screenshots — take these yourself, they should be your captures.
-Grab them from `pcomm ui` on a corpus capture the night before:
+Grab them from `comshu ui` on a corpus capture the night before:
 
 - **Matrix** — rank × rank bytes, the classic comm matrix
 - **Timeline** — or a Perfetto screenshot, cross-node clocks aligned
@@ -232,7 +232,7 @@ Cut this slide first if you're behind — the demo covers it.
 Then the closer:
 
 > And there's a file in the repo called `BUGS-FOUND.md` — defects in *other*
-> people's software that pcomm found, each with the evidence that identified it
+> people's software that comshu found, each with the evidence that identified it
 > and the explanations we ruled out. The claim a tool makes is what it found,
 > not what it can in principle see.
 
@@ -254,20 +254,20 @@ what makes every edge cross the NIC: without it the three spokes sharing rank
 0's node would move over NVLink and be invisible to `-p ib`, and the star would
 come up missing three arms with no error to explain it.
 
-**`pcomm list`**
+**`comshu list`**
 
 > Providers are plugins. This is the menu, printed by the binary — not a slide
 > I wrote.
 
 **`ls` the application**
 
-> Stock NVSHMEM. Not built for pcomm, not linked against it, not recompiled.
+> Stock NVSHMEM. Not built for comshu, not linked against it, not recompiled.
 
-**`mpirun … pcomm run -p ib -o ~/demo-out -- …`**
+**`mpirun … comshu run -p ib -o ~/demo-out -- …`**
 
 > The only change is the four words in front of the program.
 
-**`ls -R` then `pcomm read`**
+**`ls -R` then `comshu read`**
 
 > One directory per rank, one file per record type. Nothing is named after a
 > tool or a version — each stream's header says what it is, so the capture
@@ -281,7 +281,7 @@ Browser, in order — and only these three:
 
 > Sixteen ranks, and one column lit up: every spoke into the hub, the hub
 > answering every spoke. A star in *rank* space — and QP numbers and LIDs differ
-> on every run, so pcomm got here by reading each queue pair's RTR transition
+> on every run, so comshu got here by reading each queue pair's RTR transition
 > and mapping the destination back to the rank that owns it.
 >
 > And the row doesn't match the column — ~50 KB inbound against ~7 KB out.
@@ -361,8 +361,8 @@ End on the thesis, not on a list:
 
 The night before:
 
-- [ ] Reinstall `pcomm` to `~/.local` on MN5 so the renamed providers are live —
-      `pcomm list` must print `gpumem` and `ibgda`, six rows
+- [ ] Reinstall `comshu` to `~/.local` on MN5 so the renamed providers are live —
+      `comshu list` must print `gpumem` and `ibgda`, six rows
 - [ ] `nccl_comm` duplicate-`rank` bug is still open (`gen_raw_columns.py:143`
       injects `rank`; `NcclComm` has its own field called `rank`). The demo
       never opens an NCCL capture, so it isn't a blocker — just don't go
@@ -377,5 +377,5 @@ The night before:
 The morning of:
 
 - [ ] `salloc` on MN5 **before** the session starts, and leave it held
-- [ ] Confirm the fallback captures are on simurgh-base (`~/waste/pcomm/corpus`)
+- [ ] Confirm the fallback captures are on simurgh-base (`~/waste/comshu/corpus`)
 - [ ] Confirm the local model endpoint answers (`node agent/ask.mjs --print-prompt`)

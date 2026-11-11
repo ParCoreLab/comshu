@@ -2,7 +2,7 @@
 --
 -- kind 1 is MemcpyKind::HostToDevice. The export carries the NUMBER and not the
 -- name, in both the CSV and the Parquet, so that one assertion runs under
--- sqlite and under DuckDB — see Table<CudaMemcpy> in pcomm-read/main.cpp for
+-- sqlite and under DuckDB — see Table<CudaMemcpy> in comshu-read/main.cpp for
 -- why gpu_access.op is the counter-example rather than the precedent. The names
 -- are in the `vocabulary` derived table.
 -- PORTABLE SHAPE, and it is not cosmetic: `HAVING` without `GROUP BY` is

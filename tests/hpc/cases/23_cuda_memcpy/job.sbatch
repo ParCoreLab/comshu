@@ -5,7 +5,7 @@
 # Every other case's traffic is an instruction a kernel executed (gpumem), a
 # work request on a queue pair (ib/ibgda), or a library call (ucx/nccl). A
 # copy-engine transfer is none of those — it retires no instruction and posts no
-# work request — and pcomm/run.cpp's gpumem registry row has said so in a
+# work request — and comshu/run.cpp's gpumem registry row has said so in a
 # comment for as long as the provider has existed. cudaMemcpyPeer between two
 # GPUs is nevertheless communication, so before cuda_memcpy (534) a capture of
 # this workload was an empty communication matrix with a clean bill of health.
@@ -15,7 +15,7 @@
 # relies on. It matters here because the machine this case is written for (du04,
 # 4x A100 with NVLink between every pair) has no SLURM at all.
 #
-#SBATCH --job-name=pcomm-23-cuda-memcpy
+#SBATCH --job-name=comshu-23-cuda-memcpy
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -26,10 +26,10 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/23_cuda_memcpy"
-OUT=$(pcomm_out cuda_memcpy)
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+CASE_DIR="$COMSHU_ROOT/tests/hpc/cases/23_cuda_memcpy"
+OUT=$(comshu_out cuda_memcpy)
 
 # The workload's parameters, and they are the SAME NUMBERS meta.json's `workload`
 # block declares. Kept here as variables and passed on the command line so the
@@ -45,9 +45,9 @@ OUT=$(pcomm_out cuda_memcpy)
 # all, so `_device_key` fell back to its 'O' ordinal keys. That fallback is
 # correct and the case would still have passed; it would just never have
 # exercised the (node_hash, pci_bus) path that every multi-rank capture uses.
-ITERS="${PCOMM_COPY_ITERS:-200}"
-MSG_BYTES="${PCOMM_COPY_BYTES:-4194304}"
-GPUS="${PCOMM_COPY_GPUS:-4}"
+ITERS="${COMSHU_COPY_ITERS:-200}"
+MSG_BYTES="${COMSHU_COPY_BYTES:-4194304}"
+GPUS="${COMSHU_COPY_GPUS:-4}"
 
 # SKIP means one thing only: this host cannot run the case, so it has nothing to
 # say. It is NOT a place to put "something went wrong" — see case 09, where
@@ -68,7 +68,7 @@ fail() {
 }
 
 # ---- prerequisites --------------------------------------------------------
-pcomm_load_runtime
+comshu_load_runtime
 command -v nvidia-smi >/dev/null 2>&1 || skip "no NVIDIA driver on this host"
 have_gpus=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l)
 [ "${have_gpus:-0}" -ge "$GPUS" ] || \
@@ -77,33 +77,33 @@ have_gpus=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc 
 # The backend, not a provider directory: libcupti_trace.so builds under
 # gpu-backends/ because it captures no transport. common.sh searches both, and
 # the check is for the LIBRARY rather than for the CUDA toolkit — a build
-# configured without -DPCOMM_CUPTI has no copy capture at all and this case would
+# configured without -DCOMSHU_CUPTI has no copy capture at all and this case would
 # otherwise report an empty table as a defect in the tracer.
 cupti_so=""
-for d in $(echo "$PCOMM_PROVIDER_PATH" | tr ':' ' '); do
+for d in $(echo "$COMSHU_PROVIDER_PATH" | tr ':' ' '); do
   [ -e "$d/libcupti_trace.so" ] && cupti_so="$d/libcupti_trace.so"
 done
-[ -n "$cupti_so" ] || skip "this build has no libcupti_trace.so (configure with -DPCOMM_CUPTI=ON)"
+[ -n "$cupti_so" ] || skip "this build has no libcupti_trace.so (configure with -DCOMSHU_CUPTI=ON)"
 
 # ---- workload -------------------------------------------------------------
-APP="${PCOMM_COPYBENCH_APP:-$OUT.copybench}"
+APP="${COMSHU_COPYBENCH_APP:-$OUT.copybench}"
 mkdir -p "$(dirname "$APP")"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
-  command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || \
-    fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
+  comshu_load_build
+  command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || \
+    fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
   # sm_80 covers the A100 this case is written for; sm_90 an H100. Both are
   # emitted so the same binary runs on either without the case having to know
   # which machine it is on.
-  ${PCOMM_NVCC:-nvcc} -O2 \
+  ${COMSHU_NVCC:-nvcc} -O2 \
     -gencode arch=compute_80,code=sm_80 \
     -gencode arch=compute_90,code=sm_90 \
     -Wno-deprecated-gpu-targets \
     "$CASE_DIR/copybench.cu" -o "$APP" -lcudart || fail "workload did not build"
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
-# ---- the workload BARE first, then under pcomm ----------------------------
+# ---- the workload BARE first, then under comshu ----------------------------
 #
 # Both, in that order, and it is not ceremony. A capture of a workload that did
 # not work is indistinguishable from a tracer that captured nothing, and this
@@ -113,7 +113,7 @@ fi
 echo "=== bare run (no tracer) ==="
 timeout 300 "$APP" "$ITERS" "$MSG_BYTES" "$GPUS"
 bare_rc=$?
-[ $bare_rc -eq 0 ] || fail "workload does not run on this host without pcomm (rc=$bare_rc)"
+[ $bare_rc -eq 0 ] || fail "workload does not run on this host without comshu (rc=$bare_rc)"
 
 # ONE process, and it has to SAY it is rank 0.
 #
@@ -124,17 +124,17 @@ bare_rc=$?
 # halves of the same fact: rank 0 "silent" and rank 1652840 "not launched". Its
 # own comment names this exact case. Every other case in the suite is launched
 # under mpirun or srun and never meets it.
-export PCOMM_RANK=0
+export COMSHU_RANK=0
 
 rm -rf "$OUT" "$OUT.csv" "$OUT.pq"; mkdir -p "$OUT"
 
 echo "=== traced run ==="
 # -p cupti alone. Adding gpumem here would be a different experiment and a
-# broken one: NVBit takes the process's only CUPTI subscriber, `pcomm run` drops
+# broken one: NVBit takes the process's only CUPTI subscriber, `comshu run` drops
 # cupti and says so, and the capture would legitimately hold no copies at all.
 # link_health.memcpy_capture_unavailable is what states that case; it is
 # exercised in tests/comm_edges_rule.sh, which can construct it without a GPU.
-PCOMM_VERBOSE=1 timeout 300 "$PCOMM" run -p cupti -o "$OUT" -- \
+COMSHU_VERBOSE=1 timeout 300 "$COMSHU" run -p cupti -o "$OUT" -- \
   "$APP" "$ITERS" "$MSG_BYTES" "$GPUS"
 rc=$?; echo "traced exit=$rc"
 if [ $rc -ne 0 ]; then
@@ -144,7 +144,7 @@ if [ $rc -ne 0 ]; then
   exit 1
 fi
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"

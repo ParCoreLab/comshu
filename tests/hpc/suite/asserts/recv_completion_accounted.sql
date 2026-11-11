@@ -4,7 +4,7 @@
 --
 -- This is the receive-side mirror of entity_close_accounted.sql, and it exists
 -- for the same reason: until ib_post_recv landed, the receive half of every
--- transfer was INFERRED FROM ITS COMPLETION AND NEVER OBSERVED. pcomm hooked
+-- transfer was INFERRED FROM ITS COMPLETION AND NEVER OBSERVED. comshu hooked
 -- ibv_post_send and ibv_poll_cq and no receive door at all, so a recv
 -- completion's wr_id joined to nothing while the identical field on a send
 -- completion joined to ib_post_send. A receive that was never posted and one

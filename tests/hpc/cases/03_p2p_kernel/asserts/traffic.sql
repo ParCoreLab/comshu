@@ -2,7 +2,7 @@
 -- `p2p_kernel 4096 4` on 4 GPUs: each GPU stores `elems` ints to its ring
 -- neighbour, `iters` times, and every GPU runs the loop — so the single process
 -- records gpus*iters*elems = 65536 stores of 4 B. One process drives all four
--- devices (PCOMM_RANK=0), so the total is per rank.
+-- devices (COMSHU_RANK=0), so the total is per rank.
 --
 -- Stores only. peer_rw also reads `local[i]`, but that read stays on the GPU
 -- that issues it and gpu_access is peer-only by construction (engine.hpp's

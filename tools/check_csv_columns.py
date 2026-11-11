@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every record field must reach `pcomm export --csv`, or say why it does not.
+"""Every record field must reach `comshu export --csv`, or say why it does not.
 
 WHY THIS EXISTS. `Mlx5DevxQp` gained a `cqn_snd` field — the join that makes a
 completion attributable to a queue pair, which is the entire reason the field
@@ -51,7 +51,7 @@ TWO CHECKS, because the drift has two directions:
 
 Source of truth is the C++ record declarations, read with schema_check.py's
 parser — the same one schema_check.py and gen_raw_columns.py already use, so
-there is one place that knows how to read a PCOMM_RECORD and not three.
+there is one place that knows how to read a COMSHU_RECORD and not three.
 
 CLOSED BY CONSTRUCTION, like the tables in gen_raw_columns.py. An unmapped
 field is an error, never a skip. That is the whole point: this file is only
@@ -71,7 +71,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import schema_check as sc  # noqa: E402
 
-CSV_WRITER = "pcomm-read/main.cpp"
+CSV_WRITER = "comshu-read/main.cpp"
 
 # --- a field the CSV calls something else -----------------------------------
 # Keyed (wire_name, leaf_field) -> the column(s) that carry it. A field may map
@@ -144,7 +144,7 @@ OMITTED = {
 # The two intern streams are consumed AS the dictionary that resolves every
 # Handle in every other table, not exported as tables of their own. main.cpp
 # says so where known_types() is built. Anything else missing a Table<> is a
-# record `pcomm export --csv` cannot emit, which is this file's failure one
+# record `comshu export --csv` cannot emit, which is this file's failure one
 # level up.
 NO_TABLE = {
     "intern_key": "consumed as the intern dictionary, not exported as a table",
@@ -212,7 +212,7 @@ def main():
         # --- check 1: coverage ------------------------------------------
         rec = by_wire.get(wire)
         if rec is None:
-            errors.append(f"{wire}: Table<> exports a wire name no PCOMM_RECORD declares")
+            errors.append(f"{wire}: Table<> exports a wire name no COMSHU_RECORD declares")
             continue
         colset = set(cols)
         for field in leaves(rec["fields"], structs):
@@ -235,8 +235,8 @@ def main():
     # the same defect one level up.
     for wire in sorted(by_wire):
         if wire not in seen_wires and wire not in NO_TABLE:
-            errors.append(f"{wire}: PCOMM_RECORD has no Table<> — "
-                          f"`pcomm export --csv` cannot emit it at all")
+            errors.append(f"{wire}: COMSHU_RECORD has no Table<> — "
+                          f"`comshu export --csv` cannot emit it at all")
 
     # A stale entry is a lie about the current code, so it fails too.
     known = {w for w, _ in list(RENAMES) + list(OMITTED)}

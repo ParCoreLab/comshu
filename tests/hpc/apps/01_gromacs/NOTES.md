@@ -33,7 +33,7 @@ PATH.** `readelf`/`ldd` on `/apps/ACC/GROMACS/2025.2/GCC/NVHPCX/bin/gmx_mpi`:
 libmpi.so.40 => /gpfs/apps/MN5/ACC/NVIDIA-HPC-SDK/23.11/.../hpcx/hpcx-2.16/ompi/lib/libmpi.so.40
 ```
 
-but `pcomm_load_runtime` loads `nvidia-hpc-sdk/25.7`, whose `mpirun` is HPC-X
+but `comshu_load_runtime` loads `nvidia-hpc-sdk/25.7`, whose `mpirun` is HPC-X
 2.22.1. Launching with the 25.7 `mpirun` mixes two Open MPI releases in one job.
 Put HPC-X 2.16's `ompi/bin` on PATH and set `OPAL_PREFIX` to it.
 
@@ -49,7 +49,7 @@ baked RUNPATH, so prepending `hpcx-2.16/ucx/lib` fixes it. The job script prints
 **The module banner contradicts a memory entry.** It says *"NVHPCX uses its own
 implementation of MPI that does not offer srun support. Programs compiled with
 NVHPCX must use `mpirun --bind-to none` instead of `srun`"*, and asks for
-`export SLURM_CPU_BIND=none`. The `pcomm-mn5-hpcx-nvshmem-env` memory entry says
+`export SLURM_CPU_BIND=none`. The `comshu-mn5-hpcx-nvshmem-env` memory entry says
 to launch with `srun --mpi=pmix`. For **this** module (Open MPI 4.1.5 out of SDK
 23.11) `mpirun` is what works; the memory entry is about the 25.7/NVSHMEM stack.
 
@@ -171,7 +171,7 @@ exports and both assertion runs in **4 min 13 s** of a 2-node allocation. Job
 comparison genuinely does fit in one slot; the expensive part was deciding what
 to pin so the two arms were the same experiment.
 
-`pcomm run -p ib,ucx` cost **0.7 - 1.1 %** of ns/day on a 2.1 M-atom run. That is
+`comshu run -p ib,ucx` cost **0.7 - 1.1 %** of ns/day on a 2.1 M-atom run. That is
 low enough that the performance half of a claim can be measured under the tracer
 and still be believed.
 

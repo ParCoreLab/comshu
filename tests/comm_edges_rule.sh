@@ -27,10 +27,10 @@
 # containing only what this test is about.
 set -uo pipefail
 
-PCOMM=${1:?usage: comm_edges_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: comm_edges_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-comm-edges-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-comm-edges-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # The topology, and it is the whole point of the fixture:
@@ -354,7 +354,7 @@ CSV
 
 # --- "the copy lane is absent, not empty" -----------------------------------
 #
-# link_health.memcpy_capture_unavailable reads PCOMM_CUPTI_ALLOWED out of
+# link_health.memcpy_capture_unavailable reads COMSHU_CUPTI_ALLOWED out of
 # Invocation's captured environment, because that is the one place a capture
 # records that the launcher refused CUPTI to protect a gpumem run. Two ranks,
 # one with it cleared and one with it set, so the row is proved to count the
@@ -373,18 +373,18 @@ CSV
 cat > "$WORK/intern_text.csv" <<'CSV'
 rank,domain,handle,text
 0,2,1,./app
-0,2,2,PCOMM_CUPTI_ALLOWED=0
+0,2,2,COMSHU_CUPTI_ALLOWED=0
 0,2,3,gpumem
 0,2,4,build
 0,2,5,images
 1,2,1,./app
-1,2,2,PCOMM_CUPTI_ALLOWED=1
+1,2,2,COMSHU_CUPTI_ALLOWED=1
 1,2,3,ibverbs
 1,2,4,build
 1,2,5,images
 CSV
 
-"$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
+"$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
     echo "SKIP: build without DuckDB"; exit 0
@@ -398,7 +398,7 @@ fi
 fail=0
 expect() {  # <label> <sql> <expected>
     local got
-    got=$("$PCOMM" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
+    got=$("$COMSHU" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
     if [ "$got" != "$3" ]; then
         echo "FAIL: $1"
         echo "  expected: $3"

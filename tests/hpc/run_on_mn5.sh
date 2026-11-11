@@ -17,10 +17,10 @@
 # commit. A dirty working tree is refused; --rsync copies it as-is instead.
 #
 # Config via env (defaults are the ParCore MN5 account):
-#   PCOMM_REMOTE=koc296797@glogin1.bsc.es     ssh target (key auth assumed)
-#   PCOMM_REMOTE_DIR=proj/pcomm               clone on the remote (rel. to $HOME)
-#   PCOMM_BARE=kefah/git/pcomm                bare repo it clones from
-#   PCOMM_OUT_ROOT=$HOME/pcomm-suite          where captures land (remote)
+#   COMSHU_REMOTE=koc296797@glogin1.bsc.es     ssh target (key auth assumed)
+#   COMSHU_REMOTE_DIR=proj/comshu               clone on the remote (rel. to $HOME)
+#   COMSHU_BARE=kefah/git/comshu                bare repo it clones from
+#   COMSHU_OUT_ROOT=$HOME/comshu-suite          where captures land (remote)
 #
 # Notes: the acc_debug QoS allows one submitted job at a time. By default every
 # case now runs inside ONE allocation (suite/all_in_one.sbatch), so the run pays
@@ -31,17 +31,17 @@
 # missing result. XFAIL does not fail the run.
 #
 # Every verdict is pinned to the job id submitted by THIS run, via a manifest at
-# $PCOMM_OUT_ROOT/.last-run.manifest — so a case whose job never produced output
+# $COMSHU_OUT_ROOT/.last-run.manifest — so a case whose job never produced output
 # reports "no result" instead of quietly inheriting the previous run's PASS.
 # --check-only re-reads that manifest, and so re-checks that same run.
 set -uo pipefail
 
-REMOTE="${PCOMM_REMOTE:-koc296797@glogin1.bsc.es}"
-RDIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
+REMOTE="${COMSHU_REMOTE:-koc296797@glogin1.bsc.es}"
+RDIR="${COMSHU_REMOTE_DIR:-proj/comshu}"
 # The bare repo the remote tree clones from, and the URL this machine pushes to.
 # Both name the same repository, from the two sides of the ssh hop.
-PCOMM_BARE="${PCOMM_BARE:-kefah/git/pcomm}"
-PCOMM_REMOTE_GIT="${PCOMM_REMOTE_GIT:-$REMOTE:$PCOMM_BARE}"
+COMSHU_BARE="${COMSHU_BARE:-kefah/git/comshu}"
+COMSHU_REMOTE_GIT="${COMSHU_REMOTE_GIT:-$REMOTE:$COMSHU_BARE}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # ConnectTimeout because the login nodes refuse connections often enough that
 # this has cost two runs: without it the very first ssh (step 0, resolving
@@ -83,13 +83,13 @@ rsh() { $SSH "$REMOTE" "bash -lc '$*'"; }   # login shell → `module` is availa
 # them exported through sbatch, and `check` needs to look in the same place.
 RHOME=$($SSH "$REMOTE" 'echo $HOME' | tr -d '\r') \
   || { echo "cannot reach $REMOTE" >&2
-       echo "  try the other GPP login node: PCOMM_REMOTE=${REMOTE%%@*}@glogin2.bsc.es $0 $*" >&2
+       echo "  try the other GPP login node: COMSHU_REMOTE=${REMOTE%%@*}@glogin2.bsc.es $0 $*" >&2
        echo "  (alogin1/alogin2 have been refusing ssh since 2026-08-29; the GPP" >&2
        echo "   login nodes submit acc_debug jobs just as well — same home, same" >&2
        echo "   controller, same partition.)" >&2
        exit 1; }
 case "$RDIR" in /*) PROOT="$RDIR" ;; *) PROOT="$RHOME/$RDIR" ;; esac
-OUT_ROOT="${PCOMM_OUT_ROOT:-$RHOME/pcomm-suite}"
+OUT_ROOT="${COMSHU_OUT_ROOT:-$RHOME/comshu-suite}"
 MANIFEST_REMOTE="$OUT_ROOT/.last-run.manifest"
 MANIFEST_LOCAL=$(mktemp)
 trap 'rm -f "$MANIFEST_LOCAL"' EXIT
@@ -133,7 +133,7 @@ wait_job() {
 # (it pushes HEAD and prints branch@head) and never told the run, so nothing
 # downstream could check that the binaries it measured came from that tree.
 # `--no-build` in particular has meant "the binaries are from whenever, the
-# source is from now", silently. Exported below as PCOMM_EXPECT_COMMIT, which
+# source is from now", silently. Exported below as COMSHU_EXPECT_COMMIT, which
 # sql_check.sh turns into the one-row `provenance` table that
 # asserts/build_is_the_boards_commit.sql compares against Invocation.build.
 #
@@ -143,7 +143,7 @@ wait_job() {
 # spelling the length here rather than inheriting a default.
 expect_commit=$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null) || expect_commit=""
 
-# PCOMM_COMMIT, which write_build_id.cmake prefers over asking git, is set ONLY
+# COMSHU_COMMIT, which write_build_id.cmake prefers over asking git, is set ONLY
 # on the --rsync path, and the asymmetry is deliberate.
 #
 # On the git path the remote tree is a clone reset to the pushed commit, so the
@@ -164,13 +164,13 @@ if [ -n "$expect_commit" ] && [ "$use_rsync" -eq 1 ]; then
   git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || expect_commit="$expect_commit-dirty"
   build_commit="$expect_commit"
 fi
-BUILD_ID_ENV="export PCOMM_COMMIT=$build_commit;"
+BUILD_ID_ENV="export COMSHU_COMMIT=$build_commit;"
 # Rides `--export` into the job, which is where sql_check.sh reads it. Appended
-# conditionally rather than always: `PCOMM_EXPECT_COMMIT=` with an empty value
+# conditionally rather than always: `COMSHU_EXPECT_COMMIT=` with an empty value
 # would arrive as an empty string, which sql_check.sh reads as "nobody said" —
 # the same outcome, by a longer route that looks like a claim.
 EXPECT_EXPORT=""
-[ -n "$expect_commit" ] && EXPECT_EXPORT=",PCOMM_EXPECT_COMMIT=$expect_commit"
+[ -n "$expect_commit" ] && EXPECT_EXPORT=",COMSHU_EXPECT_COMMIT=$expect_commit"
 
 # Every case loads its providers OUT OF THE LAUNCHER, not off disk.
 #
@@ -183,7 +183,7 @@ EXPECT_EXPORT=""
 # Safe because step 2.6 verifies the payload against the build by content hash
 # and rebakes when they differ; without that this would be a way to run
 # yesterday's providers on today's board.
-EXPECT_EXPORT="$EXPECT_EXPORT,PCOMM_PREFER_BAKED=1"
+EXPECT_EXPORT="$EXPECT_EXPORT,COMSHU_PREFER_BAKED=1"
 if [ "$check_only" -eq 0 ]; then
   if [ -n "$expect_commit" ]; then
     say "this board is about $expect_commit"
@@ -194,7 +194,7 @@ fi
 
 # --- 1. sync ----------------------------------------------------------------
 # Over git, not rsync: the remote tree is a clone of the bare repo at
-# $PCOMM_BARE, so what the suite runs is always a named commit. That matters
+# $COMSHU_BARE, so what the suite runs is always a named commit. That matters
 # because a verdict is evidence about a *version* — with rsync you could not
 # say afterwards which tree produced a board, and pushing without rsyncing (or
 # the reverse) silently tested the wrong thing.
@@ -233,12 +233,12 @@ if [ "$check_only" -eq 0 ]; then
       refspec="$branch"
       say "sync (git) $branch@$head → $REMOTE:$RDIR"
     fi
-    git -C "$REPO_ROOT" push --quiet --force "$PCOMM_REMOTE_GIT" "$refspec" \
-      || { echo "push to $PCOMM_REMOTE_GIT failed" >&2; exit 1; }
+    git -C "$REPO_ROOT" push --quiet --force "$COMSHU_REMOTE_GIT" "$refspec" \
+      || { echo "push to $COMSHU_REMOTE_GIT failed" >&2; exit 1; }
     # Hard reset, not merge: the remote tree is a deploy target, never edited
     # there. Untracked build dirs survive (they are gitignored).
     rhead=$(rsh "cd $RDIR && git fetch --quiet origin && git reset --quiet --hard origin/$branch && git rev-parse --short=12 HEAD" | tr -d '[:space:]') \
-      || { echo "remote pull failed — is $RDIR a clone of $PCOMM_BARE?" >&2; exit 1; }
+      || { echo "remote pull failed — is $RDIR a clone of $COMSHU_BARE?" >&2; exit 1; }
     # CHECKED, not merely printed. The push and the reset are two operations and
     # a board is only attributable to a commit if both landed; a reset that
     # silently did not move leaves every later step — build, run, assert —
@@ -271,16 +271,16 @@ if [ "$do_build" -eq 1 ]; then
   # undeclared dependency that works until someone runs --clean on a new account.
   #
   # ONE gitignored thing now, not two. This used to also require a built
-  # `ui/dist`, because PCOMM_DUCKDB entered pcomm-ui and that subdirectory
+  # `ui/dist`, because COMSHU_DUCKDB entered comshu-ui and that subdirectory
   # refuses to configure without a frontend bundle — so a cluster with the
-  # library and no bundle got NO Parquet and NO `pcomm sql` either, and the
+  # library and no bundle got NO Parquet and NO `comshu sql` either, and the
   # derived-layer assertions went dark for want of a web page nobody was going
-  # to open on a login node. PCOMM_UI is its own option now and stays off here.
+  # to open on a login node. COMSHU_UI is its own option now and stays off here.
   #
   # STATIC, and that is the ergonomic half. The shared library has to be found
   # at run time through an RPATH pointing into this source tree, so the launcher
   # is only runnable where it was built; the archive set is linked in and
-  # `pcomm` becomes one file. Both shapes still work — PCOMM_DUCKDB_STATIC picks
+  # `comshu` becomes one file. Both shapes still work — COMSHU_DUCKDB_STATIC picks
   # — and this pushes whichever the workstation has, preferring the archives.
   DUCK_STATIC_LOCAL="$REPO_ROOT/.tools/duckdb-static"
   DUCK_LOCAL="$REPO_ROOT/.tools/duckdb"
@@ -302,7 +302,7 @@ if [ "$do_build" -eq 1 ]; then
   else
     echo "  (no local DuckDB — run tools/get_duckdb.sh --static for derived-layer assertions)" >&2
   fi
-  # PCOMM_DUCKDB follows what is actually THERE, so a missing library degrades to
+  # COMSHU_DUCKDB follows what is actually THERE, so a missing library degrades to
   # the old CSV-only behaviour instead of failing the configure. Static wins when
   # both are present: it is the shape that survives being copied.
   DUCK_KIND=$($SSH "$REMOTE" "ls $PROOT/.tools/duckdb-static/*.a >/dev/null 2>&1 && echo static || { test -e $PROOT/.tools/duckdb/libduckdb.so && echo shared || echo none; }")
@@ -337,7 +337,7 @@ if [ "$do_build" -eq 1 ]; then
   # which reads as a broken login node rather than as one bad module name. That
   # cost a cycle on 2026-08-30 when the run moved to the GPP login nodes, where
   # gcc/11.4.0 does not exist. Swallow the chatter, never the status.
-  # PCOMM_CUPTI=ON, and CUDA_HOME is what makes it findable.
+  # COMSHU_CUPTI=ON, and CUDA_HOME is what makes it findable.
   #
   # The cupti backend compiles as PLAIN C++ with no CUDA language — its own
   # CMakeLists says so, and that is precisely why it belongs in this tree rather
@@ -368,7 +368,7 @@ if [ "$do_build" -eq 1 ]; then
   say "build tools + ibverbs provider + cupti backend (gcc-13.2, DuckDB=$DUCK_ON/$DUCK_KIND)"
   rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake FAILED — run it by hand to see which name is unknown here\" >&2; exit 1; }; cd $RDIR &&
        export CUDA_HOME=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7/cuda/12.9 &&
-       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_CUPTI=ON -DPCOMM_DUCKDB=$DUCK_ON -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
+       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=ON -DCOMSHU_PROVIDER_MLX5DV=ON -DCOMSHU_CUPTI=ON -DCOMSHU_DUCKDB=$DUCK_ON -DCOMSHU_DUCKDB_STATIC=$DUCK_STATIC -DCOMSHU_UI=OFF >/dev/null &&
        bout=\$(cmake --build build -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2" \
     || { echo 'tools/ibverbs build FAILED' >&2
          echo "  if the output above mentions variables that require the cache to be" >&2
@@ -387,7 +387,7 @@ if [ "$do_build" -eq 1 ]; then
   # the right compiler — one `rm -rf build-gpumem` turned that into a blocker.
   #
   # The touch is a blunt fix for a real hazard: the CUDA target does not track
-  # libpcomm/include headers, so editing one leaves gpumem_trace stale while
+  # libcomshu/include headers, so editing one leaves gpumem_trace stale while
   # make reports success, and the stale .so then gets copied into build/ with a
   # fresh mtime. A green suite was reporting on a day-old binary.
   #
@@ -403,7 +403,7 @@ if [ "$do_build" -eq 1 ]; then
        [ \"\$GCCMOD\" = gcc/11.4.0 ] || echo \"  (gcc/11.4.0 not in this module tree; using \$GCCMOD)\" >&2;
        module load nvidia-hpc-sdk/25.7 cmake >/dev/null 2>&1 || { echo \"module load nvidia-hpc-sdk/25.7 cmake FAILED\" >&2; exit 1; }; cd $RDIR &&
        SDK=/apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7 &&
-       cmake -B build-gpumem -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
+       cmake -B build-gpumem -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=OFF -DCOMSHU_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 -DCMAKE_CUDA_HOST_COMPILER=g++ -DCMAKE_CUDA_COMPILER=\$SDK/cuda/12.9/bin/nvcc >/dev/null &&
        touch gpu-backends/nvbit/nvbit_backend.cu gpu-backends/nvbit/inject_funcs.cu providers/gpumem/gpumem_provider.cpp &&
        bout=\$(cmake --build build-gpumem --target gpumem_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/gpumem &&
@@ -442,9 +442,9 @@ if [ "$do_build" -eq 1 ]; then
   say "build ucx + ucx_deep providers (UCP doors and the UCT ops table, gcc-13.2)"
   rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
-       UCX=\$(pcomm_find_ucx) &&
+       UCX=\$(comshu_find_ucx) &&
        echo \"  ucx: \$UCX\" &&
-       cmake -B build-ucx -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
+       cmake -B build-ucx -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=OFF -DCOMSHU_PROVIDER_UCX=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DUCX_UCP_LIB=\$UCX/lib/libucp.so -DUCX_INCLUDE_DIR=\$UCX/include >/dev/null &&
        bout=\$(cmake --build build-ucx --target ucx_trace ucx_deep_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/ucx build/providers/ucx_deep &&
        cp build-ucx/providers/ucx/libucx_trace.so build/providers/ucx/ &&
@@ -468,7 +468,7 @@ if [ "$do_build" -eq 1 ]; then
   rsh "$BUILD_ID_ENV module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1 || { echo \"module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 FAILED\" >&2; exit 1; }; cd $RDIR &&
        . tests/hpc/suite/common.sh &&
        echo \"  nccl: \$NCCL_HOME\" &&
-       cmake -B build-nccl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF -DPCOMM_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$PCOMM_SDK/cuda/include >/dev/null &&
+       cmake -B build-nccl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=OFF -DCOMSHU_PROVIDER_NCCL=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DNCCL_INCLUDE_DIR=\$NCCL_HOME/include -DCUDA_RT_INCLUDE_DIR=\$COMSHU_SDK/cuda/include >/dev/null &&
        bout=\$(cmake --build build-nccl --target nccl_trace -j 2>&1) || { echo \"\$bout\" | tail -25 >&2; exit 1; }; echo \"\$bout\" | tail -2 &&
        mkdir -p build/providers/nccl &&
        cp build-nccl/providers/nccl/libnccl_trace.so build/providers/nccl/ &&
@@ -579,7 +579,7 @@ if [ "$check_only" -eq 0 ] && [ "$combined" -eq 1 ]; then
   # about. Case 05 alone is ~7.5 min; everything else together is under two.
   case " $CASES " in *" 05_"*) tlimit="00:40:00" ;; *) tlimit="00:15:00" ;; esac
   say "submit + wait: one allocation for [$CASES]"
-  JID=$(rsh "cd $RDIR && sbatch --parsable --time=$tlimit --export=ALL,PCOMM_ROOT=$PROOT,PCOMM_OUT_ROOT=$OUT_ROOT,PCOMM_CASES_FILE=$OUT_ROOT/.run-cases$EXPECT_EXPORT tests/hpc/suite/all_in_one.sbatch" \
+  JID=$(rsh "cd $RDIR && sbatch --parsable --time=$tlimit --export=ALL,COMSHU_ROOT=$PROOT,COMSHU_OUT_ROOT=$OUT_ROOT,COMSHU_CASES_FILE=$OUT_ROOT/.run-cases$EXPECT_EXPORT tests/hpc/suite/all_in_one.sbatch" \
         | tr -d '[:space:]') && JID="${JID%%;*}" && [ -n "$JID" ] \
     || { echo "  !! submit FAILED" >&2
          for c in $CASES; do printf '%s %s\n' "$c" SUBMIT_FAILED >> "$MANIFEST_LOCAL"; done
@@ -597,10 +597,10 @@ elif [ "$check_only" -eq 0 ]; then
   : > "$MANIFEST_LOCAL"; record_skips; push_manifest
   for c in $CASES; do
     say "submit + wait: $c"
-    # PCOMM_ROOT/PCOMM_OUT_ROOT go through --export so the job honours the same
-    # PCOMM_REMOTE_DIR / PCOMM_OUT_ROOT this driver was given, instead of
+    # COMSHU_ROOT/COMSHU_OUT_ROOT go through --export so the job honours the same
+    # COMSHU_REMOTE_DIR / COMSHU_OUT_ROOT this driver was given, instead of
     # falling back to common.sh's $HOME defaults.
-    if ! jid=$(rsh "cd $RDIR && sbatch --parsable --export=ALL,PCOMM_ROOT=$PROOT,PCOMM_OUT_ROOT=$OUT_ROOT$EXPECT_EXPORT tests/hpc/cases/$c/job.sbatch"); then
+    if ! jid=$(rsh "cd $RDIR && sbatch --parsable --export=ALL,COMSHU_ROOT=$PROOT,COMSHU_OUT_ROOT=$OUT_ROOT$EXPECT_EXPORT tests/hpc/cases/$c/job.sbatch"); then
       echo "  !! submit FAILED: $c" >&2
       # Record it anyway: a case missing from the manifest would fall back to
       # newest-wins in `check` and could inherit an older run's PASS.
@@ -648,7 +648,7 @@ say "suite board"
 echo "  results: $OUT_ROOT   manifest: $MANIFEST_REMOTE"
 # Captured rather than streamed, so the banner below can count what is on the
 # board. Printed verbatim immediately after, so nothing is hidden by capturing.
-board="$(rsh "cd $RDIR && PCOMM_ROOT=$PROOT PCOMM_OUT_ROOT=$OUT_ROOT PCOMM_RUN_MANIFEST=$MANIFEST_REMOTE bash tests/hpc/suite/run_suite.sh check")"
+board="$(rsh "cd $RDIR && COMSHU_ROOT=$PROOT COMSHU_OUT_ROOT=$OUT_ROOT COMSHU_RUN_MANIFEST=$MANIFEST_REMOTE bash tests/hpc/suite/run_suite.sh check")"
 rc=$?
 printf '%s\n' "$board"
 [ "$run_rc" -eq 0 ] || rc=$(( rc == 0 ? 1 : rc ))   # a bad submit/wait is a red run

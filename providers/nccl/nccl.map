@@ -30,8 +30,8 @@
      * NCCL falls through v4 to v3 to v2, finds nothing, logs "is unsupported"
      * at INFO level only, and runs on. See nccl_profiler_plugin.cpp. */
     ncclProfiler_v4;
-    pcomm_create_provider;
-    pcomm_abi_version;
+    comshu_create_provider;
+    comshu_abi_version;
   local:
     *;
 };

@@ -27,10 +27,10 @@
 # with the right columns.
 set -uo pipefail
 
-PCOMM=${1:?usage: run_provenance_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: run_provenance_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-prov-rule-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-prov-rule-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # Three ranks, and every one of them exercises a different failure:
@@ -53,23 +53,23 @@ cat > "$WORK/intern_text.csv" <<'CSV'
 rank,domain,handle,text
 0,2,1,/opt/lmp -in in.lj
 0,2,2,SLURM_NNODES=4
-0,2,3,"ibverbs,pcomm-engine"
+0,2,3,"ibverbs,comshu-engine"
 0,2,4,commit=abc123 type=Release
-0,2,5,/build/libpcomm_engine.so 990704 1788340359
+0,2,5,/build/libcomshu_engine.so 990704 1788340359
 0,3,1,SHOULD_NOT_APPEAR_a_kernel_name
 1,2,1,/opt/lmp -in in.rhodo
 1,2,2,SLURM_NNODES=8
-1,2,3,"ibverbs,pcomm-engine"
+1,2,3,"ibverbs,comshu-engine"
 1,2,4,commit=abc123 type=Release
-1,2,5,/build/libpcomm_engine.so 990704 1788340359
-2,2,3,"ibverbs,pcomm-engine"
+1,2,5,/build/libcomshu_engine.so 990704 1788340359
+2,2,3,"ibverbs,comshu-engine"
 2,2,4,commit=abc123 type=Release
-2,2,5,/build/libpcomm_engine.so 990704 1788340359
+2,2,5,/build/libcomshu_engine.so 990704 1788340359
 2,2,9,/opt/lmp -in one.thing
 2,2,9,/opt/other -in another.thing
 CSV
 
-"$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
+"$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
     echo "SKIP: build without DuckDB"; exit 0
@@ -83,7 +83,7 @@ fi
 fail=0
 expect() {  # <label> <sql> <expected>
     local got
-    got=$("$PCOMM" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
+    got=$("$COMSHU" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
     if [ "$got" != "$3" ]; then
         echo "FAIL: $1"
         echo "  expected: $3"
@@ -133,7 +133,7 @@ expect "the build id is carried verbatim" \
 
 expect "providers and images resolve on the fully-populated rank" \
     "SELECT providers || ' :: ' || images FROM run_provenance WHERE rank = 0" \
-    "ibverbs,pcomm-engine :: /build/libpcomm_engine.so 990704 1788340359"
+    "ibverbs,comshu-engine :: /build/libcomshu_engine.so 990704 1788340359"
 
 # pid comes off the record rather than the dictionary, so it is the control:
 # if this ever goes wrong the fault is in the record, not in the join.

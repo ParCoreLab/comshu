@@ -7,6 +7,6 @@
     "ranks": 1, "nodes": 1, "gpus": 4,
     "iters": 4, "elems": 4096, "elem_bytes": 4
   },
-  "workload_note": "`PCOMM_RANK=0 pcomm -p p2p -- p2p_kernel 4096 4` — one process driving all four GPUs, hence ranks=1. Every quantity in this case is computable: gpus*iters*elems = 65536 peer stores of 4 B, on the ring mem_dev = (run_dev+1) % gpus at 16384 per edge, over `gpus` allocations. That is why it is the control, and it is the one case where the assertions could in principle replace the goldens outright.",
+  "workload_note": "`COMSHU_RANK=0 comshu -p p2p -- p2p_kernel 4096 4` — one process driving all four GPUs, hence ranks=1. Every quantity in this case is computable: gpus*iters*elems = 65536 peer stores of 4 B, on the ring mem_dev = (run_dev+1) % gpus at 16384 per edge, over `gpus` allocations. That is why it is the control, and it is the one case where the assertions could in principle replace the goldens outright.",
   "expect_tables": ["gpu_access", "mem_object"]
 }

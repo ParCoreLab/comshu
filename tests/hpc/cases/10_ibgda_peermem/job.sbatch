@@ -20,7 +20,7 @@
 # (du04) has no SLURM at all, while the machine with SLURM (MN5) cannot run
 # IBGDA. This file has to work on both, and self-skip on the one that cannot.
 #
-#SBATCH --job-name=pcomm-10-ibgda-peermem
+#SBATCH --job-name=comshu-10-ibgda-peermem
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -32,16 +32,16 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
 # BEFORE the mpirun check below — see the note in 11_ibdevx_peermem. common.sh
 # purges a GPP-inherited module environment and the inherited mpirun goes with
 # it, so checking for mpirun before this line tests the module environment
 # rather than the host. Case 11 is where it surfaced (job 45630290); this case
 # has the identical ordering and is only hidden by the peermem skip above it.
-pcomm_load_runtime
-CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/10_ibgda_peermem"
-OUT=$(pcomm_out ibgda_peermem)
+comshu_load_runtime
+CASE_DIR="$COMSHU_ROOT/tests/hpc/cases/10_ibgda_peermem"
+OUT=$(comshu_out ibgda_peermem)
 
 # ---- prerequisites --------------------------------------------------------
 # IBGDA needs the NIC to be allowed to expose its doorbell page to the GPU. That
@@ -85,31 +85,31 @@ grep -q "PeerMappingOverride=1" /proc/driver/nvidia/params 2>/dev/null || \
   skip "NVIDIA driver has no PeerMappingOverride=1 — IBGDA cannot map the UAR to the GPU"
 [ "$have_peermem" = "1" ] || skip "no nvidia_peermem/nv_peer_mem module loaded"
 
-MPIRUN="${PCOMM_MPIRUN:-mpirun}"
+MPIRUN="${COMSHU_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
 # ---- workload -------------------------------------------------------------
 # Same binary as cases 04/06/07 — the ring spans whatever PE count it is given.
-APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
+APP="${COMSHU_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   # Everything below is a harness problem on a host that already proved it can
   # do IBGDA, so each one fails rather than skips.
-  command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || \
-    fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
+  command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || \
+    fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
   [ -n "${NVSHMEM_HOME:-}" ] && [ -d "$NVSHMEM_HOME" ] || \
-    fail "NVSHMEM_HOME did not resolve (PCOMM_SDK=${PCOMM_SDK:-unset})"
-  ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
+    fail "NVSHMEM_HOME did not resolve (COMSHU_SDK=${COMSHU_SDK:-unset})"
+  ${COMSHU_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
     -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart || fail "workload did not build"
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # AFTER the build block, not before it — the order case 04 documents and case
-# 12 learned. The block's pcomm_load_build/pcomm_load_runtime PREPEND SDK 25.7's
+# 12 learned. The block's comshu_load_build/comshu_load_runtime PREPEND SDK 25.7's
 # lib dir while NVSHMEM_HOME globs to the newest SDK (26.5 on MN5), so exported
 # above it, 25.7 ends up first and the fresh binary gets a libnvshmem_host it
 # was not linked against: "undefined symbol: nvshmem_selected_device_transport",
@@ -158,12 +158,12 @@ export NVSHMEM_IB_DISABLE_DMABUF=1
 
 rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 
-timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
-  -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
+timeout 300 "$MPIRUN" -np 2 ${COMSHU_MPIRUN_EXTRA:-} \
+  -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
   -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
   -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
   -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE -x NVSHMEM_IB_DISABLE_DMABUF \
-  "$PCOMM" run -p mlx5dv -o "$OUT" -- "$APP" 1024 2 2>&1 | tee "$OUT.run.log"
+  "$COMSHU" run -p mlx5dv -o "$OUT" -- "$APP" 1024 2 2>&1 | tee "$OUT.run.log"
 rc=${PIPESTATUS[0]}; echo "mpirun exit=$rc"
 
 # A run that IBGDA declined to serve is a skip, not a failure: NVSHMEM exits
@@ -184,7 +184,7 @@ if [ $rc -ne 0 ]; then
   exit 1
 fi
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"

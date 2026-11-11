@@ -4,7 +4,7 @@
 -- WHY THIS IS A SEPARATE FILE, AND WHY IT IS NOT CIRCULAR. Three of the
 -- assertions here state GROMACS's decomposition in terms of `scope`, which is
 -- right -- it is the column the contract provides for "did this leave the node",
--- and expressing the claim in pcomm's vocabulary is what keeps it true on a
+-- and expressing the claim in comshu's vocabulary is what keeps it true on a
 -- fabric that is not mlx5. But it does mean those three inherit the mapping's
 -- correctness. This file is where the mapping itself is checked, against the
 -- table published in BRIEF-BLACKBOX.md on 2026-08-30:
@@ -21,8 +21,8 @@
 -- instead.
 --
 -- WHAT A FAILURE HERE MEANS, and it is not the same thing as a failure anywhere
--- else in this directory. Every other file compares pcomm against GROMACS. This
--- one compares pcomm against its own published contract, so a row means the
+-- else in this directory. Every other file compares comshu against GROMACS. This
+-- one compares comshu against its own published contract, so a row means the
 -- documentation and the implementation disagree -- and this round already has
 -- one instance of exactly that (`link_health`'s head comment says the table
 -- should be empty while the SQL beneath it emits a zero-valued rubric row per

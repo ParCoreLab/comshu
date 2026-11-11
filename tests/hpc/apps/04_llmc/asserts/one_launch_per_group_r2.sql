@@ -9,7 +9,7 @@
 -- The claim is stated twice, by two parties, neither of them a capture:
 --   * llm.c, zero.cuh:530 — "NCCL group: aggregate all pointers in a single
 --     NCCL GPU kernel";
---   * pcomm.fbs, type 906 — "Group boundaries: N grouped sends are ONE launch,
+--   * comshu.fbs, type 906 — "Group boundaries: N grouped sends are ONE launch,
 --     and nothing in a send row says so".
 -- So, per rank:
 --
@@ -26,14 +26,14 @@
 --     rows are submission records that the link excluded;
 --   * more kernels than groups — either the group brackets are not what
 --     nccl_group says they are, or NCCL's planner split a fused group. The
---     second is a fact about NCCL, not a pcomm defect, and it is named here in
+--     second is a fact about NCCL, not a comshu defect, and it is named here in
 --     advance so that the distinction is not invented afterwards;
 --   * zero resolvable kernel names — the vacuous pass. An assertion over an
 --     export whose `name` column did not resolve matches no row and reports
 --     clean, which is the failure mode this suite has hit twice.
 --
--- REPRESENTATION. Run this over a `pcomm export --parquet` directory (the only
--- kind `pcomm link` accepts). There `gpu_kernel.name` is an intern handle and
+-- REPRESENTATION. Run this over a `comshu export --parquet` directory (the only
+-- kind `comshu link` accepts). There `gpu_kernel.name` is an intern handle and
 -- `nccl_collective.datatype` is a number; in a --csv export both are already
 -- text. Both are handled: the name is COALESCEd through intern_text and the
 -- datatype is compared as a string against both spellings.

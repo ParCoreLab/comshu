@@ -1,18 +1,18 @@
 #pragma once
 // ibverbs hook definitions — the per-symbol traits that supply the vendor
-// (ibv_*) types the engine (pcomm::hook) is deliberately free of. Ported from
+// (ibv_*) types the engine (comshu::hook) is deliberately free of. Ported from
 // SigmaTrace/Ibtrace/IbverbsHooks.hpp, reduced to the phase-1 proof set.
 //
 // DEFINE_*_HOOK must be invoked at global scope: each expands to a tag struct
-// in `namespace ibv` plus a specialization of ::pcomm::hook::HookTrait.
+// in `namespace ibv` plus a specialization of ::comshu::hook::HookTrait.
 
 #include <infiniband/verbs.h>
 
-#include "pcomm/hook/HookTrait.hpp"
+#include "comshu/hook/HookTrait.hpp"
 
 // --- object-ops hooks (installed by replacing ibv_context->ops.X) ------------
 DEFINE_OBJECT_OPS_HOOK(ibv, post_send, "ibv_post_send", int, ibv_qp*, ibv_send_wr*, ibv_send_wr**);
-// The other half of the wire, and until now the half pcomm never saw. Same
+// The other half of the wire, and until now the half comshu never saw. Same
 // shape as post_send — a linked list of fully-formed work requests, so one
 // hooked call sees the whole chain — and the same ibv_context->ops slot family.
 //
@@ -36,7 +36,7 @@ DEFINE_OBJECT_OPS_HOOK(ibv, post_recv, "ibv_post_recv", int, ibv_qp*, ibv_recv_w
 // three explanations were asserted from `nm` on the binary and LD_DEBUG=bindings
 // on the run, and all three failed the same way. Both instruments answer
 // questions about *symbols*, and a static inline has no symbol. What settled it
-// was tracing hook **entry** (PCOMM_TRACE_HOOKS=1, job 44233994): every hooked
+// was tracing hook **entry** (COMSHU_TRACE_HOOKS=1, job 44233994): every hooked
 // door reported, ibv_modify_qp and ibv_qp_to_qp_ex among them, and no create
 // door at all. A queue pair that is modified but never created cannot have come
 // through an exported symbol.
@@ -63,7 +63,7 @@ DEFINE_OBJECT_OPS_HOOK(ibv, create_cq_ex, "ibv_create_cq_ex", ibv_cq_ex*, ibv_co
 // The shared-receive-queue receive door. An object-ops hook whose first argument
 // is an ibv_srq* rather than an ibv_qp* — which matters for SigmaTrace, whose
 // get_object_from_args must resolve the context from that argument
-// (IbverbsEventSource.hpp:97), and does NOT matter here: pcomm's object-ops
+// (IbverbsEventSource.hpp:97), and does NOT matter here: comshu's object-ops
 // trampolines carry their context in a per-context slot allocated at install
 // time, so the argument types are never inspected to find it.
 DEFINE_OBJECT_OPS_HOOK(ibv, post_srq_recv, "ibv_post_srq_recv", int, ibv_srq*, ibv_recv_wr*,
@@ -225,7 +225,7 @@ DEFINE_PRELOAD_HOOK(ibv, destroy_cq, "ibv_destroy_cq", int, ibv_cq*);
 // WHY IT LIVES IN THIS PROVIDER, next to a libibverbs symbol. Because
 // ibv_destroy_cq does, and an entity whose open and close are emitted by
 // different providers is an entity whose accounting depends on which providers
-// the user selected: `pcomm -p ib` alone would record every close and no open,
+// the user selected: `comshu -p ib` alone would record every close and no open,
 // and entity_close_accounted would go red on a correct capture. mlx5dv_create_qp
 // took the other choice and left exactly that hole — mlx5_queue_pair is an open
 // record in the mlx5dv range while ibv_destroy_qp's close comes from here, so
@@ -278,7 +278,7 @@ DEFINE_PRELOAD_HOOK(ibv, create_qp, "ibv_create_qp", ibv_qp*, ibv_pd*, ibv_qp_in
 // static inline. See the create_qp_ex hook above.
 DEFINE_PRELOAD_HOOK(ibv, qp_to_qp_ex, "ibv_qp_to_qp_ex", ibv_qp_ex*, ibv_qp*);
 // ibv_destroy_qp is NOT hooked here. Its EntityClose is emitted by the ENGINE
-// (libpcomm_engine.so), because a QP opened via mlx5dv_create_qp (mlx5dv
+// (libcomshu_engine.so), because a QP opened via mlx5dv_create_qp (mlx5dv
 // provider) is destroyed through this same door, and only the engine is present
 // in every provider selection. See ibv_destroy_qp in src/engine.cpp.
 DEFINE_PRELOAD_HOOK(ibv, modify_qp, "ibv_modify_qp", int, ibv_qp*, ibv_qp_attr*, int);

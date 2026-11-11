@@ -5,7 +5,7 @@ upstream `f1e2ace`. Machines: du04 (4x A100, no queue) then MN5 (2 nodes x 4 H10
 
 ---
 
-## llm.c does not compile under CUDA 13, and this is not a pcomm problem
+## llm.c does not compile under CUDA 13, and this is not a comshu problem
 
 `llmc/cuda_utils.cuh:220` calls
 
@@ -40,7 +40,7 @@ of `mem_object.device` on migrating memory. Nobody has run it.
 The general lesson the brief asks for: **a third-party application is pinned to a
 toolchain in ways our own workloads never are.** Every `tests/hpc/*.cu` in this
 repo is written against whatever nvcc is present. llm.c is written against
-CUDA 12, and no amount of care with pcomm's build makes that go away.
+CUDA 12, and no amount of care with comshu's build makes that go away.
 
 ## Building the nccl provider on a fresh host needs two paths spelled out
 
@@ -53,13 +53,13 @@ CMake Error at providers/nccl/CMakeLists.txt:10 (find_path):
 `/usr/local/cuda/include`, which is where the header is on du04. Configure with
 
 ```bash
-cmake -B build -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_NCCL=ON \
+cmake -B build -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_NCCL=ON \
       -DCUDA_RT_INCLUDE_DIR=/usr/local/cuda/include -DNCCL_INCLUDE_DIR=/usr/include
 ```
 
 Not a bug — the provider is deliberately not linked against libnccl and has no
 CUDA target to inherit include dirs from — but it is a five-minute stop the
-first time, and `-DPCOMM_PROVIDER_NCCL=ON` alone does not work anywhere the CUDA
+first time, and `-DCOMSHU_PROVIDER_NCCL=ON` alone does not work anywhere the CUDA
 toolkit is not in CMake's default prefix path.
 
 ## du04: nvcc, cublas and MPI are in three different places
@@ -86,19 +86,19 @@ CUDA-13-built application coexist without a runtime conflict. Checked with
 
 The Makefile gates `-DMULTI_GPU` on `dpkg -l | grep -q nccl`. MN5 has no dpkg,
 so `make` silently produces a **single-GPU binary that calls no NCCL at all** —
-which under `pcomm run -p nccl` looks exactly like a provider that failed to
+which under `comshu run -p nccl` looks exactly like a provider that failed to
 hook. Invoke nvcc directly instead, as `job.sbatch` does. This is the
 "four different nothings" case from `apps/README.md`, and it is the one that
 would have been hardest to diagnose from a summary.
 
-`common.sh`'s `$PCOMM_SDK` resolves to the **newest** SDK (26.5) while
-`pcomm_load_build` puts 25.7's nvcc on PATH. That mix is what cases 02 and 20
+`common.sh`'s `$COMSHU_SDK` resolves to the **newest** SDK (26.5) while
+`comshu_load_build` puts 25.7's nvcc on PATH. That mix is what cases 02 and 20
 already use (26.5's NCCL 2.29.3, 25.7's nvcc 12.9 and mpirun), and llm.c builds
-and runs against it. Take cublas from `$PCOMM_SDK/math_libs/12.9`, matching the
+and runs against it. Take cublas from `$COMSHU_SDK/math_libs/12.9`, matching the
 nvcc, not from the unversioned `math_libs/include` symlink.
 
 `-lnvidia-ml` is unconditional in llm.c's Makefile and there is no libnvidia-ml
-on a login node; link against `$PCOMM_SDK/cuda/lib64/stubs` and keep that
+on a login node; link against `$COMSHU_SDK/cuda/lib64/stubs` and keep that
 directory **out** of `LD_LIBRARY_PATH` at run time.
 
 ## The dataset constrains the batch size, in a way that looks like a bug
@@ -127,7 +127,7 @@ than from the capture.
 
 ## `nccl_p2p` is empty, not absent
 
-`pcomm export --csv` writes a header-only CSV for every known record type, so
+`comshu export --csv` writes a header-only CSV for every known record type, so
 `nccl_p2p.csv` exists with zero rows and `sql_check.sh` loads it as an empty
 table. That is what lets `no_point_to_point_and_two_streams.sql` *assert*
 emptiness. Note the sharp edge: `-- requires: nccl_p2p` would report `[skip]`

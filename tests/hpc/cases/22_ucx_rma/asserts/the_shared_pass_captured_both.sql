@@ -1,9 +1,9 @@
 -- requires: ucx_context ib_mem_region
 -- Two hook-based providers, one process, one pass.
 --
--- `pcomm run -p ucx,ib` is required by PLAN-20260815-1540's definition of done
+-- `comshu run -p ucx,ib` is required by PLAN-20260815-1540's definition of done
 -- and had NEVER BEEN EXECUTED: the smoke job that ran used `-p ucx` with
--- PCOMM_PROVIDER_IBVERBS=OFF. Co-running two non-exclusive providers is the
+-- COMSHU_PROVIDER_IBVERBS=OFF. Co-running two non-exclusive providers is the
 -- arrangement the shared engine exists for — one SmartDlsym, one recorder, two
 -- record ranges — and the failure it guards against is not subtle. Naive dual
 -- preloading of two providers that each claim dlsym at constructor time

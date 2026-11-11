@@ -1,5 +1,5 @@
 #pragma once
-// pcomm mlx5dv/DEVX records (id range 200-299, UNIFICATION §3.4).
+// comshu mlx5dv/DEVX records (id range 200-299, UNIFICATION §3.4).
 //
 // This range exists for the traffic the ibverbs provider structurally cannot
 // see. IBGDA — NVSHMEM's GPU-initiated transport — never calls ibv_create_qp,
@@ -13,11 +13,11 @@
 
 #include <cstdint>
 
-#include "pcomm/core/ids.hpp"
-#include "pcomm/core/record.hpp"
-#include "pcomm/core/vocab.hpp"
+#include "comshu/core/ids.hpp"
+#include "comshu/core/record.hpp"
+#include "comshu/core/vocab.hpp"
 
-namespace pcomm::providers::mlx5dv::records {
+namespace comshu::providers::mlx5dv::records {
 
 using core::DeviceId;
 using core::Handle;
@@ -53,7 +53,7 @@ enum class UmemBinding : std::uint8_t { ByAddress = 0, ByDmabuf = 1 };
 enum class UmemEntry : std::uint8_t { Reg = 0, RegEx = 1 };
 
 // ENTITY — a buffer handed to the NIC via DEVX, lifetime [reg, dereg).
-PCOMM_RECORD(Mlx5Umem, RecordKind::Entity, 200, "mlx5_umem") {
+COMSHU_RECORD(Mlx5Umem, RecordKind::Entity, 200, "mlx5_umem") {
     Handle        umem;     // interned mlx5dv_devx_umem*
     MemRange      range;    // addr + size; addr is 0 for a dmabuf binding
     std::uint32_t umem_id;  // what the DEVX command buffers refer to it by
@@ -67,7 +67,7 @@ PCOMM_RECORD(Mlx5Umem, RecordKind::Entity, 200, "mlx5_umem") {
 // ENTITY — a User Access Region: the doorbell page. The GPU writes 8 bytes here
 // to tell the NIC a work-queue entry is ready, which is the entire data plane
 // of a GPU-initiated send.
-PCOMM_RECORD(Mlx5Uar, RecordKind::Entity, 202, "mlx5_uar") {
+COMSHU_RECORD(Mlx5Uar, RecordKind::Entity, 202, "mlx5_uar") {
     Handle        uar;       // interned mlx5dv_devx_uar*
     std::uint64_t reg_addr;  // the doorbell register itself
     std::uint64_t base_addr;
@@ -82,7 +82,7 @@ PCOMM_RECORD(Mlx5Uar, RecordKind::Entity, 202, "mlx5_uar") {
 // from find_nvshmem_heap_owner is that introspection into another project's
 // internals must fail *loudly* there. A capture that quietly omits the command
 // that created the queue pairs is indistinguishable from a run that made none.
-PCOMM_RECORD(Mlx5DevxCmd, RecordKind::Event, 204, "mlx5_devx_cmd") {
+COMSHU_RECORD(Mlx5DevxCmd, RecordKind::Event, 204, "mlx5_devx_cmd") {
     Handle        obj;      // interned mlx5dv_devx_obj*, 0 if the call failed
     std::uint32_t opcode;   // MLX5_CMD_OP_*
     std::uint8_t  decoded;  // 1 if a typed record was also emitted for this
@@ -94,7 +94,7 @@ PCOMM_RECORD(Mlx5DevxCmd, RecordKind::Event, 204, "mlx5_devx_cmd") {
 // work-queue entries. When the WQ buffer is GPU-resident this is a device-driven
 // QP and its doorbells come from the GPU; when it is not, the queue pair is
 // CPU-side and cannot produce one.
-PCOMM_RECORD(Mlx5DevxQp, RecordKind::Entity, 206, "mlx5_devx_qp") {
+COMSHU_RECORD(Mlx5DevxQp, RecordKind::Entity, 206, "mlx5_devx_qp") {
     Handle        obj;      // interned mlx5dv_devx_obj*
     std::uint64_t sq_base;  // WQ umem address + wq_umem_offset
     std::uint32_t qp_num;
@@ -112,7 +112,7 @@ PCOMM_RECORD(Mlx5DevxQp, RecordKind::Entity, 206, "mlx5_devx_qp") {
 
 // ENTITY — a DEVX completion queue: where the NIC reports what it finished.
 //
-// The other half of the data plane, and the half pcomm has never had. Under
+// The other half of the data plane, and the half comshu has never had. Under
 // IBGDA the CQ is GPU-resident and polled by GPU threads with ordinary loads,
 // so a completion is consumed with no host call, no MMIO, and no NIC-visible
 // artifact — `ibgda_poll_cq` ends in an atomicMax on a software consumer index
@@ -125,7 +125,7 @@ PCOMM_RECORD(Mlx5DevxQp, RecordKind::Entity, 206, "mlx5_devx_qp") {
 // CQs a PE holds, which is the input to the one cost law the mechanism has —
 // a completion that must cover every queue pair of a PE pays per queue pair;
 // and cq_base locates the ring for anything that later reads it in place.
-PCOMM_RECORD(Mlx5DevxCq, RecordKind::Entity, 216, "mlx5_devx_cq") {
+COMSHU_RECORD(Mlx5DevxCq, RecordKind::Entity, 216, "mlx5_devx_cq") {
     Handle        obj;      // interned mlx5dv_devx_obj*
     std::uint64_t cq_base;  // CQ umem address + cq_umem_offset
     std::uint32_t cqn;      // what qpc.cqn_snd refers to it by
@@ -147,7 +147,7 @@ PCOMM_RECORD(Mlx5DevxCq, RecordKind::Entity, 216, "mlx5_devx_cq") {
 // rank it scanned last — including impossible self-edges. That cost case 02 a
 // wrong topology and a record-type bump to fix (758e975). Same collision here,
 // no reason to relearn it.
-PCOMM_RECORD(Mlx5DevxQpConnect, RecordKind::Event, 208, "mlx5_devx_qp_connect") {
+COMSHU_RECORD(Mlx5DevxQpConnect, RecordKind::Event, 208, "mlx5_devx_qp_connect") {
     std::uint64_t dest_gid_prefix;  // remote GID, high 8 bytes
     std::uint64_t dest_gid_iface;   // remote GID, low 8 bytes
     // Our own GID: the GID table entry the path's src_addr_index names, on the
@@ -173,7 +173,7 @@ PCOMM_RECORD(Mlx5DevxQpConnect, RecordKind::Event, 208, "mlx5_devx_qp_connect") 
 // modify_qp transitions referred to a queue pair no record had created. The
 // entity is emitted here rather than as an IbQueuePair because a provider may
 // only write inside its declared id range, which the engine now enforces.
-PCOMM_RECORD(Mlx5QueuePair, RecordKind::Entity, 210, "mlx5_queue_pair") {
+COMSHU_RECORD(Mlx5QueuePair, RecordKind::Entity, 210, "mlx5_queue_pair") {
     Handle        qp;  // interned ibv_qp*
     Handle        pd;  // interned ibv_pd*
     std::uint32_t qp_num;
@@ -189,7 +189,7 @@ PCOMM_RECORD(Mlx5QueuePair, RecordKind::Entity, 210, "mlx5_queue_pair") {
 // we could not decode it" is a visible row and not silence — the distinction the
 // whole doorbell-hijack line of work exists to keep. `uar` joins Mlx5Uar; every
 // `qp_num` should join a Mlx5DevxQp some rank created.
-PCOMM_RECORD(Mlx5Doorbell, RecordKind::Event, 212, "mlx5_doorbell") {
+COMSHU_RECORD(Mlx5Doorbell, RecordKind::Event, 212, "mlx5_doorbell") {
     Handle        uar;  // interned mlx5dv_devx_uar* (joins Mlx5Uar)
     std::uint32_t qp_num;
     std::uint32_t prod_idx;  // producer index the doorbell announced
@@ -235,7 +235,7 @@ enum class SendSubmitter : std::uint8_t {
 // previous look at this queue and before this one, each look bracketed by TSC
 // reads either side of the doorbell-record read, so the bound is exact and
 // typically a few microseconds wide. It is never the post itself.
-PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
+COMSHU_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     std::uint64_t laddr;  // local address (data segment)
     std::uint64_t raddr;  // remote address (RDMA segment), 0 if none
     std::uint32_t qp_num;
@@ -304,7 +304,7 @@ PCOMM_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
 // Only the send-queue watcher writes it. The doorbell doors keep their counters
 // on stderr: they do not count what was published in WQEBBs, so a row from them
 // could not honour the identity above, and a row that cannot is worse than none.
-PCOMM_RECORD(Mlx5SendCoverage, RecordKind::Artifact, 218, "mlx5_send_coverage") {
+COMSHU_RECORD(Mlx5SendCoverage, RecordKind::Artifact, 218, "mlx5_send_coverage") {
     std::uint64_t published;        // WQEBBs published past the watched queues' start
     std::uint64_t decoded;          // ...parsed into Mlx5DeviceSend rows
     std::uint64_t lapped;           // ...overwritten before they could be read
@@ -320,4 +320,4 @@ PCOMM_RECORD(Mlx5SendCoverage, RecordKind::Artifact, 218, "mlx5_send_coverage") 
     std::uint16_t pad1;
 };
 
-}  // namespace pcomm::providers::mlx5dv::records
+}  // namespace comshu::providers::mlx5dv::records

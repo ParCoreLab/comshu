@@ -4,7 +4,7 @@
 --
 -- ucx_deep reaches UCX's data plane by patching `uct_iface_ops_t`, an installed
 -- header with no ABI promise across versions, and guards that by comparing the
--- ops-table size it compiled against with the UCX actually loaded. pcomm.fbs
+-- ops-table size it compiled against with the UCX actually loaded. comshu.fbs
 -- type 806 states the consequence: "`accepted = 0` is why uct_send is empty, and
 -- saying so is the whole reason this record exists."
 --
@@ -15,7 +15,7 @@
 -- interposition, so it must sit in front of the libucp that is actually loaded.
 -- 1.15 is older than anything ucx_deep has been run against, and there is no way
 -- to find out offline whether its ops table is the size the guard wants --
--- `pcomm list` documents what a provider captures, not what it requires.
+-- `comshu list` documents what a provider captures, not what it requires.
 --
 -- SO A FAILURE HERE IS A RESULT, NOT AN ACCIDENT. accepted = 0 means the
 -- transport layer is blind on exactly the software stack the science
@@ -23,7 +23,7 @@
 -- to the two version numbers this row carries. It is claim type 4 of
 -- apps/README.md and it is worth more than a green board.
 --
--- forced = 1 means PCOMM_UCX_DEEP_FORCE overrode a refusal. The job script does
+-- forced = 1 means COMSHU_UCX_DEEP_FORCE overrode a refusal. The job script does
 -- not set it, and a capture whose every row rests on a guard that said no must
 -- not be reported as an ordinary pass.
 --

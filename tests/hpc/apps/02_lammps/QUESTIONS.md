@@ -1,11 +1,11 @@
 # 02_lammps round 2 — what the capture and its documentation could not tell me
 
-Written under the black-box rule: `providers/`, `libpcomm/` (beyond `schema/`),
-`pcomm-read/`, `pcomm-ui/`, `gpu-backends/`, `tools/`, `plans/` and
+Written under the black-box rule: `providers/`, `libcomshu/` (beyond `schema/`),
+`comshu-read/`, `comshu-ui/`, `gpu-backends/`, `tools/`, `plans/` and
 `BUGS-FOUND.md` were not read. Every entry below is a place where I had a
-question, went to the documentation a real outside user has — `pcomm <verb>`
-with no arguments, `pcomm list`, `pcomm types`, `libpcomm/schema/pcomm.fbs`,
-`libpcomm/schema/README.md`, `demos/entity-map.html`, the derived-table
+question, went to the documentation a real outside user has — `comshu <verb>`
+with no arguments, `comshu list`, `comshu types`, `libcomshu/schema/comshu.fbs`,
+`libcomshu/schema/README.md`, `demos/entity-map.html`, the derived-table
 contracts in `apps/BRIEF-BLACKBOX.md`, and the assertions in
 `tests/hpc/cases/*/asserts/` — and did not find the answer.
 
@@ -14,24 +14,24 @@ none of them is a matter of taste.
 
 ---
 
-## Q1 — `pcomm types` does not list a type the schema declares, and `pcomm types` is where a user is told to look
+## Q1 — `comshu types` does not list a type the schema declares, and `comshu types` is where a user is told to look
 
 **The most consequential one, because it is the one document that is supposed
 to be generated rather than written.**
 
-`libpcomm/schema/pcomm.fbs:210` declares, in as many words:
+`libcomshu/schema/comshu.fbs:210` declares, in as many words:
 
 > type 528, Artifact. What a device ORDINAL actually refers to, on this rank.
 
 and goes on to explain why it exists — a bus id repeats across nodes, so a
-device ordinal alone cannot identify a GPU in a multi-node job. `pcomm types`
+device ordinal alone cannot identify a GPU in a multi-node job. `comshu types`
 is documented as *"type-id -> table name, for this build"*. Measured, on the
 login node, before any capture existed:
 
 ```
-$ pcomm types | wc -l
+$ comshu types | wc -l
 60                                  # a header plus 59 rows
-$ pcomm types | grep -E '^(524|526|528|530)'
+$ comshu types | grep -E '^(524|526|528|530)'
 524  artifact  node_identity
 526  entity    peer_mapping
 530  event     gpu_kernel
@@ -48,7 +48,7 @@ unimplemented, implemented but unregistered in the type list, or emitted under
 another name; all three look the same from here, and they have completely
 different fixes.
 
-**Ask:** either generate `pcomm types` from the schema, or make the schema say
+**Ask:** either generate `comshu types` from the schema, or make the schema say
 which types this build actually carries. A hand-maintained list of the types a
 build has is a list kept in step with the build by nobody.
 
@@ -77,7 +77,7 @@ array, and what GROMACS does — would put element counts in a column named
 `bytes`, off by a factor of twelve, with `unit` still reading `datatype-units`.**
 
 I could not determine this from the capture. I determined it by reading Open
-MPI's source, which is not pcomm's documentation and works for no other MPI.
+MPI's source, which is not comshu's documentation and works for no other MPI.
 
 **Ask:** state, in the `comm_edges` contract, what `datatype-units` means and
 which values `unit` can take; or record the resolved byte length beside the
@@ -124,22 +124,22 @@ representation where the derived tables live, and passes vacuously.
 
 This is the same split 01_gromacs recorded for `op` and `tag`, and 04_llmc for
 `op` and `datatype`. It is now four record types and three studies. The sharp
-edge is structural: `pcomm link` accepts **only** Parquet, so every assertion
+edge is structural: `comshu link` accepts **only** Parquet, so every assertion
 about the derived layer lives on the representation where enums are integers,
 while the CSV export — the one that decodes them — has no derived tables at all.
 
 **Ask:** one sentence somewhere saying which export decodes what. Better: decode
 in both, or in neither.
 
-## Q5 — `pcomm sql` cannot run an ordinary `.sql` file, and the two warts compound
+## Q5 — `comshu sql` cannot run an ordinary `.sql` file, and the two warts compound
 
 Documented: a statement whose first token is a comment is rejected. Undocumented:
-`pcomm sql` wraps the text in `COPY (<query>) TO '<tmp>.csv'`, so a **trailing
+`comshu sql` wraps the text in `COPY (<query>) TO '<tmp>.csv'`, so a **trailing
 semicolon** is a `Parser Error` too — and every `asserts/*.sql` in
 `tests/hpc/cases/` ends with one. Round 1 of this case recorded that.
 
 Round 2 found the third member of the family. Because there is no documented way
-to get a `params` table into a `pcomm sql` query, a runner has to splice one in
+to get a `params` table into a `comshu sql` query, a runner has to splice one in
 as a leading CTE — and then **any assertion that opens with its own `WITH`
 becomes a syntax error**:
 
@@ -153,7 +153,7 @@ file's leading `WITH` into a comma) is three lines and had to be invented twice,
 once here and once in 01_gromacs's runner, which sidesteps it by shelling out to
 a `duckdb` binary that is not on MN5's PATH.
 
-**Ask:** does `pcomm sql` accept more than one statement? If it did, an
+**Ask:** does `comshu sql` accept more than one statement? If it did, an
 assertion could materialise its own `params` and no runner would be needed at
 all. Nothing says, and I wrote around the question rather than depending on the
 answer.
@@ -173,7 +173,7 @@ reached by the harness the suite ships, with or without params.
 
 This case is now the **third** to write its own runner (01_gromacs and 04_llmc
 are the others), and the three do not agree: one shells out to `duckdb`, one uses
-`pcomm sql` with a CTE, one materialises params differently again. That is a
+`comshu sql` with a CTE, one materialises params differently again. That is a
 harness gap, not three coincidences.
 
 ## Q7 — Nothing in a capture records what the tracer was asked to do
@@ -236,7 +236,7 @@ eighteen findings at zero. Every one of those reads as "the fabric was quiet".
 `compiled_version 1.15.0, runtime_version 1.20.0, ops_size 400, accepted 0,
 forced 0` — and it is the *only* thing that does. But nothing in
 `BRIEF-BLACKBOX.md` mentions the record, the derived-table list does not include
-it, and I found it only because 01_gromacs's job script happens to `pcomm dump
+it, and I found it only because 01_gromacs's job script happens to `comshu dump
 <capture> 806` before anything else and I copied the habit.
 
 **Ask:** put "read `uct_binding` first on any `ucx_deep` capture" in the brief,

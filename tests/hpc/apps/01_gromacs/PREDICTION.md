@@ -1,7 +1,7 @@
 # PREDICTION — round 2, GROMACS against `transport_mix`, `tag_flow` and the UCT layer
 
-Written 2026-08-29/30 by an agent who has not read `providers/`, `libpcomm/`
-(beyond `schema/`), `pcomm-read/`, `tools/`, `plans/` or `BUGS-FOUND.md`, and
+Written 2026-08-29/30 by an agent who has not read `providers/`, `libcomshu/`
+(beyond `schema/`), `comshu-read/`, `tools/`, `plans/` or `BUGS-FOUND.md`, and
 **before any round-2 capture exists**. MN5 has been off the air all evening, so
 nothing here can have been back-filled from a result; that is the point of the
 ordering, not an excuse for it.
@@ -12,7 +12,7 @@ Everything below is derived from three sources, all cited to file and line:
 * **Open MPI 4.1.x** — `github.com/open-mpi/ompi`, branch `v4.1.x`. This is the
   MPI `gmx_mpi` is actually linked against (round 1's `NOTES.md`: `libmpi.so.40`
   out of HPC-X 2.16, inside NVIDIA HPC SDK 23.11).
-* **`libpcomm/schema/pcomm.fbs`** and the derived-table column contracts in
+* **`libcomshu/schema/comshu.fbs`** and the derived-table column contracts in
   `tests/hpc/apps/BRIEF-BLACKBOX.md`.
 
 Round 1 (`REPORT.md`) judged this application against `comm_edges` and the raw
@@ -217,7 +217,7 @@ rank = 12 · N/7 = 3,662,420 B/step; PME rank 7 returns 12 · N = 25,636,944 B/s
 
 The shape `{80, 60, 60, 80, 20, 0, 20, 57}` is a fingerprint of the
 decomposition. A capture that reproduces it is saying something no other table
-in pcomm can say on this stack; a capture that returns a flat profile is saying
+in comshu can say on this stack; a capture that returns a flat profile is saying
 the transport classification is not working, however plausible its totals look.
 
 ### P2.4 Expressed in `transport_mix.scope`, which is the column for the job
@@ -243,8 +243,8 @@ should land in `unknown`.
 The mapping itself is checked *separately*, in
 `scope_matches_the_documented_mapping.sql`, against the published table. That
 keeps the headline assertions from inheriting an unverified mapping without
-making them circular: one file asks whether pcomm's answer matches GROMACS's
-decomposition, the other asks whether pcomm's answer matches pcomm's contract.
+making them circular: one file asks whether comshu's answer matches GROMACS's
+decomposition, the other asks whether comshu's answer matches comshu's contract.
 `cuda_ipc` is the row at risk — its `dev_name` is neither an HCA nor a memory
 device, so a scope derived from the device name rather than the transport name
 gets `sysv` right and `cuda_ipc` wrong.
@@ -412,7 +412,7 @@ Both outcomes are informative and they fail differently, which is why the run
 carries a third short arm. If the tm arm *also* shows no matched flow while tag
 doors are present, the join is wrong rather than the fabric being quiet — that
 is a defect. If no tag door fires even with offload requested, that is a fact
-about MN5, not about pcomm. The assertion is written to tell those two apart,
+about MN5, not about comshu. The assertion is written to tell those two apart,
 after case 21's `tag_offload_was_reached.sql`.
 
 **The stake for a user:** if this is right, `tag_flow` — advertised as the join

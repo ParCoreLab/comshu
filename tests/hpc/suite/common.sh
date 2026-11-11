@@ -1,13 +1,13 @@
-# common.sh — shared environment for the pcomm integration suite on MareNostrum 5.
+# common.sh — shared environment for the comshu integration suite on MareNostrum 5.
 # Sourced by every case's job.sbatch. Override any of these from the environment.
 #
 # MN5 accelerated partition (Sapphire Rapids + 4× H100 + NDR InfiniBand):
 #   account etur02, qos acc_debug (2 h / debug). See `bsc_queues` for the rest.
 
-: "${PCOMM_ACCOUNT:=etur02}"
-: "${PCOMM_QOS:=acc_debug}"
-: "${PCOMM_ROOT:=$HOME/proj/pcomm}"
-: "${PCOMM_BUILD:=$PCOMM_ROOT/build}"
+: "${COMSHU_ACCOUNT:=etur02}"
+: "${COMSHU_QOS:=acc_debug}"
+: "${COMSHU_ROOT:=$HOME/proj/comshu}"
+: "${COMSHU_BUILD:=$COMSHU_ROOT/build}"
 
 # A JOB SUBMITTED FROM A GPP LOGIN NODE INHERITS THE GPP MODULE TREE, and runs
 # on an ACC node regardless. sbatch defaults to --export=ALL, so MODULEPATH
@@ -40,7 +40,7 @@ if [ -n "${SLURM_JOB_ID:-}" ] && [ -d /apps/ACC/modulefiles ]; then
             # dropping all of them is the honest state rather than unloading the
             # one name that happened to collide today.
             #
-            # Safe before pcomm_load_runtime, which every job calls next and
+            # Safe before comshu_load_runtime, which every job calls next and
             # which loads gcc/13.2.0 and nvidia-hpc-sdk/25.7 from the corrected
             # tree — and those are exactly the prereqs the application modules
             # declare (`prereq("nvidia-hpc-sdk")` in gromacs, `prereq_any` in
@@ -52,10 +52,10 @@ if [ -n "${SLURM_JOB_ID:-}" ] && [ -d /apps/ACC/modulefiles ]; then
     esac
 fi
 
-# Tools + providers (the launcher finds .so via PCOMM_PROVIDER_PATH, colon-list).
-# One binary, verbs for everything: `$PCOMM run`, `$PCOMM read`, `$PCOMM export`.
-# There is no PCOMM_READ any more — there is no second executable to point it at.
-export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
+# Tools + providers (the launcher finds .so via COMSHU_PROVIDER_PATH, colon-list).
+# One binary, verbs for everything: `$COMSHU run`, `$COMSHU read`, `$COMSHU export`.
+# There is no COMSHU_READ any more — there is no second executable to point it at.
+export COMSHU="$COMSHU_BUILD/comshu/comshu"
 # Every provider directory, and an existing value is PREPENDED rather than
 # replaced: a caller that already pointed at a specific build (run_on_a100.sh
 # does) must not have it silently overwritten by sourcing this file. That
@@ -65,12 +65,12 @@ export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
 #
 # GLOBBED, not listed, since 2026-08-27. The hand-written list named five
 # providers and `ucx_deep` was the sixth: its library built correctly on MN5 and
-# the launcher could not find it, so `pcomm run -p ucx,ucx_deep` refused the
+# the launcher could not find it, so `comshu run -p ucx,ucx_deep` refused the
 # whole run (job 45112957, "ucx_deep provider library not found"). Refusing was
 # right — a capture missing a provider the caller asked for is worse than no
 # capture — but the list was the defect, and a list of provider directories kept
 # in step with the provider directories by hand is a list kept in step by
-# nobody. libpcomm/CMakeLists.txt makes the same argument about globbing the
+# nobody. libcomshu/CMakeLists.txt makes the same argument about globbing the
 # record headers, and cites a build it already cost (bea74d8).
 #
 # Only directories that actually hold a provider library. `providers/*/` also
@@ -79,30 +79,30 @@ export PCOMM="$PCOMM_BUILD/pcomm/pcomm"
 # putting build scaffolding in a search path is how a search path stops being
 # readable. The name is the one the launcher looks for.
 #
-# gpu-backends/ IS SEARCHED TOO, and it has to be. `pcomm list` and
-# `pcomm run -p` do not distinguish a provider from a backend — `cupti` is a
-# registry row in pcomm/run.cpp exactly as `ibverbs` is, and the launcher looks
+# gpu-backends/ IS SEARCHED TOO, and it has to be. `comshu list` and
+# `comshu run -p` do not distinguish a provider from a backend — `cupti` is a
+# registry row in comshu/run.cpp exactly as `ibverbs` is, and the launcher looks
 # for its library on this one path — but the source tree does: libcupti_trace.so
 # builds under gpu-backends/, not providers/, because it captures no transport.
 # Globbing only providers/ therefore reproduced the ucx_deep failure recorded
 # above, for a directory rather than for a name: the library builds correctly and
-# `pcomm run -p cupti` refuses the run because it cannot find it.
-_pcomm_provider_path=""
-for _pdir in "$PCOMM_BUILD"/providers/*/ "$PCOMM_BUILD"/gpu-backends/*/; do
+# `comshu run -p cupti` refuses the run because it cannot find it.
+_comshu_provider_path=""
+for _pdir in "$COMSHU_BUILD"/providers/*/ "$COMSHU_BUILD"/gpu-backends/*/; do
   [ -d "$_pdir" ] || continue            # unmatched glob, or no providers built
   # NOT `set --`: this file is SOURCED, and rewriting the caller's positional
   # parameters to test a glob would break the first job script that uses "$1".
-  _pcomm_has_so=0
-  for _so in "$_pdir"lib*_trace.so; do [ -e "$_so" ] && _pcomm_has_so=1; done
-  [ "$_pcomm_has_so" -eq 1 ] || continue  # built nothing, or not a provider dir
-  _pcomm_provider_path="${_pcomm_provider_path:+$_pcomm_provider_path:}${_pdir%/}"
+  _comshu_has_so=0
+  for _so in "$_pdir"lib*_trace.so; do [ -e "$_so" ] && _comshu_has_so=1; done
+  [ "$_comshu_has_so" -eq 1 ] || continue  # built nothing, or not a provider dir
+  _comshu_provider_path="${_comshu_provider_path:+$_comshu_provider_path:}${_pdir%/}"
 done
-export PCOMM_PROVIDER_PATH="${PCOMM_PROVIDER_PATH:+$PCOMM_PROVIDER_PATH:}$_pcomm_provider_path"
-unset _pdir _so _pcomm_has_so _pcomm_provider_path
-# Providers link the shared engine (libpcomm_engine.so); they carry an $ORIGIN
+export COMSHU_PROVIDER_PATH="${COMSHU_PROVIDER_PATH:+$COMSHU_PROVIDER_PATH:}$_comshu_provider_path"
+unset _pdir _so _comshu_has_so _comshu_provider_path
+# Providers link the shared engine (libcomshu_engine.so); they carry an $ORIGIN
 # rpath to it, but export the dir too so a provider .so copied elsewhere (as the
 # gpumem build does) still resolves it.
-export LD_LIBRARY_PATH="$PCOMM_BUILD/libpcomm:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$COMSHU_BUILD/libcomshu:${LD_LIBRARY_PATH:-}"
 
 # NCCL's profiler plugin door — the SAME library as the interposer.
 #
@@ -118,7 +118,7 @@ export LD_LIBRARY_PATH="$PCOMM_BUILD/libpcomm:${LD_LIBRARY_PATH:-}"
 # path to a missing file is not a loud failure: NCCL logs "Could not find" at
 # INFO level, which nothing reads, and runs on.
 if [ -z "${NCCL_PROFILER_PLUGIN:-}" ]; then
-  for _so in "$PCOMM_BUILD"/providers/nccl/libnccl_trace.so; do
+  for _so in "$COMSHU_BUILD"/providers/nccl/libnccl_trace.so; do
     [ -e "$_so" ] && export NCCL_PROFILER_PLUGIN="$_so"
   done
   unset _so
@@ -130,21 +130,21 @@ fi
 # CUDA 13.0, so every one of those literals was wrong and NVSHMEM_HOME pointed
 # at a directory that does not exist. Resolved by search now, with the env
 # override kept first so a host with an unusual layout can still say so.
-if [ -z "${PCOMM_SDK:-}" ]; then
+if [ -z "${COMSHU_SDK:-}" ]; then
   for _c in /apps/ACC/NVIDIA-HPC-SDK/*/Linux_x86_64/* /opt/nvidia/hpc_sdk/Linux_x86_64/*; do
     case "$_c" in *\**) continue ;; esac          # unmatched glob
-    [ -d "$_c/comm_libs" ] && PCOMM_SDK="$_c"      # last match wins = newest
+    [ -d "$_c/comm_libs" ] && COMSHU_SDK="$_c"      # last match wins = newest
   done
 fi
-export PCOMM_SDK="${PCOMM_SDK:-}"
+export COMSHU_SDK="${COMSHU_SDK:-}"
 
 # comm_libs is versioned by CUDA (12.9 on MN5, 13.0 on du04) and NCCL by its own
 # release, so both are globbed rather than spelled. Env still wins.
-_pcomm_first_dir() { for _d in "$@"; do [ -d "$_d" ] && { echo "$_d"; return; }; done; }
-export NVSHMEM_HOME="${NVSHMEM_HOME:-$(_pcomm_first_dir \
-  "$PCOMM_SDK"/comm_libs/*/nvshmem "$PCOMM_SDK"/comm_libs/nvshmem)}"
-export NCCL_HOME="${NCCL_HOME:-$(_pcomm_first_dir \
-  "$PCOMM_SDK"/comm_libs/*/nccl-* "$PCOMM_SDK"/comm_libs/*/nccl "$PCOMM_SDK"/comm_libs/nccl)}"
+_comshu_first_dir() { for _d in "$@"; do [ -d "$_d" ] && { echo "$_d"; return; }; done; }
+export NVSHMEM_HOME="${NVSHMEM_HOME:-$(_comshu_first_dir \
+  "$COMSHU_SDK"/comm_libs/*/nvshmem "$COMSHU_SDK"/comm_libs/nvshmem)}"
+export NCCL_HOME="${NCCL_HOME:-$(_comshu_first_dir \
+  "$COMSHU_SDK"/comm_libs/*/nccl-* "$COMSHU_SDK"/comm_libs/*/nccl "$COMSHU_SDK"/comm_libs/nccl)}"
 
 # Runtime toolchain: the providers need gcc-13.2 libstdc++ (GLIBCXX_3.4.31);
 # compile CUDA with gcc-11.4 host (nvcc 12.9 rejects gcc-13.2's __is_convertible).
@@ -153,28 +153,28 @@ export NCCL_HOME="${NCCL_HOME:-$(_pcomm_first_dir \
 # toolchain has to already be on PATH — which is why nvcc is located explicitly
 # below rather than assumed. Getting this wrong cost a green board that had
 # built nothing: nvcc was missing, the case skipped, and the skip read as a pass.
-_pcomm_module() { command -v module >/dev/null 2>&1 && module "$@" >/dev/null 2>&1; return 0; }
-pcomm_load_runtime() { _pcomm_module load gcc/13.2.0 nvidia-hpc-sdk/25.7; pcomm_find_cuda; }
-pcomm_load_build()   { _pcomm_module load gcc/11.4.0 nvidia-hpc-sdk/25.7; pcomm_find_cuda; }
+_comshu_module() { command -v module >/dev/null 2>&1 && module "$@" >/dev/null 2>&1; return 0; }
+comshu_load_runtime() { _comshu_module load gcc/13.2.0 nvidia-hpc-sdk/25.7; comshu_find_cuda; }
+comshu_load_build()   { _comshu_module load gcc/11.4.0 nvidia-hpc-sdk/25.7; comshu_find_cuda; }
 
 # Put nvcc on PATH if it is not already. Returns non-zero when there is no CUDA
 # at all, so a caller can tell "no CUDA here" from "CUDA is fine".
-pcomm_find_cuda() {
+comshu_find_cuda() {
   command -v nvcc >/dev/null 2>&1 && return 0
-  for _b in "$PCOMM_SDK"/compilers/bin "$PCOMM_SDK"/cuda/bin /usr/local/cuda/bin; do
+  for _b in "$COMSHU_SDK"/compilers/bin "$COMSHU_SDK"/cuda/bin /usr/local/cuda/bin; do
     if [ -x "$_b/nvcc" ]; then export PATH="$_b:$PATH"; return 0; fi
   done
   return 1
 }
 
 # Where a case drops its capture + where the checker reads it.
-pcomm_out() { echo "${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/$1-${SLURM_JOB_ID:-local}"; }
+comshu_out() { echo "${COMSHU_OUT_ROOT:-$HOME/comshu-suite}/$1-${SLURM_JOB_ID:-local}"; }
 
-# The UCX tree, anchored to the MPI THAT WILL ACTUALLY RUN — not to $PCOMM_SDK.
+# The UCX tree, anchored to the MPI THAT WILL ACTUALLY RUN — not to $COMSHU_SDK.
 #
-# $PCOMM_SDK is the NEWEST SDK (26.5 on MN5) while pcomm_load_runtime loads
+# $COMSHU_SDK is the NEWEST SDK (26.5 on MN5) while comshu_load_runtime loads
 # nvidia-hpc-sdk/25.7, so mpirun comes from 25.7 and the UCX it dlopens is 25.7's.
-# Deriving UCX from $PCOMM_SDK instead picked 26.5, whose hpcx layout is a
+# Deriving UCX from $COMSHU_SDK instead picked 26.5, whose hpcx layout is a
 # different version entirely (2.50 vs 2.22.1) — case 19 refused to run against it
 # and said so, which is the only reason this is a two-line fix rather than a
 # capture full of nothing. Job 44696379.
@@ -187,7 +187,7 @@ pcomm_out() { echo "${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/$1-${SLURM_JOB_ID:-loca
 # MN5 has several hpcx trees per SDK (2.14, 2.20, 2.22.1); the newest that
 # actually carries lib/libucp.so wins, which is the one HPC-X's own `latest`
 # symlink points at.
-pcomm_find_ucx() {
+comshu_find_ucx() {
   [ -n "${UCX_HOME:-}" ] && { echo "$UCX_HOME"; return 0; }
   _mpirun="$(command -v mpirun 2>/dev/null)" || return 1
   [ -n "$_mpirun" ] || return 1
@@ -204,7 +204,7 @@ pcomm_find_ucx() {
 # The linked Parquet export, beside the CSV one, when this build can make it.
 #
 # WHY BOTH AND NOT JUST ONE. CSV is the path that always works: MN5 defaults to
-# PCOMM_DUCKDB=OFF because tools/get_duckdb.sh needs network and MN5 has none, so
+# COMSHU_DUCKDB=OFF because tools/get_duckdb.sh needs network and MN5 has none, so
 # a suite that required Parquet would not run on the cluster it exists for.
 # Parquet is the only path that carries the DERIVED layer — comm_edges as
 # link_sql.hpp actually computes it, plus object_access, link_health,
@@ -215,18 +215,18 @@ pcomm_find_ucx() {
 # on a host without DuckDB; sql_check.sh notices the export is missing and runs
 # exactly as it did before. The one thing it must not do is fail *quietly when it
 # was supposed to work*, so a build that HAS the verb and still errors says so.
-pcomm_derive() {
+comshu_derive() {
   _out="$1"
   # Attempting it IS the capability test. A build without DuckDB still advertises
   # `sql` and `--parquet` in its verb list and refuses at runtime, so asking the
   # verb list would answer yes and then fail.
-  if ! "$PCOMM" export "$_out" --parquet "$_out.pq" >/dev/null 2>&1; then
+  if ! "$COMSHU" export "$_out" --parquet "$_out.pq" >/dev/null 2>&1; then
     echo "   (no parquet export from this build — derived-layer assertions will be skipped)"
     rm -rf "$_out.pq"
     return 0
   fi
-  "$PCOMM" link "$_out.pq" >/dev/null 2>&1 \
-    || { echo "!! parquet export succeeded but \`pcomm link\` failed on $_out.pq" >&2
+  "$COMSHU" link "$_out.pq" >/dev/null 2>&1 \
+    || { echo "!! parquet export succeeded but \`comshu link\` failed on $_out.pq" >&2
          rm -rf "$_out.pq"; return 0; }
   echo "   (derived tables in $_out.pq)"
 }

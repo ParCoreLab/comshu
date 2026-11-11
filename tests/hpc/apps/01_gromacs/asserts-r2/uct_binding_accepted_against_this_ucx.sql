@@ -25,7 +25,7 @@
 -- `ldd | grep libucp` to prove it; this assertion is what notices if that did
 -- not take.
 --
--- forced = 1 means PCOMM_UCX_DEEP_FORCE overrode a refusal. A forced capture may
+-- forced = 1 means COMSHU_UCX_DEEP_FORCE overrode a refusal. A forced capture may
 -- be perfectly correct, but it is a capture whose every row rests on a guard
 -- that said no, and a study must not report that as an ordinary pass. Nothing in
 -- this job sets that variable, so a 1 here would mean it was inherited from the

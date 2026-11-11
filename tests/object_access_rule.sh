@@ -29,10 +29,10 @@
 # wrong thing rather than accidentally the right one.
 set -uo pipefail
 
-PCOMM=${1:?usage: object_access_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: object_access_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-object-access-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-object-access-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # One node, three GPUs, so every peer access has a nameable owner.
@@ -147,7 +147,7 @@ CSV
 #            iova row). Offsets 0, 100 and 200 must land in object 6 at those
 #            offsets — including offset 0, which the raddr = 0 guard would
 #            otherwise drop as a control send.
-#   rkey 88  a zero-based dmabuf window whose fd pcomm never resolved: base 0,
+#   rkey 88  a zero-based dmabuf window whose fd comshu never resolved: base 0,
 #            no VA. Offset 10/20 resolved as an ADDRESS falls into object 4,
 #            the one at base 0, with exact = TRUE. It must be dropped, and
 #            counted in link_health.
@@ -198,7 +198,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 2,3,0,3000,0,3100,0,1,7,5000,0,8,1,0,2,5,0
 CSV
 
-"$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
+"$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
     echo "SKIP: build without DuckDB"; exit 0
@@ -212,7 +212,7 @@ fi
 fail=0
 expect() {  # <label> <sql> <expected>
     local got
-    got=$("$PCOMM" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
+    got=$("$COMSHU" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
     if [ "$got" != "$3" ]; then
         echo "FAIL: $1"
         echo "  expected: $3"

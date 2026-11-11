@@ -1,24 +1,24 @@
-# ui/ — the pcomm frontend
+# ui/ — the comshu frontend
 
 Svelte 5 + Vite + Tailwind. Built to `dist/`, which is **compiled into**
-`pcomm ui` — the server has no other page, and a copy of the binary on a login
+`comshu ui` — the server has no other page, and a copy of the binary on a login
 node carries the whole app with it.
 
 ```bash
 npm ci                                       # exactly what package-lock.json pins
 npm run build                                # -> ui/dist, embedded at cmake build time
 
-pcomm ui <trace-dir>                         # http://127.0.0.1:8777 — that is the whole flow
+comshu ui <trace-dir>                         # http://127.0.0.1:8777 — that is the whole flow
 
 npm run dev                                  # vite on :5180, /query proxied to :8777
-pcomm ui <trace-dir> --dir ui/dist           # serve from disk instead of the embedded copy
+comshu ui <trace-dir> --dir ui/dist           # serve from disk instead of the embedded copy
 ```
 
 Neither of the first two is something you have to remember: a build with
-`-DPCOMM_UI=ON` runs `tools/build_ui.sh`, which installs when the lockfile
+`-DCOMSHU_UI=ON` runs `tools/build_ui.sh`, which installs when the lockfile
 changed and then builds. `ui/dist` is a build artifact and is not committed, so
-the build produces it. No export step either, and no `pcomm export`/`pcomm link`
-first, since `pcomm ui` loads a capture directly.
+the build produces it. No export step either, and no `comshu export`/`comshu link`
+first, since `comshu ui` loads a capture directly.
 
 **npm, not pnpm**, which this used to use. A spack `+ui` build installs these
 packages itself, and spack has an npm package but no pnpm one at all. Measured
@@ -27,7 +27,7 @@ only the app chunk differs, by 725 bytes. There is one lockfile,
 `package-lock.json`, because two lockfiles over one `package.json` is how the
 build and the developer end up installing different things.
 
-`npm run dev` proxies `/query` to a running `pcomm ui` rather than mocking it. The
+`npm run dev` proxies `/query` to a running `comshu ui` rather than mocking it. The
 data path is the part most worth exercising, and a fixture would be the one
 thing never tested against a real capture.
 
@@ -71,7 +71,7 @@ its own aggregates would be a ninth panel with a private pipeline, which is the
 failure this file exists to prevent, arriving through a door nobody guarded.
 
 **If a panel needs a table that does not exist, it belongs in
-`pcomm link`, not in the panel.** That is what keeps every view a
+`comshu link`, not in the panel.** That is what keeps every view a
 projection of one model rather than eight private pipelines.
 
 **Colour is tokens; Tailwind does layout.** The palette in `src/app.css` is the

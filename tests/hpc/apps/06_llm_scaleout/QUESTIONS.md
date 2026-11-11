@@ -1,30 +1,30 @@
 # 06_llm_scaleout — what the capture and its documentation could not tell me
 
-Black-box: `providers/`, `libpcomm/` (beyond `schema/`), `pcomm-read/`,
-`pcomm-ui/`, `gpu-backends/`, `tools/`, `plans/` and `BUGS-FOUND.md` were not
+Black-box: `providers/`, `libcomshu/` (beyond `schema/`), `comshu-read/`,
+`comshu-ui/`, `gpu-backends/`, `tools/`, `plans/` and `BUGS-FOUND.md` were not
 read. Every entry is a place where I went to the documentation an outside user
 has and did not find the answer. Ordered by cost. Job **45330280**, 16 GPUs
 across 4 MN5 nodes.
 
 ---
 
-## Q1 — `pcomm types` omits a type the tool emits, exports, and documents
+## Q1 — `comshu types` omits a type the tool emits, exports, and documents
 
 **The one that would mislead a user furthest, and I predicted the opposite.**
 
-`PREDICTION.md` P5.2 said `gpu_device` would be **absent**, because `pcomm types`
+`PREDICTION.md` P5.2 said `gpu_device` would be **absent**, because `comshu types`
 — documented as *"type-id -> table name, for this build"* — prints 59 type rows
-and 528 is not among them, though `libpcomm/schema/pcomm.fbs:210` declares it. I
-named the alternative in advance: *"If it appears anyway, then `pcomm types` is
+and 528 is not among them, though `libcomshu/schema/comshu.fbs:210` declares it. I
+named the alternative in advance: *"If it appears anyway, then `comshu types` is
 incomplete, which is a worse finding than the table being missing, because it is
 the one place a user is told to look."*
 
 It appears. Three surfaces of the same tool disagree:
 
 ```
-$ pcomm types | grep -c '^[0-9]'
+$ comshu types | grep -c '^[0-9]'
 59                                        # and 528 is not one of them
-$ pcomm read <capture> | grep 528
+$ comshu read <capture> | grep 528
   rank-7/528.pcs   528  artifact  80  4  7e61512d00383e13
 $ ls <export>.pq | grep gpu
 gpu_device.parquet
@@ -32,9 +32,9 @@ gpu_device.parquet
 
 So the record is emitted, streamed, exported and queryable, and the verb whose
 entire job is to map a type id to a table name does not know about it. A user
-who checks `pcomm types` before writing a query concludes the data is not there.
+who checks `comshu types` before writing a query concludes the data is not there.
 
-**Ask:** generate `pcomm types` from the schema. A hand-maintained list of the
+**Ask:** generate `comshu types` from the schema. A hand-maintained list of the
 types a build carries is a list kept in step with the build by nobody.
 
 ## Q2 — `link_health` files two findings that any NCCL capture must produce, and the third one explains why
@@ -127,7 +127,7 @@ hierarchical or tree algorithm.
 **But no field in the capture says so.** I had to derive it from a byte total and
 a formula. `NCCL_DEBUG=INFO` on the bare arm says it directly (232 `via P2P`
 lines against 160 `via NET`), which is why this study puts that on the bare run —
-but that is NCCL's diagnostic, not pcomm's record, and it is not in any capture.
+but that is NCCL's diagnostic, not comshu's record, and it is not in any capture.
 
 **Ask:** a door for NCCL's per-collective tuning decision, or a documented note
 that the algorithm is not recoverable. It is the difference between "the trace
@@ -171,11 +171,11 @@ Exit code: 127
 ```
 
 sixteen times, and `mpirun` reported it as processes exiting non-zero — so the
-failure is loud, which is the good half. The bad half is that `pcomm run` had
+failure is loud, which is the good half. The bad half is that `comshu run` had
 already accepted `-p nccl,ib,kernel`, found the backend library, and injected it;
 the missing dependency is the backend's own, one level down, and the error names
 the *application* rather than the provider. On MN5 `libcupti.so.12` lives in
-`$PCOMM_SDK/cuda/extras/CUPTI/lib64`, which nothing in `common.sh` puts on the
+`$COMSHU_SDK/cuda/extras/CUPTI/lib64`, which nothing in `common.sh` puts on the
 path.
 
 So the kernel layer is unanswered in this study: the launch-count oracle
@@ -188,11 +188,11 @@ which one is missing, or document the path.
 
 ## Q8 — An assertion cannot claim a table is empty on a Parquet export, and the two exporters still disagree
 
-Carried from 04_llmc and hit again. `pcomm export --parquet` omits a raw table
+Carried from 04_llmc and hit again. `comshu export --parquet` omits a raw table
 with no rows entirely, so `SELECT count(*) FROM nccl_p2p` is a `Catalog Error`
-and `-- requires: nccl_p2p` reports `[skip]` — while `pcomm export --csv` writes
-a header-only file and `pcomm link` writes its derived tables out even when
-empty. Three behaviours, one capture. `pcomm link` accepts only Parquet, so
+and `-- requires: nccl_p2p` reports `[skip]` — while `comshu export --csv` writes
+a header-only file and `comshu link` writes its derived tables out even when
+empty. Three behaviours, one capture. `comshu link` accepts only Parquet, so
 every derived-layer assertion lives on the representation where an empty raw
 table is a parse error, and a parse error reads like a pass unless the runner
 looks for it.
@@ -202,11 +202,11 @@ there is no documented query that answers it. `duckdb_tables()` returns zero
 rows — an export is a set of views — which is the first thing anyone will get
 wrong.
 
-## Q9 — `pcomm sql` still cannot run an ordinary `.sql` file, and now there are three warts
+## Q9 — `comshu sql` still cannot run an ordinary `.sql` file, and now there are three warts
 
 Documented: a leading comment is rejected. Undocumented: a trailing semicolon is
 rejected too (the text is wrapped in `COPY (<query>) TO`). Undocumented and new
-this round: because there is no way to get a `params` table into a `pcomm sql`
+this round: because there is no way to get a `params` table into a `comshu sql`
 query, a runner must splice one in as a leading CTE — and then **any assertion
 that opens with its own `WITH` is a syntax error**. That killed five of nine
 assertions on the sibling study's first job.
@@ -214,7 +214,7 @@ assertions on the sibling study's first job.
 Every one of the three is three lines to work around and all three had to be
 found by running into them.
 
-**Ask:** does `pcomm sql` accept more than one statement? If it did, an assertion
+**Ask:** does `comshu sql` accept more than one statement? If it did, an assertion
 could materialise its own `params` and no runner would be needed. Nothing says,
 and this is now the fourth private runner in `tests/hpc/apps/`.
 
@@ -246,6 +246,6 @@ produce them:
 | distinct UUIDs per `node_hash` | **4**, on every node |
 | distinct UUIDs per `ordinal` | **4** — ordinal 0 is four different GPUs |
 
-`pcomm.fbs:210`'s rationale — *"the bus id repeats across nodes"* — is confirmed
+`comshu.fbs:210`'s rationale — *"the bus id repeats across nodes"* — is confirmed
 exactly. What is not written down is that the table is per (rank, ordinal) rather
 than per rank, or what `name` (an intern handle, 1 on every row here) holds.

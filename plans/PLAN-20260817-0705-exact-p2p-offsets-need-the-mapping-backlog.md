@@ -9,8 +9,8 @@ written before those two results and are kept for their reasoning, not as a plan
 — read the two blocker sections first.
 Created: 2026-08-17 07:05
 Touches: `gpu-backends/nvbit/nvbit_backend.cu`,
-`libpcomm/include/pcomm/core/records.hpp`, `providers/gpumem/engine.hpp`,
-`pcomm-read/link_sql.hpp`
+`libcomshu/include/comshu/core/records.hpp`, `providers/gpumem/engine.hpp`,
+`comshu-read/link_sql.hpp`
 
 ## What is already fixed, and what this is not
 
@@ -214,7 +214,7 @@ would then be real on any MNNVL machine (GB200 and similar). Nothing in the
 current corpus would exercise it, and no existing capture gains anything.
 
 **A flaw in that probe, recorded so it is not repeated:** the traced run's mpirun
-output was piped through `grep -E "ncclsym|pcomm-vmm"`, so when the run stopped
+output was piped through `grep -E "ncclsym|comshu-vmm"`, so when the run stopped
 after the fabric print — NCCL under NVBit, the same instability that bus-errored
 case 05 — the error message was filtered away and the failure looked like an
 empty capture. The bare run is what answered both questions. Do not filter the
@@ -360,7 +360,7 @@ were built for.
 ## Steps
 
 1. Log `offset` and `handle` at the existing `cuMemMap` hook under
-   `PCOMM_VERBOSE` and confirm on MN5 that NVSHMEM's heap arrives with a
+   `COMSHU_VERBOSE` and confirm on MN5 that NVSHMEM's heap arrives with a
    non-trivial `offset` and a stable handle. **Do this before designing the
    record** — if the offsets are all zero the join key carries everything and
    the record shrinks.
@@ -374,15 +374,15 @@ were built for.
 4. `link_sql.hpp`: the exact join, `exact = TRUE`, `link_health` finding for
    mappings with no matching export.
 5. Re-run cases 13-15 on MN5 (**`--per-case`** — see
-   [[pcomm-mn5-combined-alloc-breaks-multinode-cases]]) and assert the bands
+   [[comshu-mn5-combined-alloc-breaks-multinode-cases]]) and assert the bands
    against the ib twin.
 
 ## The assertion gap this sits on top of
 
 Worth its own decision, because it is why the two fixed defects shipped at all:
-**no suite assertion can reach `object_access`.** `pcomm export --csv` does not
+**no suite assertion can reach `object_access`.** `comshu export --csv` does not
 emit the derived views — it re-derives `comm_edges` in C++ (`CsvAgg`,
-`pcomm-read/main.cpp:1526`), and that reimplementation is the only derived table
+`comshu-read/main.cpp:1526`), and that reimplementation is the only derived table
 the asserts can see. Case 13's own `hub_buffer_shared.sql` counts writers
 straight off `gpu_access.run_dev`, so it passed throughout while the view it was
 meant to protect reported three phantom objects.
@@ -390,7 +390,7 @@ meant to protect reported three phantom objects.
 Adding `object_access` to the CSV path would mean reimplementing the whole join
 in C++ — a second forked derived layer, which is the failure `ui/README.md` and
 `link_sql.hpp` are both written to prevent. The alternative is to let the suite
-assert against `--link` Parquet (or a `pcomm ui` instance) instead of CSV, for
+assert against `--link` Parquet (or a `comshu ui` instance) instead of CSV, for
 derived tables only. That is a change to how the suite reads a capture, not to
 what it checks, and it should be decided before more assertions are written
 against a table the UI does not use.

@@ -1,4 +1,4 @@
-// NVSHMEM put-ring — a minimal PGAS workload for exercising the pcomm gpumem
+// NVSHMEM put-ring — a minimal PGAS workload for exercising the comshu gpumem
 // (NVBit) provider. Each PE writes its symmetric buffer into the next PE's
 // symmetric buffer with device-side nvshmem_int_p; on one node those stores go
 // over NVLink to peer GPU memory, which is exactly the GPU-initiated peer

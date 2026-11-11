@@ -14,7 +14,7 @@
 -- WHAT IT CATCHES. A dropped operation, a double-recorded one, a hook that
 -- misses the first call before the interposition settles, or a `count` column
 -- that is not what the record implies. It is the only assertion in this study
--- that would notice pcomm losing one row in two hundred — every existence check
+-- that would notice comshu losing one row in two hundred — every existence check
 -- in the suite passes just as green on 199 rows as on 200.
 --
 -- WHY THE FILTER IS A SIZE AND NOT AN OP. MPI's own window synchronisation
@@ -27,7 +27,7 @@
 -- IF THIS FAILS BUT rma_sweep_is_complete PASSES — the multiplicities wrong,
 -- the byte total right — the finding is that osc/ucx split one MPI_Put into
 -- several ucp_put_nbi calls. That is a fact about OpenMPI and not a defect in
--- pcomm, and PREDICTION.md pre-registers it as such so it cannot be
+-- comshu, and PREDICTION.md pre-registers it as such so it cannot be
 -- rationalised after the fact. The assertion still stays red.
 SELECT 'a message size in the sweep was recorded the wrong number of times' AS problem,
        size                              AS message_bytes,

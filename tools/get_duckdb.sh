@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the pinned prebuilt libduckdb into .tools/duckdb (gitignored).
 #
-# DuckDB is what makes `pcomm export --parquet` and `pcomm sql` possible: it writes
+# DuckDB is what makes `comshu export --parquet` and `comshu sql` possible: it writes
 # Parquet natively, so the reader needs no Arrow, and it is the same engine the
 # UI queries with. One dependency covers the writer, the query layer and the UI
 # server; see plans/PLAN-20260807-1718-ui-backbone-done.md.
@@ -14,21 +14,21 @@
 #
 # **MN5 has no network and no cmake outside `module load`** — verified
 # 2026-08-09, not merely inherited from get_flatc.sh's comment. That is why
-# PCOMM_DUCKDB defaults to OFF: the suite builds and runs `pcomm export --csv` on
+# COMSHU_DUCKDB defaults to OFF: the suite builds and runs `comshu export --csv` on
 # MN5 exactly as before, and nothing in the cluster path depends on this script.
 # Parquet is produced where the UI runs, which is not the cluster.
 #
 #   tools/get_duckdb.sh          # fetch into .tools/duckdb
-#   cmake -B build -DPCOMM_DUCKDB=ON
+#   cmake -B build -DCOMSHU_DUCKDB=ON
 #
-#   tools/get_duckdb.sh --static   # the archive set, for PCOMM_DUCKDB_STATIC
+#   tools/get_duckdb.sh --static   # the archive set, for COMSHU_DUCKDB_STATIC
 #
 # --static fetches the vendor's `static-libs` bundle into .tools/duckdb-static:
 # libduckdb_static.a plus eighteen extension and third-party archives. It is 30
 # MB to download and 130 MB unpacked, against 41/70 for the shared library, and
-# it buys a `pcomm` that is ONE file — no RPATH into a source tree, nothing to
+# it buys a `comshu` that is ONE file — no RPATH into a source tree, nothing to
 # ship beside it. That is what makes the launcher copyable to a cluster; see
-# PCOMM_DUCKDB_STATIC in the root CMakeLists.
+# COMSHU_DUCKDB_STATIC in the root CMakeLists.
 set -euo pipefail
 
 VERSION="v1.5.5"

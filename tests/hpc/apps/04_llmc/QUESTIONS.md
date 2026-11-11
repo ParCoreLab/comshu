@@ -1,9 +1,9 @@
 # 04_llmc — what the capture and its documentation could not tell me
 
-Round 2, black-box: `providers/`, `libpcomm/` (bar `schema/`), `pcomm-read/`,
+Round 2, black-box: `providers/`, `libcomshu/` (bar `schema/`), `comshu-read/`,
 `tools/`, `plans/` and `BUGS-FOUND.md` were not read. Everything below is a
 question I hit while running llm.c under `-p nccl,kernel` on du04 and could not
-answer from `pcomm --help`, `pcomm list`, `pcomm.fbs`, the schema README, the
+answer from `comshu --help`, `comshu list`, `comshu.fbs`, the schema README, the
 derived-table contracts in `BRIEF-BLACKBOX.md`, or the assertions in
 `tests/hpc/cases/*/asserts/`. Ordered by how much they cost me.
 
@@ -54,7 +54,7 @@ Same capture, three behaviours:
 | `--csv` | present, header only (55 of 58 here) | not written at all |
 | `--parquet` | **absent — `Catalog Error`** | **present, zero rows** |
 
-`pcomm link` accepts only Parquet, so an assertion over the derived layer must
+`comshu link` accepts only Parquet, so an assertion over the derived layer must
 survive on the representation where `SELECT count(*) FROM nccl_p2p` is a parse
 error rather than a zero. Round 1 recorded "the safety comes from the exporter";
 this round is where that safety turns out to be format-specific. Is the Parquet
@@ -67,7 +67,7 @@ empty" on it? (I resorted to a presence test over `duckdb_views()`.)
 they are all in `duckdb_views()`. Nothing documents this, and it is the first
 thing anyone writing a table-existence check will get wrong.
 
-## 6. `pcomm sql` cannot run any assertion in `tests/hpc/cases/` as written
+## 6. `comshu sql` cannot run any assertion in `tests/hpc/cases/` as written
 
 It wraps the statement in `COPY (<query>) TO '<tmp>.csv'`, so a trailing `;` is a
 `Parser Error` — and every `asserts/*.sql` in the suite ends with one. Combined
@@ -78,13 +78,13 @@ every assertion fail identically.
 
 ## 7. `gpu_kernel.name` is mangled, and the schema says demangled
 
-`pcomm.fbs` type 530: `name:uint32; // interned demangled symbol`. Measured:
+`comshu.fbs` type 530: `name:uint32; // interned demangled symbol`. Measured:
 `_Z40ncclDevKernel_AllReduce_Sum_bf16_RING_LL24ncclDevKernelArgsStorageILm4096EE`.
 Every `LIKE` pattern a user writes depends on which it is.
 
 ## 8. `gpu_kernel.stream` is not a `CUstream` and cannot be joined to `nccl_collective.stream`
 
-`pcomm.fbs` says `stream:uint64; // CUstream`. Measured values are 7, 19, 20 —
+`comshu.fbs` says `stream:uint64; // CUstream`. Measured values are 7, 19, 20 —
 CUPTI stream *ids*, not pointers — while `nccl_collective.stream` is an intern
 handle over the real `CUstream` (values 3 and 77/149 on the same ranks). So
 "which kernel executed this collective" is not answerable even with both
@@ -110,9 +110,9 @@ Measured `source = 0` on all 5004 rows. The schema says the field is a
 not readable in this round and is not in the schema. So I could not check
 directly that these are execution windows; I had to infer it from
 `link_health.kernel_rows_submission_only = 0`. `TimeKind`, `MemOp`, `MemSpace`
-and `EdgePredicate` *are* declared in `pcomm.fbs`; `KernelSource` is not.
+and `EdgePredicate` *are* declared in `comshu.fbs`; `KernelSource` is not.
 
-## 11. `pcomm list` advertises providers this build cannot load
+## 11. `comshu list` advertises providers this build cannot load
 
 A build with only `nccl` and `cupti` still lists all seven, under the heading
 "the providers this build can select". `-p ib` then fails at run time with
@@ -121,9 +121,9 @@ dangerous, but the header is false. The same output also does not say *which*
 providers must own the runtime, though the footer says the distinction exists;
 I had to discover empirically that `nccl,kernel` co-run in one pass.
 
-## 12. `PCOMM_PROVIDER_PATH` is not documented anywhere I could read
+## 12. `COMSHU_PROVIDER_PATH` is not documented anywhere I could read
 
-`pcomm run` with no arguments prints one line and no environment. The nccl
+`comshu run` with no arguments prints one line and no environment. The nccl
 provider and the cupti backend build to different subtrees
 (`providers/nccl/`, `gpu-backends/cupti/`), and the variable turns out to take a
 colon-separated list. I found that by trying it. For an out-of-tree build this is
@@ -131,7 +131,7 @@ the first thing a user needs.
 
 ## 13. `timeline_span` is a derived table with no contract
 
-It is not in `BRIEF-BLACKBOX.md`'s list, and `pcomm link` reports "10 derived"
+It is not in `BRIEF-BLACKBOX.md`'s list, and `comshu link` reports "10 derived"
 without naming them. Its columns are `rank, stream, ep, bytes, kind, t0_ns,
 t1_ns`; `kind = 2` on every row here, `bytes` is null, `stream` holds the string
 `gpu_kernel`, and there is no `name`, so the one derived table that carried
@@ -151,7 +151,7 @@ away from being the capture checking itself.
 
 ## 15. Nothing in a capture records what the tracer was asked to do
 
-`pcomm read` lists streams and counts; there is no record of the `-p` selection,
+`comshu read` lists streams and counts; there is no record of the `-p` selection,
 the command line, the provider versions, or the environment. Two of my four
 captures differ *only* in an environment variable (`NCCL_PROTO`), and nothing
 inside them says so — I know which is which because of the directory name I
@@ -162,10 +162,10 @@ piece of provenance the format does not carry.
 
 ## Things I expected to be problems and were not
 
-- `-p nccl,kernel` composes in **one pass**, with no replay: `pcomm run` says
+- `-p nccl,kernel` composes in **one pass**, with no replay: `comshu run` says
   `2 providers -> 1 pass` and llm.c's banner appears once. CUPTI costs ~2 % of
   step time and reports `dropped=0`.
-- `pcomm link` is idempotent-ish and fast, and refuses a CSV export with a clear
+- `comshu link` is idempotent-ish and fast, and refuses a CSV export with a clear
   message naming the fix.
 - The `-p nccl` control capture is row-for-row identical to the
   `-p nccl,kernel` one on every NCCL table, so the kernel provider does not

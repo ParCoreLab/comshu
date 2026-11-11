@@ -13,8 +13,8 @@
  * Cases 01 and 06 assert MR/QP/modify_qp counts, so a mistake here shows up
  * as a golden diff rather than as nothing at all.
  *
- * NB `dlsym` is NOT here: it lives in libpcomm_engine.so, which must own the
- * single definition (see Dlsym.hpp, and pcomm_engine_interposer_live()).
+ * NB `dlsym` is NOT here: it lives in libcomshu_engine.so, which must own the
+ * single definition (see Dlsym.hpp, and comshu_engine_interposer_live()).
  */
 {
   global:
@@ -45,8 +45,8 @@
      * the contexts UCX opens through it. Global for the same reason every ibv_*
      * entry here is — interposition is being the first global definition. */
     mlx5dv_open_device;
-    pcomm_create_provider;
-    pcomm_abi_version;
+    comshu_create_provider;
+    comshu_abi_version;
   local:
     *;
 };

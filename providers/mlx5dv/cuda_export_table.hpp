@@ -22,7 +22,7 @@
 //      its page RW and overwrite it in place with our replacement, keeping the
 //      real for the replacement to call through.
 //
-// This is the most invasive code pcomm carries — it rewrites another library's
+// This is the most invasive code comshu carries — it rewrites another library's
 // dispatch table in memory. It is gated behind --enable-doorbell-hijack and does
 // nothing unless a replacement is registered.
 
@@ -38,7 +38,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "pcomm/hook/dlsym/Dlsym.hpp"
+#include "comshu/hook/dlsym/Dlsym.hpp"
 
 namespace mlx5::export_table {
 
@@ -64,7 +64,7 @@ struct State {
 inline State& state() {
     static State      s;
     static const bool init = [] {
-        const char* v = std::getenv("PCOMM_HIJACK_DEBUG");
+        const char* v = std::getenv("COMSHU_HIJACK_DEBUG");
         s.debug = v && *v == '1';
         return true;
     }();
@@ -91,8 +91,8 @@ inline void* real(const std::string& name) {
         if (auto it = s.overwrites.find(name); it != s.overwrites.end() && it->second.real)
             return it->second.real;
     }
-    if (auto* dl = pcomm::smart_dlsym::real_dlsym)
-        return dl(pcomm::smart_dlsym::DL_RTLD_DEFAULT, name.c_str());
+    if (auto* dl = comshu::smart_dlsym::real_dlsym)
+        return dl(comshu::smart_dlsym::DL_RTLD_DEFAULT, name.c_str());
     return nullptr;
 }
 
@@ -100,11 +100,11 @@ inline void* real(const std::string& name) {
 // already loaded (something asked for its export table); RTLD_NOLOAD promotes
 // the existing handle rather than loading a second copy.
 inline void promote_libcuda() {
-    if (auto* dlopen_fn = pcomm::smart_dlsym::real_dlopen)
+    if (auto* dlopen_fn = comshu::smart_dlsym::real_dlopen)
         for (const char* name : {"libcuda.so.1", "libcuda.so"})
-            if (dlopen_fn(name, pcomm::smart_dlsym::DL_RTLD_NOLOAD |
-                                    pcomm::smart_dlsym::DL_RTLD_GLOBAL |
-                                    pcomm::smart_dlsym::DL_RTLD_NOW))
+            if (dlopen_fn(name, comshu::smart_dlsym::DL_RTLD_NOLOAD |
+                                    comshu::smart_dlsym::DL_RTLD_GLOBAL |
+                                    comshu::smart_dlsym::DL_RTLD_NOW))
                 break;
 }
 
@@ -140,8 +140,8 @@ inline CuResult get_export_table(const void** pp_table, const void* uuid) {
     std::unordered_map<void*, std::pair<std::string, void*>> real_to_repl;  // real -> (name, repl)
     for (auto& [name, repl] : want) {
         void* r = nullptr;
-        if (auto* dl = pcomm::smart_dlsym::real_dlsym)
-            r = dl(pcomm::smart_dlsym::DL_RTLD_DEFAULT, name.c_str());
+        if (auto* dl = comshu::smart_dlsym::real_dlsym)
+            r = dl(comshu::smart_dlsym::DL_RTLD_DEFAULT, name.c_str());
         if (!r) {
             if (s.debug)
                 std::fprintf(stderr, "[export_table] %s not found in libcuda\n", name.c_str());
@@ -190,7 +190,7 @@ inline void install() {
             return;
         installed = true;
     }
-    pcomm::smart_dlsym::register_symbol(
+    comshu::smart_dlsym::register_symbol(
         "cuGetExportTable", [](void* next, void*, const char*) -> void* {
             state().real_get_export_table = reinterpret_cast<PfnGetExportTable>(next);
             return reinterpret_cast<void*>(&get_export_table);

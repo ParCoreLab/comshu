@@ -4,7 +4,7 @@ Ask a capture questions in English. The answer comes back as prose, the SQL that
 produced it, and sometimes a chart.
 
 ```bash
-pcomm ui <capture>                                  # the capture, on :8777
+comshu ui <capture>                                  # the capture, on :8777
 node agent/bridge.mjs --ui http://127.0.0.1:8777    # the agent, on :8778
 # then open http://127.0.0.1:8777 and press "Chat"
 ```
@@ -31,24 +31,24 @@ eval numbers below mean nothing if the model can change underneath them. Chosen
 2–3× faster and terser, but was less reliable on questions whose trap is a wrong
 *measure* with right arithmetic — this agent's characteristic failure. That
 evidence is two trials of one question, and the plan says so. Override with
-`--model`, or `$PCOMM_AGENT_MODEL` for every entry point at once.
+`--model`, or `$COMSHU_AGENT_MODEL` for every entry point at once.
 
 ```
 browser (page from :8777)
-  ├── query.js ──POST /query──────────────► pcomm ui  (C++, DuckDB, unchanged)
+  ├── query.js ──POST /query──────────────► comshu ui  (C++, DuckDB, unchanged)
   └── agent.js ──POST /ask (SSE)──────────► bridge.mjs (:8778)
                                               │ JSONL over stdio
                                               ▼
-                                           pi --mode rpc -e pcomm-agent.ts
-                                              ├──POST /query──► pcomm ui
+                                           pi --mode rpc -e comshu-agent.ts
+                                              ├──POST /query──► comshu ui
                                               └──OpenAI API───► llama.cpp
 ```
 
 The agent runs **where the person is, not where the capture is**. On a cluster
-the capture and `pcomm ui` sit on a login node behind an SSH forward while the
+the capture and `comshu ui` sit on a login node behind an SSH forward while the
 bridge, pi and the model run on the workstation with the GPU; the tools reach
 the capture over the same forwarded `/query` the browser uses. Nothing large
-moves, and `pcomm ui` needs no change to support any of this.
+moves, and `comshu ui` needs no change to support any of this.
 
 ## Reaching it from another machine
 
@@ -65,14 +65,14 @@ differently when it does not:
 
 | | wrong value | how it fails |
 |---|---|---|
-| `pcomm ui --bind` | loopback | page unreachable — the obvious one |
+| `comshu ui --bind` | loopback | page unreachable — the obvious one |
 | `bridge.mjs --bind` | loopback | Chat pane says "No agent at …" |
 | `bridge.mjs --ui` | loopback while bound remotely | Chat pane says the agent is reading **a different capture** — a false mismatch, and the one that wastes an afternoon |
 
 The bridge also refuses a non-loopback `--bind` unless you add `--allow-remote`,
 and refuses the third row above outright with a message naming the fix. Neither
 half has any authentication: anyone who can route to the address can read the
-capture and drive the model. `pcomm ui` turns DuckDB's external file access off
+capture and drive the model. `comshu ui` turns DuckDB's external file access off
 when bound off loopback; the query endpoint stays SELECT-only.
 
 | file | what it is |
@@ -82,7 +82,7 @@ when bound off loopback; the query endpoint stays SELECT-only.
 | `lib/preamble.mjs` | five queries at startup: ranks, providers, which tables have rows, `link_health` |
 | `lib/query.mjs` | the `/query` client, the row cap, the read-only check |
 | `lib/spec-guard.mjs` | what a chart is allowed to be |
-| `pcomm-agent.ts` | the pi extension: `schema`, `sql`, `chart` |
+| `comshu-agent.ts` | the pi extension: `schema`, `sql`, `chart` |
 | `lib/session.mjs` | one pi child, one conversation |
 | `bridge.mjs` | SSE for the browser |
 | `ask.mjs` | one question, one answer, no browser |
@@ -161,8 +161,8 @@ two captures open at once, start a bridge per capture and point the page at the
 right one:
 
 ```bash
-pcomm ui capture-a --port 8777 &  node agent/bridge.mjs --ui http://127.0.0.1:8777 --port 8778 &
-pcomm ui capture-b --port 8779 &  node agent/bridge.mjs --ui http://127.0.0.1:8779 --port 8780 &
+comshu ui capture-a --port 8777 &  node agent/bridge.mjs --ui http://127.0.0.1:8777 --port 8778 &
+comshu ui capture-b --port 8779 &  node agent/bridge.mjs --ui http://127.0.0.1:8779 --port 8780 &
 # http://127.0.0.1:8779/?agent=http://127.0.0.1:8780
 ```
 
@@ -174,7 +174,7 @@ refuses to chat on a mismatch.
 - `pi` on PATH (`npm i -g @earendil-works/pi-coding-agent`), node ≥ 20
 - a llama.cpp router with `--jinja` — **without it tool calling silently does not
   exist** and the model just talks
-- a running `pcomm ui`
+- a running `comshu ui`
 
 Nothing here is in the cmake build; the sidecar is optional and the page says so
 when it is not running.

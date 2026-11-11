@@ -8,7 +8,7 @@ against `tests/data/ib_pingpong-44578115` — 117 KB, two ranks — is how the
 
 ## The corpus lives outside the repo, and outside `~/pockt`
 
-Default `~/waste/pcomm/corpus`, override with `PCOMM_CORPUS`. **Only `index.tsv`
+Default `~/waste/comshu/corpus`, override with `COMSHU_CORPUS`. **Only `index.tsv`
 and `types.tsv` are committed.**
 
 Two separate reasons, and the second is the one that picks the directory:
@@ -39,12 +39,12 @@ are lost the moment it is copied somewhere.
 
 So `harvest.sh` writes a `provenance.tsv` beside each fetched capture, at fetch
 time, because it cannot be reconstructed afterwards. For captures harvested
-retroactively out of `~/pcomm-suite` the tracer commit is genuinely unknown and
+retroactively out of `~/comshu-suite` the tracer commit is genuinely unknown and
 is recorded as `unknown`, rather than guessed from the job id's date.
 
 ## Schema drift is a warning, not a wall
 
-Captures in `~/pcomm-suite` were written by schema `14b1d68c503ae656`; HEAD is
+Captures in `~/comshu-suite` were written by schema `14b1d68c503ae656`; HEAD is
 `160d1b71ce3bed36`. Verified 2026-08-09: every stream still decodes, because
 `stream_reader.hpp` refuses only on a *stride* disagreement and warns on a hash
 one. `nccl_internode-44400747` exports its full CSV set under HEAD's reader with
@@ -79,7 +79,7 @@ moving its stride from 80 to 88 and `kSchemaHash` from `dece2918d9647fae` to
 EXCEPT that one stream, which is refused by name:
 
 ```
-pcomm: .../rank-0/700.pcs: record stride differs — this capture was written
+comshu: .../rank-0/700.pcs: record stride differs — this capture was written
        by a build whose record layout does not match this one
 ```
 
@@ -87,7 +87,7 @@ So a pre-2026-08-17 p2p capture now reads as **0 gpu-accesses**: no NVLink
 `comm_edges`, no `object_access` p2p rows, no `gpu_access` timeline lane. The ib
 captures are untouched, having no `700` stream at all. Every case that produces
 `gpu_access` — 03, 04, 05, 06, 07, 13, 14, 15 — has to be re-run, which is the
-trade [[pcomm-prealpha-prefers-correct-design-over-compatibility]] exists to
+trade [[comshu-prealpha-prefers-correct-design-over-compatibility]] exists to
 authorise: the schema is pre-alpha and MN5 cycles are cheaper than carrying a
 record that cannot say when its accesses happened.
 
@@ -106,8 +106,8 @@ tests/hpc/corpus/harvest.sh --cases "nccl_internode nvshmem_multinode"
 tests/hpc/corpus/index.sh                       # rebuild index.tsv from the corpus
 ```
 
-`index.sh` needs a built `pcomm`; it finds one in `build-corpus/`, `build/`,
-or `$PCOMM_READ`.
+`index.sh` needs a built `comshu`; it finds one in `build-corpus/`, `build/`,
+or `$COMSHU_READ`.
 
 ## What the corpus still lacks
 

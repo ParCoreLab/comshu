@@ -3,13 +3,13 @@
 
     tools/embed_assets.py <asset-dir> <out-header>
 
-Why the binary is self-contained: pcomm is copied to a login node and run
+Why the binary is self-contained: comshu is copied to a login node and run
 there behind an SSH port-forward. A server that needs a sibling `dist/`
 directory is one that serves a blank page the first time anybody does that, and
 the failure looks like a broken UI rather than a missing file.
 
 Why bytes and not a raw string literal. The predecessor embedded one hand-written
-HTML file as `R"pcommhtml(...)pcommhtml"`, which is fine for a page you wrote and
+HTML file as `R"comshuhtml(...)comshuhtml"`, which is fine for a page you wrote and
 a trap for a bundler's output: the delimiter has to be a sequence the content
 cannot contain, and minified JS contains arbitrary byte sequences by definition.
 It also could not carry a font or an image at all. A byte array has no escape
@@ -80,7 +80,7 @@ def main() -> int:
         f"// Source: {os.path.relpath(root)}\n",
         "#pragma once\n",
         "#include <cstddef>\n\n",
-        "namespace pcomm::ui {\n\n",
+        "namespace comshu::ui {\n\n",
         "struct Asset {\n",
         "    const char*          path;  // served path, e.g. \"/assets/index.js\"\n",
         "    const char*          mime;\n",
@@ -104,7 +104,7 @@ def main() -> int:
     parts.append("};\n\n")
     parts.append("inline constexpr std::size_t kAssetCount = "
                  f"{len(files)};\n\n")
-    parts.append("}  // namespace pcomm::ui\n")
+    parts.append("}  // namespace comshu::ui\n")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w") as f:

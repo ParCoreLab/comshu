@@ -13,7 +13,7 @@
 // So the workload gate keeps the questions it can answer (are the rows right)
 // and tests/ucx_deep_tables.cpp asks the ones it cannot (what happens when two
 // pointers land in one bucket, and what happens when the table fills). No UCX
-// header and no pcomm header is included here, so that test builds in every
+// header and no comshu header is included here, so that test builds in every
 // configuration rather than only in the one with UCX.
 
 #include <cstddef>
@@ -22,7 +22,7 @@
 
 #include <atomic>
 
-namespace pcomm::providers::ucx_deep::detail {
+namespace comshu::providers::ucx_deep::detail {
 
 // Pointers out of an allocator are at least 16-byte aligned, so the low four
 // bits carry no information and hashing without the shift collapses every entry
@@ -39,7 +39,7 @@ template<std::size_t Slots> constexpr std::size_t bucket_of(const void* p) noexc
 // against a 39 ns operation.
 //
 // THE ENGINE CACHES TOO, since 2026-08-27 — that measurement was the reason,
-// and libpcomm/src/engine.cpp now carries the same idea for every provider
+// and libcomshu/src/engine.cpp now carries the same idea for every provider
 // (83.6 -> 15.3 ns on a repeated key, tests/intern_hot_path.cpp). This one
 // STAYS anyway, and the remaining 15 ns is what it buys: the engine's cache is
 // reached through a cross-.so call, past Tracer::instance()'s static guard and
@@ -170,4 +170,4 @@ constexpr std::uint8_t saturate_iovcnt(std::size_t n) noexcept {
     return static_cast<std::uint8_t>(n > 255 ? 255 : n);
 }
 
-}  // namespace pcomm::providers::ucx_deep::detail
+}  // namespace comshu::providers::ucx_deep::detail

@@ -12,11 +12,11 @@ find_path(UCX_INCLUDE_DIR ucp/api/ucp.h REQUIRED)
 add_library(ucx_deep_trace SHARED ucx_deep_provider.cpp)
 set_target_properties(ucx_deep_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "ucx_deep_trace")
 target_include_directories(ucx_deep_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${UCX_INCLUDE_DIR})
-target_link_libraries(ucx_deep_trace PRIVATE pcomm::pcomm pcomm::hook ${UCX_UCP_LIB} ${CMAKE_DL_LIBS})
+target_link_libraries(ucx_deep_trace PRIVATE comshu::comshu comshu::hook ${UCX_UCP_LIB} ${CMAKE_DL_LIBS})
 set_target_properties(ucx_deep_trace PROPERTIES
-  BUILD_RPATH "$ORIGIN/../../libpcomm"
-  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
+  BUILD_RPATH "$ORIGIN/../../libcomshu"
+  INSTALL_RPATH "$ORIGIN;${COMSHU_INSTALL_RPATH_EXTRA}")
 target_link_options(ucx_deep_trace PRIVATE -Wl,--enable-new-dtags -Wl,--no-undefined
   "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/ucx_deep.map")
 set_target_properties(ucx_deep_trace PROPERTIES LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ucx_deep.map")
-install(TARGETS ucx_deep_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR} COMPONENT ucx)
+install(TARGETS ucx_deep_trace LIBRARY DESTINATION ${COMSHU_INSTALL_LIBDIR} COMPONENT ucx)

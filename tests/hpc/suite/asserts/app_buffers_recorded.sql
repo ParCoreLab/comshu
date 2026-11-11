@@ -33,7 +33,7 @@
 --
 -- WHEN THIS FIRES, the reading is narrow: nothing interposed the allocator on
 -- this run. Either the engine was linked but not preloaded (the warning
--- pcomm_engine_interposer_live exists for), or the workload allocates through a
+-- comshu_engine_interposer_live exists for), or the workload allocates through a
 -- door the core does not hook yet. It is NOT a reason to relax the size check —
 -- a capture that cannot name the buffer under test cannot answer the object
 -- questions the UI asks of it.

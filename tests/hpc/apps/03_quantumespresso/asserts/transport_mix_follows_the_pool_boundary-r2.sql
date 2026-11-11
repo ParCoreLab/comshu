@@ -21,7 +21,7 @@
 -- arms, driven entirely by params, and names no rank, no node and no transport
 -- that the run chose.
 --
--- WHY OPERATIONS AND NOT BYTES. pcomm.fbs type 804 says UctSend.payload "means
+-- WHY OPERATIONS AND NOT BYTES. comshu.fbs type 804 says UctSend.payload "means
 -- something different per op family -- sent, requested, or advertised -- so it
 -- must not be summed across them", and 21_ucx_deep asserts separately that the
 -- rendezvous door reports its bytes as advertised_bytes and never as out_bytes.
@@ -36,7 +36,7 @@
 -- documented by UCX: rc_mlx5 / dc_mlx5 / ud_mlx5 / rc_verbs / ud_verbs are the
 -- InfiniBand ones and none of self / posix / sysv / cma / knem / xpmem /
 -- cuda_ipc collides with the pattern. Binding to a third party's vocabulary is
--- weaker than binding to pcomm's and is the best available.
+-- weaker than binding to comshu's and is the best available.
 --
 -- THE VACUITY GUARD IS NOT OPTIONAL. Without clause 3 the npool=2 arm passes on
 -- an empty capture, and "a capture of a workload that did not work is

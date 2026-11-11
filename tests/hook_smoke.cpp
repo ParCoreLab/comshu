@@ -1,4 +1,4 @@
-// hook_smoke — the interception engine (pcomm::hook + pcomm::smart_dlsym),
+// hook_smoke — the interception engine (comshu::hook + comshu::smart_dlsym),
 // exercised without any vendor library:
 //
 //  1. trait/macro machinery (tag + HookTrait specialization) compiles and is
@@ -24,9 +24,9 @@
 #include <type_traits>
 #include <vector>
 
-#include "pcomm/hook/CompositeHookManager.hpp"
-#include "pcomm/hook/dlsym/Dlsym.hpp"
-#include "pcomm/hook/dlsym/SymbolResolver.h"
+#include "comshu/hook/CompositeHookManager.hpp"
+#include "comshu/hook/dlsym/Dlsym.hpp"
+#include "comshu/hook/dlsym/SymbolResolver.h"
 
 // Vendor-free preload-hook definition: exercises the trait/macro machinery
 // (tag creation + HookTrait specialization).
@@ -64,10 +64,10 @@ int g_post_add = 0;
 int g_post_maybe = 0;
 
 struct DemoHooks
-    : pcomm::hook::CompositeHookManager<DemoHooks, pcomm::hook::DefaultHookManagerConfig,
+    : comshu::hook::CompositeHookManager<DemoHooks, comshu::hook::DefaultHookManagerConfig,
                                         demo::op_add_tag, demo::op_maybe_tag, demo::puts_tag,
                                         demo::preload_fn_tag> {
-    template<pcomm::hook::ValidCallbackTag Tag> auto& get_op(fake_ctx* c) const noexcept {
+    template<comshu::hook::ValidCallbackTag Tag> auto& get_op(fake_ctx* c) const noexcept {
         if constexpr (std::is_same_v<Tag, demo::op_add_tag>) {
             return c->add;
         } else {  // op_maybe_tag
@@ -78,14 +78,14 @@ struct DemoHooks
 }  // namespace
 
 int main() {
-    using pcomm::hook::Timestamp;
+    using comshu::hook::Timestamp;
 
     // 1. Traits.
-    using T = pcomm::hook::HookTrait<demo::puts_tag>;
-    static_assert(T::type == pcomm::hook::HookType::Preload);
-    static_assert(pcomm::hook::has_hook_trait_v<demo::puts_tag>);
-    static_assert(pcomm::hook::is_preload_hook_v<demo::puts_tag>);
-    static_assert(pcomm::hook::is_object_ops_hook_v<demo::op_add_tag>);
+    using T = comshu::hook::HookTrait<demo::puts_tag>;
+    static_assert(T::type == comshu::hook::HookType::Preload);
+    static_assert(comshu::hook::has_hook_trait_v<demo::puts_tag>);
+    static_assert(comshu::hook::is_preload_hook_v<demo::puts_tag>);
+    static_assert(comshu::hook::is_object_ops_hook_v<demo::op_add_tag>);
     std::printf("hook trait: name=%s symbol=%s\n", T::name, T::symbol_name);
 
     // 2. Object-ops interception, end to end on a fake ops table.
@@ -160,13 +160,13 @@ int main() {
     void*                           first_ret = reinterpret_cast<void*>(0x1111);
     void*                           second_ret = reinterpret_cast<void*>(0x2222);
 
-    pcomm::smart_dlsym::register_symbol(
-        "pcomm_chain_probe", [first_ret](void* next, void*, const char*) {
+    comshu::smart_dlsym::register_symbol(
+        "comshu_chain_probe", [first_ret](void* next, void*, const char*) {
             order.push_back("first");
             assert(next != nullptr && "first registrant is handed the real symbol");
             return first_ret;
         });
-    pcomm::smart_dlsym::register_symbol("pcomm_chain_probe",
+    comshu::smart_dlsym::register_symbol("comshu_chain_probe",
                                         [second_ret](void* next, void*, const char*) {
                                             order.push_back("second");
                                             seen_by_second = next;
@@ -174,18 +174,18 @@ int main() {
                                         });
     // A third that declines: returning nullptr must not blank the symbol, which
     // is how a null once reached NVSHMEM as a failed UAR allocation.
-    pcomm::smart_dlsym::register_symbol("pcomm_chain_probe", [](void*, void*, const char*) {
+    comshu::smart_dlsym::register_symbol("comshu_chain_probe", [](void*, void*, const char*) {
         order.push_back("third");
         return static_cast<void*>(nullptr);
     });
 
     {
-        const auto& chain = (*pcomm::smart_dlsym::RegisteredSymbols)["pcomm_chain_probe"];
+        const auto& chain = (*comshu::smart_dlsym::RegisteredSymbols)["comshu_chain_probe"];
         assert(chain.size() == 3 && "all three registrants are kept, none rejected");
 
         // The production path, not a reimplementation of it.
         void* real = reinterpret_cast<void*>(0xdead);
-        void* fn = pcomm::smart_dlsym::on_symbol_load(real, nullptr, "pcomm_chain_probe");
+        void* fn = comshu::smart_dlsym::on_symbol_load(real, nullptr, "comshu_chain_probe");
 
         assert(order.size() == 3 && order[0] == "first" && order[1] == "second" &&
                order[2] == "third" && "registration order is innermost-first");
@@ -194,8 +194,8 @@ int main() {
 
         // An unregistered symbol passes through untouched, and a null real
         // symbol stays null rather than being handed to registrants.
-        assert(pcomm::smart_dlsym::on_symbol_load(real, nullptr, "pcomm_unregistered") == real);
-        assert(pcomm::smart_dlsym::on_symbol_load(nullptr, nullptr, "pcomm_chain_probe") ==
+        assert(comshu::smart_dlsym::on_symbol_load(real, nullptr, "comshu_unregistered") == real);
+        assert(comshu::smart_dlsym::on_symbol_load(nullptr, nullptr, "comshu_chain_probe") ==
                nullptr);
         assert(order.size() == 3 && "a null real symbol must not run the chain");
 
@@ -208,9 +208,9 @@ int main() {
     assert(p != nullptr);
 
     // Interposed-dlsym real pointers, initialized by the load constructor(0).
-    assert(pcomm::smart_dlsym::real_dlsym != nullptr);
+    assert(comshu::smart_dlsym::real_dlsym != nullptr);
     std::printf("smart_dlsym::real_dlsym = %p\n",
-                reinterpret_cast<void*>(pcomm::smart_dlsym::real_dlsym));
+                reinterpret_cast<void*>(comshu::smart_dlsym::real_dlsym));
 
     std::puts("hook_smoke OK");
     return 0;

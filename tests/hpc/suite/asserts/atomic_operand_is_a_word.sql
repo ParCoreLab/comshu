@@ -26,7 +26,7 @@
 -- Note the interaction with the NIC wire check in case 12, which sums decoded
 -- lengths against port_xmit_data. Until atomics had a length they contributed
 -- zero to that sum, so atomic traffic was invisible to the one oracle in this
--- suite that is not pcomm checking pcomm. Both halves of that had to change
+-- suite that is not comshu checking comshu. Both halves of that had to change
 -- together: a length that is wrong would now make the wire check wrong too,
 -- which is why this assertion exists rather than trusting the read.
 SELECT rank,

@@ -61,7 +61,7 @@
   title="Rank clustering"
   subtitle={(rows) => `${new Set(rows.map((r) => r.src_rank)).size} ranks, by communication pattern (cosine distance)`}
   sql={SQL}
-  needs="comm_edges with at least two ranks — run pcomm-read --link"
+  needs="comm_edges with at least two ranks — run comshu-read --link"
 >
   {#snippet body(rows)}
     {@const { root, leaves } = build(rows)}

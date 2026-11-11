@@ -1,6 +1,6 @@
-# The pcomm capture, for whoever is answering questions about it
+# The comshu capture, for whoever is answering questions about it
 
-You are answering questions about a **pcomm** capture: a recording of how a
+You are answering questions about a **comshu** capture: a recording of how a
 distributed GPU application communicated. It was produced by running a workload
 under one or more providers (`ib` = InfiniBand verbs on the host, `p2p` =
 GPU-initiated NVLink peer access), and it is served to you as a DuckDB database
@@ -312,12 +312,12 @@ apart or a result looks like it came from the wrong binary.
 
 - `argv` is the traced program's command line — under a launcher this is the
   target binary, *not* mpirun, so the placement decision is in `env`.
-- `env` is an allowlist (PCOMM_\*, SLURM_\*, OMPI_MCA_rmaps_\*,
-  `CUDA_VISIBLE_DEVICES`, `LD_PRELOAD`, and whatever `PCOMM_ENV_CAPTURE` adds),
+- `env` is an allowlist (COMSHU_\*, SLURM_\*, OMPI_MCA_rmaps_\*,
+  `CUDA_VISIBLE_DEVICES`, `LD_PRELOAD`, and whatever `COMSHU_ENV_CAPTURE` adds),
   one `K=V` per line. It is not the whole environment and never was.
 - `build` is `commit=… type=… abi=… schema=…`, restamped on every build.
   `-dirty` on the commit means the tree had uncommitted changes.
-- `images` is every mapped `libpcomm*` / `*_trace` object with its **size and
+- `images` is every mapped `libcomshu*` / `*_trace` object with its **size and
   mtime on disk**, one per line. Use it when a result contradicts a change you
   believe you made: a path outside the build tree, or an mtime older than the
   edit, means the run loaded a stale copy. That has happened (job 45331793) and
@@ -383,7 +383,7 @@ The vocabulary is closed. These are all of them:
 | `colliding_gpu_uuids` | defect | two PCI addresses on one node reporting one UUID |
 | `unattributed_p2p_accesses` | defect | a GPU access `object_access` could not place |
 | `device_sends_outside_kernels` | note | a GPU-initiated send whose doorbell rang in no kernel window on its rank (kernel windows recorded); `kernel_sends` cannot name its kernel |
-| `unplaced_offset_sends` | defect | a send naming a zero-based region (NCCL GIN) whose VA pcomm never recovered, or an rkey reused across regions that disagree; `object_access` drops it rather than misplace it |
+| `unplaced_offset_sends` | defect | a send naming a zero-based region (NCCL GIN) whose VA comshu never recovered, or an rkey reused across regions that disagree; `object_access` drops it rather than misplace it |
 | `self_edges` | defect | a rank sending to itself — the qp_num-collision signature |
 | `ambiguous_recv_buffers` | defect | a `wr_id` naming more than one posted buffer |
 | `unattributed_recv_completions` | defect | a receive resolving to no known object |
@@ -399,7 +399,7 @@ The vocabulary is closed. These are all of them:
 | `kernel_rows_submission_only` | note | kernels timed at launch, not execution — excluded from the timeline |
 | `wr_flight_unretired_selective` | note | unretired posts on QPs that declared `sq_sig_all = 0` |
 | `wr_flight_selective_signalling_qps` | note | those QPs themselves — certainly selective signalling |
-| `uct_ops_patch_forced` | note | `PCOMM_UCX_DEEP_FORCE` overrode the version guard |
+| `uct_ops_patch_forced` | note | `COMSHU_UCX_DEEP_FORCE` overrode the version guard |
 | `nccl_proxy_op_unparented` | note | proxy ops naming no recorded collective — a point-to-point parent, tracked for linkage but not recorded |
 | `nccl_bcast_invisible_to_profiler` | note | broadcasts with no execution row. **NCCL's own limitation, not the tool's**: `NCCL_ALLGATHERV_ENABLE` (default 1) rewrites a broadcast onto a queue its profiler never walks, so no plugin at any version is offered the event |
 
@@ -472,7 +472,7 @@ GROUP BY 1 ORDER BY 2 DESC;
 ```
 
 It covers `TimeKind`, `RecordKind`, `MemOp`, `MemSpace`, `EdgePredicate` and
-`KernelSource`. The ibverbs opcodes above are vendor constants rather than pcomm
+`KernelSource`. The ibverbs opcodes above are vendor constants rather than comshu
 enums and are not in it.
 
 ## Worked examples

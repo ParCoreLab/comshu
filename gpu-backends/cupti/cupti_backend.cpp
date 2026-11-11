@@ -3,7 +3,7 @@
 //
 // The copy half (CUDA_MEMCPY / MEMCPY2 -> CudaMemcpy, 534) was added because it
 // is traffic NOTHING ELSE IN THIS TREE CAN SEE. A copy engine retires no
-// instruction, so NVBit is structurally blind to it (pcomm/run.cpp says so in
+// instruction, so NVBit is structurally blind to it (comshu/run.cpp says so in
 // the gpumem row); it posts no work request, so ibverbs and mlx5dv are blind to
 // it; it calls into neither UCX nor NCCL. And cudaMemcpyPeer between two GPUs
 // is communication — it is bytes over NVLink or PCIe — so a workload built on
@@ -12,9 +12,9 @@
 // cudart. See plans/PLAN-20260903-1828.
 //
 // A backend rather than part of the engine, for the reason stated at the top of
-// libpcomm/src/engine.cpp: the engine is L0-L2 core and nothing there may pull
+// libcomshu/src/engine.cpp: the engine is L0-L2 core and nothing there may pull
 // in a vendor header. The RECORD is still the engine's (GpuKernel, 530, in its
-// own 500-599 range) and arrives through pcomm_engine_record_kernel; this file
+// own 500-599 range) and arrives through comshu_engine_record_kernel; this file
 // owns only the vendor binding. Same split as gpu-backends/nvbit.
 //
 // WHY THIS IS NOT SIMPLY ALWAYS ON — the measurement that shapes the whole file
@@ -33,12 +33,12 @@
 // So this file must never be the one that wins. The guards, in the order they
 // actually protect:
 //
-//   1. THE REAL ONE: pcomm_engine_cupti_allowed(). The launcher knows the
+//   1. THE REAL ONE: comshu_engine_cupti_allowed(). The launcher knows the
 //      provider list before anything loads and clears it when gpumem is
 //      selected, so we never touch CUPTI in a process NVBit is in. This is
 //      deterministic and does not depend on timing.
 //
-//      It was pcomm_engine_kernel_timing_wanted() until 2026-08-17, and that
+//      It was comshu_engine_kernel_timing_wanted() until 2026-08-17, and that
 //      is a cautionary tale rather than a rename: NVBit's own kernel stamp read
 //      the same flag, so the guard protecting THIS file from CUPTI was also
 //      switching off the instrument that replaces it. Every gpumem capture ever
@@ -50,7 +50,7 @@
 //      those doors are reachable, and they are not always: a statically linked
 //      cudart can reach the driver through cuGetProcAddress, which defeats
 //      symbol interposition entirely (measured during the IBGDA work). So the
-//      constructor arms as a last resort, and PCOMM_KERNEL_TIMING_LAZY=1 turns
+//      constructor arms as a last resort, and COMSHU_KERNEL_TIMING_LAZY=1 turns
 //      that last resort off for anyone hand-rolling a chain with NVBit in it.
 //
 // Guard 2 is a convenience. Guard 1 is the one that must be right.
@@ -72,11 +72,11 @@
 #include <cuda_runtime.h>
 #include <cupti.h>
 
-#include "pcomm/core/ids.hpp"
-#include "pcomm/helpers/timestamp.hpp"
-#include "pcomm/tracer.hpp"
-#include "pcomm/core/vocab.hpp"
-#include "pcomm/engine_abi.h"
+#include "comshu/core/ids.hpp"
+#include "comshu/helpers/timestamp.hpp"
+#include "comshu/tracer.hpp"
+#include "comshu/core/vocab.hpp"
+#include "comshu/engine_abi.h"
 
 namespace {
 
@@ -127,29 +127,29 @@ using TimestampFn = uint64_t(CUPTIAPI*)(void);
 using RegisterTimestampFn = CUptiResult (*)(TimestampFn);
 
 uint64_t CUPTIAPI tsc_now() {
-    return pcomm::helpers::ts::RdtscTimestampSource::Now();
+    return comshu::helpers::ts::RdtscTimestampSource::Now();
 }
 
 // Which domain kernel records are stamped in — decided at arm time by the
 // check in try_tsc_timebase(), never guessed.
-pcomm::core::DomainId g_domain = pcomm::core::kDomainCuptiWall;
+comshu::core::DomainId g_domain = comshu::core::kDomainCuptiWall;
 
 // Returns true when CUPTI is confirmed to be reporting our TSC.
 bool try_tsc_timebase() {
-    if (const char* off = std::getenv("PCOMM_CUPTI_TSC"); off && *off == '0')
+    if (const char* off = std::getenv("COMSHU_CUPTI_TSC"); off && *off == '0')
         return false;
 
     auto reg = reinterpret_cast<RegisterTimestampFn>(
         dlsym(RTLD_DEFAULT, "cuptiActivityRegisterTimestampCallback"));
     if (!reg) {
         if (g_verbose)
-            std::fprintf(stderr, "[pcomm/cupti] no cuptiActivityRegisterTimestampCallback — "
+            std::fprintf(stderr, "[comshu/cupti] no cuptiActivityRegisterTimestampCallback — "
                                  "staying on CUPTI's own timebase\n");
         return false;
     }
     if (CUptiResult r = reg(tsc_now); r != CUPTI_SUCCESS) {
         if (g_verbose)
-            std::fprintf(stderr, "[pcomm/cupti] timestamp callback refused: %s\n", cupti_err(r));
+            std::fprintf(stderr, "[comshu/cupti] timestamp callback refused: %s\n", cupti_err(r));
         return false;
     }
 
@@ -158,23 +158,23 @@ bool try_tsc_timebase() {
     // of the call. If it did not, they differ by ~1.8e18 — a CLOCK_REALTIME ns
     // against a tick count — so the threshold does not need to be delicate.
     // A millisecond of TSC is ~2e6 ticks; anything under a second is proof.
-    uint64_t before = pcomm::helpers::ts::RdtscTimestampSource::Now();
+    uint64_t before = comshu::helpers::ts::RdtscTimestampSource::Now();
     uint64_t cupti_ts = 0;
     if (cuptiGetTimestamp(&cupti_ts) != CUPTI_SUCCESS)
         return false;
-    uint64_t   after = pcomm::helpers::ts::RdtscTimestampSource::Now();
+    uint64_t   after = comshu::helpers::ts::RdtscTimestampSource::Now();
     const bool bracketed = cupti_ts >= before && cupti_ts <= after + 10'000'000ull;
     if (!bracketed && g_verbose)
         std::fprintf(stderr,
-                     "[pcomm/cupti] timestamp callback registered but CUPTI still reports its own "
+                     "[comshu/cupti] timestamp callback registered but CUPTI still reports its own "
                      "clock (%llu vs tsc %llu) — staying on domain %u\n",
                      (unsigned long long)cupti_ts, (unsigned long long)before,
-                     unsigned{pcomm::core::kDomainCuptiWall});
+                     unsigned{comshu::core::kDomainCuptiWall});
     return bracketed;
 }
 
 // (cupti_ticks, wall_ns) sampled as close together as we can manage. Two of
-// these — one at enable, one at teardown — are what let pcomm-read fit domain 1
+// these — one at enable, one at teardown — are what let comshu-read fit domain 1
 // onto the shared timeline. Without them every kernel row is dropped and
 // counted in link_health.timeline_unanchored.
 //
@@ -183,12 +183,12 @@ bool try_tsc_timebase() {
 // describe a domain no record is in. Left in place rather than deleted because
 // the fallback is a runtime decision, not a build-time one.
 void emit_anchor() {
-    if (g_domain == pcomm::core::kDomainHostTsc)
+    if (g_domain == comshu::core::kDomainHostTsc)
         return;
     uint64_t cupti_ts = 0;
     if (cuptiGetTimestamp(&cupti_ts) != CUPTI_SUCCESS)
         return;
-    pcomm_engine_clock_anchor(pcomm::core::kDomainCuptiWall, cupti_ts, wall_ns());
+    comshu_engine_clock_anchor(comshu::core::kDomainCuptiWall, cupti_ts, wall_ns());
 }
 
 void CUPTIAPI on_buffer_request(uint8_t** buf, size_t* size, size_t* max_records) {
@@ -199,7 +199,7 @@ void CUPTIAPI on_buffer_request(uint8_t** buf, size_t* size, size_t* max_records
     // runs from this backend's destructor, by which point the driver returns
     // CUDA_ERROR_DEINITIALIZED. That asymmetry is why a CUPTI capture could
     // never satisfy the old arena-flush proxy at any record count.
-    ::pcomm_engine_note_cuda_live("cupti_buffer_request");
+    ::comshu_engine_note_cuda_live("cupti_buffer_request");
     void* p = nullptr;
     if (posix_memalign(&p, kBufAlign, kBufSize) != 0)
         p = nullptr;
@@ -215,7 +215,7 @@ void CUPTIAPI on_buffer_request(uint8_t** buf, size_t* size, size_t* max_records
 // coincidence and a table would silently mistranslate the day one of them
 // gains a value in the middle.
 uint8_t copy_kind(uint8_t cupti_kind) {
-    using K = pcomm::core::MemcpyKind;
+    using K = comshu::core::MemcpyKind;
     switch (cupti_kind) {
         case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
             return static_cast<uint8_t>(K::HostToDevice);
@@ -243,7 +243,7 @@ uint8_t copy_kind(uint8_t cupti_kind) {
 }
 
 uint8_t residency(uint8_t cupti_mem_kind) {
-    using R = pcomm::core::MemResidency;
+    using R = comshu::core::MemResidency;
     switch (cupti_mem_kind) {
         case CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE:
             return static_cast<uint8_t>(R::Pageable);
@@ -315,8 +315,8 @@ bool dst_is_device(uint8_t cupti_kind) {
 // newest is 10, for the same reason.)
 void record_memcpy(const CUpti_ActivityMemcpy5* m) {
     const uint16_t dev = static_cast<uint16_t>(m->deviceId);
-    const uint16_t none = pcomm::core::kUnknownDevice;
-    pcomm_engine_record_memcpy(m->start, m->end, g_domain, m->bytes, m->correlationId, m->streamId,
+    const uint16_t none = comshu::core::kUnknownDevice;
+    comshu_engine_record_memcpy(m->start, m->end, g_domain, m->bytes, m->correlationId, m->streamId,
                                src_is_device(m->copyKind) ? dev : none,
                                dst_is_device(m->copyKind) ? dev : none,
                                // On a non-peer record the context device IS the
@@ -325,7 +325,7 @@ void record_memcpy(const CUpti_ActivityMemcpy5* m) {
                                // CUPTI reports all three separately.
                                dev, copy_kind(m->copyKind),
                                residency(m->srcKind), residency(m->dstKind),
-                               static_cast<uint8_t>(pcomm::core::CopySource::Cupti),
+                               static_cast<uint8_t>(comshu::core::CopySource::Cupti),
                                (m->flags & CUPTI_ACTIVITY_FLAG_MEMCPY_ASYNC) ? 1 : 0);
     g_copies.fetch_add(1, std::memory_order_relaxed);
 }
@@ -334,7 +334,7 @@ void record_memcpy(const CUpti_ActivityMemcpy5* m) {
 // arrive together on one row. This is the record that makes cudaMemcpyPeer a
 // comm_edges edge at all.
 void record_memcpy_peer(const CUpti_ActivityMemcpyPtoP3* m) {
-    pcomm_engine_record_memcpy(m->start, m->end, g_domain, m->bytes, m->correlationId, m->streamId,
+    comshu_engine_record_memcpy(m->start, m->end, g_domain, m->bytes, m->correlationId, m->streamId,
                                static_cast<uint16_t>(m->srcDeviceId),
                                static_cast<uint16_t>(m->dstDeviceId),
                                // `deviceId`, NOT srcDeviceId: CUPTI reports all
@@ -345,7 +345,7 @@ void record_memcpy_peer(const CUpti_ActivityMemcpyPtoP3* m) {
                                // evidence when the two endpoints are not.
                                static_cast<uint16_t>(m->deviceId), copy_kind(m->copyKind),
                                residency(m->srcKind), residency(m->dstKind),
-                               static_cast<uint8_t>(pcomm::core::CopySource::Cupti),
+                               static_cast<uint8_t>(comshu::core::CopySource::Cupti),
                                (m->flags & CUPTI_ACTIVITY_FLAG_MEMCPY_ASYNC) ? 1 : 0);
     g_copies.fetch_add(1, std::memory_order_relaxed);
     if (m->srcDeviceId != m->dstDeviceId)
@@ -383,11 +383,11 @@ void CUPTIAPI on_buffer_complete(CUcontext, uint32_t, uint8_t* buf, size_t, size
         const uint16_t block[3] = {static_cast<uint16_t>(k->blockX),
                                    static_cast<uint16_t>(k->blockY),
                                    static_cast<uint16_t>(k->blockZ)};
-        pcomm_engine_record_kernel(k->start, k->end, g_domain, k->name, k->correlationId,
+        comshu_engine_record_kernel(k->start, k->end, g_domain, k->name, k->correlationId,
                                    // streamId, not a CUstream: CUPTI reports the ordinal, which is
                                    // what a timeline lane wants anyway.
                                    k->streamId, static_cast<uint16_t>(k->deviceId),
-                                   static_cast<uint8_t>(pcomm::core::KernelSource::Cupti), grid,
+                                   static_cast<uint8_t>(comshu::core::KernelSource::Cupti), grid,
                                    block);
         g_kernels.fetch_add(1, std::memory_order_relaxed);
     }
@@ -407,7 +407,7 @@ const char* cupti_err(CUptiResult r) {  // NOLINT — forward-declared above
 // records which, because that is the difference between "interposition worked"
 // and "we fell back to the constructor" and it is not guessable from outside.
 void enable_once() {
-    g_verbose = std::getenv("PCOMM_VERBOSE") != nullptr;
+    g_verbose = std::getenv("COMSHU_VERBOSE") != nullptr;
 
     // Two questions, and this backend is the only thing in the tree that has to
     // ask both. They fail for different reasons and so they say different
@@ -415,14 +415,14 @@ void enable_once() {
     // take CUPTI" is the launcher protecting a gpumem capture that is still
     // being timed by NVBit. Reporting either as the other is how the two got
     // conflated in the first place — see engine_abi.h.
-    if (!pcomm_engine_kernel_timing_wanted()) {
+    if (!comshu_engine_kernel_timing_wanted()) {
         if (g_verbose)
-            std::fprintf(stderr, "[pcomm/cupti] kernel timing off (PCOMM_KERNEL_TIMING=0)\n");
+            std::fprintf(stderr, "[comshu/cupti] kernel timing off (COMSHU_KERNEL_TIMING=0)\n");
         return;
     }
-    if (!pcomm_engine_cupti_allowed()) {
+    if (!comshu_engine_cupti_allowed()) {
         if (g_verbose)
-            std::fprintf(stderr, "[pcomm/cupti] not taking CUPTI — NVBit owns this process's "
+            std::fprintf(stderr, "[comshu/cupti] not taking CUPTI — NVBit owns this process's "
                                  "subscriber\n");
         return;
     }
@@ -431,7 +431,7 @@ void enable_once() {
     // in place before CUPTI stamps its first record, or the capture would hold
     // two clocks under one domain id.
     if (try_tsc_timebase())
-        g_domain = pcomm::core::kDomainHostTsc;
+        g_domain = comshu::core::kDomainHostTsc;
 
     CUptiResult r = cuptiActivityRegisterCallbacks(on_buffer_request, on_buffer_complete);
     if (r != CUPTI_SUCCESS) {
@@ -439,7 +439,7 @@ void enable_once() {
         // out loud rather than swallowed: a capture with no kernel rows and no
         // explanation is indistinguishable from a run that launched no kernels.
         std::fprintf(stderr,
-                     "[pcomm/cupti] kernel timing UNAVAILABLE: %s\n"
+                     "[comshu/cupti] kernel timing UNAVAILABLE: %s\n"
                      "              Another CUDA tool owns this process's CUPTI subscriber "
                      "(NVBit, via the gpumem provider).\n"
                      "              Comm capture is unaffected; GpuKernel rows will be absent.\n",
@@ -448,7 +448,7 @@ void enable_once() {
     }
     r = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     if (r != CUPTI_SUCCESS) {
-        std::fprintf(stderr, "[pcomm/cupti] cuptiActivityEnable failed: %s\n", cupti_err(r));
+        std::fprintf(stderr, "[comshu/cupti] cuptiActivityEnable failed: %s\n", cupti_err(r));
         return;
     }
 
@@ -457,7 +457,7 @@ void enable_once() {
     // AFTER the kernel kind and after the subscriber is already ours, which is
     // what keeps this out of the NVBit conflict entirely: a process where NVBit
     // owns the subscriber returned above and never reaches here. Nothing in
-    // pcomm/run.cpp's build_passes() changes.
+    // comshu/run.cpp's build_passes() changes.
     //
     // Two kinds, not one. CUPTI_ACTIVITY_KIND_MEMCPY covers H2D/D2H/D2D/H2H and
     // reports ONE device; CUPTI_ACTIVITY_KIND_MEMCPY2 is peer-to-peer and is the
@@ -466,7 +466,7 @@ void enable_once() {
     // communication — which is the failure this whole backend change exists to
     // fix, so it is worth stating that it is two calls and both must succeed.
     //
-    // ENABLED BY DEFAULT, and PCOMM_COPY_CAPTURE=0 is the opt-out. Same
+    // ENABLED BY DEFAULT, and COMSHU_COPY_CAPTURE=0 is the opt-out. Same
     // asymmetry core/vocab.hpp argues for TraceMode: the copy stream is small
     // (one record per transfer, against ~1050 kernels/s/rank already accepted at
     // +0.65 %), overhead can be paid again, and a capture that silently omitted
@@ -474,15 +474,15 @@ void enable_once() {
     // is gone.
     //
     // Read from the environment HERE and not through engine_abi.h on purpose.
-    // pcomm_engine_kernel_timing_wanted() is in the ABI because TWO backends
+    // comshu_engine_kernel_timing_wanted() is in the ABI because TWO backends
     // consult it and had to agree; this question has exactly one possible
     // consumer, and putting it in the ABI would imply a coordination that does
     // not exist. If a second copy instrument ever lands (the host-API door), it
     // moves — that is the same rule, applied when it becomes true.
-    const char* copy_off = std::getenv("PCOMM_COPY_CAPTURE");
+    const char* copy_off = std::getenv("COMSHU_COPY_CAPTURE");
     if (copy_off && (*copy_off == '0' || *copy_off == 'n' || *copy_off == 'N')) {
         if (g_verbose)
-            std::fprintf(stderr, "[pcomm/cupti] copy capture off (PCOMM_COPY_CAPTURE=0)\n");
+            std::fprintf(stderr, "[comshu/cupti] copy capture off (COMSHU_COPY_CAPTURE=0)\n");
     } else {
         const CUptiResult r1 = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
         const CUptiResult r2 = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY2);
@@ -496,7 +496,7 @@ void enable_once() {
             // fail for different reasons — MEMCPY2 is the one an old CUPTI or a
             // restricted profiling mode is likelier to refuse.
             std::fprintf(stderr,
-                         "[pcomm/cupti] copy capture UNAVAILABLE: memcpy=%s memcpy2=%s\n"
+                         "[comshu/cupti] copy capture UNAVAILABLE: memcpy=%s memcpy2=%s\n"
                          "              cuda_memcpy rows will be absent or "
                          "peer-blind; kernel timing is unaffected.\n",
                          cupti_err(r1), cupti_err(r2));
@@ -505,9 +505,9 @@ void enable_once() {
     emit_anchor();
     g_on.store(true, std::memory_order_release);
     if (g_verbose)
-        std::fprintf(stderr, "[pcomm/cupti] kernel timing on (domain %u, %s timebase), copies %s\n",
+        std::fprintf(stderr, "[comshu/cupti] kernel timing on (domain %u, %s timebase), copies %s\n",
                      unsigned{g_domain},
-                     g_domain == pcomm::core::kDomainHostTsc ? "host TSC" : "CUPTI wall",
+                     g_domain == comshu::core::kDomainHostTsc ? "host TSC" : "CUPTI wall",
                      g_copies_on ? "on" : "off");
 }
 
@@ -578,36 +578,36 @@ cudaError_t cudaLaunchKernel(const void* func, dim3 grid, dim3 block, void** arg
 // the direct-LD_PRELOAD path and it does NOT touch CUPTI — starting a sink and
 // a recorder is unrelated to the subscriber slot, so there is nothing here that
 // could displace NVBit.
-__attribute__((constructor)) void pcomm_cupti_load() {
-    const pcomm::Config cfg = pcomm::Config::from_env();
+__attribute__((constructor)) void comshu_cupti_load() {
+    const comshu::Config cfg = comshu::Config::from_env();
     // No declare_provider call: this backend emits nothing of its own. GpuKernel
     // is the ENGINE's record, in the engine's already-declared 500-599 range,
     // and claiming a second range for it would make the disjointness check fail
     // on a fact that is not true.
-    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     // Last resort, and it must exist: an application whose launches we cannot
     // interpose (statically linked cudart reaching the driver through
     // cuGetProcAddress — measured to defeat symbol interposition entirely
     // during the IBGDA work) would otherwise never arm, and the capture would
-    // have no kernel rows with nothing saying why. PCOMM_KERNEL_TIMING_LAZY=1
+    // have no kernel rows with nothing saying why. COMSHU_KERNEL_TIMING_LAZY=1
     // suppresses this for a hand-built LD_PRELOAD chain that also contains
     // NVBit, where losing the race matters more than losing the lane.
-    if (const char* lazy = std::getenv("PCOMM_KERNEL_TIMING_LAZY"); !lazy || *lazy == '0')
+    if (const char* lazy = std::getenv("COMSHU_KERNEL_TIMING_LAZY"); !lazy || *lazy == '0')
         arm("constructor");
 }
 
 // Teardown. The final anchor must be written BEFORE the flush is reported, and
 // both must happen while the Tracer still has a recorder — this is a
 // destructor, so it runs before the engine's own exit path.
-__attribute__((destructor)) void pcomm_cupti_fini() {
+__attribute__((destructor)) void comshu_cupti_fini() {
     if (!g_on.load(std::memory_order_acquire))
         return;
     emit_anchor();
     cuptiActivityFlushAll(1);
     // Drain the arenas this thread owns; the CUPTI worker's are reached by
     // Tracer::finalize() through the registry.
-    pcomm_engine_drain_thread();
+    comshu_engine_drain_thread();
     if (g_verbose || g_dropped.load())
         // `peer` is broken out of `copies` rather than left to be counted in
         // SQL: it is the number that says whether this run had any GPU-to-GPU
@@ -615,12 +615,12 @@ __attribute__((destructor)) void pcomm_cupti_fini() {
         // difference between "the workload only staged through the host" and
         // "the peer activity kind was refused".
         std::fprintf(stderr,
-                     "[pcomm/cupti] kernels=%llu copies=%llu peer=%llu dropped=%llu "
+                     "[comshu/cupti] kernels=%llu copies=%llu peer=%llu dropped=%llu "
                      "armed_by=%s copies_on=%d\n",
                      (unsigned long long)g_kernels.load(), (unsigned long long)g_copies.load(),
                      (unsigned long long)g_peer_copies.load(), (unsigned long long)g_dropped.load(),
                      g_armed_by ? g_armed_by : "(never)", g_copies_on ? 1 : 0);
-    pcomm_engine_release();
+    comshu_engine_release();
 }
 
 }  // extern "C"

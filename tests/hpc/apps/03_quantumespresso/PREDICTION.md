@@ -1,4 +1,4 @@
-# PREDICTION — Quantum ESPRESSO 7.5 under pcomm, round 2
+# PREDICTION — Quantum ESPRESSO 7.5 under comshu, round 2
 
 **Written 2026-08-29/30, before any round-2 capture exists.** MN5 has been
 unreachable since ~17:00 (alogin1 and alogin2 silent on 22/443/80 while
@@ -118,7 +118,7 @@ their `workload_note`).
 
 **Measured on operations, not bytes, and that is deliberate.** `UctSend.payload`
 "means something different per op family — sent, requested, or advertised — so
-it must not be summed across them" (`pcomm.fbs`, type 804). QE's messages are
+it must not be summed across them" (`comshu.fbs`, type 804). QE's messages are
 0.8–3.4 MB, far above any default `UCX_RNDV_THRESH`, so they are rendezvous:
 the sender *advertises* and the bytes appear in `advertised_bytes`, not
 `out_bytes` (`21_ucx_deep/asserts/rendezvous_advertises_rather_than_sends.sql`).
@@ -172,17 +172,17 @@ shape:
 does not enable ConnectX tag matching by default, and the job deliberately does
 not force it — forcing `UCX_RC_MLX5_TM_ENABLE=y` would be tuning the fabric to
 make a table non-empty. If there are no tag doors, `tag_flow` has nothing to
-join on for this application, and *that* is the finding: **the only join pcomm
+join on for this application, and *that* is the finding: **the only join comshu
 has between the 600s and the 800s requires a fabric feature that a real MPI
 application does not switch on.** Recorded as claim type 4, named to a symbol.
 
 ### P4 `uct_binding` decides whether any of this is answerable
 
 `ucx_deep` patches `uct_iface_ops_t`, guarded on the ops-table size
-(`pcomm.fbs` type 806: "`accepted = 0` is why `uct_send` is empty"). QE's module
+(`comshu.fbs` type 806: "`accepted = 0` is why `uct_send` is empty"). QE's module
 loads **HPC-X 2.16 / UCX 1.15** — older than anything this provider has been run
 against (case 21 measured runtime 1.18.0 against a 1.19.0 build). I cannot
-determine offline whether that is accepted; `pcomm list` documents what a
+determine offline whether that is accepted; `comshu list` documents what a
 provider captures, not what it requires.
 
 **Predicted: 50/50, and either result is a finding.** `accepted = 0` on UCX 1.15
@@ -244,7 +244,7 @@ device 0 and the claim is untestable.
 a live assertion and *not* pre-marked `expect_fail`; predicting a failure in
 writing beforehand is the honest form, marking it xfail on another agent's word
 is not. If it fails, the finding is sharper than the sibling's: this capture
-carries a device ordinal in `ucx_tag_send.device` (`pcomm.fbs` type 606) on
+carries a device ordinal in `ucx_tag_send.device` (`comshu.fbs` type 606) on
 every one of ~10^5 rows, so the information is present and the derived table
 declines to use it.
 
@@ -254,10 +254,10 @@ declines to use it.
   this; round 2 re-measures it with a third provider co-loaded.
 * `ucx_worker_address` = **0 rows**, so `comm_edges` cannot be built in
   rank space. Round 1 named the symbol: `mca_pml_ucx.so` publishes through
-  `ucp_worker_query`, and pcomm hooks `ucp_worker_get_address`. Every claim
+  `ucp_worker_query`, and comshu hooks `ucp_worker_get_address`. Every claim
   above is therefore stated over **endpoints and transports**, never over peer
   ranks — the same discipline round 1 used, for the same measured reason.
-* `pw.x` exits **139** after printing `JOB DONE`. Not a pcomm bug; round 1
+* `pw.x` exits **139** after printing `JOB DONE`. Not a comshu bug; round 1
   attributed it with an unpreloaded control run. The job greps `JOB DONE`.
 * Low-volume streams may be truncated on the ranks that die by signal
   (round 1: `node_identity` 2 of 4 ranks). If `uct_iface` is missing for a rank

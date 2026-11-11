@@ -1,7 +1,7 @@
 # libgpumem_trace.so — GPU memory-access provider (the Snoopie engine).
 # Built as an NVBit tool: the .so carries the nvbit_at_* callbacks, the
 # device-side instrumentation function, and the vendor-free engine that feeds
-# the pcomm recorder. Build recipe follows snoopie/src/mem_multigpu.
+# the comshu recorder. Build recipe follows snoopie/src/mem_multigpu.
 
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
   set(CMAKE_CUDA_ARCHITECTURES 80)  # A100 (du04); override with -DCMAKE_CUDA_ARCHITECTURES
@@ -24,7 +24,7 @@ set(NVBIT_ROOT ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/nvbit-1.7.7.1)
 # it is not optional: NVBit preserves only UR4:UR5 across an injected call
 # (SAVE_UREG_SPACE in libnvbit.a), so a patch that uses UR6+ destroys whatever
 # the instrumented kernel had live there. Without the flag ptxas allocated
-# pcomm_instrument_mem UR4-UR27, which is the "64-bit index" illegal access in
+# comshu_instrument_mem UR4-UR27, which is the "64-bit index" illegal access in
 # ../nvbit-bug-report — a bug that had nothing to do with index width.
 #
 # It has to be a separate target because the flag cannot coexist with either of
@@ -37,8 +37,8 @@ set(NVBIT_ROOT ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/nvbit-1.7.7.1)
 # ptxas has already generated the SASS by then.
 #
 # Check it, do not assume it. The flag is silent when it fails to apply:
-#   cuobjdump -sass libgpumem_trace.so | awk '/Function : pcomm_instrument_mem/{f=1} \
-#     f&&/Function : /&&!/pcomm_instrument_mem/{f=0} f' | grep -oE 'UR[0-9]+' | sort -uV
+#   cuobjdump -sass libgpumem_trace.so | awk '/Function : comshu_instrument_mem/{f=1} \
+#     f&&/Function : /&&!/comshu_instrument_mem/{f=0} f' | grep -oE 'UR[0-9]+' | sort -uV
 # Any output at all means the fix is not in effect.
 add_library(gpumem_inject OBJECT
   ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit/inject_funcs.cu)
@@ -48,10 +48,10 @@ set_target_properties(gpumem_inject PROPERTIES
 target_include_directories(gpumem_inject PRIVATE
   ${NVBIT_ROOT}
   ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit
-  ${CMAKE_SOURCE_DIR}/libpcomm/include
+  ${CMAKE_SOURCE_DIR}/libcomshu/include
   ${CMAKE_CURRENT_SOURCE_DIR})
 # -std=c++20 and -allow-unsupported-compiler are repeated here rather than
-# inherited: this target deliberately does not link pcomm::engine (it needs only
+# inherited: this target deliberately does not link comshu::engine (it needs only
 # headers), so it gets none of gpumem_trace's compile options.
 target_compile_options(gpumem_inject PRIVATE
   -std=c++20 -allow-unsupported-compiler
@@ -71,15 +71,15 @@ set_target_properties(gpumem_trace PROPERTIES
 # property: with this nvcc CMake fails to map the "CUDA20" dialect and errors at
 # configure, and it doesn't emit the -std flag anyway.
 
-# NB: still no link to pcomm::pcomm. That INTERFACE target carries `cxx_std_20`,
+# NB: still no link to comshu::comshu. That INTERFACE target carries `cxx_std_20`,
 # which would propagate onto this CUDA target and make CMake demand a "CUDA20"
 # dialect it can't map for nvcc 12.9 (clean-configure error, 877ab90). The C++20
-# dialect is supplied by -std=c++20 below. pcomm::engine is safe to link: its
+# dialect is supplied by -std=c++20 below. comshu::engine is safe to link: its
 # cxx_std_20 is PRIVATE, so we get its INTERFACE include dir and nothing else.
 target_include_directories(gpumem_trace PRIVATE
   ${NVBIT_ROOT}
   ${CMAKE_SOURCE_DIR}/gpu-backends/nvbit
-  ${CMAKE_SOURCE_DIR}/libpcomm/include
+  ${CMAKE_SOURCE_DIR}/libcomshu/include
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
@@ -87,7 +87,7 @@ target_include_directories(gpumem_trace PRIVATE
 # makes this provider share ONE Tracer/Recorder/intern-table set with every
 # other provider in the process, by construction instead of by linker accident.
 target_link_libraries(gpumem_trace PRIVATE
-  pcomm::engine
+  comshu::engine
   ${NVBIT_ROOT}/libnvbit.a
   cuda
 )
@@ -96,7 +96,7 @@ target_link_libraries(gpumem_trace PRIVATE
 # with the -astoolspatch they have to travel with.)
 
 # DIAGNOSTIC ONLY, default OFF. inject_funcs.cu has carried a
-# PCOMM_INJECT_NO_PUSH branch since it was written — instrument everything,
+# COMSHU_INJECT_NO_PUSH branch since it was written — instrument everything,
 # push nothing — and nothing could switch it on, so the question it exists to
 # answer has never been asked. It separates "the injected code perturbs the
 # kernel" from "channel_dev->push() does", which is the last split standing in
@@ -104,10 +104,10 @@ target_link_libraries(gpumem_trace PRIVATE
 #
 # A capture built this way records NO accesses. Never ship it; the board would
 # be green and empty.
-option(PCOMM_INJECT_NO_PUSH "diagnostic: instrument but never push to the channel" OFF)
-if(PCOMM_INJECT_NO_PUSH)
-  target_compile_definitions(gpumem_inject PRIVATE PCOMM_INJECT_NO_PUSH)
-  message(WARNING "PCOMM_INJECT_NO_PUSH=ON — gpumem will instrument but record nothing")
+option(COMSHU_INJECT_NO_PUSH "diagnostic: instrument but never push to the channel" OFF)
+if(COMSHU_INJECT_NO_PUSH)
+  target_compile_definitions(gpumem_inject PRIVATE COMSHU_INJECT_NO_PUSH)
+  message(WARNING "COMSHU_INJECT_NO_PUSH=ON — gpumem will instrument but record nothing")
 endif()
 
 target_compile_options(gpumem_trace PRIVATE
@@ -131,21 +131,21 @@ target_link_options(gpumem_trace PRIVATE
 # (gcc/13.2.0, per common.sh) wins and either order works.
 target_link_options(gpumem_trace PRIVATE $<HOST_LINK:-Xlinker --enable-new-dtags>)
 
-# The provider .so now has a DT_NEEDED on libpcomm_engine.so, so it must be
-# findable at runtime. $ORIGIN/../../libpcomm resolves correctly for both build
+# The provider .so now has a DT_NEEDED on libcomshu_engine.so, so it must be
+# findable at runtime. $ORIGIN/../../libcomshu resolves correctly for both build
 # layouts: build/providers/<p>/ (ibverbs, and gpumem after run_on_mn5.sh copies
 # it there from build-gpumem/). New dtags so LD_LIBRARY_PATH can still override.
-# In an *installed* tree the engine is a sibling in <prefix>/lib/pcomm, so
-# INSTALL_RPATH is $ORIGIN rather than the build tree's ../../libpcomm.
+# In an *installed* tree the engine is a sibling in <prefix>/lib/comshu, so
+# INSTALL_RPATH is $ORIGIN rather than the build tree's ../../libcomshu.
 set_target_properties(gpumem_trace PROPERTIES
-  BUILD_RPATH "$ORIGIN/../../libpcomm"
-  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
+  BUILD_RPATH "$ORIGIN/../../libcomshu"
+  INSTALL_RPATH "$ORIGIN;${COMSHU_INSTALL_RPATH_EXTRA}")
 # COMPONENT so this provider can be installed on its own. gpumem is configured
 # in a second build tree (build-gpumem: nvcc + the gcc-11.4 host compiler, see
 # tests/hpc/run_on_mn5.sh) where the launcher is not built at all, so a plain
-# `cmake --install build-gpumem` fails looking for bin/pcomm. The documented
+# `cmake --install build-gpumem` fails looking for bin/comshu. The documented
 # command is `cmake --install build-gpumem --component gpumem`.
-install(TARGETS gpumem_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
+install(TARGETS gpumem_trace LIBRARY DESTINATION ${COMSHU_INSTALL_LIBDIR}
         COMPONENT gpumem)
 
 # Export only what must be exported (see gpumem.map): 3438 -> 9. HOST_LINK so

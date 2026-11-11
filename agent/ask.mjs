@@ -13,7 +13,7 @@ import { buildSystemPrompt } from './lib/prompt.mjs';
 import { PiSession } from './lib/session.mjs';
 
 function parseArgs(argv) {
-  const opts = { ui: process.env.PCOMM_UI_URL ?? 'http://127.0.0.1:8777', json: false, question: '' };
+  const opts = { ui: process.env.COMSHU_UI_URL ?? 'http://127.0.0.1:8777', json: false, question: '' };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -31,7 +31,7 @@ function parseArgs(argv) {
 
 const usage = `usage: node agent/ask.mjs [options] "<question>"
 
-  --ui <url>        a running \`pcomm ui\` (default $PCOMM_UI_URL or http://127.0.0.1:8777)
+  --ui <url>        a running \`comshu ui\` (default $COMSHU_UI_URL or http://127.0.0.1:8777)
   --model <name>    override pi's configured model
   --provider <name> override pi's configured provider
   --json            print one JSON object instead of a transcript
@@ -49,7 +49,7 @@ let systemPrompt;
 try {
   systemPrompt = await buildSystemPrompt(capture);
 } catch (e) {
-  process.stderr.write(`cannot read the capture at ${opts.ui}: ${e.message}\n` + 'is `pcomm ui <capture>` running?\n');
+  process.stderr.write(`cannot read the capture at ${opts.ui}: ${e.message}\n` + 'is `comshu ui <capture>` running?\n');
   process.exit(2);
 }
 

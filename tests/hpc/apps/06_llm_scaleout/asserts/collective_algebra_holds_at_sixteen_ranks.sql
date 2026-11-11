@@ -32,7 +32,7 @@
 --
 -- THE f32 ROWS ARE SEPARATED FROM THE bf16 ONES BY THEIR COUNT, not by their
 -- datatype column, because the datatype enum's vocabulary is not published
--- anywhere a black-box reader can see (it is `uint8` in pcomm.fbs with no
+-- anywhere a black-box reader can see (it is `uint8` in comshu.fbs with no
 -- declared enumerators) and because the CSV and Parquet exports disagree about
 -- whether such a field is decoded to a name or left as an integer. count = 4 is
 -- an unambiguous discriminator here: no gradient tensor in this model has four

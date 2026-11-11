@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Answer Stage 2's question from a probe log + a pcomm capture.
+"""Answer Stage 2's question from a probe log + a comshu capture.
 
     analyze.py <probe-log-dir> <capture.csv-dir>
 
@@ -144,7 +144,7 @@ def main():
         return 0
     print("  NO — IBGDA engaged, its queues are in GPU memory, and not one")
     print("  instrumented access touched them.")
-    print("  CONFOUND before concluding: this run sets PCOMM_KERNEL_NAME=put_to_next,")
+    print("  CONFOUND before concluding: this run sets COMSHU_KERNEL_NAME=put_to_next,")
     print("  so only that kernel is instrumented. If NVSHMEM's IBGDA path is not")
     print("  inlined into it, the stores exist but were never instrumented. Re-run")
     print("  without the filter to separate 'NVBit cannot see them' from 'NVBit was")

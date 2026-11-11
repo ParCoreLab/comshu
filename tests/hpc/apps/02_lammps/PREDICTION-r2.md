@@ -15,8 +15,8 @@ Nothing here is read off a capture — not round 1's, not anybody's. Round 1's
 `REPORT.md` is used exactly once, in §3.5, as a *retrospective check on the
 geometric model*, and it is flagged there as such.
 
-Black-box: no file under `providers/`, `libpcomm/` (bar `schema/`),
-`pcomm-read/`, `pcomm-ui/`, `gpu-backends/`, `tools/`, `plans/` or
+Black-box: no file under `providers/`, `libcomshu/` (bar `schema/`),
+`comshu-read/`, `comshu-ui/`, `gpu-backends/`, `tools/`, `plans/` or
 `BUGS-FOUND.md` was read while writing this.
 
 ---
@@ -46,7 +46,7 @@ So round 2 asks one question with a numeric answer:
 
 > **Given a decomposition whose every communication edge is known in advance,
 > and a rank-to-node placement chosen so that the answer is known in advance,
-> does pcomm put the right bytes on the right side of the node boundary?**
+> does comshu put the right bytes on the right side of the node boundary?**
 
 And it asks it **twice, with the decomposition held byte-for-byte fixed and only
 the placement changed**, so that a right answer cannot be a coincidence.
@@ -292,7 +292,7 @@ Per capture, `-p ucx,ucx_deep`, exported to Parquet and linked.
 | `rank_identity.device` | non-null on every rank, and the 4 ranks of a node name 4 *distinct* devices | `-k on g 4` -> `cudaSetDevice(local rank)`; and "`rank_identity.device` now resolves on UCX-only captures" is exactly the claim under test |
 | `uct_binding` | `accepted = 1` | the providers for this arm are built against `/usr/include`, i.e. the *same* UCX 1.20.0 the application runs. If it is 0 the layout guard refused and every `transport_mix` claim above is void — the job script reads this first |
 | `link_health` | 0 findings with `n > 0` | the rubric, queried as `WHERE n > 0` |
-| `gpu_device` (type 528) | **absent** | measured before the run: `pcomm types` for this build lists 58 types and 528 is not among them, although `libpcomm/schema/pcomm.fbs:210` declares it. Predicting absence; if it appears, `pcomm types` is incomplete, which is worse |
+| `gpu_device` (type 528) | **absent** | measured before the run: `comshu types` for this build lists 58 types and 528 is not among them, although `libcomshu/schema/comshu.fbs:210` declares it. Predicting absence; if it appears, `comshu types` is incomplete, which is worse |
 | `tag_flow` | rows exist; **no** flow in a matched state | MN5's UCX does not enable ConnectX hardware tag matching by default, so `uct_send.tag` is never written and the tag join has nothing to match on. Same expectation 01_gromacs recorded |
 
 ---

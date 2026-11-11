@@ -34,12 +34,12 @@
 
 #include <unistd.h>
 
-#include "pcomm/engine_abi.h"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/tracer.hpp"
 
 namespace fs = std::filesystem;
-using namespace pcomm;
+using namespace comshu;
 using rec::InternDomain;
 
 namespace {
@@ -53,7 +53,7 @@ void expect(bool ok, const char* what) {
 }
 
 std::uint32_t intern_key(InternDomain d, std::uint64_t k) {
-    return pcomm_engine_intern_key(static_cast<std::uint8_t>(d), k);
+    return comshu_engine_intern_key(static_cast<std::uint8_t>(d), k);
 }
 
 // ns per call over `reps` interns of `keys`, cycled. Returns the median of five
@@ -78,7 +78,7 @@ double ns_per_intern(InternDomain d, const std::vector<std::uint64_t>& keys, int
 }  // namespace
 
 int main() {
-    const auto dir = fs::temp_directory_path() / ("pcomm-intern-hot-" + std::to_string(::getpid()));
+    const auto dir = fs::temp_directory_path() / ("comshu-intern-hot-" + std::to_string(::getpid()));
     fs::remove_all(dir);
     Config cfg;
     cfg.output_dir = dir;

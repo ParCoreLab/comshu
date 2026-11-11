@@ -12,7 +12,7 @@
 -- through mlx5dv_create_qp is recorded by the mlx5dv provider; one reached
 -- through ibv_create_qp by the ibverbs provider. Which door was used is a fact
 -- about the application, and pinning either table would test that instead of
--- testing pcomm. What must hold, whichever door: a transition cannot refer to a
+-- testing comshu. What must hold, whichever door: a transition cannot refer to a
 -- queue pair no record created.
 --
 -- Deliberately not counting: how many queue pairs perftest builds is its

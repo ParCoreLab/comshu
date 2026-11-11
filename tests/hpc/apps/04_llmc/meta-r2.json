@@ -7,7 +7,7 @@
   ],
   "topology": "du04: 1 node x 4 A100-SXM4-40GB, 4 ranks, NCCL over NVLink. No InfiniBand, no UCX, no NVBit.",
   "golden": "none — a third-party application is not a regression gate (see apps/README.md)",
-  "why": "Round 1 judged this workload against the raw NCCL tables only. Round 2 adds the `kernel` provider — which no case in tests/hpc/cases/ asserts anything about — and the derived layer that `pcomm link` builds, so that the capture can be asked what the GPU actually ran and not only what the application asked for.",
+  "why": "Round 1 judged this workload against the raw NCCL tables only. Round 2 adds the `kernel` provider — which no case in tests/hpc/cases/ asserts anything about — and the derived layer that `comshu link` builds, so that the capture can be asked what the GPU actually ran and not only what the application asked for.",
   "workload": {
     "ranks": 4,
     "nodes": 1,

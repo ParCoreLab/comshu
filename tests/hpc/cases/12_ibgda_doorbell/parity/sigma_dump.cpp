@@ -1,7 +1,7 @@
 // sigma_dump — dump SigmaTrace's mlx5dv/doorbell events as TSV.
 //
-// Written for the pcomm parity comparison
-// (pcomm/plans/PLAN-20260810-0102-sigmatrace-parity). The comparison is
+// Written for the comshu parity comparison
+// (comshu/plans/PLAN-20260810-0102-sigmatrace-parity). The comparison is
 // TSV-vs-TSV so that neither tool's analysis code sits in the loop: SigmaTrace's
 // own ProfilerEventReader produces a comm-graph JSON and a Perfetto trace, both
 // derived and opinionated views, and a difference in either would not
@@ -57,7 +57,7 @@ public:
 
     // kind, qp_num, prod_index, opcode, length, gpu_id — the doorbell rows are
     // what the parity claim is built on. `data` and `control` are kept as
-    // separate kinds rather than merged: SigmaTrace splits them and pcomm does
+    // separate kinds rather than merged: SigmaTrace splits them and comshu does
     // not, and flattening that here would hide a real difference in vocabulary.
     void visit(Events::EventTrait<PE::DoorbellRingData>, const Events::EventFileHeader&,
                Events::EventHeader&&, PE::DoorbellRingData&& e) {
@@ -73,7 +73,7 @@ public:
     }
 
     // Registrations: size is stable across runs, the address is not, so only the
-    // size is printed. Same projection the pcomm side applies.
+    // size is printed. Same projection the comshu side applies.
     void visit(Events::EventTrait<PE::Mlx5dvMemoryRegistration>, const Events::EventFileHeader&,
                Events::EventHeader&&, PE::Mlx5dvMemoryRegistration&& e) {
         std::printf("umem_reg\t%u\t0\t0x00\t%llu\t-1\n", e.mem_id,

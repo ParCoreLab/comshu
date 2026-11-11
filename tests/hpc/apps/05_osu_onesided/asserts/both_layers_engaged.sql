@@ -2,7 +2,7 @@
 -- Two hook-based providers, one process, one pass — and the deep one must have
 -- DARED to patch, without being told to.
 --
--- `pcomm run -p ucx,ucx_deep` puts two non-exclusive providers in one engine.
+-- `comshu run -p ucx,ucx_deep` puts two non-exclusive providers in one engine.
 -- The half that can fail quietly is ucx_deep: it reaches UCX's data plane
 -- through uct_iface_ops_t, an installed header with no ABI promise across
 -- versions, and it guards that by comparing the table size it compiled against
@@ -10,7 +10,7 @@
 -- uct_send has no rows and uct_binding says why, rather than leaving a reader
 -- to conclude that a benchmark which demonstrably moved 3 MB sent nothing.
 --
--- forced = 1 means PCOMM_UCX_DEEP_FORCE overrode a refusal. Such a capture may
+-- forced = 1 means COMSHU_UCX_DEEP_FORCE overrode a refusal. Such a capture may
 -- be perfectly correct, but every row in it rests on a guard that said no, and
 -- a study must not report that as an ordinary pass. This job sets no such
 -- variable, so a 1 here would also mean the environment is not what the script

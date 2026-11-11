@@ -5,7 +5,7 @@
 -- that the largest region each rank registers is device-resident "by
 -- construction of the transport". That was an assumption written down as an
 -- oracle, and MN5 refused it: job 44348796 reported device=65535 on every 38 MB
--- region, and the diagnostic (PCOMM_TRACE_HOOKS=1, job 44349630) said
+-- region, and the diagnostic (COMSHU_TRACE_HOOKS=1, job 44349630) said
 -- `stage=called rc=1 type=0` on all 8 ranks — libcuda resolved, the call ran,
 -- and the pointer is not known to CUDA at all. The buffers are ordinary host
 -- memory and 65535 was the right answer.
@@ -25,7 +25,7 @@
 -- assertion starts demanding device residency without being edited.
 --
 -- 65535 is kUnknownDevice (core/vocab.hpp), ambiguous on purpose: it means host
--- memory, CUDA-not-present and call-failed at once. PCOMM_TRACE_HOOKS=1 prints
+-- memory, CUDA-not-present and call-failed at once. COMSHU_TRACE_HOOKS=1 prints
 -- the stage/rc/type that separates them, and that is the tool to reach for when
 -- a row here surprises you — not a change to this file.
 --

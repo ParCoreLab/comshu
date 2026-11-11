@@ -4,7 +4,7 @@
 #
 # WHAT THIS GUARDS. Until 2026-09-03 it did not. One real du04 capture, copied
 # four times and damaged the three ways a capture can actually be damaged, put
-# through `pcomm export --parquet` and `pcomm link`:
+# through `comshu export --parquet` and `comshu link`:
 #
 #     variant      mlx5_umem rows   ranks   link_health non-zero
 #     pristine          10            2          0 of 25
@@ -33,22 +33,22 @@
 # the no-false-positive case is checked first and is not a formality.
 set -uo pipefail
 
-PCOMM=${1:?usage: capture_integrity_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: capture_integrity_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-capint-XXXXXX")
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/comshu-capint-XXXXXX")
 trap 'rm -rf "$ROOT"' EXIT
 
 fail=0
 
-# Raw column names, not the --csv export's decoded ones: `pcomm link` mounts
+# Raw column names, not the --csv export's decoded ones: `comshu link` mounts
 # these through mount_raw_tables, which expects the on-disk record layout.
 CS_COLS='rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,records_lost,bytes_lost,streams_open,streams_lost,dir_failed,header_lost,never_opened,pad,pad2'
 CI_COLS='rank,streams_found,streams_unreadable,streams_truncated,streams_foreign_schema'
 CA_COLS='rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,domain,local_ticks,wall_ns,mono_ns'
 
 link_or_die() {  # <dir>
-    "$PCOMM" link "$1" > "$1/link.out" 2>&1
+    "$COMSHU" link "$1" > "$1/link.out" 2>&1
     local rc=$?
     if grep -q "no DuckDB" "$1/link.out"; then echo "SKIP: build without DuckDB"; exit 0; fi
     if [ "$rc" -ne 0 ] || grep -q "SOME FAILED" "$1/link.out"; then
@@ -57,7 +57,7 @@ link_or_die() {  # <dir>
 }
 
 health() {  # <dir> <finding> -> n
-    "$PCOMM" sql "$1" \
+    "$COMSHU" sql "$1" \
         "SELECT coalesce(sum(n), 0) FROM link_health WHERE finding = '$2'" 2>/dev/null |
         tail -1 | tr -d '"'
 }
@@ -147,7 +147,7 @@ expect "files gone since the run are counted, and a replay's extra files are not
 # makes the tables beside it untrustworthy, which is the severity rule
 # link_health's own header sets out.
 expect "all five are defects, so the clean predicate sees them" \
-    "$("$PCOMM" sql "$BAD" \
+    "$("$COMSHU" sql "$BAD" \
         "SELECT count(*) FROM link_health
          WHERE n > 0 AND severity = 'defect' AND finding LIKE 'capture_%'" 2>/dev/null |
         tail -1 | tr -d '"')" "5"

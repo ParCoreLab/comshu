@@ -18,7 +18,7 @@
 # is a different queue with a different wait, so 32 is the largest capture
 # reachable on the debug QoS at all.
 #
-#SBATCH --job-name=pcomm-corpus-scale-nccl
+#SBATCH --job-name=comshu-corpus-scale-nccl
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=8
@@ -28,35 +28,35 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 export LD_LIBRARY_PATH="$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
 APP="$HOME/nccl_allreduce"
 if [ ! -x "$APP" ]; then                        # build once with the gcc-11 host
-  pcomm_load_build
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/nccl_allreduce.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/nccl_allreduce.cu" -o "$APP" \
     -I"$NCCL_HOME/include" -L"$NCCL_HOME/lib" -lnccl -lcudart
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
-OUT=$(pcomm_out scale_nccl); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out scale_nccl); rm -rf "$OUT"; mkdir -p "$OUT"
 
 # Identical pinning to case 02. Without it NCCL picks channel counts from
 # measured bandwidth, and at 32 ranks that choice varies across the allocation
 # as well as across runs — which would make this capture unrepeatable and
 # therefore useless as a sizing reference.
 mpirun -np 32 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=1 \
+  -x COMSHU_PROVIDER_PATH -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=1 \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  "$PCOMM" run -p ib -o "$OUT" -- "$APP" 8388608 20
+  "$COMSHU" run -p ib -o "$OUT" -- "$APP" 8388608 20
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
 
 # The question this job exists to answer, printed in the job log so it is
 # available without fetching 32 ranks of capture first.

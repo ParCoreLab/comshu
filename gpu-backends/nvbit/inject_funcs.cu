@@ -9,7 +9,7 @@
 
 #include "dev_common.h"
 
-extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcode_id, int dev_id,
+extern "C" __device__ __noinline__ void comshu_instrument_mem(int pred, int opcode_id, int dev_id,
                                                              uint64_t addr, uint64_t grid_launch_id,
                                                              uint64_t pchannel_dev, int instr_index,
                                                              int access_size) {
@@ -20,7 +20,7 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcod
     const int laneid = get_laneid();
     const int first_laneid = __ffs(active_mask) - 1;
 
-    pcomm_gpu_access_t ma;
+    comshu_gpu_access_t ma;
     for (int i = 0; i < 32; i++) {
         // __shfl_sync from a source lane that is not in active_mask returns an
         // undefined value, NOT the caller's addr and NOT zero. The host drain
@@ -45,10 +45,10 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcod
 
     if (first_laneid == laneid) {
         ChannelDev* channel_dev = (ChannelDev*)pchannel_dev;
-#ifndef PCOMM_INJECT_NO_PUSH
-        channel_dev->push(&ma, sizeof(pcomm_gpu_access_t));
+#ifndef COMSHU_INJECT_NO_PUSH
+        channel_dev->push(&ma, sizeof(comshu_gpu_access_t));
 #else
-        // Diagnostic build (-DPCOMM_INJECT_NO_PUSH): every instruction is still
+        // Diagnostic build (-DCOMSHU_INJECT_NO_PUSH): every instruction is still
         // instrumented — same injected calls, same register pressure, same SASS
         // perturbation — but nothing is ever pushed to the channel. Separates
         // "the injected code changes the kernel" from "push() interacts badly
@@ -79,16 +79,16 @@ extern "C" __device__ __noinline__ void pcomm_instrument_mem(int pred, int opcod
 //
 // %globaltimer is its own clock domain, NOT the host TSC and NOT CLOCK_REALTIME
 // — measured drift -13.9 ppm (H100) / +5.7 ppm (A100), opposite signs, so it is
-// anchored per GPU on the host side and resolved by pcomm-read's per-(rank,
+// anchored per GPU on the host side and resolved by comshu-read's per-(rank,
 // domain) fit like any other domain.
 extern "C" __device__ __noinline__ void
-pcomm_kernel_stamp(int is_end, int dev_id, uint64_t launch_id, uint64_t pchannel_dev) {
+comshu_kernel_stamp(int is_end, int dev_id, uint64_t launch_id, uint64_t pchannel_dev) {
     // Thread 0 of each block, and only when it is the first active lane, so a
     // divergent entry point still pushes exactly once.
     if (threadIdx.x != 0 || threadIdx.y != 0 || threadIdx.z != 0)
         return;
 
-    pcomm_gpu_access_t r;
+    comshu_gpu_access_t r;
     // Zeroed rather than partially filled: the access drain skips lanes whose
     // addr is 0, and a span record that leaked a non-zero addrs[] into that
     // path would be decoded as memory traffic if the -2 branch were ever
@@ -99,31 +99,31 @@ pcomm_kernel_stamp(int is_end, int dev_id, uint64_t launch_id, uint64_t pchannel
     uint64_t t;
     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
 
-    r.lane_id = PCOMM_SPAN_LANE_ID;
+    r.lane_id = COMSHU_SPAN_LANE_ID;
     r.dev_id = dev_id;
     r.instr_index = 0;
     r.access_size = 0;
     // Set on both records, though the drain reads it only off accesses: an
     // uninitialised field on the wire is a trap for whoever reads it next, and
     // the two kinds naming one launch identically is the join a tighter lower
-    // bound would need. PCOMM_SPAN_LAUNCH predates the field; see dev_common.h.
+    // bound would need. COMSHU_SPAN_LAUNCH predates the field; see dev_common.h.
     r.launch_id = launch_id;
-    PCOMM_SPAN_LAUNCH(r) = launch_id;
-    PCOMM_SPAN_TICKS(r) = t;
-    PCOMM_SPAN_IS_END(r) = is_end;
-    PCOMM_SPAN_BLOCK(r) = blockIdx.x + blockIdx.y * (uint64_t)gridDim.x +
+    COMSHU_SPAN_LAUNCH(r) = launch_id;
+    COMSHU_SPAN_TICKS(r) = t;
+    COMSHU_SPAN_IS_END(r) = is_end;
+    COMSHU_SPAN_BLOCK(r) = blockIdx.x + blockIdx.y * (uint64_t)gridDim.x +
                           (uint64_t)gridDim.x * gridDim.y * blockIdx.z;
 
     ChannelDev* channel_dev = (ChannelDev*)pchannel_dev;
-#ifndef PCOMM_INJECT_NO_PUSH
-    channel_dev->push(&r, sizeof(pcomm_gpu_access_t));
+#ifndef COMSHU_INJECT_NO_PUSH
+    channel_dev->push(&r, sizeof(comshu_gpu_access_t));
 #else
     (void)channel_dev;
     asm volatile("" ::"r"(r.dev_id) : "memory");
 #endif
 }
 
-// There was an entry function here — `pcomm_trickery`, calling both injected
+// There was an entry function here — `comshu_trickery`, calling both injected
 // functions to keep them from being optimised away ("BLACK MAGIC DONT REMOVE",
 // per the original). It is gone, and it must stay gone.
 //

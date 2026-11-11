@@ -72,16 +72,16 @@
   "runner_note": "This case does NOT use suite/sql_check.sh. That script materialises `params` from a HARD-CODED column list (PARAM_COLS = ranks nodes gpus iters msg_bytes elems elem_bytes app_buffer_bytes regions_per_rank umem_binding gpudirect rx_depth colls_per_iter p2p_per_iter groups_per_iter) and exits 2 on any workload key outside it, so npp/npme/nsteps/natoms -- the entire oracle of this case -- cannot be stated to it at all. asserts.sh here is the assertion half of sql_check.sh with the column list taken from meta.json instead. See NOTES.md.",
   "expect_fail_asserts": {
     "entity_close_accounted": "NOT a missing door, and the previous text here was wrong -- it claimed 3,726 closes against openers that were never recorded. Re-measured on job 45103152: every mem-region close names a region that WAS recorded (unmatched = 0). What fires is clause 3, 'entity opened and never closed': 33 of 1,588 ib_mem_region lifetimes are still live at exit, 3-5 per rank evenly across all 8, all origin=1 (the same door as the other 1,508), so they are not a distinct population. That is an application exiting without deregistering, which suite/asserts/entity_close_accounted.sql explicitly calls 'legal and not our problem' and tells you to scope per case rather than exempt -- a global exemption for opener 100 would hide the hcoll leak in BUGS-FOUND.md and the 474 unmatched closes this file was written for. Marked here and nowhere else, exactly as the hcoll case is.",
-    "mem_owner_unambiguous": "CORRECT BEHAVIOUR, and the previous text here described the wrong mechanism. It is not that UCX re-registers one base at growing lengths -- that IS a containment chain and the reader already resolves it to the innermost object (nested_refs, not ambiguous_refs; see the co-terminal NCCL case in the assertion). Re-measured on job 45103152: the flagged pairs PARTIALLY OVERLAP by exactly 16 bytes. 0x10a2a480+88016 ends at 0x10a3fc50 while a separate region starts at 0x10a3fc40; 0x112f6830+86288 against 0x1130b930 is the same 16 bytes. Neither contains the other, so no rule picks a winner without inventing one, which is precisely what this assertion exists to say. 198 such rows, and ZERO rows with devices > 1 -- the emitters do not disagree about any device. Nothing to fix in pcomm; the finding is about UCX's registration cache."
+    "mem_owner_unambiguous": "CORRECT BEHAVIOUR, and the previous text here described the wrong mechanism. It is not that UCX re-registers one base at growing lengths -- that IS a containment chain and the reader already resolves it to the innermost object (nested_refs, not ambiguous_refs; see the co-terminal NCCL case in the assertion). Re-measured on job 45103152: the flagged pairs PARTIALLY OVERLAP by exactly 16 bytes. 0x10a2a480+88016 ends at 0x10a3fc50 while a separate region starts at 0x10a3fc40; 0x112f6830+86288 against 0x1130b930 is the same 16 bytes. Neither contains the other, so no rule picks a winner without inventing one, which is precisely what this assertion exists to say. 198 such rows, and ZERO rows with devices > 1 -- the emitters do not disagree about any device. Nothing to fix in comshu; the finding is about UCX's registration cache."
   },
   "runs": {
     "main": {
       "job": 45082564,
       "elapsed": "00:04:13",
       "nodes": 2,
-      "stdout": "~/proj/pcomm/pcomm-app-gromacs.45082564.out",
-      "logs": "~/pcomm-apps/gromacs/run-45082564/{smoke,bare-on,bare-off,trace-on,trace-off}.log",
-      "captures": "~/pcomm-apps/gromacs/gromacs-{on,off}-45082564{,.csv,.pq}"
+      "stdout": "~/proj/comshu/comshu-app-gromacs.45082564.out",
+      "logs": "~/comshu-apps/gromacs/run-45082564/{smoke,bare-on,bare-off,trace-on,trace-off}.log",
+      "captures": "~/comshu-apps/gromacs/gromacs-{on,off}-45082564{,.csv,.pq}"
     },
     "probe": {
       "job": 45088478,
@@ -91,15 +91,15 @@
         "ucx",
         "mlx5dv"
       ],
-      "stdout": "~/proj/pcomm/pcomm-app-gromacs-probe.45088478.out",
-      "captures": "~/pcomm-apps/gromacs/gromacs-probe-45088478{,.csv}",
+      "stdout": "~/proj/comshu/comshu-app-gromacs-probe.45088478.out",
+      "captures": "~/comshu-apps/gromacs/gromacs-probe-45088478{,.csv}",
       "why": "separates 'UCX never used GPUDirect RDMA' from 'the device registration went through a door -p ib,ucx did not load'. Answer: the former."
     }
   },
   "input": {
     "system": "benchRIB",
     "source": "https://www.mpinat.mpg.de/grubmueller/bench",
-    "file": "~/pcomm-apps/gromacs/benchRIB.tpr",
+    "file": "~/comshu-apps/gromacs/benchRIB.tpr",
     "md5": "f16f0e021ef1a2c43ad21800943b2d45",
     "tpx_version": 83,
     "natoms_offset": 72,

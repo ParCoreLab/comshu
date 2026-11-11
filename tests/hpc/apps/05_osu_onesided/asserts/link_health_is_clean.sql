@@ -4,7 +4,7 @@
 -- Every row here is a defect in the LINK, not in the workload: an operation
 -- whose transport could not be named, a send whose peer could not be resolved,
 -- an interface pointer claimed by two transports. This study is the first time
--- a third-party one-sided workload has been put through `pcomm link` at all,
+-- a third-party one-sided workload has been put through `comshu link` at all,
 -- and the round-2 brief is explicit that a non-empty link_health is a finding.
 --
 -- WHY IT BELONGS HERE RATHER THAN ONLY IN THE SUITE. The RERUN of 2026-08-27

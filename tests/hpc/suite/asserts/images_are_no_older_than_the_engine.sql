@@ -1,4 +1,4 @@
--- Every libpcomm object mapped into the traced process was built with the
+-- Every libcomshu object mapped into the traced process was built with the
 -- engine that loaded it — or after it, never long before.
 --
 -- WHY THIS IS A SEPARATE CHECK FROM build_is_the_boards_commit, and not a
@@ -10,7 +10,7 @@
 -- the build tree beside them was correct. It nearly refuted a correct change,
 -- and it is the reason `Invocation.images` exists at all.
 --
--- `images` is one line per mapped libpcomm object: `<path> <size> <mtime>`,
+-- `images` is one line per mapped libcomshu object: `<path> <size> <mtime>`,
 -- walked from /proc/self/maps at emit time (engine.cpp, mapped_images).
 --
 -- THE THRESHOLD IS MEASURED, NOT GUESSED. On the MN5 board (job 45426015, a
@@ -22,7 +22,7 @@
 --
 -- A BAKED engine is unpacked into a cache directory at run time, and the
 -- comparison is only meaningful because the unpacked copy carries the mtime
--- its source had when it was baked (pcomm/baked.hpp, format 2). Format 1
+-- its source had when it was baked (comshu/baked.hpp, format 2). Format 1
 -- stamped the unpack time, so a provider loaded straight from the build tree
 -- — NCCL's profiler plugin, which NCCL dlopens by path — looked as old as the
 -- queue wait: 873 s on MN5 job 45894230, a correct capture failed.
@@ -68,7 +68,7 @@ parts(rank, path, mtime) AS (
 ),
 engine(rank, mtime) AS (
     SELECT rank, CAST(mtime AS INTEGER) FROM parts
-    WHERE path LIKE '%/libpcomm_engine.so' AND mtime GLOB '[0-9]*'
+    WHERE path LIKE '%/libcomshu_engine.so' AND mtime GLOB '[0-9]*'
 )
 
 SELECT 'mapped image is older than the engine that loaded it' AS problem,
@@ -76,7 +76,7 @@ SELECT 'mapped image is older than the engine that loaded it' AS problem,
        p.path                                                 AS detail,
        e.mtime - CAST(p.mtime AS INTEGER)                     AS seconds_older
 FROM parts p JOIN engine e ON e.rank = p.rank
-WHERE p.path NOT LIKE '%/libpcomm_engine.so'
+WHERE p.path NOT LIKE '%/libcomshu_engine.so'
   AND p.mtime GLOB '[0-9]*'
   AND e.mtime - CAST(p.mtime AS INTEGER) > 60
 
@@ -102,7 +102,7 @@ UNION ALL
 -- be read; images without the engine means the walk found providers but not
 -- the object every one of them is linked against. Either way the comparison
 -- above has nothing to compare and must not report that as clean.
-SELECT 'rank recorded no mapped pcomm images at all',
+SELECT 'rank recorded no mapped comshu images at all',
        CAST(i.rank AS INTEGER), NULL, NULL
 FROM invocation i WHERE coalesce(i.images, '') = ''
 
@@ -110,10 +110,10 @@ UNION ALL
 
 -- By path, not through `engine`: an engine that is mapped but could not be
 -- stat'd is present, and is already reported by the branch above as gone.
-SELECT 'mapped images do not include libpcomm_engine.so',
+SELECT 'mapped images do not include libcomshu_engine.so',
        CAST(i.rank AS INTEGER), NULL, NULL
 FROM invocation i
 WHERE coalesce(i.images, '') <> ''
   AND NOT EXISTS (SELECT 1 FROM parts p
                   WHERE p.rank = CAST(i.rank AS INTEGER)
-                    AND p.path LIKE '%/libpcomm_engine.so');
+                    AND p.path LIKE '%/libcomshu_engine.so');

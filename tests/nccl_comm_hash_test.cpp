@@ -28,7 +28,7 @@
 
 #include "nccl_comm_hash.hpp"
 
-using pcomm::providers::nccl::nccl_comm_hash;
+using comshu::providers::nccl::nccl_comm_hash;
 
 namespace {
 
@@ -65,6 +65,8 @@ int main() {
     // having on its own because it is the case where a bug in the tail-chunk
     // loop would be masked by the leading bytes agreeing.
     std::memset(id, 0, sizeof id);
+    // The bytes are the known answer's input and must not change with the
+    // project's name: 0x3b9c0d977c7bca36 was computed from exactly these 14.
     std::memcpy(id, "\x02\x00\x00\x00pcomm-test", 14);
     expect_hash(id, sizeof id, 0x3b9c0d977c7bca36ull, "header + zero fill");
 

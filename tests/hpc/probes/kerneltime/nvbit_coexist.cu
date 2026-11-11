@@ -2,7 +2,7 @@
 //
 // This is the architectural crux, not a detail. If they cannot coexist, then
 // putting kernel timing in the ENGINE via CUPTI would break the gpumem provider
-// every time both are selected, and `pcomm run -p gpumem,ibverbs` is a
+// every time both are selected, and `comshu run -p gpumem,ibverbs` is a
 // supported combination.
 //
 // Static analysis says they should: `nm libnvbit.a` reports ZERO undefined

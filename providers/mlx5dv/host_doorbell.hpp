@@ -69,17 +69,17 @@ namespace mlx5::hostdb {
 
 inline constexpr std::size_t kUarPageSize = 4096;
 
-// The launcher's --enable-host-doorbell sets PCOMM_HOST_DOORBELL=1. Checked
+// The launcher's --enable-host-doorbell sets COMSHU_HOST_DOORBELL=1. Checked
 // once, and refused outright when the GPU hijack is also asked for: a run gets
 // one doorbell mechanism, and which one is a property of the platform, not a
 // preference.
 inline bool enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_HOST_DOORBELL");
+        const char* v = std::getenv("COMSHU_HOST_DOORBELL");
         const bool  want = v && *v == '1';
         if (want && hijack::enabled()) {
             std::fprintf(stderr,
-                         "[pcomm] PCOMM_HOST_DOORBELL and PCOMM_DOORBELL_HIJACK are both set. "
+                         "[comshu] COMSHU_HOST_DOORBELL and COMSHU_DOORBELL_HIJACK are both set. "
                          "They observe the same doorbell by opposite means and cannot share a "
                          "run; the host path is DISABLED and the GPU hijack stands. Pick one: "
                          "the GPU hijack needs the NIC BAR mapped into the GPU, the host path "
@@ -117,7 +117,7 @@ inline State& state() {
 
 inline bool debug_on() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_HOST_DOORBELL_DEBUG");
+        const char* v = std::getenv("COMSHU_HOST_DOORBELL_DEBUG");
         return v && *v == '1';
     }();
     return on;
@@ -169,7 +169,7 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
         // Not cached: libcuda may simply not be loaded yet.
         if (!std::exchange(g_said_unresolved, true))
             std::fprintf(stderr,
-                         "[pcomm] host doorbell: cannot resolve the CUDA driver yet, so whether "
+                         "[comshu] host doorbell: cannot resolve the CUDA driver yet, so whether "
                          "this platform maps a NIC doorbell page into the GPU is unknown. NOT "
                          "arming this UAR; will ask again on the next one.\n");
         return false;
@@ -194,7 +194,7 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
     if (rc == hijack::kCudaSuccess) {
         unreg(real_reg_addr);  // leave the page exactly as it was found
         std::fprintf(stderr,
-                     "[pcomm] host doorbell: this platform DOES map the NIC doorbell page into "
+                     "[comshu] host doorbell: this platform DOES map the NIC doorbell page into "
                      "the GPU, so its transport can submit from the device and arming the host "
                      "path would change which mode it picks. NOT arming — use "
                      "--enable-doorbell-hijack here.\n");
@@ -215,7 +215,7 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
         // one, so the next UAR gets a real answer.
         if (!std::exchange(g_said_inconclusive, true))
             std::fprintf(stderr,
-                         "[pcomm] host doorbell: probing the doorbell page failed with rc=%d, "
+                         "[comshu] host doorbell: probing the doorbell page failed with rc=%d, "
                          "which is not the refusal this guard looks for (%d, NOT_PERMITTED) — "
                          "201 means no CUDA context was current yet. That says the probe could "
                          "not be made, not that the platform refuses. NOT arming this UAR; will "
@@ -225,7 +225,7 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
     }
 
     std::fprintf(stderr,
-                 "[pcomm] host doorbell: the driver refuses to map the NIC doorbell page into "
+                 "[comshu] host doorbell: the driver refuses to map the NIC doorbell page into "
                  "the GPU (cuMemHostRegister -> NOT_PERMITTED). GPU-submitted IBGDA is "
                  "impossible on this platform, so the doorbell writer is a host thread and "
                  "watching its mapping cannot change the run.\n");
@@ -399,7 +399,7 @@ inline void report_and_shutdown(int rank) {
 
     auto& h = hijack::state();
     std::fprintf(stderr,
-                 "[pcomm rank %d] host doorbell: uars_armed=%u unarmed=%u doorbells=%llu "
+                 "[comshu rank %d] host doorbell: uars_armed=%u unarmed=%u doorbells=%llu "
                  "sends=%llu (unknown_op=%llu truncated=%llu) wqes_lapped=%llu%s\n",
                  rank, s.uars_armed.load(), s.uars_unarmed.load(),
                  static_cast<unsigned long long>(h.doorbells_decoded.load()),
@@ -411,7 +411,7 @@ inline void report_and_shutdown(int rank) {
 
     if (s.uars_armed.load() > 0 && h.doorbells_decoded.load() == 0)
         std::fprintf(stderr,
-                     "[pcomm rank %d] host doorbell: %u UAR(s) watched and NO doorbell rang "
+                     "[comshu rank %d] host doorbell: %u UAR(s) watched and NO doorbell rang "
                      "through them. Either this run sent nothing, or its doorbell writer is the "
                      "GPU — in which case this is the wrong mechanism and "
                      "--enable-doorbell-hijack is the right one.\n",

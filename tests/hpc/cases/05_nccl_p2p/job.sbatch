@@ -18,7 +18,7 @@
 # So the deadline reflects the tool, not the workload. Do NOT "fix" this by
 # shrinking the message — that was tried across a 2621x range and does nothing.
 #
-#SBATCH --job-name=pcomm-05-nccl-p2p
+#SBATCH --job-name=comshu-05-nccl-p2p
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -29,29 +29,29 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 export LD_LIBRARY_PATH="$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
 APP="$HOME/nccl_allreduce-li"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/nccl_allreduce.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/nccl_allreduce.cu" -o "$APP" \
     -I"$NCCL_HOME/include" -L"$NCCL_HOME/lib" -lnccl -lcudart
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
-OUT=$(pcomm_out nccl_p2p); rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT" "$OUT.csv"
+OUT=$(comshu_out nccl_p2p); rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT" "$OUT.csv"
 DEADLINE=600   # ~435s of fixed NVBit module cost + headroom
 
 timeout "$DEADLINE" mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NCCL_DEBUG=WARN \
+  -x COMSHU_PROVIDER_PATH -x NCCL_DEBUG=WARN \
   -x NCCL_P2P_DISABLE=0 -x NCCL_P2P_LEVEL=NVL \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  "$PCOMM" run -p p2p -o "$OUT" -- "$APP" 262144 3
+  "$COMSHU" run -p p2p -o "$OUT" -- "$APP" 262144 3
 rc=$?
 echo "workload rc=$rc"
 if [ $rc -ne 0 ]; then
@@ -61,8 +61,8 @@ if [ $rc -ne 0 ]; then
   exit 1
 fi
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/05_nccl_p2p"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/05_nccl_p2p"

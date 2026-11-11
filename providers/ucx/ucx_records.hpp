@@ -4,11 +4,11 @@
 
 #include <cstdint>
 
-#include "pcomm/core/record.hpp"
-#include "pcomm/core/vocab.hpp"
+#include "comshu/core/record.hpp"
+#include "comshu/core/vocab.hpp"
 
-namespace pcomm::providers::ucx::records {
-using namespace pcomm::core;
+namespace comshu::providers::ucx::records {
+using namespace comshu::core;
 
 enum class StatusClass : std::uint8_t {
     Immediate = 0,  // nullptr / UCS_OK
@@ -39,23 +39,23 @@ enum class UcxDoor : std::uint8_t {
     LegacyPost = 5,  // ucp_atomic_post — fire and forget, no result at all
 };
 
-PCOMM_RECORD(UcxContext, RecordKind::Entity, 600, "ucx_context") {
+COMSHU_RECORD(UcxContext, RecordKind::Entity, 600, "ucx_context") {
     Handle        context;
     std::uint32_t api_major;
     std::uint32_t api_minor;
 };
 
-PCOMM_RECORD(UcxWorker, RecordKind::Entity, 602, "ucx_worker") {
+COMSHU_RECORD(UcxWorker, RecordKind::Entity, 602, "ucx_worker") {
     Handle worker;
     Handle context;
 };
 
-PCOMM_RECORD(UcxEndpoint, RecordKind::Entity, 604, "ucx_endpoint") {
+COMSHU_RECORD(UcxEndpoint, RecordKind::Entity, 604, "ucx_endpoint") {
     Handle endpoint;
     Handle worker;
 };
 
-PCOMM_RECORD(UcxTagSend, RecordKind::Event, 606, "ucx_tag_send") {
+COMSHU_RECORD(UcxTagSend, RecordKind::Event, 606, "ucx_tag_send") {
     Handle        endpoint;
     Handle        buffer;
     Handle        request;
@@ -89,7 +89,7 @@ PCOMM_RECORD(UcxTagSend, RecordKind::Event, 606, "ucx_tag_send") {
 // tag across every peer the worker can hear from, so there is no endpoint to
 // name, and inventing one by guessing the likely sender would be a fabricated
 // join that reads exactly like a measured one.
-PCOMM_RECORD(UcxTagRecv, RecordKind::Event, 608, "ucx_tag_recv") {
+COMSHU_RECORD(UcxTagRecv, RecordKind::Event, 608, "ucx_tag_recv") {
     Handle        worker;
     Handle        buffer;
     Handle        request;
@@ -122,7 +122,7 @@ PCOMM_RECORD(UcxTagRecv, RecordKind::Event, 608, "ucx_tag_recv") {
 // the UCX record family. Every other size here is capacity offered or a raw
 // datatype count; this one is how big the message actually is, straight out of
 // ucp_tag_recv_info_t, known before the receive is even posted.
-PCOMM_RECORD(UcxTagProbe, RecordKind::Event, 618, "ucx_tag_probe") {
+COMSHU_RECORD(UcxTagProbe, RecordKind::Event, 618, "ucx_tag_probe") {
     Handle        worker;
     Handle        message;     // interned ucp_tag_message_h — the join key
     std::uint64_t sender_tag;  // the FULL tag of the matched message
@@ -146,7 +146,7 @@ enum class RmaOp : std::uint8_t {
 // EVENT — a one-sided put or get was issued. `remote_addr` is the peer's
 // virtual address, and it is the field that makes these rows joinable to a
 // remote object the way ib_post_send.remote_addr already is.
-PCOMM_RECORD(UcxRma, RecordKind::Event, 610, "ucx_rma") {
+COMSHU_RECORD(UcxRma, RecordKind::Event, 610, "ucx_rma") {
     Handle        endpoint;
     Handle        buffer;  // the LOCAL buffer
     Handle        request;
@@ -163,7 +163,7 @@ PCOMM_RECORD(UcxRma, RecordKind::Event, 610, "ucx_rma") {
 // EVENT — an active-message send. The header and the payload keep separate
 // lengths rather than being summed: an AM protocol's header is control traffic
 // and its payload is data, and a total that merges them cannot be split back.
-PCOMM_RECORD(UcxAmSend, RecordKind::Event, 612, "ucx_am_send") {
+COMSHU_RECORD(UcxAmSend, RecordKind::Event, 612, "ucx_am_send") {
     Handle        endpoint;
     Handle        buffer;  // the payload buffer; the header is not interned
     Handle        request;
@@ -191,7 +191,7 @@ PCOMM_RECORD(UcxAmSend, RecordKind::Event, 612, "ucx_am_send") {
 // says which of the two a row carries, because a rounded length and a requested
 // length are different measurements and a reader cannot tell them apart by
 // looking.
-PCOMM_RECORD(UcxMemMap, RecordKind::Entity, 614, "ucx_mem_map") {
+COMSHU_RECORD(UcxMemMap, RecordKind::Entity, 614, "ucx_mem_map") {
     Handle        memh;  // interned ucp_mem_h
     Handle        context;
     std::uint64_t address;
@@ -206,7 +206,7 @@ PCOMM_RECORD(UcxMemMap, RecordKind::Entity, 614, "ucx_mem_map") {
 // between two runs of the identical workload. So the empty polls are dropped
 // (see the predicate on the hook) and what remains is telemetry — never a
 // golden, and never evidence about how much work a rank did.
-PCOMM_RECORD(UcxWorkerProgress, RecordKind::Event, 616, "ucx_worker_progress") {
+COMSHU_RECORD(UcxWorkerProgress, RecordKind::Event, 616, "ucx_worker_progress") {
     Handle        worker;
     std::uint32_t progressed;  // callbacks dispatched by this call
 };
@@ -246,7 +246,7 @@ enum class UcxAtomicOp : std::uint8_t {
 // fire-and-forget through ucp_atomic_post and fetching through
 // ucp_atomic_fetch_nb's FADD, and through ucp_atomic_op_nbx it is whichever the
 // caller's reply buffer says. Read from the field_mask there, never assumed.
-PCOMM_RECORD(UcxAtomic, RecordKind::Event, 620, "ucx_atomic") {
+COMSHU_RECORD(UcxAtomic, RecordKind::Event, 620, "ucx_atomic") {
     Handle        endpoint;
     Handle        buffer;  // operand/result buffer where the door has one
     Handle        request;
@@ -297,7 +297,7 @@ PCOMM_RECORD(UcxAtomic, RecordKind::Event, 620, "ucx_atomic") {
 // joins to `ucx_ep_connection.remote_prefix_hash` and thence to another rank's
 // `ucx_worker_address`, and `ucx_rma.remote_addr` can then be range-matched
 // against that rank's `ucx_mem_map`. That chain is measured, not invented.
-PCOMM_RECORD(UcxRkey, RecordKind::Entity, 626, "ucx_rkey") {
+COMSHU_RECORD(UcxRkey, RecordKind::Entity, 626, "ucx_rkey") {
     Handle rkey;      // interned ucp_rkey_h — the key ucx_rma/ucx_atomic name
     Handle endpoint;  // the endpoint it was unpacked for = which peer it targets
 };
@@ -321,7 +321,7 @@ PCOMM_RECORD(UcxRkey, RecordKind::Entity, 626, "ucx_rkey") {
 // not exist; see UcxRkey for why. It is recorded anyway because it is free here
 // and because two packs of the same registration should agree — a cheap
 // consistency check on a format nothing else in the capture inspects.
-PCOMM_RECORD(UcxRkeyPack, RecordKind::Artifact, 628, "ucx_rkey_pack") {
+COMSHU_RECORD(UcxRkeyPack, RecordKind::Artifact, 628, "ucx_rkey_pack") {
     Handle        memh;  // interned ucp_mem_h — joins to ucx_mem_map
     Handle        context;
     std::uint64_t buffer_hash;  // FNV-1a over the whole packed buffer
@@ -346,7 +346,7 @@ PCOMM_RECORD(UcxRkeyPack, RecordKind::Artifact, 628, "ucx_rkey_pack") {
 // the prefix stored, the same collision reads as a confident, wrong join.
 // Artifact, not Entity (2026-08-25): the worker's address is computed once and
 // never closes; the worker it belongs to is the thing with the lifetime.
-PCOMM_RECORD(UcxWorkerAddress, RecordKind::Artifact, 622, "ucx_worker_address") {
+COMSHU_RECORD(UcxWorkerAddress, RecordKind::Artifact, 622, "ucx_worker_address") {
     Handle        worker;
     std::uint64_t addr_hash;    // FNV-1a over the whole address
     std::uint64_t prefix_hash;  // FNV-1a over the first kAddressHashPrefix bytes
@@ -370,9 +370,9 @@ PCOMM_RECORD(UcxWorkerAddress, RecordKind::Artifact, 622, "ucx_worker_address") 
 // a measured null peer.
 // Artifact, not Entity (2026-08-25): a fact about an endpoint recorded once at
 // connect. The endpoint closes; this does not.
-PCOMM_RECORD(UcxEpConnection, RecordKind::Artifact, 624, "ucx_ep_connection") {
+COMSHU_RECORD(UcxEpConnection, RecordKind::Artifact, 624, "ucx_ep_connection") {
     Handle        endpoint;
     std::uint64_t remote_prefix_hash;
 };
 
-}  // namespace pcomm::providers::ucx::records
+}  // namespace comshu::providers::ucx::records

@@ -23,11 +23,11 @@
 
 #include <cstdint>
 
-#include "pcomm/core/record.hpp"
-#include "pcomm/core/vocab.hpp"
+#include "comshu/core/record.hpp"
+#include "comshu/core/vocab.hpp"
 
-namespace pcomm::providers::nccl::records {
-using namespace pcomm::core;
+namespace comshu::providers::nccl::records {
+using namespace comshu::core;
 
 // WHICH COLLECTIVE. Values are pinned: they go on disk.
 //
@@ -86,7 +86,7 @@ enum class GroupEdge : std::uint8_t {
 // grow path get a commHash mixed from their parent, which no ncclUniqueId we
 // are shown determines. 0 means "unknown", never "no communicator", and a join
 // on it must exclude 0 rather than treat it as a value.
-PCOMM_RECORD(NcclComm, RecordKind::Entity, 900, "nccl_comm") {
+COMSHU_RECORD(NcclComm, RecordKind::Entity, 900, "nccl_comm") {
     Handle        comm;            // interned ncclComm_t
     std::uint64_t comm_hash;       // FNV-1a of the ncclUniqueId — equal across the comm
     std::uint64_t nccl_comm_hash;  // NCCL's own commHash; 0 = not derivable
@@ -106,7 +106,7 @@ PCOMM_RECORD(NcclComm, RecordKind::Entity, 900, "nccl_comm") {
 // moves it once from one rank. Presenting the logical size as traffic would
 // invent a measurement, so the record carries the two facts it actually knows
 // and leaves the reader to name what it derives.
-PCOMM_RECORD(NcclCollective, RecordKind::Event, 902, "nccl_collective") {
+COMSHU_RECORD(NcclCollective, RecordKind::Event, 902, "nccl_collective") {
     Handle        comm;
     Handle        sendbuff;
     Handle        recvbuff;
@@ -122,7 +122,7 @@ PCOMM_RECORD(NcclCollective, RecordKind::Event, 902, "nccl_collective") {
 // One point-to-point call. The peer is the whole point: this is the only NCCL
 // record from which an exact edge follows, with no assumption about how a
 // collective's algorithm decomposes.
-PCOMM_RECORD(NcclP2p, RecordKind::Event, 904, "nccl_p2p") {
+COMSHU_RECORD(NcclP2p, RecordKind::Event, 904, "nccl_p2p") {
     Handle        comm;
     Handle        buffer;
     Handle        stream;
@@ -144,7 +144,7 @@ PCOMM_RECORD(NcclP2p, RecordKind::Event, 904, "nccl_p2p") {
 // `edge` is widened to 32 bits rather than padded to the record's alignment.
 // Seven bytes of declared padding would be seven bytes this file has to keep
 // truthful across two schemas forever, in exchange for nothing.
-PCOMM_RECORD(NcclGroup, RecordKind::Event, 906, "nccl_group") {
+COMSHU_RECORD(NcclGroup, RecordKind::Event, 906, "nccl_group") {
     std::uint32_t depth;
     std::uint32_t edge;  // GroupEdge
 };
@@ -157,7 +157,7 @@ PCOMM_RECORD(NcclGroup, RecordKind::Event, 906, "nccl_group") {
 // see. So an access NVBit records inside a registered window CAN be named,
 // while NCCL's internal channel buffers cannot: the difference is that the
 // application allocated and registered this one.
-PCOMM_RECORD(NcclWindow, RecordKind::Entity, 908, "nccl_window") {
+COMSHU_RECORD(NcclWindow, RecordKind::Entity, 908, "nccl_window") {
     Handle        window;  // interned ncclWindow_t
     Handle        comm;
     Handle        buffer;  // the registered base pointer
@@ -180,7 +180,7 @@ PCOMM_RECORD(NcclWindow, RecordKind::Entity, 908, "nccl_window") {
 // not have it.
 // Artifact, not Entity (2026-08-25): an existence fact, which is the Artifact
 // definition almost word for word. Nothing opens or closes it.
-PCOMM_RECORD(NcclDevComm, RecordKind::Artifact, 910, "nccl_dev_comm") {
+COMSHU_RECORD(NcclDevComm, RecordKind::Artifact, 910, "nccl_dev_comm") {
     Handle       comm;
     std::int32_t pad;
 };
@@ -229,7 +229,7 @@ PCOMM_RECORD(NcclDevComm, RecordKind::Artifact, 910, "nccl_dev_comm") {
 // It is interned rather than dropped because it is the only human-readable name
 // a communicator ever has, and a workload that names its comms ("dp", "tp",
 // "pp") is telling us its parallelism strategy for free.
-PCOMM_RECORD(NcclProfComm, RecordKind::Artifact, 912, "nccl_prof_comm") {
+COMSHU_RECORD(NcclProfComm, RecordKind::Artifact, 912, "nccl_prof_comm") {
     Handle        comm_name;
     std::uint64_t nccl_comm_hash;
     std::int32_t  nnodes;
@@ -256,7 +256,7 @@ PCOMM_RECORD(NcclProfComm, RecordKind::Artifact, 912, "nccl_prof_comm") {
 // the event NCCL named as this one's parent, or 0 where that parent's event
 // family was masked off and we therefore never saw it. 0 means "not observed",
 // never "root".
-PCOMM_RECORD(NcclCollExec, RecordKind::Event, 914, "nccl_coll_exec") {
+COMSHU_RECORD(NcclCollExec, RecordKind::Event, 914, "nccl_coll_exec") {
     Handle        func;      // "AllReduce", "Broadcast", ... as NCCL spells it
     Handle        algo;      // "Ring" / "Tree" / "NVLS" / ...
     Handle        proto;     // "Simple" / "LL" / "LL128"
@@ -298,7 +298,7 @@ PCOMM_RECORD(NcclCollExec, RecordKind::Event, 914, "nccl_coll_exec") {
 // padding, which is six bytes two schemas have to keep truthful forever in
 // exchange for nothing. Widening leaves the struct exactly 8-aligned with no
 // hole to keep honest.
-PCOMM_RECORD(NcclProxyOp, RecordKind::Event, 916, "nccl_proxy_op") {
+COMSHU_RECORD(NcclProxyOp, RecordKind::Event, 916, "nccl_proxy_op") {
     std::uint64_t event_id;
     std::uint64_t parent_event_id;  // 0 = not observed
     std::int32_t  peer;             // rank within the communicator
@@ -309,4 +309,4 @@ PCOMM_RECORD(NcclProxyOp, RecordKind::Event, 916, "nccl_proxy_op") {
     std::uint32_t is_send;  // 1 send, 0 recv
 };
 
-}  // namespace pcomm::providers::nccl::records
+}  // namespace comshu::providers::nccl::records

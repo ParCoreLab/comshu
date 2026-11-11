@@ -12,7 +12,7 @@
 #
 #   sbatch tests/hpc/cases/04_nvshmem/job.sbatch
 #
-#SBATCH --job-name=pcomm-04-nvshmem
+#SBATCH --job-name=comshu-04-nvshmem
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -23,25 +23,25 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
-APP="$HOME/nvshmem_putget-li-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)"
+APP="$HOME/nvshmem_putget-li-$(sha1sum "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
     -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # AFTER the build block, not before it, and this line has already cost a job.
 #
 # NVSHMEM_HOME is globbed to the NEWEST SDK (26.5 on MN5) while
-# pcomm_load_build/pcomm_load_runtime do `module load nvidia-hpc-sdk/25.7` — and
+# comshu_load_build/comshu_load_runtime do `module load nvidia-hpc-sdk/25.7` — and
 # each of those PREPENDS 25.7's lib dir. Setting this before the build block
 # therefore puts 26.5 first, the build block shoves 25.7 in front of it, and the
 # loader hands the binary a libnvshmem_host it was not linked against:
@@ -53,9 +53,9 @@ fi
 # someone changes the workload". Adding -lineinfo was that day (job 44696379).
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
-OUT=$(pcomm_out nvshmem); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out nvshmem); rm -rf "$OUT"; mkdir -p "$OUT"
 
-# PCOMM_KERNEL_NAME restricts instrumentation to our put kernel. NB the mechanism
+# COMSHU_KERNEL_NAME restricts instrumentation to our put kernel. NB the mechanism
 # is not what it looks like: nvshmem_int_p is *inlined* into put_to_next, so the
 # puts have no name of their own to filter on — they are captured precisely
 # because they are part of put_to_next's SASS. What the filter excludes is
@@ -64,13 +64,13 @@ OUT=$(pcomm_out nvshmem); rm -rf "$OUT"; mkdir -p "$OUT"
 # tests each related function's name individually): a callee that is *not*
 # inlined has its own name, won't match, and its accesses are silently dropped.
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
-  -x PCOMM_KERNEL_NAME=put_to_next \
-  "$PCOMM" run -p p2p -o "$OUT" -- "$APP" 65536 3
+  -x COMSHU_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
+  -x COMSHU_KERNEL_NAME=put_to_next \
+  "$COMSHU" run -p p2p -o "$OUT" -- "$APP" 65536 3
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem"

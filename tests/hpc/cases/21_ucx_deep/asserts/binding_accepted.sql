@@ -8,7 +8,7 @@
 -- is the honest empty capture: uct_send has no rows and this row says why,
 -- instead of leaving a reader to conclude the application sent nothing.
 --
--- forced = 1 means PCOMM_UCX_DEEP_FORCE overrode a refusal. A forced capture may
+-- forced = 1 means COMSHU_UCX_DEEP_FORCE overrode a refusal. A forced capture may
 -- be perfectly correct, but it is a capture whose every row rests on a guard
 -- that said no, and the suite must not report that as an ordinary pass.
 --

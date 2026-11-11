@@ -3,7 +3,7 @@
 --
 -- Not `kind = 5`. `kind` is what the API was asked for and the ordinal pair is
 -- what the hardware did, and they can disagree in both directions — see
--- _memcpy_edges in pcomm-read/link_sql.hpp. Restricted to msg_bytes so the
+-- _memcpy_edges in comshu-read/link_sql.hpp. Restricted to msg_bytes so the
 -- phase-5 probe, whose classification is the open question this case exists to
 -- measure, cannot move this number either way.
 -- PORTABLE SHAPE, and it is not cosmetic: `HAVING` without `GROUP BY` is

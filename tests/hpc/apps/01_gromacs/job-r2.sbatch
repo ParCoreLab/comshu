@@ -9,9 +9,9 @@
 #
 #   1. bare,  direct GPU comm ON   \  the workload works, and the ONLY place
 #   2. bare,  direct GPU comm OFF  /  ns/day and the DD log lines mean anything
-#   3. pcomm, direct GPU comm ON      the primary capture
-#   4. pcomm, direct GPU comm OFF     the knob's control arm
-#   5. pcomm, ON + UCX tag offload    the tag_flow control, 50 steps
+#   3. comshu, direct GPU comm ON      the primary capture
+#   4. comshu, direct GPU comm OFF     the knob's control arm
+#   5. comshu, ON + UCX tag offload    the tag_flow control, 50 steps
 #
 # The bare pair is not optional (apps/README.md: "a capture of a workload that
 # did not work is indistinguishable from a tracer that captured nothing"). Run 1
@@ -25,7 +25,7 @@
 # ONE JOB AT A TIME, ACCOUNT-WIDE. Before submitting:
 #   while squeue -u koc296797 -h | grep -q .; do sleep 60; done
 #
-#SBATCH --job-name=pcomm-app-gromacs-r2
+#SBATCH --job-name=comshu-app-gromacs-r2
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -36,9 +36,9 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime                       # gcc 13.2 (GLIBCXX_3.4.32) + HPC SDK 25.7
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime                       # gcc 13.2 (GLIBCXX_3.4.32) + HPC SDK 25.7
 
 # ---------------------------------------------------------------- GROMACS ----
 # One module per command: lmod evaluates gromacs's prereq() against what is
@@ -48,7 +48,7 @@ module load fftw/3.3.10-gcc-nvhpcx
 module load gromacs/2025.2-gcc-nvhpcx
 
 # gmx_mpi is linked against HPC-X 2.16 out of HPC SDK 23.11, not the 25.7 that
-# pcomm_load_runtime puts on PATH. This matters more for round 2 than it did for
+# comshu_load_runtime puts on PATH. This matters more for round 2 than it did for
 # round 1: ucx_deep patches uct_iface_ops_t, an installed header with no ABI
 # promise, and it must patch the SAME UCX the application's pml_ucx is running
 # against. If libucx_deep_trace.so resolves libucp/libuct from hpcx-2.22.1 while
@@ -66,7 +66,7 @@ export SLURM_CPU_BIND=none                # the module banner asks for this
 # direct comm OFF.
 unset GMX_ENABLE_DIRECT_GPU_COMM
 unset GMX_DISABLE_DIRECT_GPU_COMM
-unset PCOMM_UCX_DEEP_FORCE                # a forced binding is not an ordinary pass
+unset COMSHU_UCX_DEEP_FORCE                # a forced binding is not an ordinary pass
 
 echo "=== stack ==="
 which gmx_mpi mpirun
@@ -76,13 +76,13 @@ ldd "$(which gmx_mpi)" | grep -E 'libmpi|libcuda|libcufft'
 # because uct_binding would then be guarding the wrong library.
 for so in providers/ucx/libucx_trace.so providers/ucx_deep/libucx_deep_trace.so; do
   echo "--- $so"
-  ldd "$PCOMM_BUILD/$so" 2>&1 | grep -E 'libucp|libuct|libucs|not found'
+  ldd "$COMSHU_BUILD/$so" 2>&1 | grep -E 'libucp|libuct|libucs|not found'
 done
 
-WORK="$HOME/pcomm-apps/gromacs"
+WORK="$HOME/comshu-apps/gromacs"
 TPR="$WORK/benchRIB.tpr"                  # 2,136,412 atoms; md5 f16f0e02...
 RUN="$WORK/r2-$SLURM_JOB_ID"; mkdir -p "$RUN"; cd "$RUN" || exit 1
-CASE="$PCOMM_ROOT/tests/hpc/apps/01_gromacs"
+CASE="$COMSHU_ROOT/tests/hpc/apps/01_gromacs"
 
 # ------------------------------------------------------------ the command ----
 # Identical to round 1's, so the two rounds are the same experiment, EXCEPT
@@ -116,7 +116,7 @@ case "$NSTEPS$NSTEPS_TM" in *[!0-9]*|"") echo "!! bad nsteps from meta-r2.json: 
 echo "nsteps=$NSTEPS  nsteps_tm=$NSTEPS_TM  (from meta-r2.json, the same file the assertions read)"
 
 mpi_run() {
-  local xs=(-x PATH -x LD_LIBRARY_PATH -x OPAL_PREFIX -x PCOMM_PROVIDER_PATH)
+  local xs=(-x PATH -x LD_LIBRARY_PATH -x OPAL_PREFIX -x COMSHU_PROVIDER_PATH)
   [ -n "${GMX_DISABLE_DIRECT_GPU_COMM:-}" ] && xs+=(-x GMX_DISABLE_DIRECT_GPU_COMM)
   [ -n "${GMX_FORCE_GPU_AWARE_MPI:-}"    ] && xs+=(-x GMX_FORCE_GPU_AWARE_MPI)
   [ -n "${UCX_RC_MLX5_TM_ENABLE:-}"      ] && xs+=(-x UCX_RC_MLX5_TM_ENABLE)
@@ -139,7 +139,7 @@ mpi_run gmx_mpi mdrun "${COMMON_ARGS[@]}" -nsteps 0 \
 # ------------------------------------------------------------- the oracles ---
 # THE TWO LINES THE WHOLE STUDY RESTS ON. Printed from GROMACS's own log, not
 # from a capture, and printed BEFORE any capture exists.
-echo "=== DD ORACLE (from GROMACS, not from pcomm) ==="
+echo "=== DD ORACLE (from GROMACS, not from comshu) ==="
 grep -E 'Domain decomposition grid|separate PME ranks|number of communication pulses|domain decomposition cell size|Using .* MPI process' smoke.log
 PULSES="$(sed -n 's/.*initial number of communication pulses is:[[:space:]]*X[[:space:]]*\([0-9]*\).*/\1/p' smoke.log | head -1)"
 echo "pulses_x = ${PULSES:-<not printed>}  (PREDICTION.md P1.2 predicts 1)"
@@ -171,22 +171,22 @@ run_bare() {
 run_traced() {                            # $1 = on|off  $2 = tag  $3 = nsteps
   local a="$1" tag="$2" n="$3" out; arm "$a"
   out="$WORK/gmx-r2-$tag-$SLURM_JOB_ID"; rm -rf "$out" "$out.csv" "$out.pq"; mkdir -p "$out"
-  echo "=== pcomm $tag (direct=$a, nsteps=$n) ==="
-  mpi_run "$PCOMM" run -p ucx,ucx_deep -o "$out" -- \
+  echo "=== comshu $tag (direct=$a, nsteps=$n) ==="
+  mpi_run "$COMSHU" run -p ucx,ucx_deep -o "$out" -- \
           gmx_mpi mdrun "${COMMON_ARGS[@]}" -nsteps "$n" \
           -g "trace-$tag.log" -e "trace-$tag.edr" -o "trace-$tag.trr"
-  echo "pcomm $tag exit=$?"
+  echo "comshu $tag exit=$?"
 
   # A capture directory with no rank-* subdirectory means the workload never
   # started. Read this before reading anything else.
   ls -d "$out"/rank-* >/dev/null 2>&1 || { echo "!! NO rank-* IN $out — the workload never started"; return 1; }
 
-  echo "--- captured streams ($tag) ---"; "$PCOMM" read "$out"
+  echo "--- captured streams ($tag) ---"; "$COMSHU" read "$out"
   # uct_binding first, always: accepted=0 is why uct_send would be empty and the
   # record exists to say so.
-  "$PCOMM" dump "$out" 806 2>/dev/null | head -12 || true
-  "$PCOMM" export "$out" --csv "$out.csv"
-  pcomm_derive "$out"                     # parquet + the derived layer (DuckDB)
+  "$COMSHU" dump "$out" 806 2>/dev/null | head -12 || true
+  "$COMSHU" export "$out" --csv "$out.csv"
+  comshu_derive "$out"                     # parquet + the derived layer (DuckDB)
   grep -E 'GPU-aware MPI|direct GPU communication|GPU halo exchange|Update task|Performance:' \
        "trace-$tag.log" | head -20
 }
@@ -218,7 +218,7 @@ unset UCX_RC_MLX5_TM_ENABLE UCX_DC_MLX5_TM_ENABLE UCX_TM_THRESH
 
 # ------------------------------------------------------------- assertions ----
 # Over the PARQUET export, because transport_mix / tag_flow / tag_recv_resolved
-# / link_health are built by `pcomm link` and do not exist in the CSV one. See
+# / link_health are built by `comshu link` and do not exist in the CSV one. See
 # run-asserts-r2.sh's head comment.
 for v in direct_on direct_off tm; do
   echo "=== asserts-r2: $v ==="
@@ -245,27 +245,27 @@ ASSERT_META=meta-r2.json \
 # is a query a reader can re-run.
 PQ="$WORK/gmx-r2-direct_on-$SLURM_JOB_ID.pq"
 echo "=== transport_mix, direct_on ==="
-"$PCOMM" sql "$PQ" "SELECT rank, tl_name, dev_name, scope, op, ops, out_bytes, in_bytes, advertised_bytes, header_bytes FROM transport_mix ORDER BY rank, tl_name, op"
+"$COMSHU" sql "$PQ" "SELECT rank, tl_name, dev_name, scope, op, ops, out_bytes, in_bytes, advertised_bytes, header_bytes FROM transport_mix ORDER BY rank, tl_name, op"
 echo "=== per-rank network share (PREDICTION.md P2.3 predicts 80,60,60,80,20,0,20,57) ==="
-"$PCOMM" sql "$PQ" "SELECT rank, sum(CASE WHEN scope='network' THEN out_bytes+in_bytes ELSE 0 END) AS network, sum(CASE WHEN scope='intra-node' THEN out_bytes+in_bytes ELSE 0 END) AS intra, sum(CASE WHEN scope='unknown' THEN out_bytes+in_bytes ELSE 0 END) AS unknown FROM transport_mix GROUP BY rank ORDER BY rank"
+"$COMSHU" sql "$PQ" "SELECT rank, sum(CASE WHEN scope='network' THEN out_bytes+in_bytes ELSE 0 END) AS network, sum(CASE WHEN scope='intra-node' THEN out_bytes+in_bytes ELSE 0 END) AS intra, sum(CASE WHEN scope='unknown' THEN out_bytes+in_bytes ELSE 0 END) AS unknown FROM transport_mix GROUP BY rank ORDER BY rank"
 echo "=== the tl_name -> scope mapping this run actually produced ==="
-"$PCOMM" sql "$PQ" "SELECT scope, tl_name, dev_name, count(*) AS rows, sum(ops) AS ops FROM transport_mix GROUP BY 1,2,3 ORDER BY scope, tl_name"
+"$COMSHU" sql "$PQ" "SELECT scope, tl_name, dev_name, count(*) AS rows, sum(ops) AS ops FROM transport_mix GROUP BY 1,2,3 ORDER BY scope, tl_name"
 echo "=== the peer matrix, decoded from Open MPI's tag (round 1 said this was impossible) ==="
-"$PCOMM" sql "$PQ" "SELECT rank, (tag >> 20) & 1048575 AS peer, tag >> 40 AS mpi_tag, count(*) AS n, sum(count) AS offered FROM ucx_tag_recv WHERE ((tag >> 20) & 1048575) < 8 GROUP BY 1,2,3 ORDER BY rank, offered DESC"
+"$COMSHU" sql "$PQ" "SELECT rank, (tag >> 20) & 1048575 AS peer, tag >> 40 AS mpi_tag, count(*) AS n, sum(count) AS offered FROM ucx_tag_recv WHERE ((tag >> 20) & 1048575) < 8 GROUP BY 1,2,3 ORDER BY rank, offered DESC"
 echo "=== MPI tags this run used (7 = eCommType_COORD, 8 = COORD_GPU, 0/1 = halo X/F) ==="
 for v in direct_on direct_off; do
   echo "--- $v"
-  "$PCOMM" sql "$WORK/gmx-r2-$v-$SLURM_JOB_ID.pq" \
+  "$COMSHU" sql "$WORK/gmx-r2-$v-$SLURM_JOB_ID.pq" \
     "SELECT tag >> 40 AS mpi_tag, count(*) AS sends, sum(count) AS units FROM ucx_tag_send GROUP BY 1 ORDER BY units DESC"
 done
 echo "=== tag_flow status distribution, all three arms ==="
 for v in direct_on direct_off tm; do
   echo "--- $v"
-  "$PCOMM" sql "$WORK/gmx-r2-$v-$SLURM_JOB_ID.pq" \
+  "$COMSHU" sql "$WORK/gmx-r2-$v-$SLURM_JOB_ID.pq" \
     "SELECT status, count(*) AS flows, sum(ucp_sends) AS ucp_sends, sum(uct_ops) AS uct_ops FROM tag_flow GROUP BY status" || true
 done
 echo "=== link_health rubric ==="
-"$PCOMM" sql "$PQ" "SELECT finding, severity, n, note FROM link_health ORDER BY severity, n DESC"
+"$COMSHU" sql "$PQ" "SELECT finding, severity, n, note FROM link_health ORDER BY severity, n DESC"
 
 echo "=== artefacts ==="
 ls -la "$RUN"

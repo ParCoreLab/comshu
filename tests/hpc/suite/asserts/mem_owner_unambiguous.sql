@@ -1,7 +1,7 @@
 -- requires: mem_owner
 -- An address has one owner, and its owner has one device.
 --
--- mem_owner is pcomm-read's containment join: every referenced address resolved
+-- mem_owner is comshu-read's containment join: every referenced address resolved
 -- against that RANK's memory objects. Rank scope is the whole discipline here —
 -- comm_edges learned it from qp_num, which is HCA-local and made a qp_num-keyed
 -- map resolve every colliding peer to whichever rank was scanned last. Virtual

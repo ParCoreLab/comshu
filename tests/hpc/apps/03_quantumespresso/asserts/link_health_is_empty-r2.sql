@@ -23,7 +23,7 @@
 --    thing to a consumer.
 --
 --  * unresolved sends -- round 1's teardown truncation, counted rather than
---    hidden. pcomm keeps dst_rank = -1 deliberately so the matrix cannot lie
+--    hidden. comshu keeps dst_rank = -1 deliberately so the matrix cannot lie
 --    about its totals, and this is where that honesty becomes visible.
 --
 -- Names no finding and no threshold, so it stays correct as the reader grows

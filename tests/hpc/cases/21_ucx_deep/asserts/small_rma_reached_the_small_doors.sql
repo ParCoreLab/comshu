@@ -19,7 +19,7 @@
 -- IT DOES NOT SAY WHICH of short or bcopy. That is UCX's choice — it depends on
 -- the transport's inline capability, which is a property of the HCA and not of
 -- this workload — and asserting either specifically would be asserting the
--- fabric's configuration rather than pcomm's recording.
+-- fabric's configuration rather than comshu's recording.
 SELECT 'one-sided traffic below zcopy_thresh took only zero-copy doors' AS problem,
        (SELECT rma_small_bytes FROM params) AS sent,
        (SELECT zcopy_thresh FROM params)    AS threshold

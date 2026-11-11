@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""parity.py — pcomm vs SigmaTrace on case 11 (ibdevx), as a coverage matrix.
+"""parity.py — comshu vs SigmaTrace on case 11 (ibdevx), as a coverage matrix.
 
 Both captures are projected onto the same (class, key) vocabulary per rank:
-SigmaTrace's by sigma_fingerprint.cpp, one rank-N.tsv per rank; pcomm's here,
-from `pcomm export --csv` output. Keys carry only what survives a rerun (sizes,
+SigmaTrace's by sigma_fingerprint.cpp, one rank-N.tsv per rank; comshu's here,
+from `comshu export --csv` output. Keys carry only what survives a rerun (sizes,
 flags, LIDs, port state, GUIDs), so two runs of one tool can be compared as
 bags, and so can the two tools.
 
 Usage:
-  parity.py --pcomm A.csv [--pcomm B.csv] --sigma DIR [--sigma DIR2]
+  parity.py --comshu A.csv [--comshu B.csv] --sigma DIR [--sigma DIR2]
 
-The first --pcomm and the first --sigma are the pair compared. Every run given
+The first --comshu and the first --sigma are the pair compared. Every run given
 is also checked against the other run of the same tool, first: a cross-tool
 difference means nothing until each tool agrees with itself.
 
@@ -28,12 +28,12 @@ PORT_STATE = {"nop": 0, "down": 1, "init": 2, "armed": 3, "active": 4, "active_d
 
 # Compared by count only: their keys are either not stable across runs or not
 # expressed in a shared vocabulary by the two tools (SigmaTrace records one
-# post_send per call with a WR count, pcomm one row per WR).
+# post_send per call with a WR count, comshu one row per WR).
 COUNT_ONLY = {"qp_modify", "post_send", "post_recv", "completion", "doorbell"}
 
 # Classes one tool records and the other has no event for at all. Listed so the
 # matrix says "no counterpart" instead of reading a vocabulary gap as a miss.
-PCOMM_ONLY = {"cq_create", "cq_destroy", "srq_create", "srq_destroy", "devx_qp_create",
+COMSHU_ONLY = {"cq_create", "cq_destroy", "srq_create", "srq_destroy", "devx_qp_create",
               "devx_obj_destroy", "devx_cmd", "mr_on_gpu", "object_create", "object_free",
               "close_unmatched"}
 SIGMA_ONLY = {"device_enum"}
@@ -47,7 +47,7 @@ def read(d, table):
         return list(csv.DictReader(f))
 
 
-def pcomm_bags(d):
+def comshu_bags(d):
     bags = defaultdict(Counter)
     closes = {}  # (rank, handle) -> (class, key) that closing it counts as
 
@@ -95,7 +95,7 @@ def pcomm_bags(d):
     for r in read(d, "mlx5_device_send"):
         add(r, "doorbell", "-")
 
-    # pcomm-only vocabulary
+    # comshu-only vocabulary
     for r in read(d, "ib_completion_queue"):
         add(r, "cq_create", "-")
         opened(r, "cq", "cq_destroy", "-")
@@ -190,34 +190,34 @@ def reading(cls, s, p, both, p_only, s_only):
     if s_only == 0 and p_only == 0:
         return "agree"
     if s == 0:
-        return "no SigmaTrace event for this" if cls in PCOMM_ONLY else "pcomm only"
+        return "no SigmaTrace event for this" if cls in COMSHU_ONLY else "comshu only"
     if p == 0:
-        return "no pcomm record for this" if cls in SIGMA_ONLY else "SigmaTrace only"
+        return "no comshu record for this" if cls in SIGMA_ONLY else "SigmaTrace only"
     if s_only == 0:
-        return "pcomm sees all of SigmaTrace's, and more"
+        return "comshu sees all of SigmaTrace's, and more"
     if p_only == 0:
-        return "SigmaTrace sees all of pcomm's, and more"
+        return "SigmaTrace sees all of comshu's, and more"
     return "disagree"
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--pcomm", action="append", required=True)
+    ap.add_argument("--comshu", action="append", required=True)
     ap.add_argument("--sigma", action="append", required=True)
     args = ap.parse_args()
 
-    pr = [(d, normalise(pcomm_bags(d))) for d in args.pcomm]
+    pr = [(d, normalise(comshu_bags(d))) for d in args.comshu]
     sr = [(d, normalise(sigma_bags(d))) for d in args.sigma]
 
     print("== self-repeatability (a cross-tool difference means nothing without this)")
-    repeatability("pcomm", pr)
+    repeatability("comshu", pr)
     repeatability("SigmaTrace", sr)
 
     p, s = pr[0][1], sr[0][1]
     print("\n== coverage, %s vs %s (summed over ranks %s)"
-          % (os.path.basename(args.sigma[0]), os.path.basename(args.pcomm[0]),
+          % (os.path.basename(args.sigma[0]), os.path.basename(args.comshu[0]),
              ",".join(map(str, sorted(set(p) | set(s))))))
-    hdr = ("class", "SigmaTrace", "pcomm", "both", "pcomm only", "Sigma only", "reading")
+    hdr = ("class", "SigmaTrace", "comshu", "both", "comshu only", "Sigma only", "reading")
     print("%-18s %10s %6s %5s %10s %10s  %s" % hdr)
     details = []
     for cls in classes(p, s):
@@ -235,7 +235,7 @@ def main():
                 for k, n in sorted(s_only.items()):
                     print("      SigmaTrace only  %4dx  %s" % (n, k))
                 for k, n in sorted(p_only.items()):
-                    print("      pcomm only       %4dx  %s" % (n, k))
+                    print("      comshu only       %4dx  %s" % (n, k))
 
 
 if __name__ == "__main__":

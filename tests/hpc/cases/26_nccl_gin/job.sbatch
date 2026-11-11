@@ -9,7 +9,7 @@
 # thread — so --enable-host-doorbell is the arm, exactly as case 12 uses it for
 # NVSHMEM's CPU-assisted IBGDA. Same decoder, same records, a different library.
 #
-#SBATCH --job-name=pcomm-26-nccl-gin
+#SBATCH --job-name=comshu-26-nccl-gin
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -20,10 +20,10 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/26_nccl_gin"
-OUT=$(pcomm_out nccl_gin)                 # the armed capture (asserted)
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+CASE_DIR="$COMSHU_ROOT/tests/hpc/cases/26_nccl_gin"
+OUT=$(comshu_out nccl_gin)                 # the armed capture (asserted)
 CTRL="${OUT}_ctrl"                        # the passive control
 mkdir -p "$(dirname "$OUT")"
 
@@ -43,8 +43,8 @@ fail() {
 
 [ -d /sys/class/infiniband ] || skip "no InfiniBand device on this host"
 
-pcomm_load_runtime
-MPIRUN="${PCOMM_MPIRUN:-mpirun}"
+comshu_load_runtime
+MPIRUN="${COMSHU_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
 # ---- does this host's NCCL have the device API at all? ----------------------
@@ -71,20 +71,20 @@ echo "=== 26_nccl_gin : NCCL $nccl_ver at $NCCL_HOME ==="
 # Named for its source, like the putget binaries, so an edit cannot be run as if
 # it were the old build — the failure that let case 12 pass for three weeks on a
 # kernel that never ran.
-APP="${PCOMM_GIN_APP:-$HOME/gin_putring-$(sha1sum "$CASE_DIR/gin_putring.cu" | cut -c1-10)}"
+APP="${COMSHU_GIN_APP:-$HOME/gin_putring-$(sha1sum "$CASE_DIR/gin_putring.cu" | cut -c1-10)}"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
-  command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
-  ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -std=c++17 -O2 --expt-extended-lambda \
+  comshu_load_build
+  command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
+  ${COMSHU_NVCC:-nvcc} -ccbin=mpic++ -std=c++17 -O2 --expt-extended-lambda \
     -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -I"$NCCL_HOME/include" "$CASE_DIR/gin_putring.cu" -o "$APP" \
     -L"$NCCL_HOME/lib" -lnccl -lcudart -Xlinker -rpath -Xlinker "$NCCL_HOME/lib" \
     || fail "workload did not build (needs NCCL >= 2.28 for the device API)"
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # AFTER the build block, for the reason case 04 documents at length: NCCL_HOME
-# globs to the newest SDK while pcomm_load_build/pcomm_load_runtime `module load`
+# globs to the newest SDK while comshu_load_build/comshu_load_runtime `module load`
 # an older one and PREPEND its lib dir. Exported first, the loader hands the
 # binary a libnccl it was not linked against.
 export LD_LIBRARY_PATH="$NCCL_HOME/lib:${LD_LIBRARY_PATH:-}"
@@ -107,14 +107,14 @@ export NCCL_DEBUG=WARN
 CHUNK=128 NPUT=1024 ITERS=20              # = meta.json's workload block
 # Overridable so a probe can run this exact case with more providers beside the
 # two it asserts on — tests/hpc/probes/kernel_attr adds cupti for kernel windows.
-PROVIDERS="${PCOMM_GIN_PROVIDERS:-ib,mlx5dv}"
-mpi() {  # mpi <out-dir> <extra pcomm args...>
+PROVIDERS="${COMSHU_GIN_PROVIDERS:-ib,mlx5dv}"
+mpi() {  # mpi <out-dir> <extra comshu args...>
   local out="$1"; shift
   rm -rf "$out" "$out.csv"; mkdir -p "$out"
-  timeout 420 "$MPIRUN" -np 2 --map-by ppr:1:node ${PCOMM_MPIRUN_EXTRA:-} \
-    -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
+  timeout 420 "$MPIRUN" -np 2 --map-by ppr:1:node ${COMSHU_MPIRUN_EXTRA:-} \
+    -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
     -x NCCL_NET_PLUGIN -x NCCL_GIN_TYPE -x NCCL_GIN_GDAKI_NIC_HANDLER -x NCCL_DEBUG \
-    "$PCOMM" run -p "$PROVIDERS" "$@" -o "$out" -- "$APP" "$CHUNK" "$NPUT" "$ITERS"
+    "$COMSHU" run -p "$PROVIDERS" "$@" -o "$out" -- "$APP" "$CHUNK" "$NPUT" "$ITERS"
 }
 
 # ---- control run: no door ---------------------------------------------------
@@ -156,12 +156,12 @@ app_arm="$(grep -h 'gin put-ring OK' "$OUT.app" | sort)"
 [ "$app_ctrl" = "$app_arm" ] || fail "application output differs under the door"
 
 # ---- assert -----------------------------------------------------------------
-echo "=== captured streams (armed) ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
+echo "=== captured streams (armed) ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
 
 # What the door itself says it did. Not an assertion — gin_puts_arrived is the
 # assertion — but the first line to read when that one fails.
 grep -h "host doorbell: uars_armed" "$OUT.err" | sed 's/^/=== /' || true
 
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"

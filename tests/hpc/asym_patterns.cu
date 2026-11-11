@@ -21,11 +21,11 @@
 // object — three things no existing capture produces.
 //
 // All three patterns are one kernel (`put_slice`) driven by a per-PE send list,
-// because the pattern is data and only the data differs. PCOMM_KERNEL_NAME can
+// because the pattern is data and only the data differs. COMSHU_KERNEL_NAME can
 // therefore filter on one name for all three.
 //
 // NB it is NOT inlined here, contrary to what case 04's job.sbatch says about
-// its own binary. PCOMM_INSTR_DUMP on this workload shows two instrumented
+// its own binary. COMSHU_INSTR_DUMP on this workload shows two instrumented
 // functions: `put_slice` with 3 instructions and
 // `nvshmemi_transfer_rma_p<int>` with 1485. So `nvshmem_int_p` compiles to a
 // real call in this build. Whether it inlines is a property of the build, not
@@ -48,7 +48,7 @@
 //
 // Instrumenting this kernel with a 64-bit index computation raises an illegal
 // memory access that poisons the CUDA context — the workload runs perfectly with
-// no profiler. Bisected to the instruction with PCOMM_INSTR_LO/HI (MN5 jobs
+// no profiler. Bisected to the instruction with COMSHU_INSTR_LO/HI (MN5 jobs
 // 44464306, 44464689) and then to the cause with four kernel variants (44464836,
 // 44465353):
 //

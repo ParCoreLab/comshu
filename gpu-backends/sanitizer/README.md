@@ -2,11 +2,11 @@
 
 GPU capture engine over the Compute-Sanitizer API — the portable,
 NVBit-independent path. This port is what introduces the vendor-neutral
-backend interface: a sketch existed as `libpcomm/include/pcomm/gpu/backend.hpp`
+backend interface: a sketch existed as `libcomshu/include/comshu/gpu/backend.hpp`
 (IGpuBackend, removed unimplemented — resurrect from git history) and becomes
 real here, when there are two backends to sit behind it.
 Port target: `../../../snoopie-sanitized/src/nvidia`
-(its `interfaces.cuh` is what `pcomm::attr` was promoted from, so the mapping
+(its `interfaces.cuh` is what `comshu::attr` was promoted from, so the mapping
 is direct). A working reference lives on du04 at `~/sanitizer_demo`
 (MemoryTracker + patches).
 

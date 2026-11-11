@@ -20,11 +20,11 @@ DuckDB appears in exactly three places, all on the reading side:
 
 | where | what for |
 |---|---|
-| `pcomm-read/capture_load.hpp` | mount a capture as tables in memory |
-| `pcomm-read/link_sql.hpp` | the derived layer — `comm_edges`, `mem_owner`, `link_health` |
-| `pcomm-ui/main.cpp` | the `/query` endpoint behind the panels |
+| `comshu-read/capture_load.hpp` | mount a capture as tables in memory |
+| `comshu-read/link_sql.hpp` | the derived layer — `comm_edges`, `mem_owner`, `link_health` |
+| `comshu-ui/main.cpp` | the `/query` endpoint behind the panels |
 
-It is behind a CMake flag that defaults **off** (`PCOMM_DUCKDB`, `CMakeLists.txt:32`).
+It is behind a CMake flag that defaults **off** (`COMSHU_DUCKDB`, `CMakeLists.txt:32`).
 Build without it and you still get capture, `read`, `dump`, and `export --csv`;
 you lose `link`, `sql`, `--parquet` and `ui`. That is the point of the split: a
 compute node needs none of it.
@@ -43,7 +43,7 @@ compute node needs none of it.
 into core.**
 
 This is a written rule (`PLAN-20260806-1329`) and the reasoning is in
-`libpcomm/include/pcomm/core/object_registry.hpp`, which is worth reading before
+`libcomshu/include/comshu/core/object_registry.hpp`, which is worth reading before
 the talk because it is the cleanest statement of the architecture you have.
 
 The worked example: **memory objects**. gpumem needs a buffer's extent at drain
@@ -55,7 +55,7 @@ forbids, because gpumem would have to ask it a question at runtime.
 
 So `ObjectRegistry` sits in core, below every provider. The engine interposes the
 allocator doors itself (`nvshmem_malloc`, `nvshmem_calloc`, `nvshmem_align`,
-`nvshmem_free` — `libpcomm/src/engine.cpp:637`).
+`nvshmem_free` — `libcomshu/src/engine.cpp:637`).
 
 **The measurement that justifies it**, and it is a good one to quote: on one
 NVSHMEM workload captured with mlx5dv alone, the capture holds 20 `mem_object`
@@ -74,7 +74,7 @@ there. One end of the join was simply missing.
 
 ## 3. What *is* the engine, and where does it stop?
 
-`libpcomm_engine.so`. One shared object, preloaded first in every selection,
+`libcomshu_engine.so`. One shared object, preloaded first in every selection,
 holding exactly the things there must be **one** of:
 
 - the `Tracer` singleton and its `Recorder`
@@ -120,7 +120,7 @@ split is principled:
   fact about the NIC, not about the allocator, and it belongs to ibverbs.
 
 They do not collide because both intern the base pointer in the same domain and
-get the same handle. `pcomm-read`'s `mem_owner` resolves an address to its
+get the same handle. `comshu-read`'s `mem_owner` resolves an address to its
 containing object at read time.
 
 The same shape appears twice more, and pointing that out makes it look like a
@@ -148,14 +148,14 @@ They are separated by **who initiates**, not by what the hardware does:
 |---|---|---|
 | who starts the transfer | the **CPU** posts a work request | the **GPU** rings the doorbell |
 | the door | `ibv_post_send` and friends | DEVX / `mlx5dv`, direct |
-| what pcomm hooks | libibverbs, via `LD_PRELOAD` | the driver's export table, doorbell pages |
+| what comshu hooks | libibverbs, via `LD_PRELOAD` | the driver's export table, doorbell pages |
 
 IBGDA never calls `ibv_create_qp`, `ibv_modify_qp` or `ibv_post_send`. It drives
 DEVX directly. So a GPU-initiated run traced with `-p ib` is not *wrong*, it is
 **silent** — which is worse, and is exactly why they are two providers rather
 than one with a flag. They co-run happily; a workload using both verbs and DEVX
 needs both. (The reasoning is in the comment above the registry entry,
-`pcomm/run.cpp`.)
+`comshu/run.cpp`.)
 
 > If someone asks why the `.so` is still called `libmlx5dv_trace.so` when the
 > provider is named `ibgda`: the library contains the mechanism, the provider is
@@ -194,7 +194,7 @@ cause unknown" into "refused, and here is why".
 
 ## 7. So what *is* an Instant then? And a Window?
 
-The five kinds are in `libpcomm/include/pcomm/core/time.hpp:13`. Real producers
+The five kinds are in `libcomshu/include/comshu/core/time.hpp:13`. Real producers
 in the tree today:
 
 | kind | real example | why |
@@ -308,7 +308,7 @@ as `Window`.
 > version of this shipped with `kAttrDeviceOrdinal = 4`, which is actually
 > `CU_POINTER_ATTRIBUTE_HOST_POINTER`, not `DEVICE_ORDINAL`. It survived the
 > provider's entire life, because every failure mode of the function looks
-> identical from the capture. `PCOMM_TRACE_HOOKS=1` prints the first attribution
+> identical from the capture. `COMSHU_TRACE_HOOKS=1` prints the first attribution
 > attempt and is the only thing that tells the three apart — which is why it
 > stays in the tree.
 
@@ -374,7 +374,7 @@ collapse sixteen buffers into one and every per-rank number would be wrong.
 All six co-run in one process, one recorder, one timeline. **Nothing is marked
 exclusive today.**
 
-`replay` still exists for a provider that genuinely must own the runtime: pcomm
+`replay` still exists for a provider that genuinely must own the runtime: comshu
 re-runs the workload once per exclusive provider and drops each pass under one
 `-o` directory, wall-clock aligned, stitched back by rank on read (each provider
 owns a disjoint record-id range, so the merge is clean). It is the fallback, not
@@ -439,7 +439,7 @@ Subtracting the ~14 s floor gives the numbers that mean something:
    does element-wise `nvshmem_p` — one 4-byte put per record. So it pays the full
    per-send cost for every four bytes moved. A workload doing bulk RDMA writes
    moves the same bytes in orders of magnitude fewer work requests and pays
-   proportionally less. **Do not present 4.2× as "pcomm's overhead"** — present it
+   proportionally less. **Do not present 4.2× as "comshu's overhead"** — present it
    as the cost per *work request*, which is the thing that actually scales.
 2. **A large part of that 165 ns is capture I/O**, not instrumentation: 15 GB in
    44 s. To `/tmp`. On GPFS it would be worse, and that is a property of where you
@@ -498,7 +498,7 @@ it is the most convincing thing in the talk:
 > Nothing else in that capture was abnormal — the 126-edge star resolved
 > exactly, zero unresolved peers, zero self-edges across 16 LIDs.
 >
-> Naming the owner needed one more thing: pcomm `dladdr`s
+> Naming the owner needed one more thing: comshu `dladdr`s
 > `__builtin_return_address(0)` inside each registration interposer, but keyed on
 > `(door, library)` it couldn't answer — `ibv_reg_mr` has two callers in that
 > workload. Extending the key with the region length separated them:
@@ -516,9 +516,9 @@ the finding be specific rather than "something looks off".
 
 Have these ready as honest answers rather than getting caught:
 
-- **`-p kernel` will not run on MN5 right now.** `pcomm list` advertises it, but
+- **`-p kernel` will not run on MN5 right now.** `comshu list` advertises it, but
   it builds from `gpu-backends/cupti/` (not `providers/`) and `libcupti_trace.so`
-  is **not** in `~/.local/lib/pcomm/` — the installed set is gpumem, ibverbs,
+  is **not** in `~/.local/lib/comshu/` — the installed set is gpumem, ibverbs,
   mlx5dv, nccl, ucx and the engine. If someone says "run that one", say it isn't
   installed in this tree. Don't discover it on stage.
 - **`Counter` has no producer.** The temporal kind exists; nothing emits one. Say
@@ -529,7 +529,7 @@ Have these ready as honest answers rather than getting caught:
 - **The p2p/gpumem provider has an open illegal-memory-access bug** under some
   workloads (`PLAN-20260810-0854`), which is why cases 16–18 deliberately don't
   load it. Don't run `-p gpumem` live on something you haven't tested.
-- **`pcomm ui` currently drops `nccl_comm`** — `gen_raw_columns.py:143` injects a
+- **`comshu ui` currently drops `nccl_comm`** — `gen_raw_columns.py:143` injects a
   `rank` column and `NcclComm` has its own field called `rank`, so DuckDB refuses
   the duplicate and the table vanishes silently. The CSV path already renames it.
   Known, small, not yet fixed.

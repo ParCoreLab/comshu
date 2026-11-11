@@ -1,11 +1,11 @@
 #pragma once
-// Mlx5dvEventSource — binds the mlx5dv hook tags to pcomm's interception
+// Mlx5dvEventSource — binds the mlx5dv hook tags to comshu's interception
 // engine. Mirrors ib_event_source.hpp, minus the object-ops contract: DEVX has
 // no ibv_context->ops equivalent, so every hook here is a preload interposer.
 
 #include <string_view>
 
-#include "pcomm/hook/CompositeHookManager.hpp"
+#include "comshu/hook/CompositeHookManager.hpp"
 
 #include "mlx5_hooks.hpp"
 
@@ -14,12 +14,12 @@ constexpr std::string_view LibPath{"libmlx5.so"};
 
 template<typename Derived>
 class Mlx5dvEventSource
-    : public pcomm::hook::CompositeHookManager<
-          Derived, pcomm::hook::DefaultHookManagerConfig, devx_umem_reg_tag, devx_umem_reg_ex_tag,
+    : public comshu::hook::CompositeHookManager<
+          Derived, comshu::hook::DefaultHookManagerConfig, devx_umem_reg_tag, devx_umem_reg_ex_tag,
           devx_umem_dereg_tag, devx_alloc_uar_tag, devx_free_uar_tag, devx_obj_create_tag,
           devx_obj_modify_tag, create_qp_tag> {
-    using Base = pcomm::hook::CompositeHookManager<
-        Derived, pcomm::hook::DefaultHookManagerConfig, devx_umem_reg_tag, devx_umem_reg_ex_tag,
+    using Base = comshu::hook::CompositeHookManager<
+        Derived, comshu::hook::DefaultHookManagerConfig, devx_umem_reg_tag, devx_umem_reg_ex_tag,
         devx_umem_dereg_tag, devx_alloc_uar_tag, devx_free_uar_tag, devx_obj_create_tag,
         devx_obj_modify_tag, create_qp_tag>;
 

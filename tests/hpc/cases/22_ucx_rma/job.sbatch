@@ -24,7 +24,7 @@
 #
 # so MPI RMA is exactly the workload that makes those doors fire.
 #
-# ONE MORE THING IT CLOSES: `pcomm run -p ucx,ib` in ONE SHARED PASS. The UCX
+# ONE MORE THING IT CLOSES: `comshu run -p ucx,ib` in ONE SHARED PASS. The UCX
 # plan's definition of done requires it and it had never been executed — the
 # smoke job that ran used `-p ucx` with the verbs provider compiled out. Two
 # hook-based providers in one process is what the shared engine exists for, and
@@ -33,7 +33,7 @@
 #
 #   sbatch tests/hpc/cases/22_ucx_rma/job.sbatch
 #
-#SBATCH --job-name=pcomm-22-ucx_rma
+#SBATCH --job-name=comshu-22-ucx_rma
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -44,9 +44,9 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 # ONE RANK PER NODE, case 19's reason unchanged: UCX picks shared memory for a
 # same-node pair, and a shm-only run would exercise the doors without ever
@@ -55,7 +55,7 @@ pcomm_load_runtime
 # record this case exists for empty and look like a tracer defect.
 MPI_BIN="$(dirname "$(command -v mpirun)")"
 APP="$HOME/rma_doors"
-SRC="$PCOMM_ROOT/tests/hpc/probes/ucx_rma_doors/rma_doors.c"
+SRC="$COMSHU_ROOT/tests/hpc/probes/ucx_rma_doors/rma_doors.c"
 
 if [ ! -x "$APP" ] || [ "$SRC" -nt "$APP" ]; then
   "$MPI_BIN/mpicc" -O2 -Wall -Wextra -Werror -o "$APP" "$SRC" \
@@ -66,7 +66,7 @@ fi
 # and the same one definition. The provider interposes public UCP symbols, so
 # build against one libucp and run against another and the interposition
 # silently does not engage.
-UCX_HOME_RESOLVED="$(pcomm_find_ucx)" || {
+UCX_HOME_RESOLVED="$(comshu_find_ucx)" || {
   echo "!! no HPC-X UCX tree found beside this MPI ($(command -v mpirun))" >&2
   exit 1; }
 UCX_LIB="$UCX_HOME_RESOLVED/lib"
@@ -89,22 +89,22 @@ export RMA_ITERS=10 RMA_BYTES=4096 WIN_BYTES=65536 SSEND_ITERS=10 SSEND_BYTES=64
 # component. With osc/rdma or osc/pt2pt they become active messages, no rkey is
 # ever unpacked, and this case's central table would be empty for a reason that
 # has nothing to do with the provider.
-OUT="$(pcomm_out ucx_rma)"
+OUT="$(comshu_out ucx_rma)"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 # -p ucx,ib — the shared pass. Both are hook-based and therefore non-exclusive,
 # so they co-run in ONE process rather than forcing a replay; that is precisely
 # the arrangement the shared engine was built for and the one never yet run.
-mpirun -np 2 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
+mpirun -np 2 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
   -x RMA_ITERS -x RMA_BYTES -x WIN_BYTES -x SSEND_ITERS -x SSEND_BYTES \
   --mca osc ucx \
-  "$PCOMM" run -p ucx,ib -o "$OUT" -- "$APP"
+  "$COMSHU" run -p ucx,ib -o "$OUT" -- "$APP"
 echo "mpirun exit=$?"
 
 echo "=== captured streams ($OUT) ==="
-"$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
+"$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
 
 # Printed for the record, because "which door did MPI actually take" is the
 # question this case exists to answer and a human reading the job output should
@@ -131,5 +131,5 @@ fi
 # against a capture that was complete and correct, which is the same queue slot
 # 21_ucx_deep's own comment records losing to the sibling mistake of naming the
 # output directory for the arm instead of the case.
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/22_ucx_rma"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/22_ucx_rma"

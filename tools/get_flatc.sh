@@ -2,7 +2,7 @@
 # Build the pinned flatc into .tools/flatc (gitignored).
 #
 # The version is pinned to the one that generated
-# libpcomm/schema/generated/pcomm_generated.h. flatc's output is not stable
+# libcomshu/schema/generated/comshu_generated.h. flatc's output is not stable
 # across releases, so an unpinned flatc turns tools/check_generated.sh into a
 # diff against a different generator rather than against a stale header — the
 # check would fail for the wrong reason, or worse, a regeneration with a newer
@@ -19,7 +19,7 @@ set -euo pipefail
 VERSION="v25.12.19"          # keep in step with third_party/flatbuffers
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="$root/.tools/flatc"
-src="${PCOMM_FLATBUFFERS_SRC:-}"
+src="${COMSHU_FLATBUFFERS_SRC:-}"
 
 if [[ -x "$dest" ]] && "$dest" --version | grep -q "${VERSION#v}"; then
     echo "flatc ${VERSION} already at $dest"

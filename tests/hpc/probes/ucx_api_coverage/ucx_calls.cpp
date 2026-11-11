@@ -1,4 +1,4 @@
-// Stage-0 UCX coverage probe. This is deliberately not the pcomm provider: it
+// Stage-0 UCX coverage probe. This is deliberately not the comshu provider: it
 // answers which public UCP doors the site MPI actually crosses before the
 // capture schema is committed. Build as a preload library against the site's
 // UCX headers.
@@ -94,10 +94,10 @@ __attribute__((destructor)) void report() {
 }  // namespace
 
 // Probe-only bridge consumed by the ibverbs provider when
-// PCOMM_TRACE_UCX_NESTING=1. Returning the innermost frame matters if UCX calls
+// COMSHU_TRACE_UCX_NESTING=1. Returning the innermost frame matters if UCX calls
 // progress from inside an operation: the verbs post belongs to what is actually
 // on the stack, not to a permanently cached endpoint guess.
-extern "C" int pcomm_ucx_api_probe_current(std::uint32_t* call, unsigned long long* id) {
+extern "C" int comshu_ucx_api_probe_current(std::uint32_t* call, unsigned long long* id) {
     if (!g_scope_depth)
         return 0;
     const Frame& frame = g_scopes[g_scope_depth - 1];

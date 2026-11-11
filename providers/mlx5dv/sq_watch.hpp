@@ -2,10 +2,10 @@
 // The passive send-queue observer: the data plane of a DEVX queue pair whose
 // send queue and doorbell record are both host memory — NVSHMEM's ibdevx
 // transport above all. tests/hpc/cases/11_ibdevx_peermem/parity/README.md
-// measured the gap this closes: under ibdevx neither pcomm nor SigmaTrace
+// measured the gap this closes: under ibdevx neither comshu nor SigmaTrace
 // recorded one byte of the 16,384 the workload moved through the NIC.
 //
-// Opt-in: `pcomm run --watch-send-queues`, which sets PCOMM_SQ_WATCH=1. What it
+// Opt-in: `comshu run --watch-send-queues`, which sets COMSHU_SQ_WATCH=1. What it
 // saw and missed is one Mlx5SendCoverage row per rank; the design, the rejected
 // alternatives and the measurements are in
 // plans/PLAN-20260914-1750-the-ibdevx-data-plane-is-a-host-send-queue.
@@ -34,7 +34,7 @@
 // `1024 20` in exactly one event per run — even with the watcher on a CPU of its
 // own (du04, 2026-09-14: 2-4 involuntary context switches, a poll every ~1 us).
 // The longest single batch was 2.1-2.4 ms, always at batch ~800: the moment the
-// watcher's first 4,096-row arena filled and pcomm_engine_arena_flush ran inline
+// watcher's first 4,096-row arena filled and comshu_engine_arena_flush ran inline
 // — a synchronous drain plus the process's one-time GpuDevice emission, which
 // queries the CUDA driver. The proxy posted straight through it and lapped the
 // 1,024-slot ring many times over. Recording is a stall waiting to happen, so it
@@ -49,7 +49,7 @@
 //     It is never the post itself, and the record says so (SendSubmitter::SqWatch);
 //   * the watcher SPINS, which costs a core. Sleeping 20 us between polls —
 //     about 60 us once the kernel rounds it — let the CPU proxy lap the ring
-//     (one run decoded 9 of ~4,100 WQEs). PCOMM_SQ_WATCH_US=<n> sleeps anyway;
+//     (one run decoded 9 of ~4,100 WQEs). COMSHU_SQ_WATCH_US=<n> sleeps anyway;
 //   * and that core is NOT the rank's own. Open MPI binds a rank to one core by
 //     default, and the watcher inherits it: sharing two hardware threads with
 //     the main thread and the very proxy it watches, it took 7,700-16,000
@@ -84,14 +84,14 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 
-#include "pcomm/helpers/clock.hpp"
+#include "comshu/helpers/clock.hpp"
 #include "uar_hijack.hpp"
 
 namespace mlx5::sqwatch {
 
 inline bool enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_SQ_WATCH");
+        const char* v = std::getenv("COMSHU_SQ_WATCH");
         return v && *v == '1';
     }();
     return on;
@@ -99,7 +99,7 @@ inline bool enabled() {
 
 inline bool debug_on() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_SQ_WATCH_DEBUG");
+        const char* v = std::getenv("COMSHU_SQ_WATCH_DEBUG");
         return v && *v == '1';
     }();
     return on;
@@ -108,7 +108,7 @@ inline bool debug_on() {
 // Zero, the default, means spin.
 inline std::chrono::microseconds poll_interval() {
     static const auto us = [] {
-        const char* v = std::getenv("PCOMM_SQ_WATCH_US");
+        const char* v = std::getenv("COMSHU_SQ_WATCH_US");
         const long  n = v ? std::strtol(v, nullptr, 10) : 0;
         return std::chrono::microseconds(n > 0 ? n : 0);
     }();
@@ -117,15 +117,15 @@ inline std::chrono::microseconds poll_interval() {
 
 inline std::size_t stage_bytes() {
     static const std::size_t b = [] {
-        const char* v = std::getenv("PCOMM_SQ_WATCH_STAGE_MB");
+        const char* v = std::getenv("COMSHU_SQ_WATCH_STAGE_MB");
         const long  mb = v ? std::strtol(v, nullptr, 10) : 0;
         return static_cast<std::size_t>(mb > 0 ? mb : 16) << 20;
     }();
     return b;
 }
 
-// MEASUREMENT ONLY, like PCOMM_HIJACK_NO_DECODE: how much of the watcher's cost
-// to the application is which part of it. PCOMM_SQ_WATCH_STAGE=
+// MEASUREMENT ONLY, like COMSHU_HIJACK_NO_DECODE: how much of the watcher's cost
+// to the application is which part of it. COMSHU_SQ_WATCH_STAGE=
 //   poll   read the doorbell records and nothing else — no send-queue read;
 //   copy   also copy WQEBBs into staging, but the decoder records nothing;
 //   full   the capture (default).
@@ -135,7 +135,7 @@ inline std::size_t stage_bytes() {
 enum class StageMode { Full, Copy, Poll };
 inline StageMode stage_mode() {
     static const StageMode m = [] {
-        const char* v = std::getenv("PCOMM_SQ_WATCH_STAGE");
+        const char* v = std::getenv("COMSHU_SQ_WATCH_STAGE");
         if (v && std::strcmp(v, "poll") == 0)
             return StageMode::Poll;
         if (v && std::strcmp(v, "copy") == 0)
@@ -369,9 +369,9 @@ inline void drain_one(Watched& w) {
     // The TSC either side of the counter read. Whatever this look finds new was
     // published after w.look_ticks and before `seen` — an exact bound, which is
     // what the row's Window says, and all this passive door can honestly say.
-    const std::uint64_t look = pcomm::helpers::TscClock::now();
+    const std::uint64_t look = comshu::helpers::TscClock::now();
     const std::uint32_t end = read_counter(w);
-    const std::uint64_t seen = pcomm::helpers::TscClock::now();
+    const std::uint64_t seen = comshu::helpers::TscClock::now();
     const std::uint64_t since = w.look_ticks;
     const std::uint32_t start = w.last;
     const std::uint32_t delta = hijack::prod_diff(end, start);
@@ -603,7 +603,7 @@ inline bool l3_cpus_of(int cpu, cpu_set_t& out) {
     return false;
 }
 
-// Where a watcher thread runs. PCOMM_SQ_WATCH_CPU:
+// Where a watcher thread runs. COMSHU_SQ_WATCH_CPU:
 //   auto (default)  the watcher on the CPUs sharing the rank's L3 cache, minus
 //                   the rank's own binding; the NUMA node if there are none.
 //                   The decoder always takes the NUMA node — it reads only the
@@ -629,7 +629,7 @@ inline bool l3_cpus_of(int cpu, cpu_set_t& out) {
 // of these leaves the job's allocation; if nothing is left, the call fails and
 // the thread keeps the binding it had, which is reported rather than hidden.
 inline void place_thread(bool is_watcher) {
-    const char* v = std::getenv("PCOMM_SQ_WATCH_CPU");
+    const char* v = std::getenv("COMSHU_SQ_WATCH_CPU");
     const char* mode = v && *v ? v : "auto";
     if (std::strcmp(mode, "bound") == 0)
         return;
@@ -664,7 +664,7 @@ inline void place_thread(bool is_watcher) {
     }
     if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0)
         std::fprintf(stderr,
-                     "[sqwatch] could not place the %s thread (PCOMM_SQ_WATCH_CPU=%s); it "
+                     "[sqwatch] could not place the %s thread (COMSHU_SQ_WATCH_CPU=%s); it "
                      "keeps the rank's binding\n",
                      is_watcher ? "watcher" : "decoder", mode);
 }
@@ -733,7 +733,7 @@ inline void watch(std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq
     w->shape = hijack::QpInfo{sq_host, log_wq_size, service_type};
     w->sq_umem = sq_umem;
     w->dbr_umem = dbr_umem;
-    w->look_ticks = pcomm::helpers::TscClock::now();  // just created: nothing was posted before now
+    w->look_ticks = comshu::helpers::TscClock::now();  // just created: nothing was posted before now
     if (debug_on())
         std::fprintf(stderr, "[sqwatch] watch qpn=%u sq=%#llx slots=%u dbr=%#llx\n", qpn,
                      static_cast<unsigned long long>(sq_host), 1u << log_wq_size,
@@ -848,7 +848,7 @@ inline void shutdown(int rank) {
     const std::uint64_t undecoded =
         (s.stage.head.load() - s.stage.tail.load()) / hijack::kWqebb;  // headers included
     std::fprintf(stderr,
-                 "[pcomm] sq-watch rank=%d qps_watched=%u refused=%u staged=%llu decoded=%llu "
+                 "[comshu] sq-watch rank=%d qps_watched=%u refused=%u staged=%llu decoded=%llu "
                  "sends=%llu (unknown_op=%llu truncated=%llu) held=%llu lapped=%llu "
                  "dropped=%llu polls=%llu\n",
                  rank, s.qps_watched.load(), s.qps_refused.load(),
@@ -864,11 +864,11 @@ inline void shutdown(int rank) {
     {
         std::lock_guard<std::mutex> lk(s.mutex);
         for (const auto& r : s.refusals)
-            std::fprintf(stderr, "[pcomm] sq-watch rank=%d refused %u: %s — first: %s\n", rank, r.n,
+            std::fprintf(stderr, "[comshu] sq-watch rank=%d refused %u: %s — first: %s\n", rank, r.n,
                          r.why, r.first.c_str());
     }
     std::fprintf(stderr,
-                 "[pcomm] sq-watch rank=%d lapped_early=%llu lapped_late=%llu batches=%llu "
+                 "[comshu] sq-watch rank=%d lapped_early=%llu lapped_late=%llu batches=%llu "
                  "max_delta=%u copy_us=%llu first_batch_us=%llu max_batch_us=%llu@%llu "
                  "decode_us=%llu max_decode_us=%llu undecoded=%llu cpu=%d affinity=%d "
                  "csw_vol=%ld csw_invol=%ld\n",
@@ -884,7 +884,7 @@ inline void shutdown(int rank) {
                  static_cast<unsigned long long>(undecoded), s.cpu_start, s.affinity_cpus,
                  s.csw_voluntary, s.csw_involuntary);
     std::fprintf(stderr,
-                 "[pcomm] sq-watch rank=%d watcher_cpu_ms=%ld watcher_wall_ms=%ld "
+                 "[comshu] sq-watch rank=%d watcher_cpu_ms=%ld watcher_wall_ms=%ld "
                  "decoder_cpu_ms=%ld poll_us=%lld cpu=%d->%d max_gap_us=%llu@%llu\n",
                  rank, s.watcher_cpu_us / 1000, s.watcher_wall_us / 1000, s.decoder_cpu_us / 1000,
                  static_cast<long long>(poll_interval().count()), s.cpu_start, s.cpu_end,

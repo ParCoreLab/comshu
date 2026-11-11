@@ -14,12 +14,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "pcomm/core/records.hpp"
-#include "pcomm/rec/thread_local_buffer.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/rec/thread_local_buffer.hpp"
+#include "comshu/tracer.hpp"
 
 namespace fs = std::filesystem;
-using namespace pcomm;
+using namespace comshu;
 using core::records::MemObject;
 
 static void record_n(int n, std::uint16_t dev) {
@@ -63,7 +63,7 @@ static std::size_t stream_count_with_device(const fs::path& dir, std::uint16_t d
 int main() {
     constexpr int kParentPre = 100, kChild = 50, kParentPost = 30;
 
-    fs::path out = fs::temp_directory_path() / ("pcomm-fork-" + std::to_string(::getpid()));
+    fs::path out = fs::temp_directory_path() / ("comshu-fork-" + std::to_string(::getpid()));
     fs::remove_all(out);
 
     Config cfg;

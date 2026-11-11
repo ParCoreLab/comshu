@@ -2,7 +2,7 @@
 -- `tag_flow` has never been pointed at an application we did not write. This is
 -- that test, and the two clauses fail for different reasons.
 --
--- tag_flow is the ONLY thing in pcomm that joins the 600s (what the application
+-- tag_flow is the ONLY thing in comshu that joins the 600s (what the application
 -- asked UCX for) to the 800s (what UCX put on the wire). demos/figures/
 -- 09-ucx-records.svg states the join outright: "The 600s and the 800s are joined
 -- on the TAG, by the reader's tag_flow, not by a field -- the join is per

@@ -1,7 +1,7 @@
 # libcupti_trace.so — kernel execution windows from CUPTI's activity API.
 #
-# Its own target rather than part of the engine because libpcomm_engine.so may
-# not pull in a vendor header (the invariant at the top of libpcomm/src/
+# Its own target rather than part of the engine because libcomshu_engine.so may
+# not pull in a vendor header (the invariant at the top of libcomshu/src/
 # engine.cpp), and its own target rather than part of a provider because it is
 # not tied to a transport — it is the engine's GpuKernel record with the vendor
 # binding kept at arm's length, the same shape as gpu-backends/nvbit.
@@ -39,7 +39,7 @@ find_path(CUDA_DRIVER_INCLUDE_DIR cuda.h
 
 if(NOT CUPTI_INCLUDE_DIR OR NOT CUPTI_LIBRARY OR NOT CUDA_DRIVER_INCLUDE_DIR)
   message(STATUS
-    "pcomm: cupti backend SKIPPED — cupti_activity.h/libcupti/cuda.h not found. "
+    "comshu: cupti backend SKIPPED — cupti_activity.h/libcupti/cuda.h not found. "
     "Kernel lifetimes will be absent from captures made with this build. "
     "Set CUDA_HOME or -DCUDA_TOOLKIT_ROOT_DIR.")
   return()
@@ -51,23 +51,23 @@ set_target_properties(cupti_trace PROPERTIES PREFIX "lib" OUTPUT_NAME "cupti_tra
 target_include_directories(cupti_trace PRIVATE
   ${CUPTI_INCLUDE_DIR}
   ${CUDA_DRIVER_INCLUDE_DIR}
-  ${CMAKE_SOURCE_DIR}/libpcomm/include)
+  ${CMAKE_SOURCE_DIR}/libcomshu/include)
 
-# pcomm::engine, not a private copy: this must share the ONE Tracer, recorder
+# comshu::engine, not a private copy: this must share the ONE Tracer, recorder
 # and intern-table set with every other loaded provider, by construction rather
 # than by linker accident.
-target_link_libraries(cupti_trace PRIVATE pcomm::engine ${CUPTI_LIBRARY} dl)
+target_link_libraries(cupti_trace PRIVATE comshu::engine ${CUPTI_LIBRARY} dl)
 target_compile_features(cupti_trace PRIVATE cxx_std_20)
 
-# Same reasoning as the other providers: the DT_NEEDED on libpcomm_engine.so has
+# Same reasoning as the other providers: the DT_NEEDED on libcomshu_engine.so has
 # to resolve at runtime from the build tree and from an installed tree, and new
 # dtags so LD_LIBRARY_PATH still wins.
 set_target_properties(cupti_trace PROPERTIES
-  BUILD_RPATH "$ORIGIN/../../libpcomm"
-  INSTALL_RPATH "$ORIGIN;${PCOMM_INSTALL_RPATH_EXTRA}")
+  BUILD_RPATH "$ORIGIN/../../libcomshu"
+  INSTALL_RPATH "$ORIGIN;${COMSHU_INSTALL_RPATH_EXTRA}")
 target_link_options(cupti_trace PRIVATE "LINKER:--enable-new-dtags")
 
-install(TARGETS cupti_trace LIBRARY DESTINATION ${PCOMM_INSTALL_LIBDIR}
+install(TARGETS cupti_trace LIBRARY DESTINATION ${COMSHU_INSTALL_LIBDIR}
         COMPONENT cupti)
 
-message(STATUS "pcomm: cupti backend ON — ${CUPTI_LIBRARY}")
+message(STATUS "comshu: cupti backend ON — ${CUPTI_LIBRARY}")

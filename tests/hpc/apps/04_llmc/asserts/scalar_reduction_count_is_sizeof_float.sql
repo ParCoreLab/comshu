@@ -20,7 +20,7 @@
 -- twelve-byte heap overflow on every barrier and every cross-rank float sum,
 -- present at llm.c upstream f1e2ace.
 --
--- SO THIS ASSERTION PASSES WHEN pcomm IS RIGHT AND llm.c IS WRONG. It is the
+-- SO THIS ASSERTION PASSES WHEN comshu IS RIGHT AND llm.c IS WRONG. It is the
 -- clean case of an oracle that is not the capture: the number 4 comes from
 -- `sizeof(float)` in the application's source, and if the capture had shown 1 —
 -- the value a reader would expect from the variable names — the provider would

@@ -23,10 +23,10 @@
 # defect comm_edges_rule.sh was written for, on two different ids.
 set -uo pipefail
 
-PCOMM=${1:?usage: transport_mix_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: transport_mix_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-transport-mix-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-transport-mix-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # The dictionary, as the export now writes it. domain 2 is InternDomain::String
@@ -110,7 +110,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,2,0,1220,0,1230,0,9,0,0,0,25,99,0,0,0,0,0
 CSV
 
-"$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
+"$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
     echo "SKIP: build without DuckDB"; exit 0
@@ -124,7 +124,7 @@ fi
 fail=0
 expect() {  # <label> <sql> <expected>
     local got
-    got=$("$PCOMM" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
+    got=$("$COMSHU" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
     if [ "$got" != "$3" ]; then
         echo "FAIL: $1"
         echo "  expected: $3"

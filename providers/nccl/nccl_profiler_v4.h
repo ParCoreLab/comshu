@@ -72,9 +72,9 @@ typedef enum {
     NCCL_LOG_INFO = 3,
     NCCL_LOG_ABORT = 4,
     NCCL_LOG_TRACE = 5
-} pcommNcclDebugLogLevel;
+} comshuNcclDebugLogLevel;
 
-typedef void (*pcommNcclDebugLogger_t)(pcommNcclDebugLogLevel level, unsigned long flags,
+typedef void (*comshuNcclDebugLogger_t)(comshuNcclDebugLogLevel level, unsigned long flags,
                                        const char* file, int line, const char* fmt, ...);
 
 /* Event type bitmask. Doubles as the activation mask the plugin writes back at
@@ -83,14 +83,14 @@ typedef void (*pcommNcclDebugLogger_t)(pcommNcclDebugLogLevel level, unsigned lo
  * meaning to a v4 plugin.
  * (reference/nccl-git/src/include/plugin/nccl_profiler.h) */
 enum {
-    pcommNcclProfileGroup = (1 << 0),
-    pcommNcclProfileColl = (1 << 1),
-    pcommNcclProfileP2p = (1 << 2),
-    pcommNcclProfileProxyOp = (1 << 3),
-    pcommNcclProfileProxyStep = (1 << 4),
-    pcommNcclProfileProxyCtrl = (1 << 5),
-    pcommNcclProfileKernelCh = (1 << 6),
-    pcommNcclProfileNetPlugin = (1 << 7),
+    comshuNcclProfileGroup = (1 << 0),
+    comshuNcclProfileColl = (1 << 1),
+    comshuNcclProfileP2p = (1 << 2),
+    comshuNcclProfileProxyOp = (1 << 3),
+    comshuNcclProfileProxyStep = (1 << 4),
+    comshuNcclProfileProxyCtrl = (1 << 5),
+    comshuNcclProfileKernelCh = (1 << 6),
+    comshuNcclProfileNetPlugin = (1 << 7),
 };
 
 /* v4 event descriptor. VERBATIM layout from
@@ -147,7 +147,7 @@ typedef struct {
             void*   data;
         } netPlugin;
     };
-} pcommNcclProfilerEventDescr_v4_t;
+} comshuNcclProfilerEventDescr_v4_t;
 
 typedef union {
     struct {
@@ -165,7 +165,7 @@ typedef union {
     struct {
         uint64_t pTimer;
     } kernelCh;
-} pcommNcclProfilerEventStateArgs_v4_t;
+} comshuNcclProfilerEventStateArgs_v4_t;
 
 /* The vtable NCCL dlsym's as "ncclProfiler_v4".
  *
@@ -178,13 +178,13 @@ typedef union {
 typedef struct {
     const char* name;
     int (*init)(void** context, int* eActivationMask, const char* commName, uint64_t commHash,
-                int nNodes, int nranks, int rank, pcommNcclDebugLogger_t logfn);
-    int (*startEvent)(void* context, void** eHandle, pcommNcclProfilerEventDescr_v4_t* eDescr);
+                int nNodes, int nranks, int rank, comshuNcclDebugLogger_t logfn);
+    int (*startEvent)(void* context, void** eHandle, comshuNcclProfilerEventDescr_v4_t* eDescr);
     int (*stopEvent)(void* eHandle);
     int (*recordEventState)(void* eHandle, int eState,
-                            pcommNcclProfilerEventStateArgs_v4_t* eStateArgs);
+                            comshuNcclProfilerEventStateArgs_v4_t* eStateArgs);
     int (*finalize)(void* context);
-} pcommNcclProfiler_v4_t;
+} comshuNcclProfiler_v4_t;
 
 #ifdef __cplusplus
 }

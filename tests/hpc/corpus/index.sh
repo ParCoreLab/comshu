@@ -6,30 +6,30 @@
 # table need partitioning by rank", "is a per-address table ever a table", and
 # "what does a time bucket cost" — none of which can be answered from pingpong.
 #
-# Built from `pcomm read <dir>` (the stream inventory), which reads each file's
+# Built from `comshu read <dir>` (the stream inventory), which reads each file's
 # own header rather than inferring anything from its name, and from
-# `pcomm types` for the type_id -> name map. Both come out of the one
+# `comshu types` for the type_id -> name map. Both come out of the one
 # Table<> list, so this index cannot drift from what the reader actually decodes.
 #
 # Deliberately NOT built from `export --csv`: exporting a 168 MB capture to CSV to count
 # its rows costs gigabytes and minutes, and the header already knows the count.
 set -euo pipefail
 
-CORPUS="${PCOMM_CORPUS:-$HOME/waste/pcomm/corpus}"
+CORPUS="${COMSHU_CORPUS:-$HOME/waste/comshu/corpus}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$HERE/../../.."
 
-PCOMM_BIN="${PCOMM_BIN:-}"
-for c in "$REPO/build-corpus/pcomm/pcomm" "$REPO/build/pcomm/pcomm"; do
-  [ -n "$PCOMM_BIN" ] && break
-  [ -x "$c" ] && PCOMM_BIN="$c"
+COMSHU_BIN="${COMSHU_BIN:-}"
+for c in "$REPO/build-corpus/comshu/comshu" "$REPO/build/comshu/comshu"; do
+  [ -n "$COMSHU_BIN" ] && break
+  [ -x "$c" ] && COMSHU_BIN="$c"
 done
-[ -n "$PCOMM_BIN" ] || { echo "no pcomm binary found; build one or set PCOMM_BIN" >&2; exit 1; }
+[ -n "$COMSHU_BIN" ] || { echo "no comshu binary found; build one or set COMSHU_BIN" >&2; exit 1; }
 [ -d "$CORPUS" ] || { echo "no corpus at $CORPUS; run harvest.sh" >&2; exit 1; }
 
 # The type vocabulary of THIS build, committed beside the index so a future
 # reader can tell whether a type id meant the same thing when the index was made.
-"$PCOMM_BIN" types > "$HERE/types.tsv"
+"$COMSHU_BIN" types > "$HERE/types.tsv"
 
 TYPES="$HERE/types.tsv"
 OUT="$HERE/index.tsv"
@@ -46,7 +46,7 @@ OUT="$HERE/index.tsv"
     # Inventory columns: file type kind stride records schema [(other schema)].
     # Summed across ranks per type; bytes recomputed as records*stride so the
     # 32-byte header of every stream file is excluded and the number is payload.
-    "$PCOMM_BIN" read "$d" 2>/dev/null | awk -v cap="$cap" -v cs="$case_name" -v job="$jobid" \
+    "$COMSHU_BIN" read "$d" 2>/dev/null | awk -v cap="$cap" -v cs="$case_name" -v job="$jobid" \
         -v ranks="$ranks" -v types="$TYPES" '
       BEGIN {
         while ((getline line < types) > 0) {

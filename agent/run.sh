@@ -51,24 +51,24 @@ host="$bind"
 [ "$host" = "0.0.0.0" ] && host=127.0.0.1
 ui_url="http://$host:$port"
 
-pcomm="${PCOMM:-}"
-if [ -z "$pcomm" ]; then
-    for candidate in "$root"/build*/pcomm/pcomm; do
+comshu="${COMSHU:-}"
+if [ -z "$comshu" ]; then
+    for candidate in "$root"/build*/comshu/comshu; do
         [ -x "$candidate" ] || continue
-        # `pcomm ui` only exists in a build configured with DuckDB. Note the
-        # capture into a variable: `pcomm` with no args exits 1, and under
+        # `comshu ui` only exists in a build configured with DuckDB. Note the
+        # capture into a variable: `comshu` with no args exits 1, and under
         # `pipefail` a `| grep -q` pipeline inherits that and reads as "no".
         verbs="$("$candidate" 2>&1 || true)"
         case "$verbs" in
             *"  ui "*)
-                pcomm="$candidate"
+                comshu="$candidate"
                 break
                 ;;
         esac
     done
 fi
-if [ -z "$pcomm" ]; then
-    echo "no pcomm binary with a \`ui\` verb found under $root/build*; set PCOMM=<path>" >&2
+if [ -z "$comshu" ]; then
+    echo "no comshu binary with a \`ui\` verb found under $root/build*; set COMSHU=<path>" >&2
     exit 1
 fi
 
@@ -86,7 +86,7 @@ if [ "$bind" != "127.0.0.1" ] && [ "$bind" != "localhost" ] && [ "$bind" != "::1
     echo "!! serving on $bind — no authentication on either half." >&2
 fi
 
-"$pcomm" ui "$capture" --port "$port" --bind "$bind" &
+"$comshu" ui "$capture" --port "$port" --bind "$bind" &
 
 # The bridge reads the capture through the server, so it has to be up first.
 for _ in $(seq 1 60); do

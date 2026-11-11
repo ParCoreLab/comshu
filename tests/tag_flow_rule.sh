@@ -18,10 +18,10 @@
 # and wrong in the direction that looks like success.
 set -uo pipefail
 
-PCOMM=${1:?usage: tag_flow_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: tag_flow_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-tag-flow-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-tag-flow-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # The UCP layer. status_class: 0 Immediate, 1 Error, 2 Request.
@@ -79,7 +79,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,2,0,2120,0,2130,0,5,0,0,0,20,10,0,10,0,0,0
 CSV
 
-"$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
+"$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
     echo "SKIP: build without DuckDB"; exit 0
@@ -93,7 +93,7 @@ fi
 fail=0
 expect() {  # <label> <sql> <expected>
     local got
-    got=$("$PCOMM" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
+    got=$("$COMSHU" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
     if [ "$got" != "$3" ]; then
         echo "FAIL: $1"; echo "  expected: $3"; echo "  got:      ${got:-<no result>}"
         echo "  query:    $2"; fail=1

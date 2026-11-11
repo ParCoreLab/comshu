@@ -11,10 +11,10 @@
 # problem, which round 1 never met because it never queried a derived table:
 #
 #   * round 1's asserts.sh loads a CSV export into **sqlite3**;
-#   * `pcomm export --csv` emits one CSV per RECORD TYPE — the raw 600s and 800s
+#   * `comshu export --csv` emits one CSV per RECORD TYPE — the raw 600s and 800s
 #     and nothing else;
 #   * transport_mix, tag_flow, tag_recv_resolved and link_health are built by
-#     `pcomm link` and live only in the **parquet** export.
+#     `comshu link` and live only in the **parquet** export.
 #
 # So the four tables this round exists to test cannot be reached by the runner
 # this case already ships, and there is no documented runner that can reach them

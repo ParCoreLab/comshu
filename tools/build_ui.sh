@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the pcomm frontend into ui/dist, which pcomm-ui then embeds.
+# Build the comshu frontend into ui/dist, which comshu-ui then embeds.
 #
 # WHY THIS EXISTS. ui/dist is a build artifact and is not committed, so the
 # build has to produce it. It was committed for one day (05a7671) to make the
@@ -26,7 +26,7 @@ cd "$ui"
 npm="${NPM:-npm}"
 if ! command -v "$npm" >/dev/null 2>&1; then
     echo "build_ui.sh: no '$npm' on PATH — the UI cannot be built without it" >&2
-    echo "             configure with -DPCOMM_UI=OFF to build without the UI" >&2
+    echo "             configure with -DCOMSHU_UI=OFF to build without the UI" >&2
     exit 1
 fi
 

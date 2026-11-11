@@ -120,7 +120,7 @@
       thing to read first, and widths across it are counts of different events.
       Verbs and DEVX opcodes stay raw numbers because the Parquet layer is raw
       by design: naming them belongs in a derived table in
-      <code>pcomm-read --link</code>, not in a second copy of the mapping here.
+      <code>comshu-read --link</code>, not in a second copy of the mapping here.
     </p>
   {/snippet}
 </Panel>

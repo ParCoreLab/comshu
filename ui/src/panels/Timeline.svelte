@@ -542,7 +542,7 @@
          the filtering, search and flow arrows this one does not. -->
     <p class="text-[11px] mt-3 mb-0" style="color: var(--text-3)">
       Forensics, filtering and search still belong to Perfetto —
-      <code>pcomm-read &lt;trace-dir&gt; --pftrace out.pftrace</code>, then
+      <code>comshu-read &lt;trace-dir&gt; --pftrace out.pftrace</code>, then
       <a href="https://ui.perfetto.dev" target="_blank" rel="noreferrer"
          style="color: var(--text-2)">ui.perfetto.dev</a>.
     </p>

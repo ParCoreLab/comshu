@@ -26,20 +26,20 @@
 // ARMED BY DEFAULT, unlike the doorbell hijack, because it is not in any data
 // path: it sits on a once-per-registration conversion, observes it, and passes
 // through. It IS a rewrite of libcuda's export table in memory, so
-// PCOMM_DMABUF_EXPORT_TABLE=0 turns it off if a driver ever disagrees.
+// COMSHU_DMABUF_EXPORT_TABLE=0 turns it off if a driver ever disagrees.
 
 #include <cstdlib>
 
 #include "cuda_export_table.hpp"
-#include "pcomm/core/dmabuf_registry.hpp"
+#include "comshu/core/dmabuf_registry.hpp"
 
 namespace mlx5::dmabuf_door {
 
-namespace dmb = pcomm::core::dmabuf;
+namespace dmb = comshu::core::dmabuf;
 
 inline bool enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_DMABUF_EXPORT_TABLE");
+        const char* v = std::getenv("COMSHU_DMABUF_EXPORT_TABLE");
         return !(v && *v == '0');
     }();
     return on;
@@ -82,7 +82,7 @@ inline dmb::CuResult get_handle(void* handle, dmb::CuDevicePtr dptr, std::size_t
         const int fd = *static_cast<int*>(handle);
         dmb::remember(fd,
                       dmb::Range{static_cast<std::uint64_t>(dptr), static_cast<std::uint64_t>(size),
-                                 pcomm::core::device_of(reinterpret_cast<const void*>(dptr))},
+                                 comshu::core::device_of(reinterpret_cast<const void*>(dptr))},
                       dmb::kDoorExportTable);
     }
     return rc;
@@ -105,16 +105,16 @@ inline void install() {
 // conversions came through, and whether registrations found them.
 inline void report(int rank) {
     std::uint64_t door[4] = {0, 0, 0, 0}, hits = 0, misses = 0;
-    pcomm_engine_dmabuf_stats(door, &hits, &misses);
+    comshu_engine_dmabuf_stats(door, &hits, &misses);
     if (!(door[0] | door[1] | door[2] | door[3] | hits | misses))
         return;
     std::fprintf(stderr,
-                 "[pcomm rank %d] dmabuf: conversions dlsym=%llu getproc=%llu getproc_v2=%llu "
+                 "[comshu rank %d] dmabuf: conversions dlsym=%llu getproc=%llu getproc_v2=%llu "
                  "export_table=%llu | registrations resolved=%llu unresolved=%llu%s\n",
                  rank, (unsigned long long)door[0], (unsigned long long)door[1],
                  (unsigned long long)door[2], (unsigned long long)door[3],
                  (unsigned long long)hits, (unsigned long long)misses,
-                 enabled() ? "" : " (export-table door off: PCOMM_DMABUF_EXPORT_TABLE=0)");
+                 enabled() ? "" : " (export-table door off: COMSHU_DMABUF_EXPORT_TABLE=0)");
 }
 
 }  // namespace mlx5::dmabuf_door

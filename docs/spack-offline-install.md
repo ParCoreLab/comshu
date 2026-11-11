@@ -1,7 +1,7 @@
-# Installing pcomm with spack on an offline cluster
+# Installing comshu with spack on an offline cluster
 
 The normal path is in the [README](../README.md): `spack repo add` the repo URL
-and `spack install pcomm`. That needs a network and a recent spack. This file is
+and `spack install comshu`. That needs a network and a recent spack. This file is
 for a cluster with neither. It was verified on MareNostrum 5 on 2026-09-16.
 
 Two things rule out the obvious approach there:
@@ -27,7 +27,7 @@ with no network:
 # ~/.spack/repos.yaml
 repos:
   builtin: /home/you/spack-builtin/repos/spack_repo/builtin
-  parcore: /home/you/pcomm-src/spack_repo/parcore
+  parcore: /home/you/comshu-src/spack_repo/parcore
 ```
 
 ## 2. Give it clingo
@@ -51,7 +51,7 @@ fails immediately instead of hanging:
 
 ```bash
 spack bootstrap disable
-env PYTHONPATH=$HOME/clingo39 spack spec pcomm
+env PYTHONPATH=$HOME/clingo39 spack spec comshu
 ```
 
 ## 3. Register the toolchain and every dependency as external
@@ -74,20 +74,20 @@ version that has to be built, and building it means downloading it.
 Since the repo is private for now, add a version pointing at a local clone:
 
 ```python
-version("local", git="file:///home/you/pcomm-src", branch="main")
+version("local", git="file:///home/you/comshu-src", branch="main")
 ```
 
 ```bash
-env PYTHONPATH=$HOME/clingo39 spack install pcomm@local +ibverbs
+env PYTHONPATH=$HOME/clingo39 spack install comshu@local +ibverbs
 ```
 
 Then confirm it captures something real rather than merely running:
 
 ```bash
-P=$(spack location -i "pcomm@local +ibverbs")
+P=$(spack location -i "comshu@local +ibverbs")
 ib_write_bw -s 1024 -n 200 &                     # server
-$P/bin/pcomm run -p ib -o cap -- ib_write_bw -s 1024 -n 200 localhost
-$P/bin/pcomm read cap
+$P/bin/comshu run -p ib -o cap -- ib_write_bw -s 1024 -n 200 localhost
+$P/bin/comshu read cap
 ```
 
 A good capture shows `ib_post_send` with one record per iteration, next to

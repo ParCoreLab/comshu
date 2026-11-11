@@ -23,17 +23,17 @@
 # tests/ucx_records.sh makes.
 set -uo pipefail
 
-PCOMM=${1:?usage: ucx_deep_records.sh <pcomm> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
-SELFTEST=${2:?usage: ucx_deep_records.sh <pcomm> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
-ENGINE=${3:?usage: ucx_deep_records.sh <pcomm> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
-UCX_SO=${4:?usage: ucx_deep_records.sh <pcomm> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
-DEEP_SO=${5:?usage: ucx_deep_records.sh <pcomm> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
+COMSHU=${1:?usage: ucx_deep_records.sh <comshu> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
+SELFTEST=${2:?usage: ucx_deep_records.sh <comshu> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
+ENGINE=${3:?usage: ucx_deep_records.sh <comshu> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
+UCX_SO=${4:?usage: ucx_deep_records.sh <comshu> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
+DEEP_SO=${5:?usage: ucx_deep_records.sh <comshu> <selftest> <engine-so> <ucx-so> <ucx-deep-so>}
 
-for f in "$PCOMM" "$SELFTEST" "$ENGINE" "$UCX_SO" "$DEEP_SO"; do
+for f in "$COMSHU" "$SELFTEST" "$ENGINE" "$UCX_SO" "$DEEP_SO"; do
     [ -x "$f" ] || [ -f "$f" ] || { echo "SKIP: missing $f"; exit 0; }
 done
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-uct-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-uct-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # UCX_TLS IS PINNED, and for case 21's reason: pinning is not tuning. This test
@@ -43,13 +43,13 @@ trap 'rm -rf "$WORK"' EXIT
 # has six active mlx5 HCAs, UCX also picks rc_mlx5 and ud_mlx5 and the workload
 # reports three in-progress sends: two failures that say nothing about the
 # provider. It went unseen because run_on_mn5.sh builds the UCX configuration
-# with -DPCOMM_BUILD_TESTS=OFF, so this gate had never once run on the cluster.
+# with -DCOMSHU_BUILD_TESTS=OFF, so this gate had never once run on the cluster.
 #
 # Pinning makes the test measure what it already claims to. The rc_mlx5 and
 # rendezvous paths are NOT lost by doing so — they are case 21's job, on
 # hardware, in an allocation, where the thresholds are pinned for the same
 # reason.
-PCOMM_OUTPUT_DIR="$WORK/cap" PCOMM_TRACE_MODE=full UCX_TLS=self \
+COMSHU_OUTPUT_DIR="$WORK/cap" COMSHU_TRACE_MODE=full UCX_TLS=self \
     LD_PRELOAD="$ENGINE $UCX_SO $DEEP_SO" "$SELFTEST" > "$WORK/run.out" 2>&1
 rc=$?
 if [ "$rc" -eq 77 ]; then
@@ -72,7 +72,7 @@ if grep -qE "REFUSING|ucx_deep: BUG|shadow table full" "$WORK/run.out"; then
     exit 1
 fi
 
-"$PCOMM" export "$WORK/cap" --csv "$WORK/csv" > "$WORK/export.out" 2>&1 || {
+"$COMSHU" export "$WORK/cap" --csv "$WORK/csv" > "$WORK/export.out" 2>&1 || {
     cat "$WORK/export.out"; echo "FAIL: export failed"; exit 1
 }
 if grep -q "unknown to this build" "$WORK/export.out"; then

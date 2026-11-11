@@ -28,8 +28,8 @@
 # multi-node behaviour can. Neither board subsumes the other.
 #
 # Config via env:
-#   PCOMM_A100=missa18@a100        ssh target (may be a ProxyJump alias)
-#   PCOMM_SSH_OPTS=               extra ssh options, e.g.
+#   COMSHU_A100=missa18@a100        ssh target (may be a ProxyJump alias)
+#   COMSHU_SSH_OPTS=               extra ssh options, e.g.
 #                                  '-o ProxyJump=mktips@100.64.0.8'.
 #                                  For hosts where ~/.ssh/config cannot carry the
 #                                  jump: on simurgh-base it is a read-only
@@ -37,15 +37,15 @@
 #                                  MagicDNS names do not resolve there, so the
 #                                  configured `ProxyJump university-base` fails
 #                                  and cannot be fixed locally.
-#   PCOMM_A100_DIR=/DATA/$USER/pcomm   checkout on the remote. NOT $HOME —
+#   COMSHU_A100_DIR=/DATA/$USER/comshu   checkout on the remote. NOT $HOME —
 #                                  the A100 box's root filesystem runs at 98%
 #                                  and other people's jobs live there.
 set -uo pipefail
 
-REMOTE="${PCOMM_A100:-missa18@a100}"
-RDIR="${PCOMM_A100_DIR:-/DATA/missa18/pcomm}"
+REMOTE="${COMSHU_A100:-missa18@a100}"
+RDIR="${COMSHU_A100_DIR:-/DATA/missa18/comshu}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 ${PCOMM_SSH_OPTS:-}"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 ${COMSHU_SSH_OPTS:-}"
 
 do_build=1
 cases_filter="09"
@@ -64,7 +64,7 @@ rsh() { $SSH "$REMOTE" "bash -lc '$1'"; }
 $SSH "$REMOTE" true 2>/dev/null || {
   echo "run_on_a100.sh: cannot reach $REMOTE." >&2
   echo "  If it needs a jump host, put it in ~/.ssh/config, or pass it as" >&2
-  echo "  PCOMM_SSH_OPTS='-o ProxyJump=user@host' when that file is not yours" >&2
+  echo "  COMSHU_SSH_OPTS='-o ProxyJump=user@host' when that file is not yours" >&2
   echo "  to edit. This script does not guess one. (Overriding a configured" >&2
   echo "  ProxyJump on the command line is what made the first attempt fail" >&2
   echo "  with 'Host key verification failed'.)" >&2
@@ -80,7 +80,7 @@ $SSH "$REMOTE" true 2>/dev/null || {
 # red for a reason that no longer existed.
 #
 # So the commit is printed with every board, a dirty tree is called out, and
-# PCOMM_EXPECT_COMMIT lets a caller demand the tree it meant to test.
+# COMSHU_EXPECT_COMMIT lets a caller demand the tree it meant to test.
 #
 # THAT CHECK IS ABOUT THE LOCAL CHECKOUT AND NOTHING ELSE — it compares the tree
 # this script is reading to the tree the caller meant, and says nothing about
@@ -95,10 +95,10 @@ $SSH "$REMOTE" true 2>/dev/null || {
 src_commit="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 src_dirty="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | head -1)"
 echo "== source $src_commit${src_dirty:+  (DIRTY — this board is not attributable to a commit)}"
-if [ -n "${PCOMM_EXPECT_COMMIT:-}" ] &&
-   [ "${src_commit#$PCOMM_EXPECT_COMMIT}" = "$src_commit" ] &&
-   [ "${PCOMM_EXPECT_COMMIT#$src_commit}" = "$PCOMM_EXPECT_COMMIT" ]; then
-  echo "run_on_a100.sh: tree is at $src_commit, expected $PCOMM_EXPECT_COMMIT." >&2
+if [ -n "${COMSHU_EXPECT_COMMIT:-}" ] &&
+   [ "${src_commit#$COMSHU_EXPECT_COMMIT}" = "$src_commit" ] &&
+   [ "${COMSHU_EXPECT_COMMIT#$src_commit}" = "$COMSHU_EXPECT_COMMIT" ]; then
+  echo "run_on_a100.sh: tree is at $src_commit, expected $COMSHU_EXPECT_COMMIT." >&2
   echo "  If this checkout is fed by syncthing, the files may still be arriving." >&2
   exit 1
 fi
@@ -112,14 +112,14 @@ fi
 # the remote holds a perfect copy of the source and no repository at all, so
 # every build there has been stamping `commit=unknown` — on the one host where a
 # hand-copied .so has already caused a false refutation. write_build_id.cmake
-# has had the $PCOMM_COMMIT door for exactly this since it was written, and
+# has had the $COMSHU_COMMIT door for exactly this since it was written, and
 # nothing walked through it.
 build_commit="$src_commit"
 git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || build_commit="$src_commit-dirty"
 # Overrides whatever form the caller passed above: the assertion matches the
 # stamped id exactly, so what reaches it must be the id this script computed,
 # not a 7-character abbreviation of it that would fail against every capture.
-export PCOMM_EXPECT_COMMIT="$build_commit"
+export COMSHU_EXPECT_COMMIT="$build_commit"
 
 # ---- sync -----------------------------------------------------------------
 # rsync rather than the git round-trip run_on_mn5.sh uses: there is no bare repo
@@ -132,7 +132,7 @@ rsync -az --delete --exclude build --exclude 'build-*' --exclude .git --exclude 
 
 # .tools is excluded above (it is 130 MB of archives and `--delete` would fight
 # with anything already there), so DuckDB goes over as its own step and only
-# when it is missing. It is what gives this host `--parquet` and `pcomm sql`,
+# when it is missing. It is what gives this host `--parquet` and `comshu sql`,
 # and therefore the derived-layer assertions — on the one machine that can run
 # IBGDA at all, which is the only place several of them can ever be exercised.
 DUCK_STATIC_LOCAL="$REPO_ROOT/.tools/duckdb-static"
@@ -157,8 +157,8 @@ if [ "$do_build" -eq 1 ]; then
   # the runner went on to execute cases against the previous binary. That is
   # finding 14 of the round-2 studies, word for word, and it was still here in
   # this file after being fixed in wait_and_run_mn5.sh.
-  rsh "set -o pipefail; export PCOMM_COMMIT=$build_commit; cd $RDIR &&
-       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON -DPCOMM_DUCKDB=$DUCK_STATIC -DPCOMM_DUCKDB_STATIC=$DUCK_STATIC -DPCOMM_UI=OFF >/dev/null &&
+  rsh "set -o pipefail; export COMSHU_COMMIT=$build_commit; cd $RDIR &&
+       cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=ON -DCOMSHU_PROVIDER_MLX5DV=ON -DCOMSHU_DUCKDB=$DUCK_STATIC -DCOMSHU_DUCKDB_STATIC=$DUCK_STATIC -DCOMSHU_UI=OFF >/dev/null &&
        cmake --build build -j 2>&1 | tail -3" || {
     echo "run_on_a100.sh: build failed" >&2; exit 1; }
 fi
@@ -194,12 +194,12 @@ for c in $(rsh "ls $RDIR/tests/hpc/cases" | grep -E "^(${cases_filter// /|})" );
   echo "== case $c"
   ran="$ran $c"
   rsh "cd $RDIR &&
-       export PCOMM_ROOT=$RDIR &&
-       export PCOMM_OUT_ROOT=$RDIR/results &&
-       export PCOMM_PROVIDER_PATH=$RDIR/build/providers/mlx5dv &&
-       export PCOMM=$RDIR/build/pcomm/pcomm &&
-       export PCOMM_EXPECT_COMMIT=$build_commit &&
-       export PCOMM_PREFER_BAKED=1 &&
+       export COMSHU_ROOT=$RDIR &&
+       export COMSHU_OUT_ROOT=$RDIR/results &&
+       export COMSHU_PROVIDER_PATH=$RDIR/build/providers/mlx5dv &&
+       export COMSHU=$RDIR/build/comshu/comshu &&
+       export COMSHU_EXPECT_COMMIT=$build_commit &&
+       export COMSHU_PREFER_BAKED=1 &&
        bash tests/hpc/cases/$c/job.sbatch 2>&1 | tail -40"
 done
 

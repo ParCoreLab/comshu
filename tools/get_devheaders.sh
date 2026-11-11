@@ -21,7 +21,7 @@
 #
 #   tools/get_devheaders.sh                    # rdma-core (default)
 #   tools/get_devheaders.sh rdma libfabric ucx # and the transports above it
-#   cmake -B build -DPCOMM_PROVIDER_IBVERBS=ON \
+#   cmake -B build -DCOMSHU_PROVIDER_IBVERBS=ON \
 #         -DCMAKE_PREFIX_PATH=$PWD/.tools/sysroot/usr
 set -euo pipefail
 
@@ -38,7 +38,7 @@ declare -A PKGS=(
 
 want=("${@:-rdma}")
 mkdir -p "$SYSROOT"
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-devheaders-XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/comshu-devheaders-XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 for group in "${want[@]}"; do
@@ -73,4 +73,4 @@ done
 echo
 echo "configure with:"
 echo "  cmake -B build -DCMAKE_PREFIX_PATH=$SYSROOT/usr \\"
-echo "        -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_MLX5DV=ON"
+echo "        -DCOMSHU_PROVIDER_IBVERBS=ON -DCOMSHU_PROVIDER_MLX5DV=ON"

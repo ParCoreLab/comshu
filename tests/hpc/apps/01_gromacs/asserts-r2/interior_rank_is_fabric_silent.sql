@@ -36,7 +36,7 @@
 -- SPLIT ON `scope`, per the contract in BRIEF-BLACKBOX.md (corrected
 -- 2026-08-30): the column takes 'intra-node', 'network' or 'unknown' and is the
 -- table's own answer to "did this leave the node". Grouping on it rather than
--- matching tl_name keeps the claim in pcomm's vocabulary and keeps it true on a
+-- matching tl_name keeps the claim in comshu's vocabulary and keeps it true on a
 -- fabric that is not mlx5. Whether the mapping from tl_name to scope is itself
 -- right is asked separately, in scope_matches_the_documented_mapping.sql.
 WITH RECURSIVE r(rk) AS (

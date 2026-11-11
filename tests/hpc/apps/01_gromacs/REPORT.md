@@ -112,7 +112,7 @@ Same number of calls, same element counts, same peers. So:
   percent** between the arms. `pme_coord_volume.sql` asserts the same expected
   value in both, which is the point — one specification, two runs.
 - The discriminator is **which memory the NIC was asked to register.**
-  `mem_object.device` is filled by `pcomm::core::device_of()` at every ibverbs
+  `mem_object.device` is filled by `comshu::core::device_of()` at every ibverbs
   registration door (`ibverbs_provider.cpp:580, :622, :914`) and is 65535 for
   host memory. Predicted: **direct ON has at least one NIC-registered range with
   a real device ordinal; direct OFF has none.** That is
@@ -126,7 +126,7 @@ Same number of calls, same element counts, same peers. So:
 
 If the ON capture shows **less** traffic than the OFF capture, the correct
 reading is *not* "the knob saved bytes". It would mean the traffic left through a
-door pcomm does not hook. The specific candidate is ruled out by the build: the
+door comshu does not hook. The specific candidate is ruled out by the build: the
 `cudaMemcpyPeerAsync` peer-to-peer path
 (`gpuhaloexchange_impl_gpu.cpp: communicateHaloDataPeerToPeer`) is
 `supportedThreadMpiBuild` only, and this is a lib-MPI build, so it cannot fire.
@@ -139,7 +139,7 @@ is hooked. **Prediction: no traffic disappears.**
 `endpoint` — and **no memory type and no device.** `ucp_request_param_t` has a
 `memory_type` field, but Open MPI's `pml_ucx` does not set it (UCX sniffs the
 pointer itself), so the API argument genuinely does not carry it. But
-`pcomm::core::device_of()` already exists, is header-only, and is applied by the
+`comshu::core::device_of()` already exists, is header-only, and is applied by the
 ibverbs provider to every address it registers — and the UCX provider never asks
 it about the send/recv buffer.
 
@@ -173,7 +173,7 @@ GPU-aware MPI detected, enabling direct GPU communication.
 | direct GPU comm **OFF** | 50.760 | 50.189 | 1.12 % |
 | **speedup from the knob** | **+19.41 %** | **+19.93 %** | |
 
-Two things worth stating. First, `pcomm run -p ib,ucx` costs about **1 %** on a
+Two things worth stating. First, `comshu run -p ib,ucx` costs about **1 %** on a
 2.1 M-atom production MD run — the tracer is cheap enough that the performance
 claim survives being measured under it. Second, GPU update was refused in
 **both** arms for reasons that have nothing to do with the knob (`trace-on.log:335`:
@@ -275,7 +275,7 @@ hypotheses, written before it ran).
 | `ucx_tag_send` | 103,292 | 24,452 |
 
 The mlx5dv provider finds **1,534 registrations the ibverbs provider never saw**
-— so there really was a second registration door in play, and pcomm does hook
+— so there really was a second registration door in play, and comshu does hook
 it. Every one of those registrations is still **host** memory.
 
 That kills the hypothesis that device memory was being registered through a door
@@ -284,7 +284,7 @@ we had not loaded. Combined with `UCX_IB_GPU_DIRECT_RDMA=try` (try, not force �
 
 > **UCX did not use GPUDirect RDMA for GROMACS's device buffers. It pipelined
 > them through host memory, so the NIC genuinely only ever saw host pages, and
-> pcomm's capture of that fact is CORRECT.**
+> comshu's capture of that fact is CORRECT.**
 
 The affirmative evidence for it — not merely the absence of device rows — is in
 1.2: with direct GPU comm ON, UCX registers **1.80 GB more host memory**
@@ -360,9 +360,9 @@ part of the capture that works.
 | P4 no traffic disappears | **right** — 103,292 vs 103,215 messages |
 | P5 `ucx_tag_send` cannot tell host from device | **right**, and it mattered more than expected |
 
-## Section 3 — what turned out to be wrong or missing in pcomm
+## Section 3 — what turned out to be wrong or missing in comshu
 
-### F1 — On the HPC-X/UCX stack, pcomm records zero transmitted payload. Named to a symbol.
+### F1 — On the HPC-X/UCX stack, comshu records zero transmitted payload. Named to a symbol.
 
 `suite/README.md` and `PLAN-20260815-1540` Stage 3 record this as "`ibv_post_send`
 is not UCX's send door on MN5 (measured, job 44635003) and no replacement has
@@ -385,7 +385,7 @@ doorbell it mapped itself. There is no ibverbs data-plane door to hook, so
 `ib_post_send` is not "missing entry points" the way case 08 was — it is
 structurally unreachable here.
 
-The named replacement is the DEVX plane, which pcomm already has a provider for.
+The named replacement is the DEVX plane, which comshu already has a provider for.
 But **loading it does not close the gap.** With `-p ib,ucx,mlx5dv` the probe
 recorded the entire control plane — 1,328 `mlx5_devx_qp`, 1,328
 `mlx5_devx_qp_connect`, 304 `mlx5_uar`, 2,032 `mlx5_umem`, 6,192 `mlx5_devx_cmd`
@@ -488,7 +488,7 @@ problem in its own comment: kUnknownDevice "means 'host memory' *and* 'CUDA is
 not present' *and* 'the call failed'. Those three imply completely different
 work and look identical in the capture."
 
-It provides `PCOMM_TRACE_HOOKS=1` -> `trace_device_attr()` as the discriminator,
+It provides `COMSHU_TRACE_HOOKS=1` -> `trace_device_attr()` as the discriminator,
 but that is a one-shot **stderr print**, not a column, so it cannot be asserted
 on and does not survive into the export. I reached the H1 conclusion in 1.5 by
 an indirect argument (host registration went *up* 25.8 %), which is sound but is
@@ -505,7 +505,7 @@ Predicted in P5 and confirmed. `ucx_tag_send` records `buffer` (an interned
 address) but no device and no memory type, so the layer that captured 100 % of
 this run's traffic cannot distinguish a host-staged halo exchange from a
 GPU-direct one. `ucp_request_param_t` does have a `memory_type` field and Open
-MPI does not set it — but `pcomm::core::device_of()` is header-only, already
+MPI does not set it — but `comshu::core::device_of()` is header-only, already
 linked into every provider, and already applied by the ibverbs provider to every
 address it registers. Applying it to the send/recv buffer would give
 `ucx_tag_send` the discriminator this whole exercise needed, at the layer that
@@ -531,7 +531,7 @@ accounting had not caught up when the job's own `du` ran.
 What *is* empty is `comm_edges.parquet` — 196 bytes, header only — and it is
 **identically** empty in both arms, for the reason in F1. Nothing about the
 derived layer differs between the two configurations. Had that been read as
-"direct GPU comm moved the traffic somewhere pcomm cannot see", it would have
+"direct GPU comm moved the traffic somewhere comshu cannot see", it would have
 been the exact inversion the brief warns about: the traffic never moved
 (+0.0008 % bytes), the wire layer was blind in both arms equally, and the knob's
 19 % came from work GROMACS stopped doing on its own side of the NIC.

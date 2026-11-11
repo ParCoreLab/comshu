@@ -38,7 +38,7 @@
 #   sbatch --account=etur02 --qos=acc_debug \
 #     tests/hpc/probes/uar_doorbell_mode/mn5_roce_av.sbatch
 #
-#SBATCH --job-name=pcomm-roce-av
+#SBATCH --job-name=comshu-roce-av
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=20
@@ -49,12 +49,12 @@
 
 set -uo pipefail
 : "${TMPDIR:=/tmp}"
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
 
-PCOMM="$PCOMM_ROOT/build/pcomm/pcomm"
-export PCOMM_PROVIDER_PATH="$PCOMM_ROOT/build/providers/mlx5dv"
-CUDART_DIR="$(dirname "$(ls "$PCOMM_SDK"/cuda/*/targets/x86_64-linux/lib/libcudart.so.12 2>/dev/null | head -1)")"
+COMSHU="$COMSHU_ROOT/build/comshu/comshu"
+export COMSHU_PROVIDER_PATH="$COMSHU_ROOT/build/providers/mlx5dv"
+CUDART_DIR="$(dirname "$(ls "$COMSHU_SDK"/cuda/*/targets/x86_64-linux/lib/libcudart.so.12 2>/dev/null | head -1)")"
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib${CUDART_DIR:+:$CUDART_DIR}:${LD_LIBRARY_PATH:-}"
 APP="$NVSHMEM_HOME/bin/perftest/device/pt-to-pt/shmem_put_bw"
 
@@ -89,12 +89,12 @@ $SRUN bash -c '
 # ---------------------------------------------------------------------------
 leg() {  # leg <name> <env assignments...>
   local name="$1"; shift
-  local out="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/roce_av.$SLURM_JOB_ID.$name"
+  local out="${COMSHU_OUT_ROOT:-$HOME/comshu-suite}/roce_av.$SLURM_JOB_ID.$name"
   echo
   echo "######## leg: $name   ($*) ########"
   local log="$TMPDIR/roce.$name.log"
   ( export "$@"
-    timeout 400 $SRUN "$PCOMM" run -p mlx5dv --enable-host-doorbell \
+    timeout 400 $SRUN "$COMSHU" run -p mlx5dv --enable-host-doorbell \
       -o "$out" -- "$APP" > "$log" 2>&1 )
   echo "-- rc=$? --"
   # The transport's own account of what it bound to. If it silently fell back to
@@ -106,7 +106,7 @@ leg() {  # leg <name> <env assignments...>
 
   local csv="$TMPDIR/csv.$name"
   rm -rf "$csv"
-  "$PCOMM" export "$out" --csv "$csv" >/dev/null 2>&1
+  "$COMSHU" export "$out" --csv "$csv" >/dev/null 2>&1
   local f="$csv/mlx5_device_send.csv"
   [ -f "$f" ] || { echo "  NO mlx5_device_send.csv — nothing was decoded"; return; }
   echo "-- rows: $(( $(wc -l < "$f") - 1 )) --"

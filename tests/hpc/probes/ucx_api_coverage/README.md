@@ -2,7 +2,7 @@
 
 Stage-0 instruments for
 `plans/PLAN-20260815-1540-ucx-provider-and-attribution-done.md`.
-They measure the public UCP surface before those calls become permanent pcomm
+They measure the public UCP surface before those calls become permanent comshu
 records.
 
 `job.sbatch` builds `ucx_calls.cpp` as a disposable preload counter and runs
@@ -22,8 +22,8 @@ called.
 ## The nesting arm: ANSWERED, and retired
 
 `nesting.sbatch` asked whether a verbs work request could be attributed to the
-UCP call it was posted beneath, by running the same workload under pcomm's
-ibverbs provider with `PCOMM_TRACE_UCX_NESTING=1`: the preload library exported
+UCP call it was posted beneath, by running the same workload under comshu's
+ibverbs provider with `COMSHU_TRACE_UCX_NESTING=1`: the preload library exported
 the innermost operation scope and the `post_send` callback bucketed each WR by
 it.
 
@@ -42,6 +42,6 @@ instrument has been removed from `providers/ibverbs/ibverbs_provider.cpp`, and
 the kind of door held open for a record nobody writes that this tree has spent
 real time paying down.
 
-`ucx_calls.cpp` keeps `pcomm_ucx_api_probe_current` — the scope export costs
+`ucx_calls.cpp` keeps `comshu_ucx_api_probe_current` — the scope export costs
 nothing, is used by no provider, and is what the next arm would need once an
 observable host-side mlx5 send/doorbell door is identified. See the plan.

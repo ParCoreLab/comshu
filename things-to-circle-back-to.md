@@ -1,4 +1,4 @@
-# pcomm — things to circle back to
+# comshu — things to circle back to
 
 Known limitations and deferred work: one paragraph each, with the evidence and
 the next step. Only OPEN items live here. When one is fixed, its entry is
@@ -10,8 +10,8 @@ Defects in other people's software go to `BUGS-FOUND.md`; designs go to `plans/`
 
 ## The first full arena stalls the thread that fills it for ~2 ms
 
-`pcomm_engine_arena_flush` runs inline on the recording thread
-(`libpcomm/src/engine.cpp`), and the first flush also does the one-time
+`comshu_engine_arena_flush` runs inline on the recording thread
+(`libcomshu/src/engine.cpp`), and the first flush also does the one-time
 `GpuDevice` (a CUDA driver query) and `Invocation` emission. Measured on du04 on
 the send-queue watcher: that batch took 2.1–2.4 ms, and every other batch took
 microseconds. On an application thread that's harmless. On a doorbell repeater
@@ -48,17 +48,17 @@ driver on MN5).
 
 ## Instrumenting one local-memory load wedges NVSHMEM's IBRC proxy
 
-Bisected on MN5 (jobs 43918460..43920181, `PCOMM_INSTR_LO/HI`) to a single
+Bisected on MN5 (jobs 43918460..43920181, `COMSHU_INSTR_LO/HI`) to a single
 instruction: instrumenting `[0,1006)` of `nvshmemi_transfer_rma_p<int>`
 completes, `[0,1007)` hangs. Index 1006 is `LDL.64` at `+0x19680`, a spilled-register
 reload. The surrounding global atomics and system-scope stores are innocent. It
 needs NVSHMEM's IBRC proxy (reproduces on one node with `NVSHMEM_DISABLE_P2P=1`)
-and needs the injected `push()` to run (`-DPCOMM_INJECT_NO_PUSH` completes). The
+and needs the injected `push()` to run (`-DCOMSHU_INJECT_NO_PUSH` completes). The
 channel never fills, no host thread is blocked, and the kernel issues every
 access it should and then never exits. The case 07 hang is avoided on our side;
 the **mechanism is unknown**, which is why this is not a `BUGS-FOUND.md` entry:
 it could be NVBit's, NVSHMEM's or ours. **Next:** a minimal NVBit tool that
-injects a call before that one load, outside pcomm. If it hangs, it goes to
+injects a call before that one load, outside comshu. If it hangs, it goes to
 NVBit/NVSHMEM with the reproducer.
 
 ## Goldens still encode run-specific identifiers
@@ -76,5 +76,5 @@ only where it pins a number no assertion can derive.
 A du04 board can run a mixed tree, because a provider and the assertion beside
 it can arrive separately. `run_on_mn5.sh` can't do this (it pushes HEAD over
 git and refuses a dirty tree). The A100 runner prints the source commit, flags
-a dirty tree and honours `PCOMM_EXPECT_COMMIT`, but the hop is still
+a dirty tree and honours `COMSHU_EXPECT_COMMIT`, but the hop is still
 asynchronous. **Next:** sync du04 over git the way MN5 is synced.

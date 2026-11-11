@@ -1,4 +1,4 @@
-# Quantum ESPRESSO 7.5 (`pw.x`) under pcomm — report
+# Quantum ESPRESSO 7.5 (`pw.x`) under comshu — report
 
 **Machine:** MareNostrum 5, 4 nodes × 1 rank × 1 H100, NDR InfiniBand.
 **App:** `quantumespresso/7.5-nvidia-nvhpcx` (NVHPC 23.11, HPC-X 2.16, UCX 1.15,
@@ -18,7 +18,7 @@ every number below comes from it unless stated).
 | 2 | **An unclean exit silently destroys rank attribution while preserving 100 % of the event volume.** 15.68 M of 18.70 M sends land on `dst_rank = -1` | claim 2 |
 | 3 | **`ucx_worker_address` is never written for any OpenMPI point-to-point application.** The hooked door is `ucp_worker_get_address`; `mca_pml_ucx.so` uses `ucp_worker_query` | claim 4 |
 | 4 | QE does **not** allocate managed memory. `plans/todos.txt` item 1 stays latent — with the evidence, and with a warning about how *not* to test it | clean negative |
-| 5 | On the default transport pcomm sees no wire traffic at all for this app; one documented UCX setting makes 18.7 M sends visible | claim 4 + reach |
+| 5 | On the default transport comshu sees no wire traffic at all for this app; one documented UCX setting makes 18.7 M sends visible | claim 4 + reach |
 
 ---
 
@@ -123,7 +123,7 @@ change. That is claim 3 of `apps/README.md`.
 
 `pw.x` reaches `JOB DONE`, prints `FORTRAN STOP`, and *then* takes `SIGSEGV`
 during teardown. Attributed with a control run (`bare-clean`, job 45088258): it
-happens with **no pcomm and no preload**, so it is the application's own teardown
+happens with **no comshu and no preload**, so it is the application's own teardown
 on this stack, not something we injected.
 
 The consequence in the capture is severe and asymmetric:
@@ -154,10 +154,10 @@ The same mechanism was visible in job 45081919 from the other direction: ranks 1
 and 3 recorded 28 671 `ucx_tag_send` rows each and **zero** `ucx_context`,
 `ucx_worker`, `ucx_endpoint` and `ucx_ep_connection` rows.
 
-pcomm is honest about the result — `dst_rank = -1` is kept deliberately so the
+comshu is honest about the result — `dst_rank = -1` is kept deliberately so the
 matrix cannot lie about its totals, and `link_health.unresolved_sends` counts it.
 The defect is upstream of that: there is **no signal-time flush**. A grep of
-`libpcomm/src/engine.cpp`, `pcomm/run.cpp` and `rec/` finds no `sigaction` and no
+`libcomshu/src/engine.cpp`, `comshu/run.cpp` and `rec/` finds no `sigaction` and no
 `SIGSEGV` handling; the only exit path is `atexit`, which a signal bypasses.
 
 Why this matters beyond QE: the failure is silent and inverted. A capture that
@@ -191,7 +191,7 @@ required:
 
 `pml_ucx` publishes its worker address through `ucp_worker_query` with
 `UCP_WORKER_ATTR_FIELD_ADDRESS` (its undefined symbols also carry
-`ucp_worker_release_address`, so it certainly obtains one). pcomm hooks only
+`ucp_worker_release_address`, so it certainly obtains one). comshu hooks only
 `ucp_worker_get_address` — `providers/ucx/ucx_hooks.hpp:181`,
 `ucx_provider.cpp:345`. **The hooked door is the one-sided/OpenSHMEM door.**
 
@@ -269,7 +269,7 @@ runtime-symbol interposition both measured 0.)
 **So "the interposer saw no managed allocations" is not evidence of anything.**
 The build-line evidence above is what carries the conclusion.
 
-The constructive half: pcomm's own door *does* see these allocations —
+The constructive half: comshu's own door *does* see these allocations —
 `mem_object` has 408 rows (`npool=1`) and 802 rows (`npool=2`). So if a
 managed/device discriminator is ever added for item 2, it belongs where
 `mem_object` is already produced (`core/mem_attr.hpp`'s door), **not** in an
@@ -277,9 +277,9 @@ allocator-symbol interposer, which on this compiler would record nothing at all.
 
 ---
 
-## 5. What pcomm can see of this application, and at what cost
+## 5. What comshu can see of this application, and at what cost
 
-On the **default transport** — QE exactly as a user runs it — pcomm records no
+On the **default transport** — QE exactly as a user runs it — comshu records no
 wire traffic whatsoever:
 
 | table | default (rc_mlx5) | `rc_verbs` + `cuda_copy,gdr_copy` + `RNDV_THRESH=inf` |
@@ -327,7 +327,7 @@ host bounce buffers) makes it work and makes the wire fully visible. That is the
 finding 1 depends on — the two captures carrying the `-npool` claim run on the
 default transport. It does, however, answer a question
 `PLAN-20260815-1540` stage 3 could not: the blind spot is the *transport's* WQE
-path, not pcomm's hooks, and there is a supported configuration in which the same
+path, not comshu's hooks, and there is a supported configuration in which the same
 application's wire traffic is completely observable.
 
 Also worth noting: `-m simple` cut 1 932 658 `ucx_worker_progress` rows (94 % of

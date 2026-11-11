@@ -17,11 +17,11 @@
 #include <string>
 #include <vector>
 
-#include "pcomm/rec/intern_table.hpp"
+#include "comshu/rec/intern_table.hpp"
 
-using pcomm::core::Handle;
-using pcomm::core::kNullHandle;
-using pcomm::rec::InternTable;
+using comshu::core::Handle;
+using comshu::core::kNullHandle;
+using comshu::rec::InternTable;
 
 namespace {
 

@@ -19,7 +19,7 @@
 #
 #   sbatch tests/hpc/cases/06_nvshmem_coexist/job.sbatch
 #
-#SBATCH --job-name=pcomm-06-nvshmem-coexist
+#SBATCH --job-name=comshu-06-nvshmem-coexist
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -30,27 +30,27 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 # Same workload binary as case 04 — the ring spans whatever PE count it is given,
 # so the only difference here is 8 PEs across 2 nodes instead of 4 on one.
-APP="$HOME/nvshmem_putget-li-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)"
+APP="$HOME/nvshmem_putget-li-$(sha1sum "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -rdc=true \
     -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # AFTER the build block, not before it, and this line has already cost a job.
 #
 # NVSHMEM_HOME is globbed to the NEWEST SDK (26.5 on MN5) while
-# pcomm_load_build/pcomm_load_runtime do `module load nvidia-hpc-sdk/25.7` — and
+# comshu_load_build/comshu_load_runtime do `module load nvidia-hpc-sdk/25.7` — and
 # each of those PREPENDS 25.7's lib dir. Setting this before the build block
 # therefore puts 26.5 first, the build block shoves 25.7 in front of it, and the
 # loader hands the binary a libnvshmem_host it was not linked against:
@@ -62,19 +62,19 @@ fi
 # someone changes the workload". Adding -lineinfo was that day (job 44696379).
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
-OUT=$(pcomm_out nvshmem_coexist); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out nvshmem_coexist); rm -rf "$OUT"; mkdir -p "$OUT"
 
-# PCOMM_KERNEL_NAME as in case 04 — and see that case's note: the puts are
+# COMSHU_KERNEL_NAME as in case 04 — and see that case's note: the puts are
 # inlined into put_to_next (so they have no name of their own); what the filter
 # excludes is NVSHMEM's separately-launched internal kernels.
 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
-  -x PCOMM_KERNEL_NAME=put_to_next \
-  "$PCOMM" run -p ib,p2p -o "$OUT" -- "$APP" 65536 3
+  -x COMSHU_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
+  -x COMSHU_KERNEL_NAME=put_to_next \
+  "$COMSHU" run -p ib,p2p -o "$OUT" -- "$APP" 65536 3
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/06_nvshmem_coexist"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/06_nvshmem_coexist"

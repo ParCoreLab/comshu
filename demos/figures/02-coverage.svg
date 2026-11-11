@@ -74,10 +74,10 @@
     ↑ four log formats, four viewers — and no way to ask a question that crosses two rows
   </text>
 
-  <!-- ── pcomm ─────────────────────────────────────────────────────── -->
+  <!-- ── comshu ─────────────────────────────────────────────────────── -->
   <g>
     <rect x="70" y="646" width="1460" height="112" rx="14" fill="#f7f9fb" stroke="#5b7c99" stroke-width="2.5"/>
-    <text x="90" y="700" font-size="27" font-weight="700" fill="#24343f">pcomm</text>
+    <text x="90" y="700" font-size="27" font-weight="700" fill="#24343f">comshu</text>
     <text x="90" y="726" font-size="16" fill="#7c8c9a">one process, one clock</text>
     <g>
       <rect x="350" y="676" width="160" height="46" rx="8" fill="#dfe6f2" stroke="#5b7c99" stroke-width="2"/>

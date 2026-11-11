@@ -18,7 +18,7 @@
 #
 #   sbatch tests/hpc/probes/kerneltime/startup_ab.sbatch
 #
-#SBATCH --job-name=pcomm-kt-startup-ab
+#SBATCH --job-name=comshu-kt-startup-ab
 #SBATCH --account=etur02
 #SBATCH --qos=acc_ehpc
 #SBATCH --nodes=16
@@ -29,12 +29,12 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-export PCOMM_ROOT="${PCOMM_ROOT:-$HOME/pcomm-impl}"
-export PCOMM_BUILD="${PCOMM_BUILD:-$PCOMM_ROOT/build-cupti}"
-export PCOMM_PROVIDER_PATH="$PCOMM_BUILD/gpu-backends/cupti"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
-_pcomm_module load cuda/12.6
+export COMSHU_ROOT="${COMSHU_ROOT:-$HOME/comshu-impl}"
+export COMSHU_BUILD="${COMSHU_BUILD:-$COMSHU_ROOT/build-cupti}"
+export COMSHU_PROVIDER_PATH="$COMSHU_BUILD/gpu-backends/cupti"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
+_comshu_module load cuda/12.6
 CUPTI_LIB="$CUDA_HOME/extras/CUPTI/lib64"
 NSYS="$CUDA_HOME/bin/nsys"
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$CUPTI_LIB:$LD_LIBRARY_PATH"
@@ -58,18 +58,18 @@ run_arm() {
 }
 
 for REP in 1 2 3; do
-  # A — no pcomm at all. The floor: what this allocation costs to start.
+  # A — no comshu at all. The floor: what this allocation costs to start.
   run_arm A_bare mpirun "${MPI_COMMON[@]}" "$APP" $ARGS
 
   # B — what we ship today.
   OB="$HOME/kt-ab-B-$SLURM_JOB_ID-$REP"; rm -rf "$OB"
-  run_arm B_ib mpirun "${MPI_COMMON[@]}" -x PCOMM_PROVIDER_PATH \
-    "$PCOMM" run -p ib -o "$OB" -- "$APP" $ARGS
+  run_arm B_ib mpirun "${MPI_COMMON[@]}" -x COMSHU_PROVIDER_PATH \
+    "$COMSHU" run -p ib -o "$OB" -- "$APP" $ARGS
 
   # C — the same build and the same allocation, one provider more.
   OC="$HOME/kt-ab-C-$SLURM_JOB_ID-$REP"; rm -rf "$OC"
-  run_arm C_ib_cupti mpirun "${MPI_COMMON[@]}" -x PCOMM_PROVIDER_PATH -x PCOMM_VERBOSE=1 \
-    "$PCOMM" run -p ib,cupti -o "$OC" -- "$APP" $ARGS
+  run_arm C_ib_cupti mpirun "${MPI_COMMON[@]}" -x COMSHU_PROVIDER_PATH -x COMSHU_VERBOSE=1 \
+    "$COMSHU" run -p ib,cupti -o "$OC" -- "$APP" $ARGS
 done
 
 # D — where the time goes, if it goes anywhere. nsys on RANK 0 ONLY: 64 reports
@@ -86,9 +86,9 @@ exec "$@"
 EOS
 chmod +x "$HOME/nsys_rank0.sh"
 OD="$HOME/kt-ab-D-$SLURM_JOB_ID"; rm -rf "$OD"
-run_arm D_cupti_nsys mpirun "${MPI_COMMON[@]}" -x PCOMM_PROVIDER_PATH -x NSYS="$NSYS" \
+run_arm D_cupti_nsys mpirun "${MPI_COMMON[@]}" -x COMSHU_PROVIDER_PATH -x NSYS="$NSYS" \
   -x SLURM_JOB_ID -x HOME "$HOME/nsys_rank0.sh" \
-  "$PCOMM" run -p ib,cupti -o "$OD" -- "$APP" $ARGS
+  "$COMSHU" run -p ib,cupti -o "$OD" -- "$APP" $ARGS
 
 # The capture-side measure of the same thing, and the one directly comparable to
 # the 165.5 s that prompted this: first send minus first anchor, per arm.
@@ -96,7 +96,7 @@ echo "=== startup measured FROM THE CAPTURES (first send - first anchor) ==="
 for d in "$HOME"/kt-ab-B-"$SLURM_JOB_ID"-* "$HOME"/kt-ab-C-"$SLURM_JOB_ID"-* "$OD"; do
   [ -d "$d" ] || continue
   echo "--- $(basename "$d")"
-  "$PCOMM" read "$d" 2>&1 | tail -3
+  "$COMSHU" read "$d" 2>&1 | tail -3
 done
 
 echo "=== nsys summaries (rank 0, arm D) ==="

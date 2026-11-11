@@ -55,8 +55,8 @@
   // sits beside them rather than replacing one, and it stays open across
   // navigation. It is remembered because a pane you must reopen on every reload
   // is a pane you stop using.
-  let chat = $state(localStorage.getItem('pcomm.chat') === 'open');
-  $effect(() => localStorage.setItem('pcomm.chat', chat ? 'open' : 'closed'));
+  let chat = $state(localStorage.getItem('comshu.chat') === 'open');
+  $effect(() => localStorage.setItem('comshu.chat', chat ? 'open' : 'closed'));
 
   let health = $state([]);
   $effect(() => {
@@ -74,7 +74,7 @@
 <main class="grow min-w-0 max-w-[1100px] mx-auto p-6">
   <div class="flex items-start gap-3">
     <div class="grow">
-      <h1 class="text-lg font-semibold m-0">pcomm</h1>
+      <h1 class="text-lg font-semibold m-0">comshu</h1>
       <p class="text-[13px] mt-0.5 mb-4" style="color: var(--text-2)">
         multi-GPU communication profile
       </p>

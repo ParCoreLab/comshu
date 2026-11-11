@@ -31,7 +31,7 @@
 -- TWO CLAUSES, AND THE SECOND IS THE ONE THAT CANNOT BE EXPLAINED AWAY. If the
 -- ON arm shows no tag 8 that may mean the GPU PME<->PP path was never selected
 -- -- a decision GROMACS makes from the task assignment, nothing to do with
--- pcomm, and one round 1's evidence positively suggests, since a PME rank whose
+-- comshu, and one round 1's evidence positively suggests, since a PME rank whose
 -- outbound bytes are identical across the knob cannot have switched from
 -- MPI_BYTE to MPI_FLOAT. But if the OFF arm shows tag 8, GROMACS sent a
 -- coordinate buffer down a path the environment variable had disabled, or the

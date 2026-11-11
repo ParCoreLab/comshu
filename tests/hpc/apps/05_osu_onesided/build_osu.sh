@@ -8,13 +8,13 @@
 #   rsync -av osu-micro-benchmarks-7.5.tar.gz koc296797@alogin2.bsc.es:~/
 #
 #   # then, on alogin2 (login shell is tcsh — wrap it):
-#   bash -lc 'bash ~/proj/pcomm/tests/hpc/apps/05_osu_onesided/build_osu.sh'
+#   bash -lc 'bash ~/proj/comshu/tests/hpc/apps/05_osu_onesided/build_osu.sh'
 #
 # sha256 of the tarball this study was written against:
 #   1cf84ac5419456202757a757c5f9a4f5c6ecd05c65783c7976421cfd6020b3b3
 set -euo pipefail
 
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
 TARBALL="${TARBALL:-$HOME/osu-micro-benchmarks-7.5.tar.gz}"
 PREFIX="${PREFIX:-$HOME/osu-7.5}"
 BUILD="${BUILD:-$HOME/build-osu-7.5}"
@@ -36,9 +36,9 @@ GOT="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
 # a benchmark linked against one HPC-X and launched by another mixes two Open
 # MPI releases in one job, and the UCX provider then interposes a libucp that
 # the application's pml was not built against.
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
-command -v mpicc >/dev/null || { echo "!! no mpicc after pcomm_load_runtime" >&2; exit 1; }
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
+command -v mpicc >/dev/null || { echo "!! no mpicc after comshu_load_runtime" >&2; exit 1; }
 echo "=== building against: $(command -v mpicc)"
 mpicc -show 2>/dev/null || true
 

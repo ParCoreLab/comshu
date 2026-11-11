@@ -59,27 +59,27 @@
 #include <uct/api/uct.h>
 #include <uct/api/version.h>
 
-#include "pcomm/core/records.hpp"
-#include "pcomm/engine_abi.h"
-#include "pcomm/provider/provider.hpp"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/provider/provider.hpp"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/tracer.hpp"
 
 #include "ucx_deep_event_source.hpp"
 #include "ucx_deep_records.hpp"
 #include "ucx_deep_tables.hpp"
 
 namespace ucx_deep {
-namespace rr = pcomm::providers::ucx_deep::records;
-namespace detail = pcomm::providers::ucx_deep::detail;
-using pcomm::rec::InternDomain;
+namespace rr = comshu::providers::ucx_deep::records;
+namespace detail = comshu::providers::ucx_deep::detail;
+using comshu::rec::InternDomain;
 
-static pcomm::rec::Recorder<>& rec() {
-    static pcomm::rec::Recorder<> proxy;
+static comshu::rec::Recorder<>& rec() {
+    static comshu::rec::Recorder<> proxy;
     return proxy;
 }
 
-static pcomm::core::Handle h(const void* p) {
+static comshu::core::Handle h(const void* p) {
     return rec().intern(InternDomain::Pointer, reinterpret_cast<std::uint64_t>(p));
 }
 
@@ -96,7 +96,7 @@ static pcomm::core::Handle h(const void* p) {
 //     + interning the endpoint pointer           138   ns/op   <-- 86 ns of it
 //
 // So four fifths of this provider's cost was one call. A UCT endpoint pointer's
-// handle is immutable — pcomm_engine_intern_key is keyed by the raw address and
+// handle is immutable — comshu_engine_intern_key is keyed by the raw address and
 // returns the same handle forever, even after the address is freed and re-used
 // — so caching it is not an approximation, and a stale entry cannot exist.
 //
@@ -104,27 +104,27 @@ static pcomm::core::Handle h(const void* p) {
 // burst of sends hits one lane, so 16 entries make this a compare in the case
 // that matters while a multi-lane endpoint still degrades to the real call
 // rather than to a wrong answer.
-static pcomm::core::Handle ep_handle(const void* p) noexcept {
+static comshu::core::Handle ep_handle(const void* p) noexcept {
     static thread_local detail::HandleCache<16> cache;
-    if (const auto hit = cache.lookup(p); hit != pcomm::core::kNullHandle) [[likely]]
+    if (const auto hit = cache.lookup(p); hit != comshu::core::kNullHandle) [[likely]]
         return hit;
     const auto handle = h(p);
     cache.store(p, handle);
     return handle;
 }
 
-static pcomm::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
-    return pcomm::core::Temporal::interval({pcomm::core::kDomainHostTsc, begin},
-                                           {pcomm::core::kDomainHostTsc, end});
+static comshu::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
+    return comshu::core::Temporal::interval({comshu::core::kDomainHostTsc, begin},
+                                           {comshu::core::kDomainHostTsc, end});
 }
 
 static std::uint64_t now() noexcept {
-    return pcomm::helpers::ts::RdtscTimestampSource::Now();
+    return comshu::helpers::ts::RdtscTimestampSource::Now();
 }
 
-static void close_entity(const void* p, pcomm::core::RecordTypeId opener) {
+static void close_entity(const void* p, comshu::core::RecordTypeId opener) {
     if (p)
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(p), opener});
+        rec().record(rec().now_instant(), comshu::core::records::EntityClose{{}, {}, h(p), opener});
 }
 
 // ===========================================================================
@@ -203,7 +203,7 @@ static void refresh_ucx_code_ranges() {
     std::FILE* f = std::fopen("/proc/self/maps", "re");
     if (!f) {
         std::fprintf(stderr,
-                     "[pcomm] ucx_deep: cannot read /proc/self/maps (%s); the UCT ops table "
+                     "[comshu] ucx_deep: cannot read /proc/self/maps (%s); the UCT ops table "
                      "cannot be validated and will NOT be patched\n",
                      std::strerror(errno));
         std::fflush(stderr);
@@ -285,24 +285,24 @@ static const Binding& binding() {
         ucp_get_version(&maj, &min, &patch);
         out.runtime = pack_version(maj, min, patch);
         const bool  in_range = (maj == 1 && min >= kMinVerifiedMinor && min <= kMaxVerifiedMinor);
-        const char* force = std::getenv("PCOMM_UCX_DEEP_FORCE");
+        const char* force = std::getenv("COMSHU_UCX_DEEP_FORCE");
         out.forced = force && *force && std::strcmp(force, "0") != 0;
         out.accepted = in_range || out.forced;
         if (!in_range && out.forced) {
             std::fprintf(
                 stderr,
-                "[pcomm] ucx_deep: UCX %u.%u.%u is OUTSIDE the range whose uct_iface_ops_t "
-                "layout was verified (1.%u - 1.%u), and PCOMM_UCX_DEEP_FORCE is set. "
+                "[comshu] ucx_deep: UCX %u.%u.%u is OUTSIDE the range whose uct_iface_ops_t "
+                "layout was verified (1.%u - 1.%u), and COMSHU_UCX_DEEP_FORCE is set. "
                 "Patching anyway. If the ops table moved, this WILL corrupt the "
                 "application, not merely the capture.\n",
                 maj, min, patch, kMinVerifiedMinor, kMaxVerifiedMinor);
         } else if (!in_range) {
             std::fprintf(stderr,
-                         "[pcomm] ucx_deep: REFUSING to instrument. UCX %u.%u.%u is outside the "
+                         "[comshu] ucx_deep: REFUSING to instrument. UCX %u.%u.%u is outside the "
                          "range whose uct_iface_ops_t layout was verified (1.%u - 1.%u). "
                          "uct_send will be EMPTY — this is a refusal, not an absence of traffic. "
                          "Re-verify tl.h against this version and widen the range, or set "
-                         "PCOMM_UCX_DEEP_FORCE=1 to override.\n",
+                         "COMSHU_UCX_DEEP_FORCE=1 to override.\n",
                          maj, min, patch, kMinVerifiedMinor, kMaxVerifiedMinor);
         }
         std::fflush(stderr);
@@ -324,7 +324,7 @@ static const Binding& binding() {
 // erased out from under it would be a use-after-free inside the application. An
 // interface closed and a new one opened at the same address re-uses the entry,
 // because insert() probes for the pointer first — so pointer re-use, which is
-// what makes stale entity state dangerous everywhere else in pcomm, is handled
+// what makes stale entity state dangerous everywhere else in comshu, is handled
 // by overwrite rather than by deletion.
 //
 // LEAKED ON PURPOSE. Same reasoning as ucx_provider.cpp's ep_open(): UCX can
@@ -339,7 +339,7 @@ struct Shadow {
     // the test that drives the collision behaviour must not need a UCX header.
     const void*         key{nullptr};
     uct_iface_ops_t     orig{};
-    pcomm::core::Handle iface_h{pcomm::core::kNullHandle};
+    comshu::core::Handle iface_h{comshu::core::kNullHandle};
 };
 
 using ShadowTable = detail::PointerTable<Shadow, kMaxIfaces, kSlots>;
@@ -387,7 +387,7 @@ static Shadow* need_shadow(uct_iface_h iface) noexcept {
     static std::atomic<bool> warned{false};
     if (!warned.exchange(true)) {
         std::fprintf(stderr,
-                     "[pcomm] ucx_deep: BUG — a patched uct_iface_ops slot fired for interface %p "
+                     "[comshu] ucx_deep: BUG — a patched uct_iface_ops slot fired for interface %p "
                      "with no shadow entry. Operations on it are being FAILED, not passed through, "
                      "because the original function pointer is unrecoverable.\n",
                      static_cast<void*>(iface));
@@ -608,7 +608,7 @@ static void tr_ep_destroy(uct_ep_h ep) {
     Shadow* s = need_shadow(ep->iface);
     if (!s) [[unlikely]]
         return;  // nothing to call; leaking one endpoint beats calling null
-    close_entity(ep, pcomm::core::RecordTrait<rr::UctEndpoint>::type_id);
+    close_entity(ep, comshu::core::RecordTrait<rr::UctEndpoint>::type_id);
     s->orig.ep_destroy(ep);
 }
 
@@ -616,7 +616,7 @@ static void tr_iface_close(uct_iface_h iface) {
     Shadow* s = need_shadow(iface);
     if (!s) [[unlikely]]
         return;
-    close_entity(iface, pcomm::core::RecordTrait<rr::UctIface>::type_id);
+    close_entity(iface, comshu::core::RecordTrait<rr::UctIface>::type_id);
     // The shadow entry deliberately OUTLIVES the interface — see the table's
     // comment. Another thread can still be inside a trampoline for this
     // interface right now, and erasing its original function pointer would turn
@@ -671,8 +671,8 @@ static std::uint8_t patch(Shadow* s, uct_iface_ops_t* ops) {
 
 static void on_iface_open(uct_md_h md, uct_worker_h worker, const uct_iface_params_t* params,
                           uct_iface_h iface, std::uint64_t begin, std::uint64_t end) {
-    pcomm::core::Handle tl_h = pcomm::core::kNullHandle;
-    pcomm::core::Handle dev_h = pcomm::core::kNullHandle;
+    comshu::core::Handle tl_h = comshu::core::kNullHandle;
+    comshu::core::Handle dev_h = comshu::core::kNullHandle;
     std::uint64_t       open_mode = 0;
 
     // EVERY optional field through its mask, for the reason ucp_worker_query
@@ -694,7 +694,7 @@ static void on_iface_open(uct_md_h md, uct_worker_h worker, const uct_iface_para
 
     auto                instrumented = rr::UctInstrumented::No;
     std::uint8_t        patched = 0;
-    pcomm::core::Handle iface_h = h(iface);
+    comshu::core::Handle iface_h = h(iface);
 
     if (binding().accepted) {
         const char* bad = nullptr;
@@ -709,7 +709,7 @@ static void on_iface_open(uct_md_h md, uct_worker_h worker, const uct_iface_para
             static std::atomic<bool> warned{false};
             if (!warned.exchange(true)) {
                 std::fprintf(stderr,
-                             "[pcomm] ucx_deep: REFUSING to instrument — uct_iface_ops_t does not "
+                             "[comshu] ucx_deep: REFUSING to instrument — uct_iface_ops_t does not "
                              "look like the struct this build compiled against: slot '%s' is not "
                              "executable UCX code. uct_send will be EMPTY. This is a layout "
                              "mismatch, not an absence of traffic.\n",
@@ -724,7 +724,7 @@ static void on_iface_open(uct_md_h md, uct_worker_h worker, const uct_iface_para
                 if (!warned) {
                     warned = true;
                     std::fprintf(stderr,
-                                 "[pcomm] ucx_deep: shadow table full (%zu interfaces); further "
+                                 "[comshu] ucx_deep: shadow table full (%zu interfaces); further "
                                  "interfaces will NOT be instrumented and their uct_send rows "
                                  "will be missing.\n",
                                  kMaxIfaces);
@@ -755,12 +755,12 @@ static void on_iface_open(uct_md_h md, uct_worker_h worker, const uct_iface_para
 }
 
 Profiler::Profiler() {
-    const pcomm::Config cfg = pcomm::Config::from_env();
-    if (pcomm_engine_declare_provider("ucx_deep", pcomm::core::id_range::ucx_deep_lo,
-                                      pcomm::core::id_range::ucx_deep_hi,
-                                      PCOMM_ENGINE_ABI_VERSION) != 0)
+    const comshu::Config cfg = comshu::Config::from_env();
+    if (comshu_engine_declare_provider("ucx_deep", comshu::core::id_range::ucx_deep_lo,
+                                      comshu::core::id_range::ucx_deep_hi,
+                                      COMSHU_ENGINE_ABI_VERSION) != 0)
         return;
-    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     // One row, written once, saying what this process bound itself to. It is
     // emitted whether or not the guard accepted, because "uct_send is empty"
@@ -798,7 +798,7 @@ extern "C" ucs_status_t uct_iface_open(uct_md_h md, uct_worker_h worker,
                                                                     iface_p);
 }
 
-namespace pcomm::providers {
+namespace comshu::providers {
 class UcxDeepProvider final : public provider::IProvider {
 public:
     provider::ProviderInfo info() const override {
@@ -809,18 +809,18 @@ public:
         return true;
     }
     void shutdown() override {
-        pcomm_engine_drain_thread();
-        pcomm_engine_release();
+        comshu_engine_drain_thread();
+        comshu_engine_release();
     }
 };
-}  // namespace pcomm::providers
+}  // namespace comshu::providers
 
-PCOMM_EXPORT_PROVIDER(pcomm::providers::UcxDeepProvider)
+COMSHU_EXPORT_PROVIDER(comshu::providers::UcxDeepProvider)
 
-static void __attribute__((constructor)) pcomm_ucx_deep_load() {
+static void __attribute__((constructor)) comshu_ucx_deep_load() {
     ucx_deep::Profiler::instance();
 }
-static void __attribute__((destructor)) pcomm_ucx_deep_unload() {
-    pcomm_engine_drain_thread();
-    pcomm_engine_release();
+static void __attribute__((destructor)) comshu_ucx_deep_unload() {
+    comshu_engine_drain_thread();
+    comshu_engine_release();
 }

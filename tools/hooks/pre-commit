@@ -42,7 +42,7 @@ if "$root/tools/format.sh" --check --all >/dev/null 2>&1; then
 fi
 
 # ── CLI call sites ─────────────────────────────────────────────────────────
-# A script that calls `pcomm` with a flag where the verb goes still "runs" — it
+# A script that calls `comshu` with a flag where the verb goes still "runs" — it
 # exits 2 with a message no job.sbatch reads, and the failure surfaces as rc=2 a
 # queue slot later. 30 ms here, one cluster run there.
 # stdout is the "ok" line and is silenced; the offending lines go to stderr.

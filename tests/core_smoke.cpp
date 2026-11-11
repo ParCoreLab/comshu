@@ -9,13 +9,13 @@
 #include <memory>
 #include <vector>
 
-#include "pcomm/attr/pipeline.hpp"
-#include "pcomm/core/records.hpp"
-#include "pcomm/rec/recorder.hpp"
-#include "pcomm/rec/stream_header.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/attr/pipeline.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/rec/recorder.hpp"
+#include "comshu/rec/stream_header.hpp"
+#include "comshu/tracer.hpp"
 
-using namespace pcomm;
+using namespace comshu;
 using core::records::GpuAccess;
 
 namespace {
@@ -103,7 +103,7 @@ int main() {
     // question, noted in things-to-circle-back-to.md; in production finalize
     // runs once at exit, so it has never mattered outside this test.)
     {
-        auto dir = fs::temp_directory_path() / "pcomm-core-smoke";
+        auto dir = fs::temp_directory_path() / "comshu-core-smoke";
         fs::remove_all(dir);
         Config cfg;
         cfg.output_dir = dir;

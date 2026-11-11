@@ -1,6 +1,6 @@
-// ibverbs proof provider — the first network provider on pcomm's core. Ported
-// from SigmaTrace/Ibtrace: the hook engine (pcomm::hook) drives interposition;
-// the callbacks below translate ibv_* handles/args into vendor-neutral pcomm
+// ibverbs proof provider — the first network provider on comshu's core. Ported
+// from SigmaTrace/Ibtrace: the hook engine (comshu::hook) drives interposition;
+// the callbacks below translate ibv_* handles/args into vendor-neutral comshu
 // records (ib_records.hpp, 100-range) through the Tracer's recorder.
 //
 // Object-ops hooks (post_send/poll_cq) are installed into ibv_context->ops on
@@ -10,14 +10,14 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "pcomm/core/ids.hpp"
-#include "pcomm/core/dmabuf_registry.hpp"
-#include "pcomm/core/mem_attr.hpp"
-#include "pcomm/core/records.hpp"
-#include "pcomm/provider/provider.hpp"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/engine_abi.h"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/ids.hpp"
+#include "comshu/core/dmabuf_registry.hpp"
+#include "comshu/core/mem_attr.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/provider/provider.hpp"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/tracer.hpp"
 
 #include "mlx5_cqe.hpp"
 #include "ib_event_source.hpp"
@@ -38,8 +38,8 @@
 #include <endian.h>  // be64toh — GIDs and GUIDs are big-endian on the wire
 
 namespace ibv {
-namespace rr = pcomm::providers::ibverbs::records;
-using pcomm::rec::InternDomain;
+namespace rr = comshu::providers::ibverbs::records;
+using comshu::rec::InternDomain;
 
 // How many legacy ibv_reg_mr calls this thread is inside.
 //
@@ -84,7 +84,7 @@ static void trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr);
 // sites should say what they are asking, not re-derive the policy.
 static bool record_completions() noexcept {
     static const bool on =
-        pcomm_engine_trace_mode() >= static_cast<int>(pcomm::core::TraceMode::Full);
+        comshu_engine_trace_mode() >= static_cast<int>(comshu::core::TraceMode::Full);
     return on;
 }
 
@@ -94,7 +94,7 @@ static bool record_completions() noexcept {
 // consulted inside the post_send loop.
 static bool record_sge() noexcept {
     static const bool on =
-        pcomm_engine_trace_mode() >= static_cast<int>(pcomm::core::TraceMode::Full);
+        comshu_engine_trace_mode() >= static_cast<int>(comshu::core::TraceMode::Full);
     return on;
 }
 
@@ -105,13 +105,13 @@ static int& reg_mr_depth() noexcept {
 
 // Stateless proxy over the C ABI rather than a reference into the engine's
 // Recorder — same reason as gpumem: no C++ object layout on the .so boundary.
-static pcomm::rec::Recorder<>& rec() {
-    static pcomm::rec::Recorder<> proxy;
+static comshu::rec::Recorder<>& rec() {
+    static comshu::rec::Recorder<> proxy;
     return proxy;
 }
 
 // Intern a vendor handle (pointer) into a stable Handle for cross-record joins.
-static pcomm::core::Handle h(const void* p) {
+static comshu::core::Handle h(const void* p) {
     return rec().intern(InternDomain::Pointer, reinterpret_cast<std::uint64_t>(p));
 }
 
@@ -202,8 +202,8 @@ static Gids rtr_gids(ibv_qp* qp, const ibv_qp_attr* attr, int mask, std::uint8_t
 // what a MemObject's time means, which is worse than the thing being fixed.
 // Artifacts (IbQpSignalling) and the other entities keep Temporal::none(),
 // which is what TimeKind::None is for.
-static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
-    return pcomm::core::Temporal::interval({0, t0}, {0, t1});
+static comshu::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
+    return comshu::core::Temporal::interval({0, t0}, {0, t1});
 }
 
 // A region registered at an iova other than its base is addressed by iova, so
@@ -213,7 +213,7 @@ static pcomm::core::Temporal span(std::uint64_t t0, std::uint64_t t1) {
 static void record_iova_if_rebased(const ibv_mr* mr, std::uint64_t base, std::uint64_t iova) {
     if (!mr || iova == base)
         return;
-    rec().record(pcomm::core::Temporal::none(),
+    rec().record(comshu::core::Temporal::none(),
                  rr::IbMemRegionIova{{}, {}, h(mr), mr->rkey, iova});
 }
 
@@ -281,8 +281,8 @@ ibv_srq* srq_of_qp(const ibv_context* ctx, std::uint32_t qp_num) {
 // and every existing query and golden still works.
 namespace wr {
 
-using pcomm::providers::ibverbs::WrBuilder;
-using pcomm::providers::ibverbs::WrOpcode;
+using comshu::providers::ibverbs::WrBuilder;
+using comshu::providers::ibverbs::WrOpcode;
 
 // The provider's own function pointers, saved before we overwrite them.
 struct Ops {
@@ -294,7 +294,7 @@ struct Ops {
     void (*wr_rdma_read)(ibv_qp_ex*, std::uint32_t, std::uint64_t){};
     void (*wr_set_sge)(ibv_qp_ex*, std::uint32_t, std::uint64_t, std::uint32_t){};
     void (*wr_set_sge_list)(ibv_qp_ex*, std::size_t, const ibv_sge*){};
-    pcomm::core::Handle qp_handle{};
+    comshu::core::Handle qp_handle{};
     std::uint32_t       qp_num{};
 };
 
@@ -368,7 +368,7 @@ static void begin(ibv_qp_ex* qpx, WrOpcode op) {
 static void w_start(ibv_qp_ex* qpx) {
     if (auto* s = slot_for(qpx)) {
         s->builder.start();
-        s->t0 = pcomm::helpers::TscClock::now();
+        s->t0 = comshu::helpers::TscClock::now();
         s->ops.wr_start(qpx);
         // mlx5 re-installs its own wr_complete (and may re-install wr_abort)
         // from inside wr_start, choosing an implementation for this batch. That
@@ -475,7 +475,7 @@ static int w_complete(ibv_qp_ex* qpx) {
         return global_ops(qpx, ops) ? ops.wr_complete(qpx) : 0;
     }
     const int  ret = s->ops.wr_complete(qpx);
-    const auto t1 = pcomm::helpers::TscClock::now();
+    const auto t1 = comshu::helpers::TscClock::now();
     for (const auto& w : s->builder.complete(ret == 0))
         rec().record(span(s->t0, t1), rr::IbPostSend{{},
                                                      {},
@@ -558,19 +558,19 @@ Profiler::Profiler() {
     // Both providers registering "cuGetProcAddress" is only legal because the
     // dlsym registry chains; it used to throw on the second registrant and abort
     // the process.
-    pcomm::core::dmabuf::install();
+    comshu::core::dmabuf::install();
 
-    // The launcher/preload sets PCOMM_* env; bring up sink + recorder once.
-    const pcomm::Config cfg = pcomm::Config::from_env();
+    // The launcher/preload sets COMSHU_* env; bring up sink + recorder once.
+    const comshu::Config cfg = comshu::Config::from_env();
     // Declare before acquiring: checks our ABI against the engine's and that
-    // nobody else has claimed the 100-199 record-id range. pcomm-read merges
+    // nobody else has claimed the 100-199 record-id range. comshu-read merges
     // provider streams assuming those ranges are disjoint; until now nothing
     // verified it.
-    if (pcomm_engine_declare_provider("ibverbs", pcomm::core::id_range::ibverbs_lo,
-                                      pcomm::core::id_range::ibverbs_hi,
-                                      PCOMM_ENGINE_ABI_VERSION) != 0)
+    if (comshu_engine_declare_provider("ibverbs", comshu::core::id_range::ibverbs_lo,
+                                      comshu::core::id_range::ibverbs_hi,
+                                      COMSHU_ENGINE_ABI_VERSION) != 0)
         return;  // the engine has already explained why on stderr
-    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>(
@@ -603,7 +603,7 @@ Profiler::Profiler() {
         // legacy ibv_reg_mr we are already recording. See kRegMrDepth.
         if (reg_mr_depth() > 0)
             return;
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbMemRegion{{},
                                      {},
                                      h(mr),
@@ -640,13 +640,13 @@ Profiler::Profiler() {
         // so the duplicate is detectable and mergeable instead of doubling a
         // count — the shape that hooking both ibv_reg_mr and ibv_reg_mr_iova2
         // produced in case 01.
-        rec().record(rec().now_instant(), pcomm::core::records::MemObject{
+        rec().record(rec().now_instant(), comshu::core::records::MemObject{
                                               {},
                                               {},
                                               h(addr),
-                                              pcomm::core::kNullHandle,
+                                              comshu::core::kNullHandle,
                                               {reinterpret_cast<std::uint64_t>(addr), length},
-                                              pcomm::core::device_of(addr)});
+                                              comshu::core::device_of(addr)});
     });
 
     // reg_mr -> the legacy registration door, and the same entity. Identical
@@ -671,7 +671,7 @@ Profiler::Profiler() {
         [](ibv_mr* mr, ibv_pd* pd, void* addr, size_t length, int access, auto...) {
             if (!mr)
                 return;
-            rec().record(pcomm::core::Temporal::none(),
+            rec().record(comshu::core::Temporal::none(),
                          rr::IbMemRegion{{},
                                          {},
                                          h(mr),
@@ -682,13 +682,13 @@ Profiler::Profiler() {
                                          static_cast<std::uint32_t>(access),
                                          -1,
                                          static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
-            rec().record(rec().now_instant(), pcomm::core::records::MemObject{
+            rec().record(rec().now_instant(), comshu::core::records::MemObject{
                                                   {},
                                                   {},
                                                   h(addr),
-                                                  pcomm::core::kNullHandle,
+                                                  comshu::core::kNullHandle,
                                                   {reinterpret_cast<std::uint64_t>(addr), length},
-                                                  pcomm::core::device_of(addr)});
+                                                  comshu::core::device_of(addr)});
         });
 
     // reg_dm_mr / alloc_null_mr -> the two MEMORYLESS registration doors.
@@ -709,7 +709,7 @@ Profiler::Profiler() {
                                           std::size_t, unsigned int access, auto...) {
         if (!mr)
             return;
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbMemRegion{{},
                                      {},
                                      h(mr),
@@ -724,7 +724,7 @@ Profiler::Profiler() {
     this->register_post<alloc_null_mr_tag>([](ibv_mr* mr, ibv_pd* pd, auto...) {
         if (!mr)
             return;
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbMemRegion{{},
                                      {},
                                      h(mr),
@@ -746,8 +746,8 @@ Profiler::Profiler() {
     this->register_post<close_device_tag>([](int ret, ibv_context* ctx, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0)
             return;
-        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
-                                       {}, {}, h(ctx), rr::IbDevice::pcomm_type_id});
+        rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                       {}, {}, h(ctx), rr::IbDevice::comshu_type_id});
         forget_context(ctx);
     });
 
@@ -770,12 +770,12 @@ Profiler::Profiler() {
                                           ibv_comp_channel* channel, int comp_vector, auto...) {
         if (!cq)
             return;
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbCompletionQueue{{},
                                            {},
                                            h(cq),
                                            h(ctx),
-                                           channel ? h(channel) : pcomm::core::Handle{},
+                                           channel ? h(channel) : comshu::core::Handle{},
                                            static_cast<std::uint32_t>(cq->cqe),
                                            static_cast<std::uint32_t>(comp_vector),
                                            static_cast<std::uint8_t>(rr::IbCqOrigin::CreateCq)});
@@ -798,12 +798,12 @@ Profiler::Profiler() {
                 return;
             ibv_cq* cq = ibv_cq_ex_to_cq(cqx);
             rec().record(
-                pcomm::core::Temporal::none(),
+                comshu::core::Temporal::none(),
                 rr::IbCompletionQueue{{},
                                       {},
                                       h(cq),
                                       h(ctx),
-                                      (a && a->channel) ? h(a->channel) : pcomm::core::Handle{},
+                                      (a && a->channel) ? h(a->channel) : comshu::core::Handle{},
                                       static_cast<std::uint32_t>(cq->cqe),
                                       a ? a->comp_vector : 0u,
                                       static_cast<std::uint8_t>(rr::IbCqOrigin::CreateCqEx)});
@@ -828,12 +828,12 @@ Profiler::Profiler() {
                 return;
             ibv_cq* cq = ibv_cq_ex_to_cq(cqx);
             rec().record(
-                pcomm::core::Temporal::none(),
+                comshu::core::Temporal::none(),
                 rr::IbCompletionQueue{{},
                                       {},
                                       h(cq),
                                       h(ctx),
-                                      (a && a->channel) ? h(a->channel) : pcomm::core::Handle{},
+                                      (a && a->channel) ? h(a->channel) : comshu::core::Handle{},
                                       static_cast<std::uint32_t>(cq->cqe),
                                       a ? a->comp_vector : 0u,
                                       static_cast<std::uint8_t>(rr::IbCqOrigin::Mlx5dvCreateCq)});
@@ -846,8 +846,8 @@ Profiler::Profiler() {
     this->register_post<destroy_cq_tag>([](int ret, ibv_cq* cq, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !cq)
             return;
-        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
-                                       {}, {}, h(cq), rr::IbCompletionQueue::pcomm_type_id});
+        rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                       {}, {}, h(cq), rr::IbCompletionQueue::comshu_type_id});
     });
 
     // create_ah -> the UD path's addressing object, and the only place in the
@@ -871,7 +871,7 @@ Profiler::Profiler() {
             prefix = be64toh(prefix);
             iface = be64toh(iface);
         }
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbAddressHandle{{},
                                          {},
                                          h(ah),
@@ -891,8 +891,8 @@ Profiler::Profiler() {
     this->register_post<destroy_ah_tag>([](int ret, ibv_ah* ah, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !ah)
             return;
-        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
-                                       {}, {}, h(ah), rr::IbAddressHandle::pcomm_type_id});
+        rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                       {}, {}, h(ah), rr::IbAddressHandle::comshu_type_id});
     });
 
     // create_qp -> queue-pair endpoint entity.
@@ -900,7 +900,7 @@ Profiler::Profiler() {
         if (!qp)
             return;
         note_qp_srq(qp);
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbQueuePair{{},
                                      {},
                                      h(qp),
@@ -913,14 +913,14 @@ Profiler::Profiler() {
         // capture asserting "selective signalling" about a queue pair it never
         // asked. Absent means unknown, which is the true statement.
         if (a)
-            rec().record(pcomm::core::Temporal::none(),
+            rec().record(comshu::core::Temporal::none(),
                          rr::IbQpSignalling{
                              {}, {}, h(qp), qp->qp_num, static_cast<std::uint8_t>(a->sq_sig_all)});
         // The close lives in the engine (ibv_destroy_qp tears down ibverbs' and
         // mlx5dv's queue pairs alike, so no provider may own it). Tell it this
         // open was recorded, so it closes this handle as an ib_queue_pair rather
         // than falling back to the per-run guess.
-        pcomm_engine_note_qp(qp, rr::IbQueuePair::pcomm_type_id);
+        comshu_engine_note_qp(qp, rr::IbQueuePair::comshu_type_id);
     });
 
     // create_qp_ex -> the extended creation door, reached through the
@@ -936,20 +936,20 @@ Profiler::Profiler() {
         // only meaningful when comp_mask says the caller set them, and pd is
         // one of them. qp_type is a base field and always set.
         const bool has_pd = a && (a->comp_mask & IBV_QP_INIT_ATTR_PD);
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbQueuePair{{},
                                      {},
                                      h(qp),
-                                     has_pd ? h(a->pd) : pcomm::core::Handle{},
+                                     has_pd ? h(a->pd) : comshu::core::Handle{},
                                      qp->qp_num,
                                      static_cast<std::uint8_t>(a ? a->qp_type : qp->qp_type)});
         // sq_sig_all is a BASE field of ibv_qp_init_attr_ex, not one of the
         // comp_mask-gated ones, so it needs no mask test — unlike pd above.
         if (a)
-            rec().record(pcomm::core::Temporal::none(),
+            rec().record(comshu::core::Temporal::none(),
                          rr::IbQpSignalling{
                              {}, {}, h(qp), qp->qp_num, static_cast<std::uint8_t>(a->sq_sig_all)});
-        pcomm_engine_note_qp(qp, rr::IbQueuePair::pcomm_type_id);
+        comshu_engine_note_qp(qp, rr::IbQueuePair::comshu_type_id);
     });
 
     // reg_dmabuf_mr -> a region the NIC was given by descriptor.
@@ -975,15 +975,15 @@ Profiler::Profiler() {
                                               int access, auto...) {
         if (!mr)
             return;
-        pcomm::core::dmabuf::Range  r{};
-        const bool                  resolved = pcomm::core::dmabuf::lookup(fd, &r);
+        comshu::core::dmabuf::Range  r{};
+        const bool                  resolved = comshu::core::dmabuf::lookup(fd, &r);
         const std::uint64_t         base = resolved ? r.base + offset : iova;
-        const pcomm::core::DeviceId device =
+        const comshu::core::DeviceId device =
             resolved ? r.device
-                     : (base ? pcomm::core::device_of(reinterpret_cast<const void*>(base))
-                             : pcomm::core::kUnknownDevice);
+                     : (base ? comshu::core::device_of(reinterpret_cast<const void*>(base))
+                             : comshu::core::kUnknownDevice);
 
-        rec().record(pcomm::core::Temporal::none(),
+        rec().record(comshu::core::Temporal::none(),
                      rr::IbMemRegion{{},
                                      {},
                                      h(mr),
@@ -1002,10 +1002,10 @@ Profiler::Profiler() {
 
         if (base)
             rec().record(rec().now_instant(),
-                         pcomm::core::records::MemObject{{},
+                         comshu::core::records::MemObject{{},
                                                          {},
                                                          h(reinterpret_cast<const void*>(base)),
-                                                         pcomm::core::kNullHandle,
+                                                         comshu::core::kNullHandle,
                                                          {base, length},
                                                          device});
     });
@@ -1015,7 +1015,7 @@ Profiler::Profiler() {
     // Both hooks existed and neither emitted anything, so a capture could count
     // registration CALLS but never live regions — which is why case 06's region
     // count tracks NVSHMEM's allocator churn and had to retreat to per-rank
-    // symmetry, and why range containment in pcomm-read is sound only while no
+    // symmetry, and why range containment in comshu-read is sound only while no
     // address is reused.
     //
     // Only on success: a dereg that failed closed nothing, and recording it
@@ -1027,8 +1027,8 @@ Profiler::Profiler() {
     this->register_post<dereg_mr_tag>([](int ret, ibv_mr* mr, std::uint64_t t0, std::uint64_t t1) {
         if (ret != 0 || !mr)
             return;
-        rec().record(span(t0, t1), pcomm::core::records::EntityClose{
-                                       {}, {}, h(mr), rr::IbMemRegion::pcomm_type_id});
+        rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                       {}, {}, h(mr), rr::IbMemRegion::comshu_type_id});
     });
     // ibv_destroy_qp's close is emitted by the engine, not here — see ib_hooks.hpp
     // and src/engine.cpp. A QP created through mlx5dv_create_qp is destroyed
@@ -1269,7 +1269,7 @@ Profiler::Profiler() {
             const bool          ok = ibv_query_srq(srq, &q) == 0;
             const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
             rec().record(
-                pcomm::core::Temporal::none(),
+                comshu::core::Temporal::none(),
                 rr::IbSharedRecvQueue{{}, {}, h(srq), h(pd), s.max_wr, s.max_sge, s.srq_limit});
         });
 
@@ -1284,11 +1284,11 @@ Profiler::Profiler() {
             const bool          ok = ibv_query_srq(srq, &q) == 0;
             const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
             const bool          has_pd = a && (a->comp_mask & IBV_SRQ_INIT_ATTR_PD);
-            rec().record(pcomm::core::Temporal::none(),
+            rec().record(comshu::core::Temporal::none(),
                          rr::IbSharedRecvQueue{{},
                                                {},
                                                h(srq),
-                                               has_pd ? h(a->pd) : pcomm::core::Handle{},
+                                               has_pd ? h(a->pd) : comshu::core::Handle{},
                                                s.max_wr,
                                                s.max_sge,
                                                s.srq_limit});
@@ -1300,8 +1300,8 @@ Profiler::Profiler() {
         if (ret != 0 || !srq)
             return;
         rec().record(span(t0, t1),
-                     pcomm::core::records::EntityClose{
-                         {}, {}, h(srq), rr::IbSharedRecvQueue::pcomm_type_id});
+                     comshu::core::records::EntityClose{
+                         {}, {}, h(srq), rr::IbSharedRecvQueue::comshu_type_id});
     });
 
     // req_notify_cq -> the CQ was armed. The counterpart to poll_cq, and the
@@ -1332,7 +1332,7 @@ Profiler::Profiler() {
     // Simple skips is the recording, which is the part that costs.
     this->register_post<poll_cq_tag>(
         [](int ret, ibv_cq* cq, int, ibv_wc* wc, std::uint64_t t0, std::uint64_t t1) {
-            // DIAGNOSTIC, gated on PCOMM_CQE_PROBE=1 and off by default: read
+            // DIAGNOSTIC, gated on COMSHU_CQE_PROBE=1 and off by default: read
             // the raw mlx5 CQE behind each of these completions and check it
             // against them. See mlx5_cqe.hpp for the question it settles.
             cqeprobe::on_poll(cq, ret, wc);
@@ -1370,7 +1370,7 @@ Profiler::Profiler() {
                                                   {},
                                                   h(cq),
                                                   wc[i].wr_id,
-                                                  srq ? h(srq) : pcomm::core::Handle{},
+                                                  srq ? h(srq) : comshu::core::Handle{},
                                                   id.wqe_counter,
                                                   wc[i].qp_num,
                                                   wc[i].byte_len});
@@ -1385,7 +1385,7 @@ template class ibv::IbverbsEventSource<ibv::Profiler>;
 
 // --- LD_PRELOAD interposers for the preload hooks ----------------------------
 // Each forwards through invoke_preload<Tag>, which resolves the real symbol via
-// pcomm::smart_dlsym, calls it, and fires the registered pre/post callbacks.
+// comshu::smart_dlsym, calls it, and fires the registered pre/post callbacks.
 
 extern "C" int ibv_close_device(ibv_context* context) {
     return ibv::Profiler::invoke_preload<ibv::close_device_tag>(context);
@@ -1494,7 +1494,7 @@ extern "C" int ibv_query_device(ibv_context* context, ibv_device_attr* attr) {
     ibv::ensure_installed(context, "query_device");
     return ibv::Profiler::invoke_preload<ibv::query_device_tag>(context, attr);
 }
-// DIAGNOSTIC, gated on PCOMM_TRACE_MR_CALLERS=1 — which LIBRARY calls each
+// DIAGNOSTIC, gated on COMSHU_TRACE_MR_CALLERS=1 — which LIBRARY calls each
 // registration door?
 //
 // entity_close_accounted reports 33 closes per rank naming regions nothing
@@ -1518,7 +1518,7 @@ extern "C" int ibv_query_device(ibv_context* context, ibv_device_attr* attr) {
 // the caller of the frame it appears in, so in a helper it names this file.
 static bool trace_mr_callers_enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_TRACE_MR_CALLERS");
+        const char* v = std::getenv("COMSHU_TRACE_MR_CALLERS");
         return v && *v && std::strcmp(v, "0") != 0;
     }();
     return on;
@@ -1550,11 +1550,11 @@ static void trace_mr_caller(const char* door, void* ret_addr, long length = -1) 
         return;
     if (seen.size() > 256) {
         capped = true;
-        std::fprintf(stderr, "[pcomm-mrcaller] (capped at 256 distinct door|lib|len rows)\n");
+        std::fprintf(stderr, "[comshu-mrcaller] (capped at 256 distinct door|lib|len rows)\n");
         std::fflush(stderr);
         return;
     }
-    std::fprintf(stderr, "[pcomm-mrcaller] %-20s <- %s len=%ld\n", door, who, length);
+    std::fprintf(stderr, "[comshu-mrcaller] %-20s <- %s len=%ld\n", door, who, length);
     std::fflush(stderr);
 }
 
@@ -1660,7 +1660,7 @@ void ibv::ensure_installed(ibv_context* ctx, const char* door) {
 void ibv::record_device(ibv_context* ctx) {
     ibv_device_attr a{};
     const bool      ok = ibv_query_device(ctx, &a) == 0;
-    rec().record(pcomm::core::Temporal::none(),
+    rec().record(comshu::core::Temporal::none(),
                  rr::IbDevice{{},
                               {},
                               h(ctx),
@@ -1684,7 +1684,7 @@ void ibv::record_device(ibv_context* ctx) {
             ibv_port_attr pa{};
             if (ibv_query_port(ctx, p, &pa) != 0)
                 continue;
-            rec().record(pcomm::core::Temporal::none(),
+            rec().record(comshu::core::Temporal::none(),
                          rr::IbPort{{},
                                     {},
                                     h(ctx),
@@ -1695,7 +1695,7 @@ void ibv::record_device(ibv_context* ctx) {
     }
 }
 
-// DIAGNOSTIC, gated on PCOMM_TRACE_CTX_INSTALL=1. One line per door that ever
+// DIAGNOSTIC, gated on COMSHU_TRACE_CTX_INSTALL=1. One line per door that ever
 // installed a context, plus the total — enough to answer whether any context
 // reaches us later than ibv_open_device, which is the whole question.
 //
@@ -1703,7 +1703,7 @@ void ibv::record_device(ibv_context* ctx) {
 // correct: each is a separate context with its own blind window.
 static void dump_install_doors() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_TRACE_CTX_INSTALL");
+        const char* v = std::getenv("COMSHU_TRACE_CTX_INSTALL");
         return v && *v && std::strcmp(v, "0") != 0;
     }();
     if (!on)
@@ -1718,10 +1718,10 @@ static void dump_install_doors() {
             total += n;
             if (door != "open_device")
                 late += n;
-            std::fprintf(stderr, "[pcomm-ctxinstall] door=%-14s contexts=%u\n", door.c_str(), n);
+            std::fprintf(stderr, "[comshu-ctxinstall] door=%-14s contexts=%u\n", door.c_str(), n);
         }
     std::fprintf(stderr,
-                 "[pcomm-ctxinstall] total=%u late=%u (late => a context ran uninstrumented "
+                 "[comshu-ctxinstall] total=%u late=%u (late => a context ran uninstrumented "
                  "between its open and that door)\n",
                  total, late);
     std::fflush(stderr);
@@ -1751,7 +1751,7 @@ void ibv::forget_context(const ibv_context* ctx) {
 // could not tell "created elsewhere" from "created through a door we do not
 // hook".
 //
-// Gated on PCOMM_TRACE_MR_CALLERS=1 like its sibling: same hunt, same switch.
+// Gated on COMSHU_TRACE_MR_CALLERS=1 like its sibling: same hunt, same switch.
 static std::set<const void*>* g_known_cqs = nullptr;  // leaked, like the rest
 
 void ibv::remember_cq(const ibv_cq* cq) {
@@ -1787,7 +1787,7 @@ void ibv::trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr) {
     if (!seen.insert(key).second)
         return;  // one line per distinct caller, not per CQ
     std::fprintf(stderr,
-                 "[pcomm-unmatched] destroy_cq cq=%p cqe=%d ctx=%p installed=%s <- %s in %s\n",
+                 "[comshu-unmatched] destroy_cq cq=%p cqe=%d ctx=%p installed=%s <- %s in %s\n",
                  static_cast<const void*>(cq), cq->cqe, static_cast<const void*>(cq->context),
                  installed ? "yes" : "NO", fn, who);
     std::fflush(stderr);
@@ -1828,7 +1828,7 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
         installed = g_installed_ctxs && mr->context && g_installed_ctxs->count(mr->context);
     }
     std::fprintf(stderr,
-                 "[pcomm-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u ctx=%p installed=%s <- %s "
+                 "[comshu-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u ctx=%p installed=%s <- %s "
                  "in %s\n",
                  static_cast<const void*>(mr), mr->addr, mr->length, mr->lkey,
                  static_cast<const void*>(mr->context), installed ? "yes" : "NO", fn, who);
@@ -1890,7 +1890,7 @@ extern "C" ibv_mr* ibv_reg_mr_iova2(ibv_pd* pd, void* addr, size_t length, uint6
 
 // --- provider registration + lifecycle ---------------------------------------
 
-namespace pcomm::providers {
+namespace comshu::providers {
 
 class IbverbsProvider final : public provider::IProvider {
 public:
@@ -1903,24 +1903,24 @@ public:
     }
     void shutdown() override {
         dump_install_doors();
-        pcomm_engine_drain_thread();
-        pcomm_engine_release();
+        comshu_engine_drain_thread();
+        comshu_engine_release();
     }
 };
 
-}  // namespace pcomm::providers
+}  // namespace comshu::providers
 
-PCOMM_EXPORT_PROVIDER(pcomm::providers::IbverbsProvider)
+COMSHU_EXPORT_PROVIDER(comshu::providers::IbverbsProvider)
 
 // Direct-LD_PRELOAD path (no launcher): bring the singleton up on load and
 // flush on unload. NOTE(skeleton): drain runs on the unloading thread only;
 // buffers filled by other app threads need the ThreadBufferRegistry (from
 // SigmaTrace) for a complete cross-thread flush — a follow-up.
-static void __attribute__((constructor)) pcomm_ibverbs_load() {
+static void __attribute__((constructor)) comshu_ibverbs_load() {
     ibv::Profiler::instance();
 }
-static void __attribute__((destructor)) pcomm_ibverbs_unload() {
+static void __attribute__((destructor)) comshu_ibverbs_unload() {
     dump_install_doors();
-    pcomm_engine_drain_thread();
-    pcomm_engine_release();
+    comshu_engine_drain_thread();
+    comshu_engine_release();
 }

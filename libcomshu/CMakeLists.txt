@@ -1,0 +1,299 @@
+# libcomshu — L0–L2 core. Header-only for now (hot path is templates anyway).
+#
+# INVARIANT: nothing under libcomshu/ may include a vendor header
+# (cuda*, hip*, infiniband/*, sanitizer*). Vendor types live in providers/
+# and gpu-backends/ only. See ../ARCHITECTURE.md §0 and §6.
+
+add_library(comshu INTERFACE)
+add_library(comshu::comshu ALIAS comshu)
+
+target_include_directories(comshu INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_compile_features(comshu INTERFACE cxx_std_20)
+
+# comshu::engine (SHARED) — the process-wide control plane, and the one place
+# the engine's singletons are defined.
+#
+# It must be SHARED, not STATIC. A static lib gets copied into every provider
+# .so, which is what put 969 weakly-linked duplicate symbols (including the
+# Tracer / ThreadBufferRegistry / RecordIdTracker guards) into each provider and
+# made coexistence depend on which copy the linker happened to bind — see
+# 7a5b55a and plans/PLAN-20260727-0126-shared-engine-abi-done.md. One .so means
+# one Tracer, one buffer store, one set of intern tables, N providers.
+#
+# `dlsym` lives here for the same reason: only one object in a process may
+# define it, and Dlsym.hpp has always said so ("can only be linked against ONCE
+# in the entire program"). Now the build enforces it — a second hook provider
+# can no longer bring its own copy.
+# The build identity Invocation carries. A TARGET, not configure_file: a commit
+# stamped at configure time keeps reporting whichever commit someone last ran
+# `cmake` on, and a provenance field that goes stale is a confident wrong answer
+# — the failure job 45331793 nearly turned into a false refutation. The script
+# only rewrites the header when the content changes, so an unchanged commit does
+# not relink the world on every build.
+set(COMSHU_BUILD_ID_H "${CMAKE_CURRENT_BINARY_DIR}/comshu_build_id.h")
+add_custom_target(comshu_build_id ALL
+  BYPRODUCTS "${COMSHU_BUILD_ID_H}"
+  COMMAND ${CMAKE_COMMAND}
+          -DCOMSHU_SRC=${CMAKE_SOURCE_DIR}
+          -DCOMSHU_OUT=${COMSHU_BUILD_ID_H}
+          -DCOMSHU_BUILD_TYPE=$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,unset>
+          -P ${CMAKE_SOURCE_DIR}/cmake/write_build_id.cmake
+  COMMENT "comshu: stamping build id"
+  VERBATIM)
+
+add_library(comshu_engine SHARED
+  src/engine.cpp
+  src/hook/Dlsym.cpp
+  src/hook/SymbolResolver.cpp
+)
+add_dependencies(comshu_engine comshu_build_id)
+target_include_directories(comshu_engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+add_library(comshu::engine ALIAS comshu_engine)
+# Kept as an alias so existing provider CMake keeps working; comshu::hook is now
+# the same shared engine rather than a separate static lib.
+add_library(comshu::hook ALIAS comshu_engine)
+
+# NB both are PRIVATE on purpose. `comshu` carries INTERFACE cxx_std_20, and
+# propagating that to a CUDA target makes CMake demand a "CUDA20" dialect it
+# cannot map for nvcc (the clean-build failure fixed in 877ab90). Consumers get
+# the headers from the INTERFACE include dir below without inheriting the
+# language-standard requirement.
+target_link_libraries(comshu_engine PRIVATE comshu ${CMAKE_DL_LIBS})
+target_compile_features(comshu_engine PRIVATE cxx_std_20)
+target_include_directories(comshu_engine INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+# Installed beside the providers in <prefix>/lib/comshu, so they resolve their
+# DT_NEEDED on it through $ORIGIN. comshu_engine_so_path() then reports that
+# installed path via dladdr, which is what the launcher puts first in
+# LD_PRELOAD — the whole chain works with no environment set.
+set_target_properties(comshu_engine PROPERTIES
+  INSTALL_RPATH "$ORIGIN;${COMSHU_INSTALL_RPATH_EXTRA}")
+target_link_options(comshu_engine PRIVATE -Wl,--enable-new-dtags)
+if(COMSHU_INSTALL_CORE)
+  install(TARGETS comshu_engine LIBRARY DESTINATION ${COMSHU_INSTALL_LIBDIR}
+          COMPONENT core)
+  install(DIRECTORY include/comshu DESTINATION include COMPONENT core)
+endif()
+
+# Schema conformance: assert the C++ records still match libcomshu/schema/comshu.fbs.
+#
+# The FlatBuffers headers are vendored under third_party/ (520 KB, header-only,
+# pinned to the flatc that generated comshu_generated.h) precisely so this is not
+# skipped anywhere. It used to be conditional on a path the developer supplied,
+# which meant the one check standing between a record change and unreadable
+# captures ran only when someone remembered to point at a FlatBuffers checkout —
+# and on this machine that path was a scratch directory that no longer exists.
+# Override COMSHU_FLATBUFFERS_INCLUDE to build against a different copy.
+if(NOT DEFINED COMSHU_FLATBUFFERS_INCLUDE)
+  set(COMSHU_FLATBUFFERS_INCLUDE ${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include)
+endif()
+
+# Every header in the tree that can declare a COMSHU_RECORD. Used by both the
+# conformance test's include path and the schema_check dependency list below,
+# so a new provider cannot be silently omitted from either.
+file(GLOB _comshu_provider_record_hdrs CONFIGURE_DEPENDS
+     "${CMAKE_SOURCE_DIR}/providers/*/*_records.hpp")
+set(_conformance_record_dirs "")
+foreach(_hdr IN LISTS _comshu_provider_record_hdrs)
+  get_filename_component(_dir "${_hdr}" DIRECTORY)
+  list(APPEND _conformance_record_dirs "${_dir}")
+endforeach()
+list(REMOVE_DUPLICATES _conformance_record_dirs)
+
+if(COMSHU_BUILD_TESTS AND EXISTS ${COMSHU_FLATBUFFERS_INCLUDE})
+  add_executable(comshu_schema_conformance tests/schema_conformance.cpp)
+  target_include_directories(comshu_schema_conformance PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/schema/generated
+    # FOUND, not listed. Every *_records.hpp is vendor-neutral by rule
+    # (ib_records.hpp pulls in no verbs.h, ucx_deep_records.hpp no uct.h), so
+    # the core conformance test compiles all of them on a host with none of the
+    # vendor libraries installed — which is the point of the rule. Globbed for
+    # the same reason comshu-read/CMakeLists.txt globs: a hand-written list of
+    # the provider directories and a generated one of the same directories is
+    # two lists kept in step by nobody, and that has already cost this repo a
+    # build (bea74d8).
+    ${_conformance_record_dirs}
+    ${COMSHU_FLATBUFFERS_INCLUDE})
+  target_compile_features(comshu_schema_conformance PRIVATE cxx_std_20)
+  # Keep assert() alive: every build type that runs tests defines
+  # NDEBUG. See the note in tests/CMakeLists.txt.
+  target_compile_options(comshu_schema_conformance PRIVATE -UNDEBUG)
+  add_test(NAME schema_conformance COMMAND comshu_schema_conformance)
+endif()
+
+# Stream format round-trip. Header-only (FileSink and StreamHeader both are), so
+# unlike tests/ this needs neither comshu::engine nor a provider — it is the only
+# local exercise of the writer.
+if(COMSHU_BUILD_TESTS)
+  add_executable(comshu_stream_format tests/stream_format.cpp)
+  target_link_libraries(comshu_stream_format PRIVATE comshu)
+  target_compile_features(comshu_stream_format PRIVATE cxx_std_20)
+  # Keep assert() alive: every build type that runs tests defines
+  # NDEBUG. See the note in tests/CMakeLists.txt.
+  target_compile_options(comshu_stream_format PRIVATE -UNDEBUG)
+  add_test(NAME stream_format COMMAND comshu_stream_format)
+endif()
+
+# Record versioning: a capture from before a schema bump and one from after must
+# read into the same table. Header-only for the same reason stream_format is.
+if(COMSHU_BUILD_TESTS)
+  add_executable(comshu_record_versioning tests/record_versioning.cpp)
+  target_link_libraries(comshu_record_versioning PRIVATE comshu)
+  target_compile_features(comshu_record_versioning PRIVATE cxx_std_20)
+  # Keep assert() alive: every build type that runs tests defines
+  # NDEBUG. See the note in tests/CMakeLists.txt.
+  target_compile_options(comshu_record_versioning PRIVATE -UNDEBUG)
+  add_test(NAME record_versioning COMMAND comshu_record_versioning)
+endif()
+
+# Schema coverage: every COMSHU_RECORD in the tree is in comshu.fbs, with the same
+# fields in the same order, the same type_id, and a case in the conformance test.
+#
+# This one is attached to the *build*, not only to ctest. schema_conformance can
+# only check records it names, so the failure it cannot see is an eleventh record
+# that nobody added to it — and a check you have to remember to run is no check
+# against a mistake made by forgetting. Text-level by necessity: no flatc on MN5.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  set(schema_check_stamp ${CMAKE_CURRENT_BINARY_DIR}/schema_check.stamp)
+  add_custom_command(
+    OUTPUT ${schema_check_stamp}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/schema_check.py ${CMAKE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E touch ${schema_check_stamp}
+    DEPENDS
+      ${CMAKE_SOURCE_DIR}/tools/schema_check.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/schema/comshu.fbs
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/comshu/core/records.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/comshu/core/vocab.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/comshu/core/time.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/comshu/core/ids.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/comshu/rec/stream_header.hpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/schema_conformance.cpp
+      # Globbed, not listed: mlx5_records.hpp was missing from the hand-written
+      # version of this list, so editing it would not have re-run the check.
+      ${_comshu_provider_record_hdrs}
+      # check 6 (ibverbs name tables) reads both readers' sources
+      ${CMAKE_SOURCE_DIR}/comshu-read/main.cpp
+      ${CMAKE_SOURCE_DIR}/tools/read_pcs.py
+    COMMENT "Checking C++ records against libcomshu/schema/comshu.fbs"
+    VERBATIM)
+  add_custom_target(comshu_schema_check ALL DEPENDS ${schema_check_stamp})
+  add_dependencies(comshu_engine comshu_schema_check)
+
+  if(COMSHU_BUILD_TESTS)
+    add_test(NAME schema_check
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/schema_check.py
+                     ${CMAKE_SOURCE_DIR})
+  endif()
+else()
+  message(WARNING "no Python3: skipping the record/schema coverage check "
+                  "(tools/schema_check.py) — a new record can reach a capture "
+                  "with no schema entry")
+endif()
+
+# Figure drift: demos/figures must draw every record that exists, with the right
+# type_id and archetype. gen_figures.py hardcodes the record set twice — as boxes
+# and as index rows — and reads neither the schema nor the declarations, which is
+# right for the LAYOUT (an argument about which relationships matter, not
+# derivable from a struct) and indefensible for the SET. Without this, adding a
+# record leaves the figure quietly missing it while every other check stays
+# green: the same "absence is invisible" failure schema_check.py exists for.
+if(COMSHU_BUILD_TESTS AND Python3_Interpreter_FOUND)
+  add_test(NAME figures_current
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_figures.py)
+endif()
+
+# The layer rule, checked instead of merely stated. README says libcomshu is
+# vendor-free; nothing enforced it, and core/mem_attr.hpp already depends on the
+# CUDA driver ABI numerically. This checks the mechanical half — no vendor
+# headers, no vendor types, and no vendor symbol outside the short allowlist the
+# script carries. It strips comments and string literals first, because naming
+# ibv_create_qp in a comment or dlsym'ing "cuPointerGetAttribute" by name is how
+# core stays vendor-free rather than how it stops being so.
+if(COMSHU_BUILD_TESTS AND Python3_Interpreter_FOUND)
+  add_test(NAME vendor_free
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_vendor_free.py)
+endif()
+
+# Generated-header drift: comshu_generated.h must be what flatc makes of
+# comshu.fbs today. A test, not a build step — it needs flatc, which MN5 does not
+# have, and the whole reason the header is committed is that the build must work
+# without it. The script skips loudly rather than failing when flatc is absent.
+if(COMSHU_BUILD_TESTS)
+  add_test(NAME schema_generated_current
+           COMMAND ${CMAKE_SOURCE_DIR}/tools/check_generated.sh)
+endif()
+
+# Portability, demonstrated rather than asserted: read a real suite capture from
+# Python through flatc-generated bindings and recompute case 01's goldens. The
+# claim that motivated the whole schema — "other languages can read captures" —
+# was never once exercised until this ran. Needs no flatc and no network: the
+# bindings and the FlatBuffers Python runtime are both committed.
+#
+# THE INTERPRETER IS PROBED, NOT ASSUMED, and the reason is a bug worth knowing.
+# The committed FlatBuffers runtime decides whether numpy is available like this
+# (third_party/flatbuffers/python/flatbuffers/compat.py:56):
+#
+#     numpy_exists = importlib.machinery.PathFinder.find_spec("numpy") is not None
+#     if numpy_exists: import numpy
+#
+# find_spec answers "can this be RESOLVED", and the next line requires it to be
+# IMPORTABLE. Those come apart exactly when a numpy built for one Python sits on
+# another's path: du04 carries numpy 1.21.5 in /usr/lib/python3/dist-packages,
+# find_spec finds it under python3.12, the import raises
+# ModuleNotFoundError: numpy.core._multiarray_umath, and it propagates out of
+# `import flatbuffers`. An ABSENT numpy is handled correctly; a broken-but-
+# present one is not. Resolution is not invocation, one layer down and in
+# somebody else's code.
+#
+# So this ran red on du04 for so long that 31/32 became the machine's "known
+# good" state — which is how a real failure would have hidden. The script itself
+# was never at fault: it passes there under python3.10, and on FreeBSD under
+# 3.12 with numpy 2.4.6.
+#
+# Probe = "numpy is absent, or numpy imports". Nothing else the reader needs can
+# be broken this way; everything else it imports is committed in-tree.
+if(COMSHU_BUILD_TESTS AND EXISTS ${CMAKE_SOURCE_DIR}/tests/data/ib_pingpong-44578115)
+  # ONE string, not two. `set(x "a" "b")` makes a cmake LIST, and a list reaches
+  # `-c` semicolon-joined — which is not Python, so every candidate fails the
+  # probe and the test quietly stops existing. Caught because the loud branch
+  # below fired and ctest went from 32 tests to 31; a silent skip would have
+  # read as a clean board.
+  set(_comshu_py_probe
+      "import importlib.util,sys; sys.exit(0) if importlib.util.find_spec('numpy') is None else __import__('numpy')")
+  set(_comshu_py "")
+  # The interpreter cmake picked comes first; the rest are a fallback for hosts
+  # where it is the broken one. Not a wide search — if none of these work the
+  # test is not registered and says so.
+  foreach(_cand ${Python3_EXECUTABLE} python3.13 python3.12 python3.11 python3.10 python3)
+    if(_comshu_py OR NOT _cand)
+      continue()
+    endif()
+    execute_process(COMMAND ${_cand} -c "${_comshu_py_probe}"
+                    RESULT_VARIABLE _rc OUTPUT_QUIET ERROR_QUIET)
+    if(_rc EQUAL 0)
+      set(_comshu_py "${_cand}")
+    endif()
+  endforeach()
+
+  if(_comshu_py)
+    add_test(NAME schema_python_reader
+             COMMAND ${_comshu_py} ${CMAKE_SOURCE_DIR}/tools/read_pcs.py)
+  else()
+    # LOUD, because a test that silently stops existing is the failure this
+    # project keeps finding in its own boards. Say which check failed and how to
+    # fix it, rather than leaving a gap in the numbering.
+    message(STATUS
+      "comshu: schema_python_reader NOT REGISTERED — no interpreter found whose "
+      "numpy either imports or is absent (a numpy built for another Python on "
+      "this one's path breaks the committed flatbuffers runtime). The capture "
+      "format is then UNTESTED from Python in this build.")
+  endif()
+endif()

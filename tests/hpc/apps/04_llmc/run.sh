@@ -1,5 +1,5 @@
 #!/bin/bash
-# 04_llmc on du04 — llm.c's GPT-2 trainer under `pcomm run -p nccl`, four A100s,
+# 04_llmc on du04 — llm.c's GPT-2 trainer under `comshu run -p nccl`, four A100s,
 # one node, no queue.
 #
 #   bash tests/hpc/apps/04_llmc/run.sh
@@ -22,7 +22,7 @@
 #   * that nvcc is CUDA 13, and llm.c does not build under it without the
 #     one-line cudaMemAdvise patch in this directory.
 #   * cublas headers/libs live in the SDK's math_libs tree, not beside nvcc.
-#   * pcomm's nccl provider CMake uses find_path for cuda_runtime_api.h, which
+#   * comshu's nccl provider CMake uses find_path for cuda_runtime_api.h, which
 #     does not look in /usr/local/cuda/include on its own.
 # Nothing here uses NVBit, so the missing nvdisasm is not in play.
 set -eux
@@ -33,21 +33,21 @@ export CPATH="$HPCSDK/math_libs/13.0/include:$HPCSDK/cuda/13.0/include"
 export LIBRARY_PATH="$HPCSDK/math_libs/13.0/lib64:$HPCSDK/cuda/13.0/lib64"
 export LD_LIBRARY_PATH="$HPCSDK/math_libs/13.0/lib64:$HPCSDK/cuda/13.0/lib64:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 
-PCOMM_SRC=${PCOMM_SRC:-$HOME/pcomm-llmc}          # a checkout of this repo
+COMSHU_SRC=${COMSHU_SRC:-$HOME/comshu-llmc}          # a checkout of this repo
 LLMC=${LLMC:-$HOME/llmc}                          # karpathy/llm.c at f1e2ace
-export PCOMM="$PCOMM_SRC/build/pcomm/pcomm"
-export PCOMM_PROVIDER_PATH="$PCOMM_SRC/build/providers/nccl"
-OUT_ROOT=${OUT_ROOT:-$HOME/pcomm-apps}
+export COMSHU="$COMSHU_SRC/build/comshu/comshu"
+export COMSHU_PROVIDER_PATH="$COMSHU_SRC/build/providers/nccl"
+OUT_ROOT=${OUT_ROOT:-$HOME/comshu-apps}
 
-# --- pcomm, nccl provider only ----------------------------------------------
+# --- comshu, nccl provider only ----------------------------------------------
 # CUDA_RT_INCLUDE_DIR must be spelled: providers/nccl/CMakeLists.txt find_path()s
 # cuda_runtime_api.h and CMake's default prefix list does not include
 # /usr/local/cuda/include.
-if [ ! -x "$PCOMM" ]; then
-  cmake -B "$PCOMM_SRC/build" -S "$PCOMM_SRC" -DCMAKE_BUILD_TYPE=Release \
-        -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_NCCL=ON \
+if [ ! -x "$COMSHU" ]; then
+  cmake -B "$COMSHU_SRC/build" -S "$COMSHU_SRC" -DCMAKE_BUILD_TYPE=Release \
+        -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_NCCL=ON \
         -DCUDA_RT_INCLUDE_DIR=/usr/local/cuda/include -DNCCL_INCLUDE_DIR=/usr/include
-  cmake --build "$PCOMM_SRC/build" -j 16
+  cmake --build "$COMSHU_SRC/build" -j 16
 fi
 
 # --- llm.c ------------------------------------------------------------------
@@ -70,7 +70,7 @@ TOKENS_PER_FWDBWD=$((2 * 1024 * NP))
 
 cd "$LLMC"
 
-echo "########## BARE — no pcomm. If this fails, nothing below means anything."
+echo "########## BARE — no comshu. If this fails, nothing below means anything."
 mpirun -np $NP ./train_gpt2cu $COMMON -z 0 -d $TOKENS_PER_FWDBWD
 echo "bare exit=$?"
 
@@ -96,12 +96,12 @@ run_capture() {           # $1 = label, rest = extra llm.c args
   local out="$OUT_ROOT/llmc-$label-${SLURM_JOB_ID:-local}"
   rm -rf "$out"; mkdir -p "$out"
   echo "########## CAPTURE $label : $*"
-  mpirun -np $NP -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
-    "$PCOMM" run -p nccl -o "$out" -- ./train_gpt2cu $COMMON "$@"
+  mpirun -np $NP -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
+    "$COMSHU" run -p nccl -o "$out" -- ./train_gpt2cu $COMMON "$@"
   echo "mpirun exit=$?"
-  echo "=== captured streams ==="; "$PCOMM" read "$out"
-  "$PCOMM" export "$out" --csv "$out.csv"
-  bash "$PCOMM_SRC/tests/hpc/suite/sql_check.sh" "$out.csv" "$CASE_DIR" || true
+  echo "=== captured streams ==="; "$COMSHU" read "$out"
+  "$COMSHU" export "$out" --csv "$out.csv"
+  bash "$COMSHU_SRC/tests/hpc/suite/sql_check.sh" "$out.csv" "$CASE_DIR" || true
 }
 
 run_capture z0   -z 0 -d $TOKENS_PER_FWDBWD

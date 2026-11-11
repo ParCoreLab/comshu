@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=pcomm-vmmdoors
+#SBATCH --job-name=comshu-vmmdoors
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -38,30 +38,30 @@
 #   4. Is cuMemMap's `offset` ever non-zero? If it is always 0 the mapping is
 #      the whole allocation and the record shrinks to a handle identity.
 #
-# READING THE RESULT: grep the .out for [pcomm-vmm]. Lines are
+# READING THE RESULT: grep the .out for [comshu-vmm]. Lines are
 #   create handle=H size=S dev=D type=T
 #   export/import type=T fd=N dev=DEV ino=INO
 #   map ptr=P size=S offset=O handle=H
 # Compare the `ino` on an export against the `ino` on the matching import in a
 # DIFFERENT rank's output. Same inode => joinable. Different => not.
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
-OUT="${PCOMM_VMM_OUT:-$HOME/pcomm-suite/vmmdoors-${SLURM_JOB_ID:-local}}"
+OUT="${COMSHU_VMM_OUT:-$HOME/comshu-suite/vmmdoors-${SLURM_JOB_ID:-local}}"
 mkdir -p "$OUT"
 
 # NCCL first: it is the workload whose objects are missing, and the one whose
 # answer decides route 2.
 export LD_LIBRARY_PATH="$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 echo "=== NCCL (case 05's binary) ==="
-mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
+mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
   -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=0 -x NCCL_P2P_LEVEL=NVL \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  -x PCOMM_TRACE_VMM=1 \
-  "$PCOMM" run -p p2p -o "$OUT/nccl" -- "$HOME/nccl_allreduce-li" 2>&1 | grep -E "pcomm-vmm|ERROR" | head -400
+  -x COMSHU_TRACE_VMM=1 \
+  "$COMSHU" run -p p2p -o "$OUT/nccl" -- "$HOME/nccl_allreduce-li" 2>&1 | grep -E "comshu-vmm|ERROR" | head -400
 echo "nccl exit=$?"
 
 # NVSHMEM second, as the control: its heap IS shared between these same ranks,
@@ -69,10 +69,10 @@ echo "nccl exit=$?"
 # nothing and NVSHMEM shows exports, the difference is NCCL's, not the probe's.
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH"
 echo "=== NVSHMEM (case 04's binary) ==="
-mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
-  -x NVSHMEM_BOOTSTRAP=MPI -x PCOMM_KERNEL_NAME=put_to_next -x PCOMM_TRACE_VMM=1 \
-  "$PCOMM" run -p p2p -o "$OUT/nvshmem" -- "$HOME/nvshmem_putget-li" 65536 3 2>&1 \
-  | grep -E "pcomm-vmm|ERROR" | head -400
+mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
+  -x NVSHMEM_BOOTSTRAP=MPI -x COMSHU_KERNEL_NAME=put_to_next -x COMSHU_TRACE_VMM=1 \
+  "$COMSHU" run -p p2p -o "$OUT/nvshmem" -- "$HOME/nvshmem_putget-li" 65536 3 2>&1 \
+  | grep -E "comshu-vmm|ERROR" | head -400
 echo "nvshmem exit=$?"
 
 echo "=== summary ==="

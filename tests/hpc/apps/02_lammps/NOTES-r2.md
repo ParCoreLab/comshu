@@ -20,7 +20,7 @@ the provider must be built against 1.20.0's headers.
 configure is
 
 ```bash
-cmake -B build-ucx -DPCOMM_PROVIDER_UCX=ON \
+cmake -B build-ucx -DCOMSHU_PROVIDER_UCX=ON \
       -DUCX_UCP_LIB=/usr/lib64/libucp.so -DUCX_INCLUDE_DIR=/usr/include
 ```
 
@@ -37,7 +37,7 @@ Nothing warns. The build succeeds. The failure appears only at run time, in a
 record most people would not think to read:
 
 ```
-$ pcomm dump <capture> 806
+$ comshu dump <capture> 806
 ticks, compiled_version, runtime_version, ops_size, accepted, forced
 ...    1.15.0            1.20.0           400       0         0
 ```
@@ -52,14 +52,14 @@ reporting `[skip]`.
 module unload UCX
 unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH CPATH
 mkdir -p ~/ucx120-include && cp -a /usr/include/{ucp,uct,ucs} ~/ucx120-include/
-cmake -B build-ucx120 -DPCOMM_PROVIDER_UCX=ON \
+cmake -B build-ucx120 -DCOMSHU_PROVIDER_UCX=ON \
       -DUCX_UCP_LIB=/usr/lib64/libucp.so -DUCX_INCLUDE_DIR=$HOME/ucx120-include
 ```
 
 A private include directory rather than `/usr/include` is the load-bearing part:
 it is not a standard system directory, so `-I` survives. Verify with
 `grep UCP_API_MINOR $HOME/ucx120-include/ucp/api/ucp_version.h` before building
-and with `pcomm dump <capture> 806` after running.
+and with `comshu dump <capture> 806` after running.
 
 **Read `uct_binding` first, every time.** It is the only thing that tells an
 empty `transport_mix` apart from a quiet fabric, and this case now ships
@@ -78,14 +78,14 @@ Built against the system UCX the provider carries **no UCX in its RUNPATH at
 all**:
 
 ```
-RUNPATH: [$ORIGIN/../../libpcomm:.../build-ucx120/libpcomm:]
+RUNPATH: [$ORIGIN/../../libcomshu:.../build-ucx120/libcomshu:]
 ```
 
 so there is nothing to form a hybrid with. `job-r2.sbatch` still appends
 `/lib64` — appending costs nothing and guards against a module that puts some
 other `libucp` on the path — but the crash is gone at the root rather than
 worked around. **Still append, never prepend**: `/lib64` ahead of gcc-13.2
-shadows its `libstdc++` and every pcomm binary dies with
+shadows its `libstdc++` and every comshu binary dies with
 `GLIBCXX_3.4.30 not found`, which reads as a different bug entirely.
 
 ## 3. `a / b` on two integers is FLOAT division in DuckDB
@@ -131,27 +131,27 @@ itself. **Two sibling assertions had the same shape** and now carry explicit
 `WHERE (SELECT count(*) FROM comm_edges) = 0` guards: any assertion that reaches
 its evidence through an inner join is vacuous when the evidence is missing.
 
-## 6. `pcomm types` does not list type 528, and the schema declares it
+## 6. `comshu types` does not list type 528, and the schema declares it
 
 Measured on the login node, no capture needed:
 
 ```
-$ pcomm types | wc -l
+$ comshu types | wc -l
 60                      # 58 types plus a header
-$ pcomm types | grep -E '^(524|526|528|530)'
+$ comshu types | grep -E '^(524|526|528|530)'
 524  artifact  node_identity
 526  entity    peer_mapping
 530  event     gpu_kernel
 ```
 
-while `libpcomm/schema/pcomm.fbs:210` says *"type 528, Artifact. What a device
+while `libcomshu/schema/comshu.fbs:210` says *"type 528, Artifact. What a device
 ORDINAL actually refers to, on this rank"*. Rebuilt from the current checkout
 (`a0b242e`), whose commits include the GpuDevice schema and its emit path; the
 list is byte-identical to the older shared build's. See `QUESTIONS.md` Q4.
 
 ## 7. Home is at 78.6 of 80 GB — put captures on scratch
 
-`bsc_quota` for `etur02`: `gpfs_home 78.58 GB / 80.00 GB`. `~/pcomm-suite` alone
+`bsc_quota` for `etur02`: `gpfs_home 78.58 GB / 80.00 GB`. `~/comshu-suite` alone
 is 57 GB. A 16-rank `ucx_deep` capture is not what the last gigabyte is for.
 `/gpfs/scratch/etur02/` is group-writable with ~400 GB free; this case writes to
 `/gpfs/scratch/etur02/koc296797-apps/`.
@@ -168,7 +168,7 @@ cyclic:  rank 000 -> as05r5b10  001 -> as05r5b12  002 -> as05r5b13  003 -> as05r
 ```
 
 so `node(r) = r/4` and `node(r) = r%4` respectively. Print it. An assertion about
-`scope` that takes its node map from `rank_identity` is pcomm marking its own
+`scope` that takes its node map from `rank_identity` is comshu marking its own
 homework.
 
 ## 9. Do not `module purge`, and source `common.sh` first
@@ -179,7 +179,7 @@ PATH with rc=0. But a job submitted from **glogin** also inherits the GPP module
 tree and glogin's auto-loaded `impi`, which `common.sh` purges for you. The
 order that works is: `source common.sh` **first** (it purges and repoints
 `MODULEPATH` while nothing of yours is loaded), then the LAMMPS prereqs, then
-`lammps/10Sep2025`, then `gcc/13.2.0`. Not `pcomm_load_runtime` — that puts the
+`lammps/10Sep2025`, then `gcc/13.2.0`. Not `comshu_load_runtime` — that puts the
 SDK's `mpirun` ahead of the one LAMMPS is linked against.
 
 ## 10. Version pins that mattered
@@ -190,5 +190,5 @@ SDK's `mpirun` ahead of the one LAMMPS is linked against.
 | MPI | Open MPI 4.1.5 (`openmpi/4.1.5-gcc`) |
 | UCX at runtime | system **1.20.0** (`/lib64`), *not* HPC-X's |
 | UCX the providers are built against | **1.20.0**, from `/usr/include` copied to `~/ucx120-include` |
-| pcomm | `~/proj/pcomm/build-apps06`, private to this study, at checkout `a0b242e` |
+| comshu | `~/proj/comshu/build-apps06`, private to this study, at checkout `a0b242e` |
 | jobs | 45329318 (providers mis-built, still produced the comm_edges result), 45330017 (the study) |

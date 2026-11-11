@@ -20,8 +20,8 @@
   //
   // One-shot on read: this panel is where a query becomes yours to edit, so a
   // later reload must not overwrite what you have typed.
-  const handed = sessionStorage.getItem('pcomm.ask.sql');
-  if (handed) sessionStorage.removeItem('pcomm.ask.sql');
+  const handed = sessionStorage.getItem('comshu.ask.sql');
+  if (handed) sessionStorage.removeItem('comshu.ask.sql');
 
   let sql = $state(
     handed ?? 'SELECT src_rank, dst_rank, sends, bytes\nFROM comm_edges\nORDER BY bytes DESC\nLIMIT 10',
@@ -38,8 +38,8 @@
       rows = null;
       error = null;
     };
-    addEventListener('pcomm:ask', take);
-    return () => removeEventListener('pcomm:ask', take);
+    addEventListener('comshu:ask', take);
+    return () => removeEventListener('comshu:ask', take);
   });
 
   $effect(() => {

@@ -50,24 +50,24 @@ print("INSERT INTO params VALUES (%s);" % ", ".join(str(w[c]) for c in cols))
 PY
 }
 
-# THE DERIVED TABLES ARE NOT CSVs. `pcomm export --csv` writes one file per RAW
+# THE DERIVED TABLES ARE NOT CSVs. `comshu export --csv` writes one file per RAW
 # record stream; transport_mix, tag_flow, link_health and the rest are built by
-# `pcomm link` into the parquet directory beside them. Round 1 learned this the
+# `comshu link` into the parquet directory beside them. Round 1 learned this the
 # expensive way (job 45103790: three assertions reported "EMPTY — unanswerable"
 # against tables that existed and had rows), so each derived table is
-# materialised out of the parquet with `pcomm sql`, which already emits CSV.
+# materialised out of the parquet with `comshu sql`, which already emits CSV.
 #
 # transport_mix and tag_flow are this round's headline tables and lead the list.
-PCOMM="${PCOMM:-$HOME/proj/pcomm/build/pcomm/pcomm}"
+COMSHU="${COMSHU:-$HOME/proj/comshu/build/comshu/comshu}"
 DERIVED_TABLES="transport_mix tag_flow tag_recv_resolved link_health rank_identity endpoint comm_edges object_access"
 
 materialise_derived() {   # materialise_derived <csvdir> <outdir>
   local csv="$1" out="$2" pq="${1%.csv}.pq" t
-  [ -d "$pq" ] || { echo "   (no $pq — derived layer absent; pcomm_derive needs DuckDB)" >&2; return 0; }
-  [ -x "$PCOMM" ] || { echo "   (no $PCOMM — cannot materialise derived tables)" >&2; return 0; }
+  [ -d "$pq" ] || { echo "   (no $pq — derived layer absent; comshu_derive needs DuckDB)" >&2; return 0; }
+  [ -x "$COMSHU" ] || { echo "   (no $COMSHU — cannot materialise derived tables)" >&2; return 0; }
   mkdir -p "$out"
   for t in $DERIVED_TABLES; do
-    if "$PCOMM" sql "$pq" "SELECT * FROM $t" > "$out/$t.csv" 2>"$out/$t.err"; then
+    if "$COMSHU" sql "$pq" "SELECT * FROM $t" > "$out/$t.csv" 2>"$out/$t.err"; then
       [ -s "$out/$t.csv" ] || rm -f "$out/$t.csv"
     else
       echo "   (derived table $t unavailable: $(head -1 "$out/$t.err" 2>/dev/null))" >&2

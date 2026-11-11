@@ -13,7 +13,7 @@ LAMMPS prints a line:
 ```
 ucp_wireup_select_transport()  .../hpcx-v2.22.1/ucx-b00d4c4b.../src/ucp/wireup/select.c:630
 ucp_ep_create()                .../ucp/core/ucp_ep.c:1198
-pcomm::hook::CompositeHookManager<ucx::Profiler, ...>::invoke_preload<ucx::ep_create_tag, ...>
+comshu::hook::CompositeHookManager<ucx::Profiler, ...>::invoke_preload<ucx::ep_create_tag, ...>
 mca_pml_ucx_add_procs()        .../openmpi-4.1.5/ompi/mca/pml/ucx/pml_ucx.c:448
 ompi_mpi_init()                ... signal 11
 ```
@@ -22,7 +22,7 @@ Cause. `libucx_trace.so` carries an **absolute RUNPATH** to the UCX it was built
 against:
 
 ```
-RUNPATH: [$ORIGIN/../../libpcomm:.../build-ucx/libpcomm:
+RUNPATH: [$ORIGIN/../../libcomshu:.../build-ucx/libcomshu:
           /apps/ACC/NVIDIA-HPC-SDK/25.7/.../hpcx-2.22.1/ucx/lib:]
 ```
 
@@ -35,7 +35,7 @@ libuct.so.0 => /lib64/libuct.so.0                      <- system
 libucs.so.0 => /lib64/libucs.so.0                      <- system
 ```
 
-HPC-X's `ucp` calling the system's `uct`/`ucs`. `common.sh`'s `pcomm_find_ucx`
+HPC-X's `ucp` calling the system's `uct`/`ucs`. `common.sh`'s `comshu_find_ucx`
 comment already warns that build-UCX and run-UCX must match; it anchors to the
 UCX under *`mpirun`'s* SDK, which is right for the suite's own HPC-X cases and
 wrong for a module-provided MPI.
@@ -48,20 +48,20 @@ export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/lib64"
 
 **Append, never prepend.** New dtags mean *any* position in `LD_LIBRARY_PATH`
 beats a RUNPATH, so appending is enough to win. Prepending also shadows
-gcc-13.2's `libstdc++` with `/lib64`'s, and every pcomm binary then dies with
+gcc-13.2's `libstdc++` with `/lib64`'s, and every comshu binary then dies with
 ``version `GLIBCXX_3.4.30' not found`` — which looks like a completely different
 bug and cost a second round.
 
-## 2. Do not use `pcomm_load_runtime` with a module-provided MPI application
+## 2. Do not use `comshu_load_runtime` with a module-provided MPI application
 
 It loads `nvidia-hpc-sdk/25.7`, which puts the SDK's own `mpirun` ahead of the
 one the application is linked against (LAMMPS here needs
-`/apps/ACC/OPENMPI/4.1.5/GCC`'s `libmpi.so.40`). All pcomm actually needs from
+`/apps/ACC/OPENMPI/4.1.5/GCC`'s `libmpi.so.40`). All comshu actually needs from
 it is gcc-13.2's libstdc++, so load that alone:
 
 ```bash
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"   # $PCOMM, PCOMM_PROVIDER_PATH
-module load gcc/13.2.0                           # NOT pcomm_load_runtime
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"   # $COMSHU, COMSHU_PROVIDER_PATH
+module load gcc/13.2.0                           # NOT comshu_load_runtime
 ```
 
 ## 3. `module purge` breaks `lammps/10Sep2025`
@@ -77,14 +77,14 @@ module load cuda/12.6 openmpi/4.1.5-gcc fftw/3.3.10-gcc-ompi gsl/2.8-gcc mkl
 module load lammps/10Sep2025
 ```
 
-## 4. `pcomm sql` rejects a TRAILING SEMICOLON as well as a leading comment
+## 4. `comshu sql` rejects a TRAILING SEMICOLON as well as a leading comment
 
 `tests/hpc/apps/README.md` documents the leading-comment wart. There is a second
 one from the same cause — the text is wrapped in `COPY (<query>) TO '...'`:
 
 ```
 Parser Error: syntax error at or near ";"
-LINE 6: ORDER BY 1, 2;) TO '/scratch/tmp/pcomm-sql-670016.csv' (FORMAT CSV, ...
+LINE 6: ORDER BY 1, 2;) TO '/scratch/tmp/comshu-sql-670016.csv' (FORMAT CSV, ...
 ```
 
 Ordinary `.sql` files end in `;`. Strip both at the runner rather than writing
@@ -111,7 +111,7 @@ A real application's oracle is a processor grid and a neighbour-rebuild period,
 not `iters` and `msg_bytes`. Widening a shared suite file from an app study is
 out of scope (`apps/README.md`: do not edit outside your own case directory), so
 this case materialises `params` from the same `meta.json` block itself and runs
-the same `asserts/*.sql` through `pcomm sql`. See `run_asserts()` in
+the same `asserts/*.sql` through `comshu sql`. See `run_asserts()` in
 `job.sbatch`. **Whoever promotes any of these studies to a gate has to decide
 whether that column list becomes open.**
 
@@ -124,9 +124,9 @@ GPU 0..3: NVIDIA H100
 
 Everything except the eight-rank two-node run was done there for free: the
 module survey, `lmp -h`, all the `nm`/`strings` work, the managed-memory probe,
-a 2-rank `pcomm run -p ib,ucx` smoke test that found trap 1 *before* it could
+a 2-rank `comshu run -p ib,ucx` smoke test that found trap 1 *before* it could
 waste an allocation, and every iteration of every SQL query (the captures are
-files; `pcomm sql`, `export` and `link` need no GPU and no allocation). One
+files; `comshu sql`, `export` and `link` need no GPU and no allocation). One
 queue slot was spent in total, and the assertions were still being debugged
 after it finished. Budget the slot for the *run*, not for the analysis.
 
@@ -176,5 +176,5 @@ so the import is present in builds with zero UVM Views. Use the build flag (the
 | LAMMPS build | KOKKOS + GPU packages, CUDA backend, double precision, view layout **legacy** |
 | MPI | OpenMPI 4.1.5, `--with-cuda --with-ucx`, `opal_built_with_cuda_support:true` |
 | UCX at runtime | system **1.20.0** (`/lib64`), *not* the SDK's HPC-X 2.22.1 |
-| pcomm on MN5 | `$HOME/proj/pcomm/build`, DuckDB present (`pcomm sql` works) |
+| comshu on MN5 | `$HOME/proj/comshu/build`, DuckDB present (`comshu sql` works) |
 | job | 45082034, 2 × (4× H100), `acc_debug`, account `etur02` |

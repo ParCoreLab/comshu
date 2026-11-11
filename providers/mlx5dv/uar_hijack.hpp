@@ -25,7 +25,7 @@
 // noise of three clean runs. If that gate fails, no amount of correct parsing
 // rescues a data path that perturbs the application, and the work stops here.
 //
-// THREE RULES, because this sits in the data path where every other pcomm hook
+// THREE RULES, because this sits in the data path where every other comshu hook
 // is passive:
 //   * Fail open, not closed. Cannot allocate the fake page, cannot resolve a
 //     driver call, no UAR match -> return the REAL device pointer (registering
@@ -104,11 +104,11 @@ using PfnHostUnregister = CuResult (*)(void*);
 using PfnHostAlloc = CuResult (*)(void**, std::size_t, unsigned);
 using PfnFreeHost = CuResult (*)(void*);
 
-// The launcher's --enable-doorbell-hijack sets PCOMM_DOORBELL_HIJACK=1. Checked
+// The launcher's --enable-doorbell-hijack sets COMSHU_DOORBELL_HIJACK=1. Checked
 // once; gates whether the provider installs the export-table patcher at all.
 inline bool enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_DOORBELL_HIJACK");
+        const char* v = std::getenv("COMSHU_DOORBELL_HIJACK");
         return v && *v == '1';
     }();
     return on;
@@ -130,11 +130,11 @@ inline bool enabled() {
 // Mlx5Doorbell rows with no Mlx5DeviceSend beside them, which is exactly the
 // "the doorbell rang and we could not decode it" shape that a real decode
 // failure has. A capture taken this way is indistinguishable from a broken one,
-// which is why it is spelled PCOMM_HIJACK_NO_DECODE and gated behind the
+// which is why it is spelled COMSHU_HIJACK_NO_DECODE and gated behind the
 // hijack's own env rather than given a launcher flag.
 inline bool decode_disabled() {
     static const bool off = [] {
-        const char* v = std::getenv("PCOMM_HIJACK_NO_DECODE");
+        const char* v = std::getenv("COMSHU_HIJACK_NO_DECODE");
         return v && *v == '1';
     }();
     return off;
@@ -142,7 +142,7 @@ inline bool decode_disabled() {
 
 inline bool debug_on() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_HIJACK_DEBUG");
+        const char* v = std::getenv("COMSHU_HIJACK_DEBUG");
         return v && *v == '1';
     }();
     return on;
@@ -955,7 +955,7 @@ inline void report_and_shutdown(int rank) {
         teardown(addr);
 
     std::fprintf(stderr,
-                 "[pcomm rank %d] doorbell hijack: uars_hijacked=%u unwatched=%u "
+                 "[comshu rank %d] doorbell hijack: uars_hijacked=%u unwatched=%u "
                  "fake_accesses=%llu doorbells=%llu sends=%llu (unknown_op=%llu truncated=%llu) "
                  "wqes_lapped=%llu | "
                  "remembered_uars=%u register_calls=%u getdevptr_calls=%u unregister_calls=%u%s\n",
@@ -991,7 +991,7 @@ inline void report_and_shutdown(int rank) {
     const unsigned unwatched = s.uars_unwatched.load();
     if (uars_exist && watched == 0 && unwatched == 0) {
         std::fprintf(stderr,
-                     "[pcomm rank %d] doorbell hijack: DEVX allocated %u UAR(s) and NONE was "
+                     "[comshu rank %d] doorbell hijack: DEVX allocated %u UAR(s) and NONE was "
                      "mapped into the GPU — the doorbell writer on this run is NOT the GPU. "
                      "This is CPU-assisted IBGDA or a host-submitted path, not a capture "
                      "failure; mlx5_device_send will be empty and no hijack can fill it. "
@@ -999,13 +999,13 @@ inline void report_and_shutdown(int rank) {
                      rank, s.remembered_uars.load());
     } else if (watched > 0 && s.num_fake_accesses.load() == 0) {
         std::fprintf(stderr,
-                     "[pcomm rank %d] doorbell hijack: %u UAR(s) swapped and never rung — the "
+                     "[comshu rank %d] doorbell hijack: %u UAR(s) swapped and never rung — the "
                      "GPU issued no doorbell through them.\n",
                      rank, watched);
     }
     if (unwatched > 0) {
         std::fprintf(stderr,
-                     "[pcomm rank %d] doorbell hijack: %u UAR(s) FAILED OPEN — the application "
+                     "[comshu rank %d] doorbell hijack: %u UAR(s) FAILED OPEN — the application "
                      "got the real doorbell page and their sends are absent from this "
                      "capture.\n",
                      rank, unwatched);

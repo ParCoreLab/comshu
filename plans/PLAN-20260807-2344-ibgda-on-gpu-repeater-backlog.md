@@ -87,7 +87,7 @@ read `*fake_addr`; on change, decode `(qpn, prod_idx)`, look up the QP, parse th
 delta WQEBBs straight out of `sq_base` in HBM, push a `GpuWqeRecord` per WQE into
 the ring, then store the doorbell value to `real_addr`. **The WQE parse is the
 one Stage 2 already got right** (`uar_hijack.hpp` — half AV segment, inline-flag
-detection, front-based offsets); it must be ported to device code *from pcomm's
+detection, front-based offsets); it must be ported to device code *from comshu's
 version, not SigmaTrace's*, because SigmaTrace's assumes a full AV and pointer
 data segments and is wrong on this NVSHMEM.
 
@@ -121,7 +121,7 @@ NVSHMEM run byte-identical, and **overhead materially below the CPU repeater's
 the GPU forward is not buying what the plan promised.
 
 ### Stage 3.2 — decode on-device, drain on-host
-Fill the QP table, port pcomm's Stage-2 WQE parse into the kernel, push
+Fill the QP table, port comshu's Stage-2 WQE parse into the kernel, push
 `GpuWqeRecord`s to the result ring, and drain it on a host thread that translates
 each into `Mlx5Doorbell`/`Mlx5DeviceSend` through the existing sinks. The records
 are unchanged — only their *source* moves to the GPU. Gate: on the case where the
@@ -168,7 +168,7 @@ have, do not carry the GPU repeater — and say so here, with the number.*
   (MN5 core) still builds the passive provider.
 - **The reference is broken.** Unlike Stages 1-2, there is no working
   implementation to port — SigmaTrace's kernel does not run. Every line is new,
-  and the parse is the only piece with a trusted source (pcomm's own Stage 2).
+  and the parse is the only piece with a trusted source (comshu's own Stage 2).
 - **Perturbation of a different kind.** This does not eliminate perturbation, it
   changes its shape from host-round-trip latency to one-SM contention. A timing
   claim under it is still a claim about an instrumented system — better, not
@@ -214,7 +214,7 @@ Batching the copies, or a cheaper parse, cannot recover an order of magnitude.
 Only removing the host round trip can, and that is what this plan is.
 
 That is the question this measurement existed to answer, and the answer is not
-the one the cheaper fix would have wanted. `PCOMM_HIJACK_NO_DECODE` was added to
+the one the cheaper fix would have wanted. `COMSHU_HIJACK_NO_DECODE` was added to
 ask it — measurement only, deliberately not a launcher flag, since it produces
 `Mlx5Doorbell` rows with no `Mlx5DeviceSend` beside them and that is exactly the
 shape a real decode failure has.
@@ -252,7 +252,7 @@ Two caveats that belong with the number rather than in a footnote:
 ### One harness defect worth recording
 
 The first run of this sweep reported the decode costing 5%, which was wrong.
-`PCOMM_HIJACK_NO_DECODE` was exported into the harness's shell and passed with a
+`COMSHU_HIJACK_NO_DECODE` was exported into the harness's shell and passed with a
 bare `-x`, so OpenMPI put it in the `hijack` runs too and both columns measured
 the same configuration. **The capture is what caught it**: the hijack run emitted
 no `214.pcs` at all, and a hijack that records no `Mlx5DeviceSend` has not

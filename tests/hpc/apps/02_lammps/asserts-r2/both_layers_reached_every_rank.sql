@@ -11,7 +11,7 @@
 -- this file turns it into a verdict.
 --
 -- IT IS A LIVE RISK HERE AND NOT A FORMALITY. LAMMPS on MN5 runs against the
--- SYSTEM UCX 1.20.0 in /lib64, not against the HPC-X UCX every other pcomm case
+-- SYSTEM UCX 1.20.0 in /lib64, not against the HPC-X UCX every other comshu case
 -- on this machine uses, and round 1 of this case (NOTES.md trap 1) had to append
 -- /lib64 to LD_LIBRARY_PATH to stop the loader building a hybrid of HPC-X's
 -- libucp with the system's libuct. Round 2 removes that hazard at the root by

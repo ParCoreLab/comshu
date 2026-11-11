@@ -8,7 +8,7 @@
 #
 # Like case 09 this needs IBGDA and self-skips where it cannot run.
 #
-#SBATCH --job-name=pcomm-12-ibgda-doorbell
+#SBATCH --job-name=comshu-12-ibgda-doorbell
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -20,10 +20,10 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/12_ibgda_doorbell"
-OUT=$(pcomm_out ibgda_doorbell)          # the hijacked capture (asserted)
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+CASE_DIR="$COMSHU_ROOT/tests/hpc/cases/12_ibgda_doorbell"
+OUT=$(comshu_out ibgda_doorbell)          # the hijacked capture (asserted)
 CTRL="${OUT}_ctrl"                        # the passive control
 # The .app/.err redirects below are opened by the shell before mpi() runs its
 # own mkdir, so the parent directory has to exist first.
@@ -89,34 +89,34 @@ fi
 echo "=== 12_ibgda_doorbell : arm=$ARM (NIC handler $HANDLER, $DOORBELL_FLAG) ==="
 
 # Load the runtime BEFORE looking for a launcher, the way case 04 does. This
-# case only ever called pcomm_load_runtime inside the app-build branch below,
+# case only ever called comshu_load_runtime inside the app-build branch below,
 # which runs after this check — so on any host where mpirun needs a module it
 # failed with "no mpirun on PATH" before it could load the module that provides
 # one. That ordering bug was invisible for as long as this case SKIPped on every
 # such host, and surfaced the moment the host arm let it actually run (MN5 job
 # 45462870).
-pcomm_load_runtime
-MPIRUN="${PCOMM_MPIRUN:-mpirun}"
+comshu_load_runtime
+MPIRUN="${COMSHU_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
 # ---- workload (same binary as cases 04/06/07/09) --------------------------
-APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
+APP="${COMSHU_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
-  command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
+  comshu_load_build
+  command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
   [ -n "${NVSHMEM_HOME:-}" ] && [ -d "$NVSHMEM_HOME" ] || fail "NVSHMEM_HOME did not resolve"
-  ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
+  ${COMSHU_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
     -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart || fail "workload did not build"
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # AFTER the build block, not before it — the same line, for the same reason,
 # that case 04 documents at length. NVSHMEM_HOME globs to the NEWEST SDK (26.5
-# on MN5) while pcomm_load_build/pcomm_load_runtime `module load
+# on MN5) while comshu_load_build/comshu_load_runtime `module load
 # nvidia-hpc-sdk/25.7`, and each of those PREPENDS 25.7's lib dir. Exported
 # before the build block, 26.5 goes first, the build block shoves 25.7 in front
 # of it, and the loader hands the binary a libnvshmem_host it was not linked
@@ -138,15 +138,15 @@ export NVSHMEM_IBGDA_NIC_HANDLER="$HANDLER"
 export NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE=gpumem
 
 ELEMS=1024 ITERS=20
-mpi() {  # mpi <out-dir> <extra pcomm args...>
+mpi() {  # mpi <out-dir> <extra comshu args...>
   local out="$1"; shift
   rm -rf "$out" "$out.csv"; mkdir -p "$out"
-  timeout 300 "$MPIRUN" -np 2 ${PCOMM_MPIRUN_EXTRA:-} \
-    -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
+  timeout 300 "$MPIRUN" -np 2 ${COMSHU_MPIRUN_EXTRA:-} \
+    -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
     -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
     -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
     -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE \
-    "$PCOMM" run -p ib,mlx5dv "$@" -o "$out" -- "$APP" "$ELEMS" "$ITERS"
+    "$COMSHU" run -p ib,mlx5dv "$@" -o "$out" -- "$APP" "$ELEMS" "$ITERS"
 }
 
 # ib is selected alongside mlx5dv, and not for its own sake.
@@ -154,7 +154,7 @@ mpi() {  # mpi <out-dir> <extra pcomm args...>
 # The engine emits an EntityClose for every ibv_destroy_qp whenever ANY
 # QP-recording provider is loaded, because from a void* it cannot tell a
 # creation door it failed to hook from a queue pair belonging to a provider the
-# user did not select (engine.cpp, pcomm_close_qp). On `-p mlx5dv` alone inside
+# user did not select (engine.cpp, comshu_close_qp). On `-p mlx5dv` alone inside
 # an MPI process that is 198 closes with opener 102 and no opens to match, and
 # entity_close_accounted goes red on a capture that is actually correct — which
 # is exactly the noise that assertion must not produce, since its whole value is
@@ -180,8 +180,8 @@ fi
 
 # ---- hijack run: hijack ON, bracketed by the NIC's own counters -----------
 #
-# THE ONLY ORACLE OUTSIDE PCOMM THIS CASE HAS. Everything else it checks is
-# pcomm agreeing with pcomm: that no opcode was unknown, that no WQE was
+# THE ONLY ORACLE OUTSIDE COMSHU THIS CASE HAS. Everything else it checks is
+# comshu agreeing with comshu: that no opcode was unknown, that no WQE was
 # truncated, that the payload size derives from the workload, that the
 # application's output is unchanged. All of those would still pass if the
 # decoder invented plausible rows out of the right-shaped bytes, which is
@@ -190,7 +190,7 @@ fi
 #
 # The NIC counts what it actually put on the wire, and it does not consult us.
 # Snapshotting it around the instrumented run gives an independent upper bound.
-IBCTR="/sys/class/infiniband/${PCOMM_HCA:-mlx5_0}/ports/1/counters"
+IBCTR="/sys/class/infiniband/${COMSHU_HCA:-mlx5_0}/ports/1/counters"
 wire_pkts_pre=$(cat "$IBCTR/port_xmit_packets" 2>/dev/null || echo "")
 wire_data_pre=$(cat "$IBCTR/port_xmit_data" 2>/dev/null || echo "")
 
@@ -234,8 +234,8 @@ app_hij="$(grep -h 'put-ring' "$OUT.app" | sort)"
 [ "$app_ctrl" = "$app_hij" ] || fail "application output differs under the hijack"
 
 # ---- assert the hijacked capture ------------------------------------------
-echo "=== captured streams (hijack) ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
+echo "=== captured streams (hijack) ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
 
 # ---- the wire check -------------------------------------------------------
 #
@@ -270,5 +270,5 @@ if [ -n "$wire_pkts_pre" ] && [ -n "$wire_pkts_post" ] && [ -f "$SENDCSV" ]; the
 else
   echo "=== wire check: SKIPPED (counters unreadable or no send rows) ==="
 fi
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"

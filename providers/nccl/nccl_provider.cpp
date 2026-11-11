@@ -9,39 +9,39 @@
 #include <cuda_runtime_api.h>
 #include <nccl.h>
 
-#include "pcomm/core/records.hpp"
-#include "pcomm/helpers/timestamp.hpp"
-#include "pcomm/engine_abi.h"
-#include "pcomm/provider/provider.hpp"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/helpers/timestamp.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/provider/provider.hpp"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/tracer.hpp"
 
 #include "nccl_comm_hash.hpp"
 #include "nccl_event_source.hpp"
 #include "nccl_records.hpp"
 
 namespace nccl {
-namespace rr = pcomm::providers::nccl::records;
-using pcomm::providers::nccl::nccl_comm_hash;
-using pcomm::rec::InternDomain;
+namespace rr = comshu::providers::nccl::records;
+using comshu::providers::nccl::nccl_comm_hash;
+using comshu::rec::InternDomain;
 
-static pcomm::rec::Recorder<>& rec() {
-    static pcomm::rec::Recorder<> proxy;
+static comshu::rec::Recorder<>& rec() {
+    static comshu::rec::Recorder<> proxy;
     return proxy;
 }
 
-static pcomm::core::Handle h(const void* p) {
+static comshu::core::Handle h(const void* p) {
     return rec().intern(InternDomain::Pointer, reinterpret_cast<std::uint64_t>(p));
 }
 
-static pcomm::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
-    return pcomm::core::Temporal::interval({pcomm::core::kDomainHostTsc, begin},
-                                           {pcomm::core::kDomainHostTsc, end});
+static comshu::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
+    return comshu::core::Temporal::interval({comshu::core::kDomainHostTsc, begin},
+                                           {comshu::core::kDomainHostTsc, end});
 }
 
-static void close(const void* p, pcomm::core::RecordTypeId opener) {
+static void close(const void* p, comshu::core::RecordTypeId opener) {
     if (p)
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(p), opener});
+        rec().record(rec().now_instant(), comshu::core::records::EntityClose{{}, {}, h(p), opener});
 }
 
 // Per-thread group nesting depth.
@@ -120,8 +120,8 @@ static void record_comm(ncclComm_t comm, std::uint64_t comm_hash, std::uint64_t 
     // CUPTI, and its host-API records are far too few to fill a record buffer
     // while the process is alive, which is the proxy gpu_device used to depend
     // on. Measured on job 45406132: nccl_internode and nccl_collectives carried
-    // no gpu_device at all. See pcomm_engine_note_cuda_live.
-    ::pcomm_engine_note_cuda_live("nccl_comm_init");
+    // no gpu_device at all. See comshu_engine_note_cuda_live.
+    ::comshu_engine_note_cuda_live("nccl_comm_init");
     rec().record(span(begin, end),
                  rr::NcclComm{{}, {}, h(comm), comm_hash, nccl_hash, rank, nranks, dev, 0});
 }
@@ -144,12 +144,12 @@ static void record_coll(rr::CollOp op, const void* sendbuff, void* recvbuff, std
 }
 
 Profiler::Profiler() {
-    const pcomm::Config cfg = pcomm::Config::from_env();
-    if (pcomm_engine_declare_provider("nccl", pcomm::core::id_range::nccl_lo,
-                                      pcomm::core::id_range::nccl_hi,
-                                      PCOMM_ENGINE_ABI_VERSION) != 0)
+    const comshu::Config cfg = comshu::Config::from_env();
+    if (comshu_engine_declare_provider("nccl", comshu::core::id_range::nccl_lo,
+                                      comshu::core::id_range::nccl_hi,
+                                      COMSHU_ENGINE_ABI_VERSION) != 0)
         return;
-    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     // --- communicator lifecycle ---------------------------------------------
     register_post<comm_init_rank_tag>(
@@ -177,10 +177,10 @@ Profiler::Profiler() {
     // exactly as it did for UCX endpoints — and that is the signal we want
     // rather than a pre-emptive filter over a case we have not observed.
     register_pre<comm_destroy_tag>([](ncclComm_t comm, auto) {
-        close(comm, pcomm::core::RecordTrait<rr::NcclComm>::type_id);
+        close(comm, comshu::core::RecordTrait<rr::NcclComm>::type_id);
     });
     register_pre<comm_abort_tag>([](ncclComm_t comm, auto) {
-        close(comm, pcomm::core::RecordTrait<rr::NcclComm>::type_id);
+        close(comm, comshu::core::RecordTrait<rr::NcclComm>::type_id);
     });
 
     // --- collectives ---------------------------------------------------------
@@ -255,7 +255,7 @@ Profiler::Profiler() {
                                                        0});
     });
 
-#if PCOMM_NCCL_HAS_WINDOW
+#if COMSHU_NCCL_HAS_WINDOW
     // --- symmetric memory ----------------------------------------------------
     register_post<window_register_tag>([](ncclResult_t res, ncclComm_t c, void* buff, size_t size,
                                           ncclWindow_t* win, int flags, auto begin, auto end) {
@@ -266,7 +266,7 @@ Profiler::Profiler() {
                     {}, {}, h(*win), h(c), h(buff), static_cast<std::uint64_t>(size), flags, 0});
     });
     register_pre<window_deregister_tag>([](ncclComm_t, ncclWindow_t win, auto) {
-        close(win, pcomm::core::RecordTrait<rr::NcclWindow>::type_id);
+        close(win, comshu::core::RecordTrait<rr::NcclWindow>::type_id);
     });
     register_post<dev_comm_create_tag>(
         [](ncclResult_t res, ncclComm_t c, const void*, void*, auto begin, auto end) {
@@ -348,23 +348,23 @@ extern "C" ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t da
 // NCCL call still starts the capture, rather than recording into nothing.
 extern "C" ncclResult_t ncclGroupStart() {
     nccl::Profiler::instance();
-    const auto   begin = pcomm::helpers::ts::RdtscTimestampSource::Now();
+    const auto   begin = comshu::helpers::ts::RdtscTimestampSource::Now();
     ncclResult_t res = pncclGroupStart();
-    const auto   end = pcomm::helpers::ts::RdtscTimestampSource::Now();
+    const auto   end = comshu::helpers::ts::RdtscTimestampSource::Now();
     if (res == ncclSuccess)
         nccl::record_group(nccl::rr::GroupEdge::Start, begin, end);
     return res;
 }
 extern "C" ncclResult_t ncclGroupEnd() {
     nccl::Profiler::instance();
-    const auto   begin = pcomm::helpers::ts::RdtscTimestampSource::Now();
+    const auto   begin = comshu::helpers::ts::RdtscTimestampSource::Now();
     ncclResult_t res = pncclGroupEnd();
-    const auto   end = pcomm::helpers::ts::RdtscTimestampSource::Now();
+    const auto   end = comshu::helpers::ts::RdtscTimestampSource::Now();
     if (res == ncclSuccess)
         nccl::record_group(nccl::rr::GroupEdge::End, begin, end);
     return res;
 }
-#if PCOMM_NCCL_HAS_WINDOW
+#if COMSHU_NCCL_HAS_WINDOW
 extern "C" ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size,
                                                ncclWindow_t* win, int winFlags) {
     return nccl::Profiler::invoke_preload<nccl::window_register_tag>(comm, buff, size, win,
@@ -378,7 +378,7 @@ extern "C" ncclResult_t ncclDevCommCreate(ncclComm_t comm, const void* reqs, voi
 }
 #endif
 
-namespace pcomm::providers {
+namespace comshu::providers {
 class NcclProvider final : public provider::IProvider {
 public:
     provider::ProviderInfo info() const override {
@@ -389,18 +389,18 @@ public:
         return true;
     }
     void shutdown() override {
-        pcomm_engine_drain_thread();
-        pcomm_engine_release();
+        comshu_engine_drain_thread();
+        comshu_engine_release();
     }
 };
-}  // namespace pcomm::providers
+}  // namespace comshu::providers
 
-PCOMM_EXPORT_PROVIDER(pcomm::providers::NcclProvider)
+COMSHU_EXPORT_PROVIDER(comshu::providers::NcclProvider)
 
-static void __attribute__((constructor)) pcomm_nccl_load() {
+static void __attribute__((constructor)) comshu_nccl_load() {
     nccl::Profiler::instance();
 }
-static void __attribute__((destructor)) pcomm_nccl_unload() {
-    pcomm_engine_drain_thread();
-    pcomm_engine_release();
+static void __attribute__((destructor)) comshu_nccl_unload() {
+    comshu_engine_drain_thread();
+    comshu_engine_release();
 }

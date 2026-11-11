@@ -4,8 +4,8 @@
 //   stores that build WQEs in the send queue?
 //
 // This is Stage 2 of PLAN-20260803-2253-ibgda-device-initiated-capture. It is a
-// PROBE, not a provider: it records nothing through pcomm, links nothing from
-// libpcomm, and writes a flat text file. If the answer is yes it gets deleted
+// PROBE, not a provider: it records nothing through comshu, links nothing from
+// libcomshu, and writes a flat text file. If the answer is yes it gets deleted
 // and rewritten properly as providers/mlx5dv/; if no, it gets deleted anyway.
 //
 // It deliberately does NOT decode DEVX command buffers. Decoding create_qp to
@@ -17,7 +17,7 @@
 // NO answer to it kills option B just as dead.
 //
 //   nvcc/g++ -shared -fPIC -o devx_probe.so devx_probe.cpp -lcuda -ldl
-//   LD_PRELOAD=./devx_probe.so PCOMM_PROBE_LOG=/path/probe.$rank.txt ...
+//   LD_PRELOAD=./devx_probe.so COMSHU_PROBE_LOG=/path/probe.$rank.txt ...
 //
 // Output lines (space-separated, stable for awk):
 //   umem  <addr_hex> <size> <mem_type> <device_ordinal> <umem_id>
@@ -39,7 +39,7 @@ namespace {
 
 FILE* log_file() {
     static FILE* f = [] {
-        const char* path = std::getenv("PCOMM_PROBE_LOG");
+        const char* path = std::getenv("COMSHU_PROBE_LOG");
         if (!path)
             return stderr;
         // One file per rank. All eight ranks sharing one path corrupted job

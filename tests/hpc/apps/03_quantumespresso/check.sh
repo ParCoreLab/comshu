@@ -47,8 +47,8 @@ PY
 
 # THE DERIVED TABLES ARE NOT CSVs, and this script could not see them.
 #
-# `pcomm export --csv` writes one file per RAW record stream. comm_edges,
-# link_health, wr_flow and the rest are DERIVED — built by `pcomm link` into the
+# `comshu export --csv` writes one file per RAW record stream. comm_edges,
+# link_health, wr_flow and the rest are DERIVED — built by `comshu link` into the
 # parquet directory beside the CSVs — so there is no comm_edges.csv to import.
 # This loader imported `<csv>/*.csv` and nothing else, so every assertion over a
 # derived table reported "comm_edges is EMPTY — unanswerable" against a table
@@ -57,24 +57,24 @@ PY
 #
 # So each derived table is materialised out of the parquet first, into the temp
 # db dir rather than into the capture — a capture is an artefact and this script
-# has no business writing into one. `pcomm sql` emits CSV on stdout, which is
+# has no business writing into one. `comshu sql` emits CSV on stdout, which is
 # already the format the loader below wants.
 #
 # Best effort by design: a build without DuckDB has no `sql` verb and no
 # parquet, and this must still run there. A table that cannot be materialised is
 # simply absent, which the `-- requires:` machinery already reports honestly as
 # a skip. The bug was never that the skip existed; it was that it was WRONG.
-PCOMM="${PCOMM:-$HOME/proj/pcomm/build/pcomm/pcomm}"
+COMSHU="${COMSHU:-$HOME/proj/comshu/build/comshu/comshu}"
 DERIVED_TABLES="comm_edges link_health endpoint rank_identity wr_flow timeline_span object_access"
 
 materialise_derived() {   # materialise_derived <csvdir> <outdir>
   local csv="$1" out="$2" pq="${1%.csv}.pq" t
   [ -d "$pq" ] || return 0
-  [ -x "$PCOMM" ] || return 0
+  [ -x "$COMSHU" ] || return 0
   mkdir -p "$out"
   local got=0
   for t in $DERIVED_TABLES; do
-    if "$PCOMM" sql "$pq" "SELECT * FROM $t" > "$out/$t.csv" 2>"$out/$t.err"; then
+    if "$COMSHU" sql "$pq" "SELECT * FROM $t" > "$out/$t.csv" 2>"$out/$t.err"; then
       # An empty result still writes a header row; a failed one leaves nothing.
       [ -s "$out/$t.csv" ] && got=$((got + 1)) || rm -f "$out/$t.csv"
     else
@@ -82,7 +82,7 @@ materialise_derived() {   # materialise_derived <csvdir> <outdir>
     fi
   done
   # LOUD when the parquet is there and nothing came out of it. Silence here was
-  # the whole defect the first time: a GLIBCXX error from `pcomm sql` went to
+  # the whole defect the first time: a GLIBCXX error from `comshu sql` went to
   # /dev/null, every derived table was absent, and the assertions over them
   # reported zeros as though the capture had said so.
   if [ "$got" -eq 0 ]; then
@@ -114,7 +114,7 @@ load() {        # load <db> <csvdir> <params-block>
   #
   # Errors are shown rather than discarded, for the same reason.
   # THE RAW EXPORT AND THE DERIVED LAYER BOTH PRODUCE A `comm_edges`, and they
-  # are not the same table. pcomm-read/main.cpp writes a four-column
+  # are not the same table. comshu-read/main.cpp writes a four-column
   # (src_rank, dst_rank, sends, bytes) aggregate built from ib_post_send;
   # link_sql.hpp's is six columns, adding `transport` and `unit`, and is the one
   # that has UCX rows at all. On this workload the raw one is header-only,
@@ -178,7 +178,7 @@ run_one() {     # run_one <db> <label> <sqlfile>
   # or EMPTY table means the assertion could not be evaluated, which is a
   # different statement from "it failed" and must not be reported as one: on the
   # default UCX transport ib_post_send and comm_edges are legitimately empty
-  # (nothing pcomm can hook is on that path), and an assertion over them is
+  # (nothing comshu can hook is on that path), and an assertion over them is
   # UNANSWERABLE, not false. See REPORT.md finding 3.
   local need; need="$(sed -n 's/^-- requires:[[:space:]]*//p' "$f" | head -1)"
   for t in $need; do
@@ -223,7 +223,7 @@ done
 # Printed, not asserted. The report quotes these; a reader who does not trust a
 # PASS can read the matrix that produced it.
 echo
-echo "=== rank-space comm matrix, pcomm's own comm_edges ==="
+echo "=== rank-space comm matrix, comshu's own comm_edges ==="
 for cfg in a b v; do
   [ -f "$DB_DIR/$cfg.db" ] || continue
   echo "--- $cfg ($(case $cfg in a) echo 'npool=1, rc_verbs';; b) echo 'npool=2, rc_verbs';; v) echo 'npool=1, default TLS (rc_mlx5)';; esac)) ---"

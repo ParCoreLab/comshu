@@ -54,21 +54,21 @@ train_gpt2cu: error while loading shared libraries: libcupti.so.12: cannot open
 shared object file: No such file or directory     (exit 127)
 ```
 
-`pcomm run` had already found and injected the backend; the missing library is
+`comshu run` had already found and injected the backend; the missing library is
 the backend's OWN dependency, and the error names the *application*, so it reads
 as a broken build of llm.c. On MN5 `libcupti.so.12` lives in
-`$PCOMM_SDK/cuda/extras/CUPTI/lib64`, which nothing in `common.sh` puts on
+`$COMSHU_SDK/cuda/extras/CUPTI/lib64`, which nothing in `common.sh` puts on
 `LD_LIBRARY_PATH`. Append it before selecting `-p kernel`:
 
 ```bash
-export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$PCOMM_SDK/cuda/extras/CUPTI/lib64"
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$COMSHU_SDK/cuda/extras/CUPTI/lib64"
 ```
 
 Separately, and the reason this section existed before the failure:
 `-p kernel` comes from `gpu-backends/cupti/libcupti_trace.so`, which is a
 different subtree and, on MN5, a different **build directory**
-(`build-cupti/`). `PCOMM_PROVIDER_PATH` takes a colon-separated list; a
-selection naming `kernel` without that directory on the path makes `pcomm run`
+(`build-cupti/`). `COMSHU_PROVIDER_PATH` takes a colon-separated list; a
+selection naming `kernel` without that directory on the path makes `comshu run`
 **exit 1** rather than capture nothing, which is the good failure mode but is
 still a stopped job. The kernel arm here is written so that its failure does not
 take the study with it.
@@ -113,7 +113,7 @@ is not what the last gigabyte is for. This case writes to
 |---|---|
 | llm.c | upstream `f1e2ace`, built at `$HOME/llmc/train_gpt2cu` by 04_llmc |
 | model | gpt2-tiny, `-e d6`: L=6, C=384, Vp=50304, T=1024, 30,357,504 parameters |
-| MPI | HPC-X's, from `nvidia-hpc-sdk/25.7` (`pcomm_load_runtime`) |
+| MPI | HPC-X's, from `nvidia-hpc-sdk/25.7` (`comshu_load_runtime`) |
 | NCCL | `$NCCL_HOME` under the newest SDK that `common.sh` resolves |
-| pcomm | `~/proj/pcomm/build-apps06`, private to this round, checkout `a0b242e` |
+| comshu | `~/proj/comshu/build-apps06`, private to this round, checkout `a0b242e` |
 | job | 45330280 |

@@ -1,7 +1,7 @@
 #!/bin/bash
 # 04_llmc round 2 — llm.c's GPT-2 trainer on du04 (4x A100, one node, no queue),
-# under `pcomm run -p nccl,kernel`, then through `pcomm export --parquet` and
-# `pcomm link` so the DERIVED tables can be judged.
+# under `comshu run -p nccl,kernel`, then through `comshu export --parquet` and
+# `comshu link` so the DERIVED tables can be judged.
 #
 #   bash tests/hpc/apps/04_llmc/run-r2.sh
 #
@@ -10,7 +10,7 @@
 #   * it adds `-p kernel`, so the capture holds the NCCL device kernels as well
 #     as the calls that enqueued them. No case in tests/hpc/cases/ asserts
 #     anything about gpu_kernel; this is the first workload pointed at it.
-#   * it exports Parquet and runs `pcomm link`, which builds comm_edges,
+#   * it exports Parquet and runs `comshu link`, which builds comm_edges,
 #     rank_identity, transport_mix, object_access and link_health. link_health
 #     is expected EMPTY — a row in it is a defect in the link.
 #   * it adds an NCCL protocol arm (knob B): same binary, same command line,
@@ -37,12 +37,12 @@ export LD_LIBRARY_PATH="$HPCSDK/math_libs/13.0/lib64:$HPCSDK/cuda/13.0/lib64:/us
 
 BUILD=${BUILD:-/DATA/missa18/build-llmc-r2}       # DuckDB + nccl + cupti
 LLMC=${LLMC:-$HOME/llmc}                          # karpathy/llm.c at f1e2ace
-OUT_ROOT=${OUT_ROOT:-/DATA/missa18/pcomm-apps-r2}
-PCOMM="$BUILD/pcomm/pcomm"
-export LD_LIBRARY_PATH="$BUILD/libpcomm:$LD_LIBRARY_PATH"
+OUT_ROOT=${OUT_ROOT:-/DATA/missa18/comshu-apps-r2}
+COMSHU="$BUILD/comshu/comshu"
+export LD_LIBRARY_PATH="$BUILD/libcomshu:$LD_LIBRARY_PATH"
 # Two provider directories, colon-separated: the nccl provider is a provider,
 # the kernel provider is a gpu-backend, and they are built to different trees.
-export PCOMM_PROVIDER_PATH="$BUILD/providers/nccl:$BUILD/gpu-backends/cupti"
+export COMSHU_PROVIDER_PATH="$BUILD/providers/nccl:$BUILD/gpu-backends/cupti"
 
 NP=4
 COMMON="-e d6 -b 2 -t 1024 -x 4 -v 1000 -m 1 -s 0 -h 0"
@@ -50,7 +50,7 @@ TOK=$((2 * 1024 * NP))
 mkdir -p "$OUT_ROOT"
 cd "$LLMC"
 
-echo "########## BARE — no pcomm. If this fails nothing below means anything."
+echo "########## BARE — no comshu. If this fails nothing below means anything."
 mpirun -np $NP ./train_gpt2cu $COMMON -z 0 -d $TOK 2>&1 | tail -25
 echo "bare pipeline status: ${PIPESTATUS[0]}"
 
@@ -60,13 +60,13 @@ run_capture() {                 # $1 = label, rest = llm.c args
   local prov="${PROV:-nccl,kernel}"
   rm -rf "$out" "$out.pq"
   echo "########## CAPTURE $label : -p $prov : $*"
-  mpirun -np $NP -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH ${MPIENV:-} \
-    "$PCOMM" run -p "$prov" -o "$out" -- ./train_gpt2cu $COMMON "$@" 2>&1 | tail -20
-  echo "=== pcomm read"
-  "$PCOMM" read "$out"
+  mpirun -np $NP -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH ${MPIENV:-} \
+    "$COMSHU" run -p "$prov" -o "$out" -- ./train_gpt2cu $COMMON "$@" 2>&1 | tail -20
+  echo "=== comshu read"
+  "$COMSHU" read "$out"
   echo "=== export + link"
-  "$PCOMM" export "$out" --parquet "$out.pq"
-  "$PCOMM" link "$out.pq"
+  "$COMSHU" export "$out" --parquet "$out.pq"
+  "$COMSHU" link "$out.pq"
   ls "$out.pq"
 }
 

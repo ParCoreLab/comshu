@@ -7,7 +7,7 @@
 #
 #   sbatch tests/hpc/cases/02_nccl_internode/job.sbatch
 #
-#SBATCH --job-name=pcomm-02-nccl-internode
+#SBATCH --job-name=comshu-02-nccl-internode
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -18,35 +18,35 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 export LD_LIBRARY_PATH="$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
 APP="$HOME/nccl_allreduce-li"
 if [ ! -x "$APP" ]; then                        # build once with the gcc-11 host
-  pcomm_load_build
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/nccl_allreduce.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/nccl_allreduce.cu" -o "$APP" \
     -I"$NCCL_HOME/include" -L"$NCCL_HOME/lib" -lnccl -lcudart
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
-OUT=$(pcomm_out nccl_internode); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out nccl_internode); rm -rf "$OUT"; mkdir -p "$OUT"
 
-# NVLink P2P off ⇒ inter-node is pure IB; every rank wraps its app in `pcomm run -p ib`.
+# NVLink P2P off ⇒ inter-node is pure IB; every rank wraps its app in `comshu run -p ib`.
 # NCCL is pinned (Ring/Simple, fixed channels) so the capture is byte-repeatable
 # — without this NCCL picks channel counts from measured bandwidth and the QP /
 # send counts drift run-to-run, defeating the golden.
 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=1 \
+  -x COMSHU_PROVIDER_PATH -x NCCL_DEBUG=WARN -x NCCL_P2P_DISABLE=1 \
   -x NCCL_ALGO=Ring -x NCCL_PROTO=Simple \
   -x NCCL_MIN_NCHANNELS=1 -x NCCL_MAX_NCHANNELS=1 -x NCCL_NTHREADS=256 \
-  "$PCOMM" run -p ib -o "$OUT" -- "$APP" 8388608 20
+  "$COMSHU" run -p ib -o "$OUT" -- "$APP" 8388608 20
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/02_nccl_internode"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/02_nccl_internode"

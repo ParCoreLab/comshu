@@ -34,7 +34,7 @@ WHERE CAST(accepted AS INTEGER) <> 1
 
 UNION ALL
 
--- A FORCED binding is not an ordinary pass. PCOMM_UCX_DEEP_FORCE overrides the
+-- A FORCED binding is not an ordinary pass. COMSHU_UCX_DEEP_FORCE overrides the
 -- layout guard, and a capture taken that way is asserting against a struct
 -- layout nobody checked. job-r2.sbatch unsets the variable; this says so.
 SELECT 'the UCT binding was forced rather than accepted',

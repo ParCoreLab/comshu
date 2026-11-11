@@ -2,10 +2,10 @@
 
 Status: **todo**
 Created: 2026-08-17 06:34
-Touches: `libpcomm/include/pcomm/core/mem_attr.hpp`,
-`libpcomm/include/pcomm/core/records.hpp`, `libpcomm/include/pcomm/core/vocab.hpp`,
-`providers/ibverbs/ibverbs_provider.cpp`, `libpcomm/src/engine.cpp`,
-`pcomm-read/link_sql.hpp`
+Touches: `libcomshu/include/comshu/core/mem_attr.hpp`,
+`libcomshu/include/comshu/core/records.hpp`, `libcomshu/include/comshu/core/vocab.hpp`,
+`providers/ibverbs/ibverbs_provider.cpp`, `libcomshu/src/engine.cpp`,
+`comshu-read/link_sql.hpp`
 
 ## The problem
 
@@ -24,7 +24,7 @@ Rows 1, 3 and 5 imply completely different follow-up work — fix the load order
 nothing, and chase a driver bug respectively — and they are byte-identical on
 disk. The only disambiguator today is `trace_device_attr()`
 (`mem_attr.hpp:68-78`), which prints the **first attempt only**, to stderr, gated
-on `PCOMM_TRACE_HOOKS=1`. Nothing survives into a capture.
+on `COMSHU_TRACE_HOOKS=1`. Nothing survives into a capture.
 
 This is not hypothetical. `mem_attr.hpp:5-10` records that the first copy of this
 function shipped with `kAttrDeviceOrdinal = 4` (that is
@@ -143,7 +143,7 @@ than *unknown*, which is the user-visible payoff.
   overloads a field whose declared meaning is "which GPU", and every existing
   `device <> 65535` filter would silently start counting driver-absent objects as
   real devices. A field that means two things is the bug this plan is fixing.
-- **Infer it in `pcomm-read` from address shape** (brk vs mmap vs heap range).
+- **Infer it in `comshu-read` from address shape** (brk vs mmap vs heap range).
   That is the heuristic we used to *reach* this conclusion by hand; promoting a
   forensic guess to a recorded fact is the failure mode `link_health` exists to
   prevent.
@@ -156,7 +156,7 @@ than *unknown*, which is the user-visible payoff.
    unchanged, every existing capture keeps decoding with a hash warning rather
    than a per-stream refusal, and the corpus does not have to be re-run for
    unrelated work. If it does grow, that is acceptable
-   ([[pcomm-prealpha-prefers-correct-design-over-compatibility]]) but should be a
+   ([[comshu-prealpha-prefers-correct-design-over-compatibility]]) but should be a
    known cost, not a surprise — see `tests/hpc/corpus/README.md` on how stride
    drift degrades a capture in pieces.
 2. `AttrStatus` in `vocab.hpp`; `device_of()` returns the pair; the four return
@@ -181,7 +181,7 @@ no stderr and no p2p control:
 > Of the objects with no device, how many did we ask about and get "host", and
 > how many did we never ask about?
 
-Today that requires re-running the workload under `PCOMM_TRACE_HOOKS=1` and
+Today that requires re-running the workload under `COMSHU_TRACE_HOOKS=1` and
 reading the first line of stderr.
 
 ## Addendum, 2026-08-18: say *where* the host memory is

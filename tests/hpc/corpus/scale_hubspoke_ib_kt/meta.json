@@ -16,7 +16,7 @@
     "app_buffer_bytes": 1048576
   },
   "workload_note": "`asym_patterns hub 4096 20` at 64 PEs with NVSHMEM_DISABLE_P2P=1 — scale_hubspoke_ib with kernel lifetimes added and iters raised from 3 to 20. The provider set is the only structural difference: `-p ib,cupti` puts gpu_kernel (530) execution spans on the same wall clock as ib_post_send/ib_poll_cq, so the timeline can distinguish a rank that was computing from a rank that was blocked. Kernel launches are edges x iters, so at 3 iterations a spoke contributed three spans and the lane was empty; 20 gives ~20 per spoke against the hub's ~1260, which is the same asymmetry the comm side shows. Byte totals therefore do NOT compare to scale_hubspoke_ib-44542856 and are not meant to.",
-  "no_nvbit": "Deliberate, and enforced by the build rather than by the launcher. CUPTI permits one subscriber per process and NVBit (loaded by gpumem) dlopens libcupti and takes it; the loser fails silently — job 44546506 arm E wrote four rank directories and zero .pcs files. This job runs against build-cupti, configured PCOMM_PROVIDER_GPUMEM=OFF, so the conflicting .so does not exist.",
+  "no_nvbit": "Deliberate, and enforced by the build rather than by the launcher. CUPTI permits one subscriber per process and NVBit (loaded by gpumem) dlopens libcupti and takes it; the loser fails silently — job 44546506 arm E wrote four rank directories and zero .pcs files. This job runs against build-cupti, configured COMSHU_PROVIDER_GPUMEM=OFF, so the conflicting .so does not exist.",
   "expect_tables": [
     "ib_post_send",
     "ib_queue_pair",

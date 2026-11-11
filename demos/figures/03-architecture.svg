@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" font-family="Inter, Helvetica Neue, Arial, sans-serif">
-  <title>pcomm architecture</title>
+  <title>comshu architecture</title>
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="#5f7183"/>
@@ -95,7 +95,7 @@
   </g>
 
   <!-- ── readers ───────────────────────────────────────────────────── -->
-  <text x="1278" y="186" font-size="18" font-weight="600" fill="#5f7183">pcomm read / export / ui</text>
+  <text x="1278" y="186" font-size="18" font-weight="600" fill="#5f7183">comshu read / export / ui</text>
   <g>
     <rect x="1278" y="204" width="256" height="62" rx="10" fill="#f7f9fb" stroke="#5b7c99" stroke-width="2"/>
     <text x="1296" y="232" font-size="20" font-weight="600" fill="#24343f">CSV / Parquet</text>
@@ -106,7 +106,7 @@
     <text x="1296" y="344" font-size="15" fill="#7c8c9a">cross-node clocks aligned</text>
 
     <rect x="1278" y="384" width="256" height="62" rx="10" fill="#f7f9fb" stroke="#5b7c99" stroke-width="2"/>
-    <text x="1296" y="412" font-size="20" font-weight="600" fill="#24343f">pcomm ui</text>
+    <text x="1296" y="412" font-size="20" font-weight="600" fill="#24343f">comshu ui</text>
     <text x="1296" y="434" font-size="15" fill="#7c8c9a">matrix · graph · sankey · timeline</text>
 
     <rect x="1278" y="474" width="256" height="62" rx="10" fill="#f2eefa" stroke="#7a5fa8" stroke-width="2"/>

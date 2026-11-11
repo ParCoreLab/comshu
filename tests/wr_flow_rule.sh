@@ -19,10 +19,10 @@
 # only what this test is about.
 set -uo pipefail
 
-PCOMM=${1:?usage: wr_flow_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: wr_flow_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-wr-rule-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-wr-rule-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # Two anchors one tick-per-ns apart, so wall-clock ns EQUALS ticks and every
@@ -99,7 +99,7 @@ CSV
 # it IS pairable: the completion at 3400 belongs to the signalled send at 3100,
 # not to the unsignalled one at 3000. Pairing by position instead would give a
 # latency of 400 measured from the wrong send; the right answer is 300.
-"$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
+"$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
     echo "SKIP: build without DuckDB"; exit 0
@@ -116,7 +116,7 @@ expect() {  # <label> <sql> <expected>
     # `sql` emits CSV, so a value containing commas comes back quoted. Strip
     # them rather than expecting them: the quoting is the transport's, not the
     # answer's.
-    got=$("$PCOMM" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
+    got=$("$COMSHU" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
     if [ "$got" != "$3" ]; then
         echo "FAIL: $1"
         echo "  expected: $3"

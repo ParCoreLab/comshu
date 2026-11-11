@@ -9,7 +9,7 @@
 # that guard a code path only du04 can execute are still exercised everywhere.
 set -u
 A="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/asserts}"
-DB="$(mktemp -t pcomm-verify12-XXXXXX.db)"
+DB="$(mktemp -t comshu-verify12-XXXXXX.db)"
 trap 'rm -f "$DB"' EXIT
 
 # A healthy capture: 2 ranks, one device-driven QP each, doorbells and sends on

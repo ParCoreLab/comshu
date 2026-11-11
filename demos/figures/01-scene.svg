@@ -102,15 +102,15 @@
   <g font-size="19" fill="#3d4f5c">
     <line x1="120" y1="708" x2="176" y2="708" stroke="#2f7d5d" stroke-width="3" marker-end="url(#a-nvlink)"/>
     <text x="192" y="714">GPU-initiated peer store over NVLink</text>
-    <text x="192" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">pcomm run -p gpumem</text>
+    <text x="192" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">comshu run -p gpumem</text>
 
     <line x1="640" y1="708" x2="696" y2="708" stroke="#b4552d" stroke-width="3" marker-end="url(#a-ib)"/>
     <text x="712" y="714">InfiniBand verbs on the wire</text>
-    <text x="712" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">pcomm run -p ib</text>
+    <text x="712" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">comshu run -p ib</text>
 
     <rect x="1090" y="698" width="44" height="20" rx="5" fill="#f2eefa" stroke="#7a5fa8" stroke-width="2"/>
     <text x="1150" y="714">the collective that caused both</text>
-    <text x="1150" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">pcomm run -p nccl</text>
+    <text x="1150" y="740" font-size="16" fill="#7c8c9a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">comshu run -p nccl</text>
   </g>
 
   <line x1="90" y1="788" x2="1510" y2="788" stroke="#e2e8ed" stroke-width="2"/>

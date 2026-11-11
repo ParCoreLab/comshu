@@ -47,9 +47,9 @@
   // it starts up. The event covers "Ask is already the open panel", where
   // nothing re-runs and the second query you clicked silently did nothing.
   function toAsk(sql) {
-    sessionStorage.setItem('pcomm.ask.sql', sql);
+    sessionStorage.setItem('comshu.ask.sql', sql);
     location.hash = '#ask';
-    dispatchEvent(new CustomEvent('pcomm:ask', { detail: sql }));
+    dispatchEvent(new CustomEvent('comshu:ask', { detail: sql }));
   }
 
   async function send() {

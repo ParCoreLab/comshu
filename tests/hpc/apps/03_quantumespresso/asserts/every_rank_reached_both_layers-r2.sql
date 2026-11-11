@@ -16,7 +16,7 @@
 --    which is the reason this assertion is here rather than in the suite:
 --    pw.x reaches JOB DONE and then takes SIGSEGV in teardown (attributed with
 --    an unpreloaded control run -- it is the application on this stack, not
---    pcomm), and a rank that dies by signal never writes its entity streams.
+--    comshu), and a rank that dies by signal never writes its entity streams.
 --    The symptom is inverted and therefore dangerous: the high-volume tables are
 --    FULL, so the capture looks bigger and healthier than a clean one, and the
 --    loss shows up only as unattributed rows downstream. 15.68 M of 18.70 M

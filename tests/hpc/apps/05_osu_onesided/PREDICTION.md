@@ -1,7 +1,7 @@
 # PREDICTION — OSU Micro-Benchmarks 7.5, one-sided set, under `-p ucx,ucx_deep`
 
 **Written 2026-08-29, before any capture of this workload exists.** Nothing in
-this file was derived from a pcomm output; every number below comes from OSU's
+this file was derived from a comshu output; every number below comes from OSU's
 own source, cited by file and line, and from the command lines in `job.sbatch`.
 MN5 was unreachable (ssh timeout on `alogin2` from ~17:00) for the whole time
 this was written, so there is no capture to have peeked at.
@@ -32,7 +32,7 @@ the reasons are in that order:
    `ARMCI_Put` becomes some number of `MPI_Put`s decided by ARMCI's own
    batching, its IGNORE-buffer copy path and its window-per-allocation policy.
    To derive the oracle I would have to read ARMCI's implementation, which puts
-   me in the same position as reading pcomm's — an oracle that is a second
+   me in the same position as reading comshu's — an oracle that is a second
    implementation's internals is not an independent oracle.
 3. **OSU one-sided.** Chosen. **The oracle is exact and it is on the command
    line.** The number of one-sided operations, their size, their direction and
@@ -163,7 +163,7 @@ with the direction reversed, which is why one `meta.json` serves both).
 **Pre-registered alternative, so it cannot be rationalised later.** If (2) holds
 but (1) does not — the byte total right, the per-size multiplicities wrong —
 then `osc/ucx` fragmented an `MPI_Put` into several `ucp_put_nbi` calls, and
-that is a finding about **OpenMPI**, not about pcomm. I predict it will not
+that is a finding about **OpenMPI**, not about comshu. I predict it will not
 happen: `opal_common_ucx`'s put/get path issues one `ucp_put_nbi` per
 contiguous MPI_Put and lets UCP fragment below the API. If it does happen, the
 right response is to record it and leave the assertion red, not to weaken it.
@@ -243,7 +243,7 @@ all** and `ucx_atomic` holds only MPI's internal 64-bit lock traffic. Job
 this stack: it recorded the probe's own operations failing with status -5 for
 asking for a **one-byte** atomic, which cannot happen unless they were passed
 down. So I predict (16) holds. If instead arm C/D shows zero 4-byte atomics and
-a matching population of 4-byte `ucx_rma` gets and puts, that is **not a pcomm
+a matching population of 4-byte `ucx_rma` gets and puts, that is **not a comshu
 defect** — it is claim type 3, the capture explaining a protocol the MPI
 documentation only asserts, and the trace showing a lock-get-put where the
 standard says "accumulate".
@@ -304,4 +304,4 @@ has a different provider list and so cannot share the primary arm's `meta.json`.
 
 This file, `meta.json`, `arms/atomic/meta.json`, all seventeen `.sql` files and
 `job.sbatch` are committed in one commit with no capture in existence, on a
-machine (FreeBSD) that cannot build or run pcomm at all.
+machine (FreeBSD) that cannot build or run comshu at all.

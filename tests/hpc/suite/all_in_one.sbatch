@@ -27,13 +27,13 @@
 # The union is now CHECKED rather than asserted in a comment — see the
 # pre-flight below. A comment cannot notice that a new case outgrew it.
 #
-#   PCOMM_CASES       space-separated case dirs to run (default: all, in order)
-#   PCOMM_CASES_FILE  same, one per line — how run_on_mn5.sh passes it, since
+#   COMSHU_CASES       space-separated case dirs to run (default: all, in order)
+#   COMSHU_CASES_FILE  same, one per line — how run_on_mn5.sh passes it, since
 #                     `--export` splits on commas and the ssh wrapper on spaces
-#   PCOMM_ROOT        repo on the remote
-#   PCOMM_OUT_ROOT    where captures land
+#   COMSHU_ROOT        repo on the remote
+#   COMSHU_OUT_ROOT    where captures land
 #
-#SBATCH --job-name=pcomm-suite
+#SBATCH --job-name=comshu-suite
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=4
@@ -43,23 +43,23 @@
 #SBATCH --time=00:40:00
 #SBATCH --output=%x.%j.out
 
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-export PCOMM_ROOT
-CASES_DIR="$PCOMM_ROOT/tests/hpc/cases"
-OUT_ROOT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}"
-export PCOMM_OUT_ROOT="$OUT_ROOT"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+export COMSHU_ROOT
+CASES_DIR="$COMSHU_ROOT/tests/hpc/cases"
+OUT_ROOT="${COMSHU_OUT_ROOT:-$HOME/comshu-suite}"
+export COMSHU_OUT_ROOT="$OUT_ROOT"
 mkdir -p "$OUT_ROOT"
 
-if [ -n "${PCOMM_CASES:-}" ]; then
-  CASES="$PCOMM_CASES"
-elif [ -n "${PCOMM_CASES_FILE:-}" ] && [ -r "$PCOMM_CASES_FILE" ]; then
-  CASES="$(cat "$PCOMM_CASES_FILE")"
+if [ -n "${COMSHU_CASES:-}" ]; then
+  CASES="$COMSHU_CASES"
+elif [ -n "${COMSHU_CASES_FILE:-}" ] && [ -r "$COMSHU_CASES_FILE" ]; then
+  CASES="$(cat "$COMSHU_CASES_FILE")"
 else
   CASES="$(for d in "$CASES_DIR"/*/; do basename "$d"; done)"
 fi
 [ -n "$CASES" ] || { echo "!! empty case list — refusing to report an empty green board" >&2; exit 2; }
 
-echo "=== pcomm suite, one allocation ==="
+echo "=== comshu suite, one allocation ==="
 echo "job      : ${SLURM_JOB_ID:-none}"
 echo "nodes    : ${SLURM_JOB_NODELIST:-?}"
 echo "cases    : $CASES"
@@ -128,8 +128,8 @@ suite_t0=$SECONDS
 # rather than being killed mid-case. A run that reports "10 of 12, out of time"
 # is a result; one that SLURM terminates leaves no board at all. Default is the
 # 40-minute allocation less five minutes for the check step and the tail.
-CASE_TIMEOUT=${PCOMM_CASE_TIMEOUT:-900}
-BUDGET=${PCOMM_SUITE_BUDGET:-2100}
+CASE_TIMEOUT=${COMSHU_CASE_TIMEOUT:-900}
+BUDGET=${COMSHU_SUITE_BUDGET:-2100}
 
 # PRE-FLIGHT: does this allocation actually cover every case we were asked to
 # run? Checked HERE, before a single workload starts, because the failure it
@@ -167,7 +167,7 @@ fi
 # THE BOARD WAS GREEN OVER CODE IT HAD NEVER COMPILED. Job 45405085 reported
 # SUITE GREEN while cases 23 and 24 skipped on "this build has no
 # libcupti_trace.so" — run_on_mn5.sh configured four build trees and none passed
-# -DPCOMM_CUPTI=ON, so the merge gate had never built the backend the change was
+# -DCOMSHU_CUPTI=ON, so the merge gate had never built the backend the change was
 # about. One skip line among twenty-four, and the top line said GREEN.
 #
 # A case that skips because THIS HOST cannot run it (no PeerMappingOverride, no
@@ -176,7 +176,7 @@ fi
 # a skip's clothing. The two look identical on the board and must not.
 #
 # ASKS THE LAUNCHER, rather than mapping provider names to .so names here. That
-# mapping lives in pcomm/run.cpp's registry and a copy of it kept in step by
+# mapping lives in comshu/run.cpp's registry and a copy of it kept in step by
 # hand is a copy kept in step by nobody — the same argument common.sh makes for
 # globbing the provider path instead of listing it. `run --dry-run` resolves
 # exactly what a real run would and exits 0 built / 1 declared-but-missing /
@@ -185,8 +185,8 @@ fi
 # HARD ERROR for the same reason the allocation check above is one.
 #
 # IT HAS TO BE ABLE TO RUN THE LAUNCHER, and the first version of this check
-# never made sure it could. It ran `"$PCOMM" run --dry-run` in this file's own
-# shell, where `$PCOMM` does not exist: it is common.sh's to define, and every
+# never made sure it could. It ran `"$COMSHU" run --dry-run` in this file's own
+# shell, where `$COMSHU` does not exist: it is common.sh's to define, and every
 # case's job.sbatch sources common.sh while this file never did. So the check
 # ran `"" run --dry-run`, `2>/dev/null` swallowed "command not found" together
 # with every real diagnostic, and ALL 23 cases were reported as build holes on a
@@ -195,12 +195,12 @@ fi
 #
 # `. common.sh` alone is still not enough, which is the more interesting half.
 # The launcher is a C++20 binary built with gcc/13.2.0 and the system
-# libstdc++.so.6 has no GLIBCXX_3.4.30, so without `pcomm_load_runtime` it dies
+# libstdc++.so.6 has no GLIBCXX_3.4.30, so without `comshu_load_runtime` it dies
 # in ld.so — exiting 1, which is indistinguishable from "the provider .so is not
 # there". A rc-only check cannot tell a launcher that cannot start from a
 # provider that was not built.
 #
-# So: A POSITIVE CONTROL FIRST. `pcomm list` uses the binary and no provider, so
+# So: A POSITIVE CONTROL FIRST. `comshu list` uses the binary and no provider, so
 # it separates "this pre-flight is broken" from any verdict about the build. A
 # gate that cannot start must say so, not vote no.
 #
@@ -208,11 +208,11 @@ fi
 # purge` belong to a case's environment, not to this driver's, and each case
 # does that for itself. The subshell prints either BROKEN + a reason, or the
 # list of cases whose providers this build cannot supply.
-preflight=$( . "$PCOMM_ROOT/tests/hpc/suite/common.sh" >/dev/null 2>&1
-  pcomm_load_runtime >/dev/null 2>&1
-  if [ ! -x "${PCOMM:-}" ]; then echo "BROKEN no launcher at ${PCOMM:-<unset>}"; exit 0; fi
-  if ! "$PCOMM" list >/dev/null 2>&1; then
-    echo "BROKEN \`$PCOMM list\` failed: $("$PCOMM" list 2>&1 | head -1)"; exit 0
+preflight=$( . "$COMSHU_ROOT/tests/hpc/suite/common.sh" >/dev/null 2>&1
+  comshu_load_runtime >/dev/null 2>&1
+  if [ ! -x "${COMSHU:-}" ]; then echo "BROKEN no launcher at ${COMSHU:-<unset>}"; exit 0; fi
+  if ! "$COMSHU" list >/dev/null 2>&1; then
+    echo "BROKEN \`$COMSHU list\` failed: $("$COMSHU" list 2>&1 | head -1)"; exit 0
   fi
   for c in $CASES; do
     m="$CASES_DIR/$c/meta.json"
@@ -221,7 +221,7 @@ preflight=$( . "$PCOMM_ROOT/tests/hpc/suite/common.sh" >/dev/null 2>&1
 try: print(",".join(json.load(open(sys.argv[1])).get("providers",[])))
 except Exception: print("")' "$m" 2>/dev/null)
     [ -n "$provs" ] || continue
-    "$PCOMM" run --dry-run -p "$provs" -- /bin/true >/dev/null 2>&1
+    "$COMSHU" run --dry-run -p "$provs" -- /bin/true >/dev/null 2>&1
     rc=$?
     # 0 planned, 1 a declared provider whose .so is not there, 2 a name the
     # registry does not know. Anything else is this check failing rather than
@@ -230,7 +230,7 @@ except Exception: print("")' "$m" 2>/dev/null)
     case $rc in
       0) ;;
       1|2) printf ' %s(-p %s)' "$c" "$provs" ;;
-      *)   echo "BROKEN \`pcomm run --dry-run -p $provs\` exited $rc for $c"; exit 0 ;;
+      *)   echo "BROKEN \`comshu run --dry-run -p $provs\` exited $rc for $c"; exit 0 ;;
     esac
   done )
 case "$preflight" in
@@ -287,7 +287,7 @@ for c in $CASES; do
   # Every assertion in those cases was reading a capture that had lost whole
   # streams, so both the reds AND any greens beside them were meaningless.
   #
-  # Caught here rather than by PCOMM_STRICT_WRITES, which makes the rank exit 70
+  # Caught here rather than by COMSHU_STRICT_WRITES, which makes the rank exit 70
   # at finalize. Under mpirun that aborts the job and destroys the rest of the
   # evidence — including the log line that says what went wrong. The message is
   # already on stderr and stderr is already in $log; reading it costs nothing and

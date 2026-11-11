@@ -2,8 +2,8 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 
-// Built to ui/dist, which is embedded into the pcomm binary. During development
-// vite serves the page itself and proxies /query to a running `pcomm ui`, so the
+// Built to ui/dist, which is embedded into the comshu binary. During development
+// vite serves the page itself and proxies /query to a running `comshu ui`, so the
 // app talks to a real capture rather than a mock — the data path is the thing
 // most worth exercising, and a fixture would be the one part never tested.
 export default defineConfig({

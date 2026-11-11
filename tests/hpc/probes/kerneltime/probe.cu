@@ -1,4 +1,4 @@
-// PROBE — how should pcomm capture kernel lifetimes? See README.md.
+// PROBE — how should comshu capture kernel lifetimes? See README.md.
 //
 // Four questions, one binary, because they share a workload and the answers
 // only mean anything together:

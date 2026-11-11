@@ -33,13 +33,13 @@
 -- GROUPED BY `scope`, WHICH IS THE COLUMN THAT ANSWERS THIS. The brief's
 -- contract (corrected 2026-08-30) gives scope exactly three values --
 -- 'intra-node', 'network', 'unknown' -- assigned from tl_name by the link. That
--- is pcomm's own answer to "did this leave the node", and asking it in pcomm's
+-- is comshu's own answer to "did this leave the node", and asking it in comshu's
 -- vocabulary is what makes the claim portable across fabrics: a run over srd or
 -- tcp or plain ud_verbs is still `network`, where a tl_name pattern would have
 -- missed all three. Whether the scope mapping is itself applied correctly is a
 -- separate question and has its own file, scope_matches_the_documented_mapping.sql
--- -- so this assertion is not asking pcomm to mark its own homework, it is
--- asking whether pcomm's answer matches GROMACS's decomposition.
+-- -- so this assertion is not asking comshu to mark its own homework, it is
+-- asking whether comshu's answer matches GROMACS's decomposition.
 --
 -- out_bytes + in_bytes and NOT advertised_bytes: case 21's
 -- rendezvous_advertises_rather_than_sends.sql states that a rendezvous

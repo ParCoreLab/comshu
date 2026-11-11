@@ -9,7 +9,7 @@
 -- NUM_PARAMETER_TENSORS = 16 come from gpt2_update (train_gpt2.cu:1110-1118),
 -- giving 23. nccl_group records a row per BOUNDARY, so the row count is twice
 -- the number of groups. llm.c states the intent itself at :530 -- "NCCL group:
--- aggregate all pointers in a single NCCL GPU kernel" -- and pcomm.fbs type 906
+-- aggregate all pointers in a single NCCL GPU kernel" -- and comshu.fbs type 906
 -- states it from the other side: "N grouped sends are ONE launch, and nothing in
 -- a send row says so". Two independent sources, neither of them a capture.
 --
@@ -20,13 +20,13 @@
 -- would mean NCCL's group nesting behaves differently at scale, which is a fact
 -- about NCCL 2.x that this project has no other way to notice.
 --
--- THE P2P CLAUSE IS THE LOAD-BEARING ONE FOR THIS STUDY. pcomm.fbs type 904
+-- THE P2P CLAUSE IS THE LOAD-BEARING ONE FOR THIS STUDY. comshu.fbs type 904
 -- says NcclP2p is "the only NCCL call that names a peer, and so the only one an
 -- exact edge follows from". llm.c calls ncclSend/ncclRecv zero times. So every
 -- rank-to-rank edge this study finds must have come from the VERBS lane and not
 -- from the collective lane -- which is exactly what makes
 -- every_ib_edge_left_its_node.sql a statement about the fabric rather than about
--- a topology pcomm inferred. If nccl_p2p is ever non-empty here, that assertion
+-- a topology comshu inferred. If nccl_p2p is ever non-empty here, that assertion
 -- changes meaning and this clause is how anyone would find out.
 --
 -- ON REQUIRING nccl_p2p: it is deliberately NOT in the `-- requires:` header.

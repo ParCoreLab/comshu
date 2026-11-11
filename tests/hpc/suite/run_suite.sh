@@ -1,5 +1,5 @@
 #!/bin/bash
-# run_suite.sh — drive the pcomm integration suite on MareNostrum 5.
+# run_suite.sh — drive the comshu integration suite on MareNostrum 5.
 #
 #   run_suite.sh list                    # the cases
 #   run_suite.sh submit [case ...]       # sbatch each case (default: all)
@@ -10,15 +10,15 @@
 # output dir; `check` gathers those into one PASS/FAIL table. Cases 03/04 need
 # the gpumem provider (NVBit) built on MN5 — see README.md.
 #
-# Env: PCOMM_OUT_ROOT     where captures live (default $HOME/pcomm-suite)
-#      PCOMM_RUN_MANIFEST "<case> <jobid>" table pinning each verdict to the job
+# Env: COMSHU_OUT_ROOT     where captures live (default $HOME/comshu-suite)
+#      COMSHU_RUN_MANIFEST "<case> <jobid>" table pinning each verdict to the job
 #                         from that run, so a dead job can't inherit an older
 #                         run's PASS. run_on_mn5.sh writes one automatically.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PCOMM_ROOT="${PCOMM_ROOT:-$(cd "$HERE/../../.." && pwd)}"
-CASES_DIR="$PCOMM_ROOT/tests/hpc/cases"
-OUT_ROOT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}"
+COMSHU_ROOT="${COMSHU_ROOT:-$(cd "$HERE/../../.." && pwd)}"
+CASES_DIR="$COMSHU_ROOT/tests/hpc/cases"
+OUT_ROOT="${COMSHU_OUT_ROOT:-$HOME/comshu-suite}"
 
 all_cases() { for d in "$CASES_DIR"/*/; do basename "$d"; done; }
 resolve() { [ "$#" -eq 0 ] && all_cases || printf '%s\n' "$@"; }
@@ -28,7 +28,7 @@ resolve() { [ "$#" -eq 0 ] && all_cases || printf '%s\n' "$@"; }
 # only take the newest capture on disk, which silently reports an older run's
 # PASS when a job dies before writing anything. Cases absent from the manifest —
 # or a bare `check` with no manifest at all — keep the newest-wins behaviour.
-MANIFEST="${PCOMM_RUN_MANIFEST:-}"
+MANIFEST="${COMSHU_RUN_MANIFEST:-}"
 manifest_jid() {
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   awk -v c="$1" '$1==c{print $2; exit}' "$MANIFEST"

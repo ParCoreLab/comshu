@@ -12,10 +12,10 @@
 #
 # Same four arms, same benchmark, same metric as MN5, so the two are comparable:
 #
-#   bare      no pcomm                                    the workload alone
-#   passive   pcomm -p mlx5dv, no doorbell flag           control-plane hooks
+#   bare      no comshu                                    the workload alone
+#   passive   comshu -p mlx5dv, no doorbell flag           control-plane hooks
 #   forward   + --enable-doorbell-hijack,                 swap + repeater, NO copy-out
-#             PCOMM_HIJACK_NO_DECODE=1
+#             COMSHU_HIJACK_NO_DECODE=1
 #   full      + --enable-doorbell-hijack                  everything
 #
 #   tests/hpc/probes/uar_doorbell_mode/a100_overhead.sh          # 3 reps
@@ -26,13 +26,13 @@
 # sees the same loopback, so the RATIOS are what this is for.
 set -uo pipefail
 
-PCOMM_ROOT="${PCOMM_ROOT:-/DATA/missa18/pcomm}"
-PCOMM="${PCOMM:-$PCOMM_ROOT/build-mlx5/pcomm/pcomm}"
-export PCOMM_PROVIDER_PATH="${PCOMM_PROVIDER_PATH:-$PCOMM_ROOT/build-mlx5/providers/mlx5dv}"
+COMSHU_ROOT="${COMSHU_ROOT:-/DATA/missa18/comshu}"
+COMSHU="${COMSHU:-$COMSHU_ROOT/build-mlx5/comshu/comshu}"
+export COMSHU_PROVIDER_PATH="${COMSHU_PROVIDER_PATH:-$COMSHU_ROOT/build-mlx5/providers/mlx5dv}"
 SDK="${SDK:-/opt/nvidia/hpc_sdk/Linux_x86_64/2025/comm_libs/13.0/nvshmem}"
 APP="${APP:-$SDK/bin/perftest/device/pt-to-pt/shmem_put_bw}"
 export LD_LIBRARY_PATH="$SDK/lib:${LD_LIBRARY_PATH:-}"
-WORK="${WORK:-${TMPDIR:-/tmp}/pcomm-a100-cost.$$}"
+WORK="${WORK:-${TMPDIR:-/tmp}/comshu-a100-cost.$$}"
 mkdir -p "$WORK"
 
 # GPU-submitted IBGDA, which is what du04 can do and MN5 cannot. Same knobs
@@ -46,10 +46,10 @@ export NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE=gpumem
 
 REPS=${REPS:-3}
 RESULTS="$WORK/arms.csv"; echo "rep,arm,size,metric" > "$RESULTS"
-MPI="mpirun -np 2 --allow-run-as-root -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH
+MPI="mpirun -np 2 --allow-run-as-root -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH
      -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT
      -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER
-     -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE -x PCOMM_HIJACK_NO_DECODE"
+     -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE -x COMSHU_HIJACK_NO_DECODE"
 
 arm() {  # arm <name> <rep>
   # Two statements, not one: bash expands every word of a `local` command
@@ -59,14 +59,14 @@ arm() {  # arm <name> <rep>
   local log="$WORK/log.$name.$rep" out="$WORK/cap.$name.$rep"
   rm -rf "$out"
   case "$name" in
-    bare)    unset PCOMM_HIJACK_NO_DECODE; timeout 600 $MPI "$APP" >"$log" 2>&1 ;;
-    passive) unset PCOMM_HIJACK_NO_DECODE
-             timeout 600 $MPI "$PCOMM" run -p mlx5dv -o "$out" -- "$APP" >"$log" 2>&1 ;;
-    forward) export PCOMM_HIJACK_NO_DECODE=1
-             timeout 600 $MPI "$PCOMM" run -p mlx5dv --enable-doorbell-hijack \
+    bare)    unset COMSHU_HIJACK_NO_DECODE; timeout 600 $MPI "$APP" >"$log" 2>&1 ;;
+    passive) unset COMSHU_HIJACK_NO_DECODE
+             timeout 600 $MPI "$COMSHU" run -p mlx5dv -o "$out" -- "$APP" >"$log" 2>&1 ;;
+    forward) export COMSHU_HIJACK_NO_DECODE=1
+             timeout 600 $MPI "$COMSHU" run -p mlx5dv --enable-doorbell-hijack \
                -o "$out" -- "$APP" >"$log" 2>&1 ;;
-    full)    unset PCOMM_HIJACK_NO_DECODE
-             timeout 600 $MPI "$PCOMM" run -p mlx5dv --enable-doorbell-hijack \
+    full)    unset COMSHU_HIJACK_NO_DECODE
+             timeout 600 $MPI "$COMSHU" run -p mlx5dv --enable-doorbell-hijack \
                -o "$out" -- "$APP" >"$log" 2>&1 ;;
   esac
   echo "-- $name rep$rep rc=$? --"

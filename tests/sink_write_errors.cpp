@@ -34,11 +34,11 @@
 #include <unistd.h>
 #include <vector>
 
-#include "pcomm/rec/sink.hpp"
+#include "comshu/rec/sink.hpp"
 
-using pcomm::core::RecordKind;
-using pcomm::rec::BufferView;
-using pcomm::rec::FileSink;
+using comshu::core::RecordKind;
+using comshu::rec::BufferView;
+using comshu::rec::FileSink;
 
 namespace fs = std::filesystem;
 
@@ -70,7 +70,7 @@ BufferView view_of(const Payload& p, std::uint32_t type_id) {
 
 fs::path temp_dir(const char* tag) {
     auto base = fs::temp_directory_path() /
-                ("pcomm-sink-" + std::string(tag) + "-" + std::to_string(::getpid()));
+                ("comshu-sink-" + std::string(tag) + "-" + std::to_string(::getpid()));
     fs::remove_all(base);
     return base;
 }
@@ -108,7 +108,7 @@ int main() {
         fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec,
                         fs::perm_options::replace);
 
-        std::vector<pcomm::rec::StreamLoss> losses;
+        std::vector<comshu::rec::StreamLoss> losses;
         {
             FileSink sink(dir);
             sink.submit(view_of(p, 701));

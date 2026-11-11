@@ -1,18 +1,18 @@
 #pragma once
-// pcomm ibverbs records (id range 100-199, UNIFICATION §3.4). Vendor-neutral:
+// comshu ibverbs records (id range 100-199, UNIFICATION §3.4). Vendor-neutral:
 // the provider translates ibv_* handles/enums into these before emitting, so
 // nothing here includes infiniband/verbs.h. High-cardinality identities
 // (mr/qp/cq/pd pointers) are interned Handles (InternDomain::Pointer); the
 // small enums (opcode, state, status) stay inline as raw bytes and are
-// decoded by pcomm-read.
+// decoded by comshu-read.
 
 #include <cstdint>
 
-#include "pcomm/core/ids.hpp"
-#include "pcomm/core/record.hpp"
-#include "pcomm/core/vocab.hpp"
+#include "comshu/core/ids.hpp"
+#include "comshu/core/record.hpp"
+#include "comshu/core/vocab.hpp"
 
-namespace pcomm::providers::ibverbs::records {
+namespace comshu::providers::ibverbs::records {
 
 using core::Handle;
 using core::MemRange;
@@ -28,7 +28,7 @@ enum class IbRegionOrigin : std::uint8_t {
     NullMr = 4,        // ibv_alloc_null_mr — no memory at all, by definition
 };
 
-PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
+COMSHU_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
     Handle        mr;     // interned ibv_mr*
     Handle        pd;     // interned ibv_pd*
     MemRange      range;  // addr, length
@@ -58,12 +58,12 @@ PCOMM_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
     // Stored as the underlying uint8, like Mlx5Umem::binding: a record field's
     // type is part of the on-disk format, and the schema checker only maps
     // scalars and shared vocabulary — a provider-local enum is neither. The
-    // enum above is still what call sites use; pcomm-read renders the name.
+    // enum above is still what call sites use; comshu-read renders the name.
     std::uint8_t origin;
 };
 
 // ENTITY — a queue-pair endpoint (ibv_create_qp), lifetime [create, destroy).
-PCOMM_RECORD(IbQueuePair, RecordKind::Entity, 102, "ib_queue_pair") {
+COMSHU_RECORD(IbQueuePair, RecordKind::Entity, 102, "ib_queue_pair") {
     Handle        qp;  // interned ibv_qp*
     Handle        pd;  // interned ibv_pd*
     std::uint32_t qp_num;
@@ -108,7 +108,7 @@ enum class IbCqOrigin : std::uint8_t {
     Mlx5dvCreateCq = 3,
 };
 
-PCOMM_RECORD(IbCompletionQueue, RecordKind::Entity, 104, "ib_completion_queue") {
+COMSHU_RECORD(IbCompletionQueue, RecordKind::Entity, 104, "ib_completion_queue") {
     Handle        cq;       // interned ibv_cq* (== ibv_cq_ex*, see below)
     Handle        context;  // interned ibv_context*
     Handle        channel;  // interned ibv_comp_channel*, null when none
@@ -124,7 +124,7 @@ PCOMM_RECORD(IbCompletionQueue, RecordKind::Entity, 104, "ib_completion_queue") 
 
 // EVENT — a QP state transition (ibv_modify_qp). The ->RTR transition carries
 // the remote endpoint (dest_qp_num/dest_lid), giving the connection topology.
-PCOMM_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
+COMSHU_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
     // The GIDs, host order, set on the ->RTR row when the caller's address
     // handle is global (ah_attr.is_global), 0 otherwise. On RoCE they are the
     // ONLY name a queue pair has: every LID is 0 there, so (src_lid, qp_num)
@@ -190,7 +190,7 @@ PCOMM_RECORD(IbModifyQp, RecordKind::Event, 106, "ib_modify_qp") {
 // plans/PLAN-20260813-2238.
 // Artifact, not Entity (2026-08-25): a policy fixed at creation, with no
 // lifetime of its own — the queue pair opens and closes, this does not.
-PCOMM_RECORD(IbQpSignalling, RecordKind::Artifact, 126, "ib_qp_signalling") {
+COMSHU_RECORD(IbQpSignalling, RecordKind::Artifact, 126, "ib_qp_signalling") {
     Handle        qp;      // interned ibv_qp*, as IbQueuePair.qp
     std::uint32_t qp_num;  // denormalised so the join is optional
     // ibv_qp_init_attr.sq_sig_all, verbatim. 1 = every WR completes whatever
@@ -221,13 +221,13 @@ PCOMM_RECORD(IbQpSignalling, RecordKind::Artifact, 126, "ib_qp_signalling") {
 // Additive rather than a field on IbMemRegion, because a layout is immutable
 // once a capture holds it, and because the common case (iova == base) needs no
 // row at all. Artifact: a fact fixed at registration, closed with its region.
-PCOMM_RECORD(IbMemRegionIova, RecordKind::Artifact, 130, "ib_mem_region_iova") {
+COMSHU_RECORD(IbMemRegionIova, RecordKind::Artifact, 130, "ib_mem_region_iova") {
     Handle        mr;    // interned ibv_mr*, as IbMemRegion.mr
     std::uint32_t rkey;  // denormalised: the key a remote send names this region by
     std::uint64_t iova;  // the address the NIC was told the region starts at
 };
 
-PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
+COMSHU_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
     Handle        qp;
     std::uint64_t wr_id;
     std::uint64_t remote_addr;  // RDMA ops only (0 otherwise)
@@ -247,7 +247,7 @@ PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
     //
     // Inline rather than a companion record, and it costs 4 bytes on the
     // highest-volume send record deliberately — see the PRE-ALPHA EXCEPTION in
-    // pcomm.fbs. A sparse side record would have kept captures written before
+    // comshu.fbs. A sparse side record would have kept captures written before
     // this readable, which is not a design argument.
     std::uint32_t send_flags;
     std::uint8_t  opcode;  // ibv_wr_opcode
@@ -294,7 +294,7 @@ PCOMM_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
 // work requests sharing a wr_id — measured on the corpus: one WR per call.
 // `index` orders the entries within a work request and makes two identical
 // SGEs distinguishable.
-PCOMM_RECORD(IbPostSendSg, RecordKind::Event, 128, "ib_post_send_sg") {
+COMSHU_RECORD(IbPostSendSg, RecordKind::Event, 128, "ib_post_send_sg") {
     Handle        qp;  // interned ibv_qp*, as IbPostSend.qp
     std::uint64_t wr_id;
     std::uint64_t addr;  // the LOCAL buffer — the field ib_post_send lacks
@@ -304,7 +304,7 @@ PCOMM_RECORD(IbPostSendSg, RecordKind::Event, 128, "ib_post_send_sg") {
     std::uint8_t  index;  // position in the sg_list, 0-based
 };
 
-PCOMM_RECORD(IbSharedRecvQueue, RecordKind::Entity, 108, "ib_shared_recv_queue") {
+COMSHU_RECORD(IbSharedRecvQueue, RecordKind::Entity, 108, "ib_shared_recv_queue") {
     Handle        srq;  // interned ibv_srq*
     Handle        pd;   // interned ibv_pd*
     std::uint32_t max_wr;
@@ -331,7 +331,7 @@ enum class IbRecvOrigin : std::uint8_t {
 // EVENT — a work request posted to a receive queue (ibv_post_recv /
 // ibv_post_srq_recv). One row per work request, like IbPostSend.
 //
-// THE RECEIVE SIDE WAS INFERRED AND NEVER OBSERVED. pcomm hooked post_send and
+// THE RECEIVE SIDE WAS INFERRED AND NEVER OBSERVED. comshu hooked post_send and
 // poll_cq and no receive door at all, so every receive was known only from the
 // completion it produced. Case 01's committed golden shows the asymmetry: 20
 // recv completions per rank, and nothing anywhere saying which buffer any of
@@ -355,7 +355,7 @@ enum class IbRecvOrigin : std::uint8_t {
 // question, *which memory receives this*, unanswered. One sge covers the real
 // cases (a receive is nearly always a single buffer) and `num_sge` says when it
 // does not, which is the same bargain IbPostSend strikes with `length`.
-PCOMM_RECORD(IbPostRecv, RecordKind::Event, 114, "ib_post_recv") {
+COMSHU_RECORD(IbPostRecv, RecordKind::Event, 114, "ib_post_recv") {
     Handle        subject;  // interned ibv_qp* or ibv_srq* — see origin
     std::uint64_t wr_id;
     std::uint64_t addr;    // first sge's addr; 0 when num_sge == 0
@@ -411,7 +411,7 @@ inline constexpr std::uint32_t kSlotUnknown = 0xFFFFFFFFu;
 // GIDs are stored HOST-ORDER, converted with be64toh on the way in, matching
 // Mlx5DevxQpConnect.dest_gid_prefix. A wire-order GID in a capture is a number
 // that compares unequal to itself across two readers.
-PCOMM_RECORD(IbAddressHandle, RecordKind::Entity, 118, "ib_address_handle") {
+COMSHU_RECORD(IbAddressHandle, RecordKind::Entity, 118, "ib_address_handle") {
     Handle        ah;           // interned ibv_ah*
     Handle        pd;           // interned ibv_pd*
     std::uint64_t dgid_prefix;  // remote GID, high 8 bytes (0 unless is_global)
@@ -457,14 +457,14 @@ PCOMM_RECORD(IbAddressHandle, RecordKind::Entity, 118, "ib_address_handle") {
 // `state` is kept because a port that is DOWN explains an absence: the LID is
 // present and unusable, which is a different capture from a LID that never
 // appeared. It is the raw ibv_port_state, not a name — the reader spells it.
-PCOMM_RECORD(IbPort, RecordKind::Entity, 122, "ib_port") {
+COMSHU_RECORD(IbPort, RecordKind::Entity, 122, "ib_port") {
     Handle        context;   // interned ibv_context*, as IbDevice.context
     std::uint32_t lid;       // ibv_port_attr.lid, host order — as IbModifyQp.src_lid
     std::uint8_t  port_num;  // 1-based, as ibverbs numbers them
     std::uint8_t  state;     // ibv_port_state
 };
 
-PCOMM_RECORD(IbDevice, RecordKind::Entity, 120, "ib_device") {
+COMSHU_RECORD(IbDevice, RecordKind::Entity, 120, "ib_device") {
     Handle        context;         // interned ibv_context* — the subject
     Handle        fw_ver;          // interned string
     std::uint64_t node_guid;       // host order, see IbAddressHandle
@@ -490,13 +490,13 @@ PCOMM_RECORD(IbDevice, RecordKind::Entity, 120, "ib_device") {
 // Note SigmaTrace hooks this door and records nothing — IbvReqNotifyCq is an
 // enum entry with no struct behind it. Copying that shape would have bought a
 // dlsym chain and an empty table.
-PCOMM_RECORD(IbReqNotifyCq, RecordKind::Event, 116, "ib_req_notify_cq") {
+COMSHU_RECORD(IbReqNotifyCq, RecordKind::Event, 116, "ib_req_notify_cq") {
     Handle       cq;
     std::uint8_t solicited_only;
 };
 
 // EVENT — a completion drained from a CQ (ibv_poll_cq); one row per completion.
-PCOMM_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
+COMSHU_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
     Handle        cq;
     std::uint64_t wr_id;
     std::uint32_t byte_len;
@@ -571,7 +571,7 @@ PCOMM_RECORD(IbPollCq, RecordKind::Event, 112, "ib_poll_cq") {
 // stated — so this is the same interned handle IbPostRecv.subject carries
 // for an SRQ post, and the join is a handle comparison rather than a number
 // that means two different things depending on the queue type.
-PCOMM_RECORD(IbRecvCqe, RecordKind::Event, 124, "ib_recv_cqe") {
+COMSHU_RECORD(IbRecvCqe, RecordKind::Event, 124, "ib_recv_cqe") {
     Handle        cq;           // interned ibv_cq*, as IbPollCq.cq
     std::uint64_t wr_id;        // as reported by the driver, for cross-checking
     Handle        srq;          // interned ibv_srq*; 0 when the receive was not SRQ-fed
@@ -580,4 +580,4 @@ PCOMM_RECORD(IbRecvCqe, RecordKind::Event, 124, "ib_recv_cqe") {
     std::uint32_t byte_len;     // bytes that actually landed
 };
 
-}  // namespace pcomm::providers::ibverbs::records
+}  // namespace comshu::providers::ibverbs::records

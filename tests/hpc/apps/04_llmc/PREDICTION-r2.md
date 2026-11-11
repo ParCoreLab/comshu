@@ -3,13 +3,13 @@
 Written 2026-08-29 on the FreeBSD workstation, committed before `run-r2.sh` was
 executed for the first time on du04. Derived from **llm.c's own source**
 (`~/llmc` on du04, upstream `f1e2ace` + the CUDA-13 `cudaMemAdvise` patch in this
-directory), from the record schema (`libpcomm/schema/pcomm.fbs`) and from the
+directory), from the record schema (`libcomshu/schema/comshu.fbs`) and from the
 derived-table column contracts in `apps/BRIEF-BLACKBOX.md`. Nothing here was read
 off a capture, r1's included: every count below was re-derived from source in
 this round, not copied from `PREDICTION.md`.
 
 Round 1 stopped at the raw NCCL tables. **This round is about the layer that did
-not exist then** — `pcomm link`'s derived tables — and about a provider no case
+not exist then** — `comshu link`'s derived tables — and about a provider no case
 in `tests/hpc/cases/` has ever asserted anything about: `kernel`.
 `grep -rn gpu_kernel tests/hpc/cases/*/asserts/*.sql` is empty.
 
@@ -47,7 +47,7 @@ Groups (`ncclGroupStart`/`End` pairs) per step: `L+1 = 7` from backward
 That is not an observation, it is where the four f32 call sites sit in the source.
 
 ## 1. The raw NCCL numbers (re-derived; r1 measured these, r2 must reproduce them
-on a *different build* of pcomm)
+on a *different build* of comshu)
 
 Per rank, 4 optimizer steps, P=4:
 
@@ -72,7 +72,7 @@ Per rank, 4 optimizer steps, P=4:
 **The claim, and it is a cross-layer one:** NCCL launches **one device kernel per
 group**, and one per collective that is not in a group. llm.c states the first
 half itself at `zero.cuh:530` — *"NCCL group: aggregate all pointers in a single
-NCCL GPU kernel"* — and `pcomm.fbs:906` states it from the other side: *"Group
+NCCL GPU kernel"* — and `comshu.fbs:906` states it from the other side: *"Group
 boundaries: N grouped sends are ONE launch, and nothing in a send row says so."*
 Two independent sources, neither of them a capture. Therefore, per rank:
 
@@ -90,7 +90,7 @@ Two independent sources, neither of them a capture. Therefore, per rank:
 **Named failure modes.** If the measured number is *lower*, the kernel provider
 dropped launches or `nccl_group` does not bracket what it claims to. If it is
 *higher*, NCCL's planner split a fused group into several kernels — that is a
-fact about NCCL 2.28, not a pcomm defect, and I will report the ratio rather
+fact about NCCL 2.28, not a comshu defect, and I will report the ratio rather
 than adjust the claim. I am predicting equality; I flag the split as the one
 non-defect way it can fail, in advance, so that the distinction is not made
 after the fact.
@@ -102,7 +102,7 @@ only that it is > 1000 for four steps, that every row names a kernel
 
 ## 3. The derived layer — the point of this round
 
-`pcomm export --parquet` then `pcomm link`. Column contracts from
+`comshu export --parquet` then `comshu link`. Column contracts from
 `BRIEF-BLACKBOX.md`. Predictions, per capture:
 
 | table | predicted rows | why |
@@ -128,7 +128,7 @@ a finding for QUESTIONS.md.
 **`comm_edges` will be empty, and that is the interesting prediction.** llm.c
 moves 4G x 2 B = 242.9 MB of gradient per rank in this run and calls
 `ncclSend`/`ncclRecv` zero times (`grep -c 'ncclSend\|ncclRecv' train_gpt2.cu
-llmc/*.cuh` = 0). `pcomm.fbs:904` says `NcclP2p` is *"the only NCCL call that
+llmc/*.cuh` = 0). `comshu.fbs:904` says `NcclP2p` is *"the only NCCL call that
 names a peer, and so the only one an exact edge follows from"*. So the rank x
 rank traffic table for a workload whose entire communication is collective must
 come out empty. Three outcomes, three different findings:
@@ -137,7 +137,7 @@ come out empty. Three outcomes, three different findings:
    layer has no path into `comm_edges`, so the derived table that the suite
    treats as *the* topology view is blank for the most common shape of GPU
    traffic there is. I will state what door is missing and what it would take.
-2. **Non-empty with exact peers** — pcomm expanded a collective into an edge set
+2. **Non-empty with exact peers** — comshu expanded a collective into an edge set
    it cannot know (NCCL chooses ring/tree, channels, and chunking), i.e. it is
    inventing topology. That would be claim 2, a bug, and I would say so.
 3. **Non-empty with a documented approximation** (e.g. an all-to-all fan-out) —
@@ -165,7 +165,7 @@ alone, and it is the round-2 answer to claim 3.
 **Knob C, `-p nccl` alone vs `-p nccl,kernel`** on the same configuration: every
 NCCL number identical. If they differ, the kernel provider perturbs the NCCL
 capture. I also predict **one pass, not two**: both are hook providers, so
-`pcomm run` should not replay the workload (llm.c's banner and losses appear
+`comshu run` should not replay the workload (llm.c's banner and losses appear
 once in stdout, and there is one set of `rank-*` directories). If it replays,
 the cross-layer join in §2 spans two executions and I will say so before using it.
 
@@ -177,7 +177,7 @@ Recorded so that being wrong costs nothing, as r1 did with its IB rank asymmetry
   2.94x the launches, because 30 MB less per step at NVLink bandwidth should beat
   ~68 extra launches at a few microseconds each. I have no oracle for this and no
   assertion depends on it.
-- I expect `pcomm read` to show a `clock_anchor` stream once `kernel` is
+- I expect `comshu read` to show a `clock_anchor` stream once `kernel` is
   selected, because device and host timestamps are in different domains.
 - I expect `nccl_collective.stream` (an interned handle) and `gpu_kernel.stream`
   (a raw `CUstream`) **not** to be joinable in the export, so "which kernel

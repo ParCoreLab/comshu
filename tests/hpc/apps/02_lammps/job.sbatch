@@ -1,5 +1,5 @@
 #!/bin/bash
-# 02_lammps — LAMMPS/KOKKOS (CUDA) under pcomm on MareNostrum 5.
+# 02_lammps — LAMMPS/KOKKOS (CUDA) under comshu on MareNostrum 5.
 #
 # Two questions, in one allocation (tests/hpc/apps/README.md: "do not spend a
 # slot on a single question"):
@@ -18,14 +18,14 @@
 #       CommBrick::forward_comm — the SAME loop, over the SAME swap table, with
 #       a host pointer instead of a device pointer.  So the MESSAGE COUNT AND
 #       SIZES MUST NOT CHANGE.  If the capture shows fewer messages with
-#       gpu/aware on, that is a door pcomm does not hook, not a speedup.
+#       gpu/aware on, that is a door comshu does not hook, not a speedup.
 #
 # Both configurations run bare first.  A capture of a workload that did not
 # work is indistinguishable from a tracer that captured nothing.
 #
 #   sbatch tests/hpc/apps/02_lammps/job.sbatch
 #
-#SBATCH --job-name=pcomm-app-lammps
+#SBATCH --job-name=comshu-app-lammps
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -35,8 +35,8 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-CASE="$PCOMM_ROOT/tests/hpc/apps/02_lammps"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+CASE="$COMSHU_ROOT/tests/hpc/apps/02_lammps"
 
 # ---------------------------------------------------------------- environment
 # The LAMMPS module's own prereq set, in its own order.  `module purge` first
@@ -45,11 +45,11 @@ CASE="$PCOMM_ROOT/tests/hpc/apps/02_lammps"
 module load cuda/12.6 openmpi/4.1.5-gcc fftw/3.3.10-gcc-ompi gsl/2.8-gcc mkl
 module load lammps/10Sep2025
 
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
 
-# NOT pcomm_load_runtime.  That loads nvidia-hpc-sdk/25.7, which puts the SDK's
+# NOT comshu_load_runtime.  That loads nvidia-hpc-sdk/25.7, which puts the SDK's
 # own mpirun ahead of the one LAMMPS is linked against (libmpi.so.40 from
-# /apps/ACC/OPENMPI/4.1.5).  All pcomm needs from it here is gcc-13.2's
+# /apps/ACC/OPENMPI/4.1.5).  All comshu needs from it here is gcc-13.2's
 # libstdc++ (GLIBCXX_3.4.30+).
 module load gcc/13.2.0
 
@@ -62,11 +62,11 @@ module load gcc/13.2.0
 # libstdc++ ahead of /lib64's.  See NOTES.md.
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/lib64"
 
-export PCOMM_OUT_ROOT="${PCOMM_OUT_ROOT:-$HOME/pcomm-apps}"
-WORK="$HOME/pcomm-apps/lammps-work-${SLURM_JOB_ID}"
+export COMSHU_OUT_ROOT="${COMSHU_OUT_ROOT:-$HOME/comshu-apps}"
+WORK="$HOME/comshu-apps/lammps-work-${SLURM_JOB_ID}"
 mkdir -p "$WORK"; cd "$WORK"
 
-MPI_ENV=(-x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH -x CUDA_VISIBLE_DEVICES
+MPI_ENV=(-x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH -x CUDA_VISIBLE_DEVICES
          -x OMPI_MCA_pml=ucx -x OMPI_MCA_osc=ucx)
 LAUNCH=(mpirun -np 8 --map-by ppr:4:node --bind-to none "${MPI_ENV[@]}")
 
@@ -153,7 +153,7 @@ IN
 LMP=(lmp_mpi -k on g 4 -sf kk -in in.lj -log none)
 
 # --------------------------------------------------------------- 1. BARE runs
-# Not optional.  These are what separate "pcomm captured nothing" from "the
+# Not optional.  These are what separate "comshu captured nothing" from "the
 # workload never ran", and the gpu/aware=on one carries the (A) probe.
 echo "=== BARE gpu/aware on (+ alloc_probe) ==="
 "${LAUNCH[@]}" -x LD_PRELOAD="$WORK/alloc_probe.so" \
@@ -170,15 +170,15 @@ grep -E "processor grid|using unified memory|using view layout|Kokkos|GPU-aware|
 
 # ------------------------------------------------------- 2. captured runs
 run_capture() {                     # $1 = label, $2 = providers, $3 = on|off
-  local out; out="$(pcomm_out "lammps-$1")"; rm -rf "$out" "$out.csv" "$out.pq"
+  local out; out="$(comshu_out "lammps-$1")"; rm -rf "$out" "$out.csv" "$out.pq"
   echo "=== CAPTURE $1  providers=$2  gpu/aware=$3 ==="
-  "${LAUNCH[@]}" "$PCOMM" run -p "$2" -o "$out" -- "${LMP[@]}" -pk kokkos gpu/aware "$3" \
+  "${LAUNCH[@]}" "$COMSHU" run -p "$2" -o "$out" -- "${LMP[@]}" -pk kokkos gpu/aware "$3" \
       2>&1 | tail -25
   echo "capture_${1}_exit=$?"
   if [ ! -d "$out/rank-0" ]; then echo "!! $1: NO rank-0 — the workload never started"; return 1; fi
-  echo "--- streams ---"; "$PCOMM" read "$out" | head -40
-  "$PCOMM" export "$out" --csv "$out.csv"
-  pcomm_derive "$out"
+  echo "--- streams ---"; "$COMSHU" read "$out" | head -40
+  "$COMSHU" export "$out" --csv "$out.csv"
+  comshu_derive "$out"
   echo "--- non-empty CSV tables ---"
   for f in "$out.csv"/*.csv; do
     n=$(( $(wc -l < "$f") - 1 )); [ "$n" -gt 0 ] && printf "  %-26s %d\n" "$(basename "$f" .csv)" "$n"
@@ -192,11 +192,11 @@ run_capture ib-on   ib      on
 run_capture ib-off  ib      off
 
 # -------------------------------------------------------------- 3. the answer
-ON="$(pcomm_out lammps-ucx-on).pq"
-OFF="$(pcomm_out lammps-ucx-off).pq"
+ON="$(comshu_out lammps-ucx-on).pq"
+OFF="$(comshu_out lammps-ucx-off).pq"
 
 # The UCX rank matrix.  comm_edges is built from ib_post_send / mlx5_device_send
-# / gpu_access only (pcomm-read/link_sql.hpp:1112) — nothing UCX contributes to
+# / gpu_access only (comshu-read/link_sql.hpp:1112) — nothing UCX contributes to
 # it — so the rank-space topology of an MPI application on this stack has to be
 # assembled by hand, through the one join that crosses a rank boundary:
 #   ucx_tag_send.endpoint -> ucx_ep_connection.remote_prefix_hash
@@ -211,17 +211,17 @@ GROUP BY 1,2 HAVING sum(s.count) > 1000000 ORDER BY 1,2'
 
 for tag in ON OFF; do
   pq="${!tag}"
-  echo "=== [$tag] UCX rank matrix (edges over 1 MB) ==="; "$PCOMM" sql "$pq" "$MATRIX"
+  echo "=== [$tag] UCX rank matrix (edges over 1 MB) ==="; "$COMSHU" sql "$pq" "$MATRIX"
   echo "=== [$tag] ucx_tag_send totals per rank ==="
-  "$PCOMM" sql "$pq" "SELECT rank, count(*) AS sends, sum(count) AS bytes FROM ucx_tag_send GROUP BY 1 ORDER BY 1"
+  "$COMSHU" sql "$pq" "SELECT rank, count(*) AS sends, sum(count) AS bytes FROM ucx_tag_send GROUP BY 1 ORDER BY 1"
   echo "=== [$tag] ucx_tag_send size histogram, top 12 per rank 0 ==="
-  "$PCOMM" sql "$pq" "SELECT count AS msg_bytes, count(*) AS n FROM ucx_tag_send WHERE rank=0 GROUP BY 1 ORDER BY n DESC LIMIT 12"
+  "$COMSHU" sql "$pq" "SELECT count AS msg_bytes, count(*) AS n FROM ucx_tag_send WHERE rank=0 GROUP BY 1 ORDER BY n DESC LIMIT 12"
   echo "=== [$tag] ib side (separate statements: an EMPTY stream is an ABSENT table in parquet) ==="
   for t in ib_post_send ib_poll_cq ib_post_recv ib_queue_pair ib_mem_region ib_modify_qp mlx5_device_send; do
-    printf "  %-18s " "$t"; "$PCOMM" sql "$pq" "SELECT count(*) AS n FROM $t" 2>&1 | tail -1
+    printf "  %-18s " "$t"; "$COMSHU" sql "$pq" "SELECT count(*) AS n FROM $t" 2>&1 | tail -1
   done
   echo "=== [$tag] how lossy is the UCX rank join ==="
-  "$PCOMM" sql "$pq" "
+  "$COMSHU" sql "$pq" "
     SELECT s.rank,
            count(*)                                                AS sends,
            count(c.endpoint)                                       AS with_ep_connection,
@@ -230,21 +230,21 @@ for tag in ON OFF; do
     LEFT JOIN ucx_ep_connection c  ON c.rank = s.rank AND c.endpoint = s.endpoint
     LEFT JOIN ucx_worker_address w ON w.prefix_hash = c.remote_prefix_hash
     GROUP BY 1 ORDER BY 1"
-  "$PCOMM" sql "$pq" "SELECT 'ucx_worker' t, count(*) n FROM ucx_worker" 2>&1 | tail -1
-  "$PCOMM" sql "$pq" "SELECT 'ucx_worker_address' t, count(*) n FROM ucx_worker_address" 2>&1 | tail -1
-  "$PCOMM" sql "$pq" "SELECT 'ucx_endpoint' t, count(*) n FROM ucx_endpoint" 2>&1 | tail -1
-  "$PCOMM" sql "$pq" "SELECT 'ucx_ep_connection' t, count(*) n FROM ucx_ep_connection" 2>&1 | tail -1
-  echo "=== [$tag] comm_edges ==="; "$PCOMM" sql "$pq" "SELECT * FROM comm_edges LIMIT 20" 2>&1 | tail -25
+  "$COMSHU" sql "$pq" "SELECT 'ucx_worker' t, count(*) n FROM ucx_worker" 2>&1 | tail -1
+  "$COMSHU" sql "$pq" "SELECT 'ucx_worker_address' t, count(*) n FROM ucx_worker_address" 2>&1 | tail -1
+  "$COMSHU" sql "$pq" "SELECT 'ucx_endpoint' t, count(*) n FROM ucx_endpoint" 2>&1 | tail -1
+  "$COMSHU" sql "$pq" "SELECT 'ucx_ep_connection' t, count(*) n FROM ucx_ep_connection" 2>&1 | tail -1
+  echo "=== [$tag] comm_edges ==="; "$COMSHU" sql "$pq" "SELECT * FROM comm_edges LIMIT 20" 2>&1 | tail -25
   echo "=== [$tag] mem_object: how many, and how big ==="
-  "$PCOMM" sql "$pq" "SELECT rank, count(*) AS objects, sum(range_size) AS bytes FROM mem_object GROUP BY 1 ORDER BY 1"
+  "$COMSHU" sql "$pq" "SELECT rank, count(*) AS objects, sum(range_size) AS bytes FROM mem_object GROUP BY 1 ORDER BY 1"
 done
 
 # THE KNOB, side by side.  kokkos.cpp:615-641 + comm_kokkos.cpp:136-157 say the
 # two configurations run the SAME swap loop over the SAME swap table, so these
 # two columns must agree.  A difference is a door, not a speedup.
 echo "=== KNOB: gpu/aware on vs off, message counts and bytes per rank ==="
-"$PCOMM" sql "$ON" "SELECT rank, count(*) AS sends_on, sum(count) AS bytes_on FROM ucx_tag_send GROUP BY 1 ORDER BY 1"
-"$PCOMM" sql "$OFF" "SELECT rank, count(*) AS sends_off, sum(count) AS bytes_off FROM ucx_tag_send GROUP BY 1 ORDER BY 1"
+"$COMSHU" sql "$ON" "SELECT rank, count(*) AS sends_on, sum(count) AS bytes_on FROM ucx_tag_send GROUP BY 1 ORDER BY 1"
+"$COMSHU" sql "$OFF" "SELECT rank, count(*) AS sends_off, sum(count) AS bytes_off FROM ucx_tag_send GROUP BY 1 ORDER BY 1"
 
 # ------------------------------------------------------------- 4. assertions
 #
@@ -258,7 +258,7 @@ echo "=== KNOB: gpu/aware on vs off, message counts and bytes per rank ==="
 # this study's call to make (tests/hpc/apps/README.md: do not edit outside your
 # own case directory).  So the case materialises `params` from the SAME
 # meta.json "workload" block and runs the SAME asserts/*.sql against the linked
-# Parquet export through `pcomm sql` -- which is the engine sql_check.sh uses
+# Parquet export through `comshu sql` -- which is the engine sql_check.sh uses
 # for assertions anyway whenever a Parquet export exists.
 run_asserts() {                     # $1 = <export>.pq
   local PQ="$1" PARAMS XFAIL fail=0 name body out rows mark
@@ -267,12 +267,12 @@ run_asserts() {                     # $1 = <export>.pq
   echo "  -- assertions (derived from meta.json's workload block; empty result = pass)"
   for f in "$CASE"/asserts/*.sql; do
     name=$(basename "$f" .sql)
-    # Two `pcomm sql` warts, worked around here so the .sql files stay ordinary
+    # Two `comshu sql` warts, worked around here so the .sql files stay ordinary
     # SQL: it rejects a statement whose first token is a comment (documented in
     # tests/hpc/apps/README.md), and it wraps the text in `COPY (<query>) TO`,
     # which makes a TRAILING SEMICOLON a syntax error too.
     body=$(sed '/^[[:space:]]*--/d; /^[[:space:]]*$/d' "$f" | sed '$ s/;[[:space:]]*$//')
-    out=$("$PCOMM" sql "$PQ" "$PARAMS$body" 2>&1)
+    out=$("$COMSHU" sql "$PQ" "$PARAMS$body" 2>&1)
     rows=$(printf '%s\n' "$out" | tail -n +2 | grep -c . || true)
     case " $XFAIL " in *" $name "*) mark="xfail" ;; *) mark="" ;; esac
     if printf '%s' "$out" | grep -qiE "query failed|^(Error|Parser Error|Binder Error|Catalog Error)"; then

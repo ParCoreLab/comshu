@@ -29,7 +29,7 @@
 # 16 nodes needs acc_ehpc: acc_debug is capped at 8 nodes and one submitted job,
 # which would also serialise this behind whatever board run is in flight.
 #
-#SBATCH --job-name=pcomm-corpus-scale-hubspoke-ib
+#SBATCH --job-name=comshu-corpus-scale-hubspoke-ib
 #SBATCH --account=etur02
 #SBATCH --qos=acc_ehpc
 #SBATCH --nodes=16
@@ -40,15 +40,15 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 # Same arch-in-the-name discipline as cases 13-18: a cached binary from the
 # other machine is not a build error, it is a silent wrong answer.
-PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-PCOMM_SM=${PCOMM_SM:-90}
-APP="$HOME/asym_patterns-sm$PCOMM_SM"
+COMSHU_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+COMSHU_SM=${COMSHU_SM:-90}
+APP="$HOME/asym_patterns-sm$COMSHU_SM"
 
 if [ ! -e "$NVSHMEM_HOME/lib/libnvshmem_host.so" ]; then
   echo "!! no libnvshmem_host.so under $NVSHMEM_HOME/lib" >&2
@@ -56,11 +56,11 @@ if [ ! -e "$NVSHMEM_HOME/lib/libnvshmem_host.so" ]; then
   exit 1
 fi
 
-if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
-  pcomm_load_build
+if [ ! -x "$APP" ] || [ "$COMSHU_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
-    -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
+    -gencode arch=compute_$COMSHU_SM,code=sm_$COMSHU_SM -Wno-deprecated-gpu-targets \
+    "$COMSHU_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -Xlinker --disable-new-dtags -Xlinker -rpath -Xlinker "$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart \
@@ -68,16 +68,16 @@ if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; t
 fi
 
 # Unconditionally, AFTER the build block, and LD_LIBRARY_PATH after that — the
-# ordering case 16 documents at length: pcomm_load_build ends by reloading the
+# ordering case 16 documents at length: comshu_load_build ends by reloading the
 # runtime modules, which prepend a different NVSHMEM than the one the binary was
 # just linked against.
-pcomm_load_runtime
+comshu_load_runtime
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 echo "=== mpirun: $(command -v mpirun)"
 echo "=== nvshmem this binary links against ==="
 ldd "$APP" 2>/dev/null | grep -i nvshmem || echo "  (none reported by ldd)"
 
-OUT=$(pcomm_out scale_hubspoke_ib); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out scale_hubspoke_ib); rm -rf "$OUT"; mkdir -p "$OUT"
 
 # NVSHMEM_DISABLE_P2P=1 is the line that makes this an IB capture rather than an
 # empty one. Without it 60 of the 126 edges are intra-node and go over NVLink,
@@ -88,16 +88,16 @@ OUT=$(pcomm_out scale_hubspoke_ib); rm -rf "$OUT"; mkdir -p "$OUT"
 # access bug (PLAN-20260810-0854) that poisons the CUDA context and costs the
 # capture. That is also why this run cannot cross-check itself against NVLink.
 mpirun -np 64 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 \
-  "$PCOMM" run -p ib -o "$OUT" -- "$APP" hub 4096 3
+  -x COMSHU_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 \
+  "$COMSHU" run -p ib -o "$OUT" -- "$APP" hub 4096 3
 echo "mpirun exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
 
 # Case 16's two assertions, run against 64 ranks. Both are closed-form in
 # params.ranks — the expected edge set is derived, not recorded — so they are
 # the SAME check at 16x the width, and the params they read come from this
 # directory's own meta.json (ranks: 64), not case 16's.
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/corpus/scale_hubspoke_ib"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/corpus/scale_hubspoke_ib"

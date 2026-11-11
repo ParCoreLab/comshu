@@ -14,8 +14,8 @@
 # subscriber per process and NVBit (which gpumem loads) dlopens libcupti and
 # takes it; whoever loses, loses SILENTLY — job 44546506 arm E produced four
 # rank directories and zero .pcs files. This runs against `build-cupti`, which
-# is configured PCOMM_PROVIDER_GPUMEM=OFF, so there is no NVBit anywhere in the
-# process and the conflict cannot arise. `pcomm run` would drop cupti anyway if
+# is configured COMSHU_PROVIDER_GPUMEM=OFF, so there is no NVBit anywhere in the
+# process and the conflict cannot arise. `comshu run` would drop cupti anyway if
 # gpumem were selected (run.cpp build_passes), but a build that cannot produce
 # the conflicting .so is the stronger guarantee. See
 # plans/PLAN-20260813-0600-kernel-lifetimes-belong-to-the-engine.
@@ -27,7 +27,7 @@
 # about iteration count, so they carry over verbatim; the byte totals do not
 # compare to scale_hubspoke_ib-44542856 and are not meant to.
 #
-#SBATCH --job-name=pcomm-corpus-scale-hubspoke-ib-kt
+#SBATCH --job-name=comshu-corpus-scale-hubspoke-ib-kt
 #SBATCH --account=etur02
 #SBATCH --qos=acc_ehpc
 #SBATCH --nodes=16
@@ -39,37 +39,37 @@
 
 set -x
 
-# The kernel-timing tree, not ~/proj/pcomm: that clone is the committed-code
+# The kernel-timing tree, not ~/proj/comshu: that clone is the committed-code
 # transport and this work is not committed yet. build-cupti is the only build
 # with libcupti_trace.so in it.
-export PCOMM_ROOT="${PCOMM_ROOT:-$HOME/pcomm-impl}"
-export PCOMM_BUILD="${PCOMM_BUILD:-$PCOMM_ROOT/build-cupti}"
+export COMSHU_ROOT="${COMSHU_ROOT:-$HOME/comshu-impl}"
+export COMSHU_BUILD="${COMSHU_BUILD:-$COMSHU_ROOT/build-cupti}"
 # Prepended, so common.sh's own list (which it appends) does not hide it.
-export PCOMM_PROVIDER_PATH="$PCOMM_BUILD/gpu-backends/cupti"
+export COMSHU_PROVIDER_PATH="$COMSHU_BUILD/gpu-backends/cupti"
 
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 # libcupti itself. The backend dlopens nothing — it links libcupti — so the
 # loader has to find it, and it lives outside the SDK's lib dirs.
-_pcomm_module load cuda/12.6
+_comshu_module load cuda/12.6
 CUPTI_LIB=$(ls -d "$CUDA_HOME"/extras/CUPTI/lib64 2>/dev/null || true)
 [ -n "$CUPTI_LIB" ] && export LD_LIBRARY_PATH="$CUPTI_LIB:$LD_LIBRARY_PATH"
 echo "=== cupti lib: ${CUPTI_LIB:-NOT FOUND}"
-ls -la "$PCOMM_BUILD/gpu-backends/cupti/libcupti_trace.so" || {
-  echo "!! no libcupti_trace.so — build-cupti was not built with PCOMM_CUPTI=ON" >&2
+ls -la "$COMSHU_BUILD/gpu-backends/cupti/libcupti_trace.so" || {
+  echo "!! no libcupti_trace.so — build-cupti was not built with COMSHU_CUPTI=ON" >&2
   exit 1
 }
 
 # THE BUILD MUST MATCH THE SOURCE THAT IS ABOUT TO BE READ BACK, and nothing
 # checked that. This job refuses a stale *app* binary twenty lines below —
 # "refusing to run a stale or missing binary" — while happily running a stale
-# *pcomm*, which is the same class of defect and the more expensive one: the app
+# *comshu*, which is the same class of defect and the more expensive one: the app
 # being old makes the workload wrong, the tracer being old makes the CAPTURE
 # wrong, in a way only visible three schemas later.
 #
-# Measured, job 44578209: PCOMM_ROOT defaults to ~/pcomm-impl here while the
-# suite's common.sh defaults it to ~/proj/pcomm, so a run right after a sync
+# Measured, job 44578209: COMSHU_ROOT defaults to ~/comshu-impl here while the
+# suite's common.sh defaults it to ~/proj/comshu, so a run right after a sync
 # produced a 619 MB, 64-rank capture written by a schema three bumps behind the
 # tree — ib_post_send at stride 88, and none of ib_port / ib_qp_signalling /
 # ib_post_send_sg present at all. A capture that is merely OLD looks exactly
@@ -82,26 +82,26 @@ ls -la "$PCOMM_BUILD/gpu-backends/cupti/libcupti_trace.so" || {
 #
 #   1. the build must live inside the tree it will be read back with
 #   2. the binary must be newer than the schema it claims to write
-if [ "${PCOMM_BUILD#$PCOMM_ROOT/}" = "$PCOMM_BUILD" ]; then
-  echo "!! PCOMM_BUILD=$PCOMM_BUILD is not inside PCOMM_ROOT=$PCOMM_ROOT" >&2
+if [ "${COMSHU_BUILD#$COMSHU_ROOT/}" = "$COMSHU_BUILD" ]; then
+  echo "!! COMSHU_BUILD=$COMSHU_BUILD is not inside COMSHU_ROOT=$COMSHU_ROOT" >&2
   echo "   the capture would be written by whatever schema that other tree holds." >&2
-  echo "   submit with:  PCOMM_ROOT=\$HOME/proj/pcomm sbatch \$0" >&2
+  echo "   submit with:  COMSHU_ROOT=\$HOME/proj/comshu sbatch \$0" >&2
   exit 1
 fi
-_hdr="$PCOMM_ROOT/libpcomm/include/pcomm/rec/stream_header.hpp"
-if [ -e "$_hdr" ] && [ "$_hdr" -nt "$PCOMM_BUILD/pcomm/pcomm" ]; then
-  echo "!! $PCOMM_BUILD/pcomm/pcomm is OLDER than $_hdr" >&2
+_hdr="$COMSHU_ROOT/libcomshu/include/comshu/rec/stream_header.hpp"
+if [ -e "$_hdr" ] && [ "$_hdr" -nt "$COMSHU_BUILD/comshu/comshu" ]; then
+  echo "!! $COMSHU_BUILD/comshu/comshu is OLDER than $_hdr" >&2
   echo "   the schema changed after this build; the capture would silently lack fields." >&2
-  echo "   rebuild:  cmake --build $PCOMM_BUILD -j" >&2
+  echo "   rebuild:  cmake --build $COMSHU_BUILD -j" >&2
   exit 1
 fi
-echo "=== pcomm build: $PCOMM_BUILD (newer than the schema header, inside PCOMM_ROOT)"
+echo "=== comshu build: $COMSHU_BUILD (newer than the schema header, inside COMSHU_ROOT)"
 
 # Same arch-in-the-name discipline as the parent job: a cached binary from the
 # other machine is not a build error, it is a silent wrong answer.
-PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-PCOMM_SM=${PCOMM_SM:-90}
-APP="$HOME/asym_patterns-sm$PCOMM_SM"
+COMSHU_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+COMSHU_SM=${COMSHU_SM:-90}
+APP="$HOME/asym_patterns-sm$COMSHU_SM"
 
 if [ ! -e "$NVSHMEM_HOME/lib/libnvshmem_host.so" ]; then
   echo "!! no libnvshmem_host.so under $NVSHMEM_HOME/lib" >&2
@@ -109,11 +109,11 @@ if [ ! -e "$NVSHMEM_HOME/lib/libnvshmem_host.so" ]; then
   exit 1
 fi
 
-if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
-  pcomm_load_build
+if [ ! -x "$APP" ] || [ "$COMSHU_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
-    -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
+    -gencode arch=compute_$COMSHU_SM,code=sm_$COMSHU_SM -Wno-deprecated-gpu-targets \
+    "$COMSHU_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -Xlinker --disable-new-dtags -Xlinker -rpath -Xlinker "$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart \
@@ -121,28 +121,28 @@ if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; t
 fi
 
 # Unconditionally, AFTER the build block, and LD_LIBRARY_PATH after that — the
-# ordering case 16 documents at length: pcomm_load_build ends by reloading the
+# ordering case 16 documents at length: comshu_load_build ends by reloading the
 # runtime modules, which prepend a different NVSHMEM than the one the binary was
 # just linked against.
-pcomm_load_runtime
+comshu_load_runtime
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:${CUPTI_LIB:+$CUPTI_LIB:}$LD_LIBRARY_PATH"
 echo "=== mpirun: $(command -v mpirun)"
 echo "=== nvshmem this binary links against ==="
 ldd "$APP" 2>/dev/null | grep -i nvshmem || echo "  (none reported by ldd)"
 
-OUT=$(pcomm_out scale_hubspoke_ib_kt); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out scale_hubspoke_ib_kt); rm -rf "$OUT"; mkdir -p "$OUT"
 
 # NVSHMEM_DISABLE_P2P=1 is the line that makes this an IB capture rather than an
 # empty one — without it 60 of the 126 edges go over NVLink where an ibverbs
 # provider cannot see them. Unchanged from the parent job, and it does NOT
 # affect the kernel lane: the put kernels launch either way.
 mpirun -np 64 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 \
-  "$PCOMM" run -p ib,cupti -o "$OUT" -- "$APP" hub 4096 20
+  -x COMSHU_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 \
+  "$COMSHU" run -p ib,cupti -o "$OUT" -- "$APP" hub 4096 20
 echo "mpirun exit=$?"
 
 echo "=== captured streams — expect ib_* (100-124) AND gpu_kernel (530) ==="
-"$PCOMM" read "$OUT"
+"$COMSHU" read "$OUT"
 
 # The failure this job is most likely to have is the silent one: everything
 # green, no 530 anywhere, because CUPTI never armed. Count it explicitly.
@@ -153,9 +153,9 @@ for d in "$OUT"/rank-*; do
 done
 echo "KERNEL_STREAMS have=$have missing=$miss  (missing must be 0)"
 
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
 
 # The parent job's two assertions, verbatim by symlink, at 64 ranks. Both are
 # closed-form in params.ranks, so raising iters does not touch them.
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/corpus/scale_hubspoke_ib_kt"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/corpus/scale_hubspoke_ib_kt"

@@ -10,8 +10,8 @@ Triaged 2026-11-09: finished entries deleted (git has them); 1-4 are the
 original 2026-08-25 review's live seeds, 5-8 came from closing plans.
 
 Raised 2026-08-25, from a review of the record model while drawing
-demos/entity-map.html. Scope of that review: libpcomm/schema, core/records.hpp,
-core/ids.hpp, pcomm-read/link_sql.hpp, the provider greps. NOT reviewed: the
+demos/entity-map.html. Scope of that review: libcomshu/schema, core/records.hpp,
+core/ids.hpp, comshu-read/link_sql.hpp, the provider greps. NOT reviewed: the
 hook layer, the recorder hot path, ui/, agent/. Nothing here is a bug report —
 these are design questions, and a few may be answered "leave it alone".
 
@@ -41,7 +41,7 @@ MEASURED 2026-08-26, and the answer is "latent, but not safely latent".
   - `handle_alloc` records `cudaGetDevice()` — the CURRENT device, not where the
     memory lives. For a managed allocation that is not merely a point-in-time
     claim, it is a claim about the wrong thing entirely.
-  - pcomm itself allocates managed memory: `cudaMallocManaged(&state->
+  - comshu itself allocates managed memory: `cudaMallocManaged(&state->
     channel_dev, ...)` in nvbit_at_ctx_init (nvbit_backend.cu:1292). It is not
     self-recorded, but only because NVBit suppresses callbacks for calls made
     from inside a callback — the same unwritten property handle_alloc's own
@@ -133,17 +133,17 @@ on". It says that when the blocker lifts, the record to carry it already exists.
     ucx_deep 800-899.
 
 
-5. `pcomm ui --bundle`: one self-contained file for a capture
+5. `comshu ui --bundle`: one self-contained file for a capture
 ---------------------------------------------------------------
 Step 6 of the UI plan (PLAN-20260807-1718-ui-backbone-done), the only step not
-built: a capture's panels as one HTML file someone can open without pcomm.
-Opportunistic, and only worth it once `pcomm report` exists, because that is
+built: a capture's panels as one HTML file someone can open without comshu.
+Opportunistic, and only worth it once `comshu report` exists, because that is
 the thing people will actually pass around.
 
 6. dmabuf fds are reused; key identity on the inode
 ---------------------------------------------------
 From PLAN-20260807-0130-context-coverage-and-next-done item 4. The engine's
-fd -> range table (pcomm_engine_dmabuf_*) keys on the descriptor NUMBER, which
+fd -> range table (comshu_engine_dmabuf_*) keys on the descriptor NUMBER, which
 the kernel reuses once closed — and NCCL GIN closes its fd right after
 registering. A later conversion replacing the entry is fine; a registration
 looking up a reused number before its own conversion would get the old range.

@@ -1,6 +1,6 @@
 -- requires: tag_flow transport_mix
 -- If the hardware tag-matching doors fired, tag_flow must join the two layers.
--- If they did not, that is the fabric's doing and not pcomm's, and the two must
+-- If they did not, that is the fabric's doing and not comshu's, and the two must
 -- be distinguishable.
 --
 -- WHAT tag_flow CLAIMS. It is advertised as the join between what the
@@ -27,11 +27,11 @@
 --   * tag doors present, no matched flow -> THE JOIN IS WRONG. A defect.
 --   * tag doors present, flows matched -> the table works on a real application,
 --     which nothing has yet shown.
--- Only the middle one is pcomm's, and only this shape of query tells it apart.
+-- Only the middle one is comshu's, and only this shape of query tells it apart.
 --
 -- BOTH REPRESENTATIONS OF `op` ARE NAMED, and that is load-bearing rather than
 -- belt-and-braces. The CSV export decodes op to a name while the Parquet export
--- leaves the raw integer, and pcomm.fbs declares no enum for it -- the comment
+-- leaves the raw integer, and comshu.fbs declares no enum for it -- the comment
 -- on UctSend points at providers/ucx_deep/ucx_deep_records.hpp, which a reader
 -- of the schema does not have. An assertion naming only the strings returns no
 -- row on Parquet and passes vacuously; naming only the integers does the same on

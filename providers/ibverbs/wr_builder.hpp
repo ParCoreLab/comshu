@@ -29,7 +29,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace pcomm::providers::ibverbs {
+namespace comshu::providers::ibverbs {
 
 // ibv_wr_opcode values, restated so this header needs no verbs.h. Deliberately
 // the *same* encoding the old ibv_post_send path records, so a capture never
@@ -142,4 +142,4 @@ private:
     bool                   m_started{false};  // between wr_start and wr_complete/wr_abort
 };
 
-}  // namespace pcomm::providers::ibverbs
+}  // namespace comshu::providers::ibverbs

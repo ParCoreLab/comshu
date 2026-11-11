@@ -2,7 +2,7 @@
 // able to say which machine and which clock it came from.
 //
 // WHY THIS EXISTS. Nothing in the engine flushes on an abnormal exit: there is
-// no signal handler anywhere in libpcomm, so a process killed by a signal keeps
+// no signal handler anywhere in libcomshu, so a process killed by a signal keeps
 // only what happened to be on disk already. That failure is INVERTED, which is
 // what makes it dangerous rather than merely unfortunate: a high-volume stream
 // survives because it filled its buffers and drained incrementally, while a
@@ -37,13 +37,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "pcomm/core/records.hpp"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/rec/thread_local_buffer.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/rec/thread_local_buffer.hpp"
+#include "comshu/tracer.hpp"
 
 namespace fs = std::filesystem;
-using namespace pcomm;
+using namespace comshu;
 using core::records::ClockAnchor;
 using core::records::MemObject;
 using core::records::NodeIdentity;
@@ -62,7 +62,7 @@ static std::size_t rows(const fs::path& dir) {
 
 // Runs one child that starts a capture, records `n` MemObjects into a thread
 // buffer WITHOUT flushing, and then dies by `sig`. Returns the signal it
-// actually died by, so the caller can check that pcomm did not change how the
+// actually died by, so the caller can check that comshu did not change how the
 // program appears to fail.
 // Set by the child's own handler so the parent can prove it ran.
 static fs::path g_marker;
@@ -124,7 +124,7 @@ static int run_dying_child(const fs::path& out, int sig, int n, AppDoor door = A
         if (door == AppDoor::Signal) {
             ::signal(SIGSEGV, &app_sigsegv_handler);
         } else if (door == AppDoor::Sigaction) {
-            // BEFORE installing: what does the process think is there? pcomm has
+            // BEFORE installing: what does the process think is there? comshu has
             // already put its handler in, and the application must not be able
             // to see it. An MPI runtime saves the old disposition and restores
             // it at finalize; if the save captures OUR handler, it gets
@@ -153,7 +153,7 @@ static int run_dying_child(const fs::path& out, int sig, int n, AppDoor door = A
 }
 
 int main() {
-    const fs::path base = fs::temp_directory_path() / ("pcomm-crash-" + std::to_string(::getpid()));
+    const fs::path base = fs::temp_directory_path() / ("comshu-crash-" + std::to_string(::getpid()));
     fs::remove_all(base);
     int fail = 0;
 
@@ -207,7 +207,7 @@ int main() {
     //
     // The difference between the two arms is the whole value of the handler:
     // same workload, same records left unflushed, and the only variable is
-    // whether pcomm got a chance to run. Under SIGKILL the eight MemObjects are
+    // whether comshu got a chance to run. Under SIGKILL the eight MemObjects are
     // gone; here they must all be on disk.
     const fs::path out2 = base / "segv";
     const int      died2 = run_dying_child(out2, SIGSEGV, 8);
@@ -253,7 +253,7 @@ int main() {
     // ── ARM 3: the application installs its OWN handler after we do ─────────
     //
     // This is the arm the whole interposer exists for, and it is the failure
-    // that got past the first version. pcomm loads under LD_PRELOAD, so its
+    // that got past the first version. comshu loads under LD_PRELOAD, so its
     // handlers go in from an ELF constructor before MPI_Init — and then OpenMPI
     // installs its own over the top (libopen-pal imports sigaction). Measured
     // on Quantum ESPRESSO job 45103790: the job exited 139, two of four ranks
@@ -283,7 +283,7 @@ int main() {
     if (!fs::exists(out3 / "app-handler-ran")) {
         std::fprintf(stderr,
                      "crash_identity_smoke: the application's own SIGSEGV handler did not run.\n"
-                     "  pcomm must chain to it, not replace it — a profiler that eats the\n"
+                     "  comshu must chain to it, not replace it — a profiler that eats the\n"
                      "  handler changes how the program behaves, not just what is recorded\n");
         fail = 1;
     }
@@ -311,7 +311,7 @@ int main() {
     }
     if (fs::exists(out4 / "handler-leaked")) {
         std::fprintf(stderr,
-                     "crash_identity_smoke: querying SIGSEGV returned pcomm's own handler.\n"
+                     "crash_identity_smoke: querying SIGSEGV returned comshu's own handler.\n"
                      "  A runtime that saves and restores dispositions around init/finalize\n"
                      "  would then reinstall OUR handler as if it were its own, and the chain\n"
                      "  would point at itself.\n");

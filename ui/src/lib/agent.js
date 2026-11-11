@@ -8,7 +8,7 @@
 // other panel's rows. If a future version of this file starts returning rows,
 // the derived layer has forked and the DuckDB-WASM build has quietly died.
 //
-// The bridge is a separate process on a second loopback port (`pcomm ui` serves
+// The bridge is a separate process on a second loopback port (`comshu ui` serves
 // the page; `agent/bridge.mjs` runs the model). It is optional: when it is not
 // running, `health()` fails and the pane says so.
 
@@ -38,7 +38,7 @@ export async function health({ timeoutMs = 3000 } = {}) {
   const h = await res.json();
 
   // The bridge names the capture it queries, and the page must check it.
-  // Two `pcomm ui` servers on one machine share this default port, so without
+  // Two `comshu ui` servers on one machine share this default port, so without
   // this check the pane on :8779 will confidently answer questions about the
   // capture on :8777 — every number right, every number about the wrong run.
   h.mismatch = h.ui && !sameOrigin(h.ui, location.origin) ? h.ui : null;

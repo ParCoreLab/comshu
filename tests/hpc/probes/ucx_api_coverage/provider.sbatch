@@ -2,7 +2,7 @@
 # Smoke test for the public-UCP provider on the real MN5 MPI/UCX path.
 # This intentionally records UCX intent only; ibverbs/UCT attribution is a
 # separate experiment because MN5's mlx5 transport bypasses ibv_post_send.
-#SBATCH --job-name=pcomm-ucx-provider
+#SBATCH --job-name=comshu-ucx-provider
 #SBATCH --account=etur02
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
@@ -13,10 +13,10 @@
 #SBATCH --error=ucx-provider-%j.err
 set -euo pipefail
 
-ROOT="${PCOMM_ROOT:-$SLURM_SUBMIT_DIR}"
+ROOT="${COMSHU_ROOT:-$SLURM_SUBMIT_DIR}"
 HERE="$ROOT/tests/hpc/probes/ucx_api_coverage"
-BUILD="${PCOMM_BUILD:-$ROOT/build-ucx-provider-$SLURM_JOB_ID}"
-OUT="${PCOMM_UCX_API_OUT:-$HERE/provider-$SLURM_JOB_ID}"
+BUILD="${COMSHU_BUILD:-$ROOT/build-ucx-provider-$SLURM_JOB_ID}"
+OUT="${COMSHU_UCX_API_OUT:-$HERE/provider-$SLURM_JOB_ID}"
 mkdir -p "$OUT"
 
 module load gcc/13.2.0 cmake nvidia-hpc-sdk/25.7 >/dev/null 2>&1
@@ -28,19 +28,19 @@ UCX="$SDK/comm_libs/12.9/hpcx/hpcx-2.22.1/ucx"
 export OMPI_CC=gcc
 export LD_LIBRARY_PATH="/apps/ACC/GCC/13.2.0/lib64:$UCX/lib:${LD_LIBRARY_PATH:-}"
 
-cmake -S "$ROOT" -B "$BUILD" -DPCOMM_BUILD_TESTS=OFF \
-    -DPCOMM_PROVIDER_UCX=ON -DPCOMM_PROVIDER_IBVERBS=OFF \
+cmake -S "$ROOT" -B "$BUILD" -DCOMSHU_BUILD_TESTS=OFF \
+    -DCOMSHU_PROVIDER_UCX=ON -DCOMSHU_PROVIDER_IBVERBS=OFF \
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
     -DUCX_UCP_LIB="$UCX/lib/libucp.so" -DUCX_INCLUDE_DIR="$UCX/include" >/dev/null
-cmake --build "$BUILD" -j 2 --target pcomm_launcher ucx_trace
+cmake --build "$BUILD" -j 2 --target comshu_launcher ucx_trace
 "$MPI/bin/mpicc" -O2 -Wall -Wextra -Werror -o "$OUT/mpi_calls" "$HERE/mpi_calls.c"
 
-export PCOMM_PROVIDER_PATH="$BUILD/providers/ucx"
-export LD_LIBRARY_PATH="$BUILD/libpcomm:$LD_LIBRARY_PATH"
+export COMSHU_PROVIDER_PATH="$BUILD/providers/ucx"
+export LD_LIBRARY_PATH="$BUILD/libcomshu:$LD_LIBRARY_PATH"
 
 echo "=== UCX public-provider smoke ==="
 echo "job: $SLURM_JOB_ID"
 echo "nodes: $SLURM_JOB_NODELIST"
 "$MPI/bin/mpirun" -np 2 --map-by ppr:1:node \
-    -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
-    "$BUILD/pcomm/pcomm" run -p ucx -o "$OUT/capture" -- "$OUT/mpi_calls"
+    -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
+    "$BUILD/comshu/comshu" run -p ucx -o "$OUT/capture" -- "$OUT/mpi_calls"

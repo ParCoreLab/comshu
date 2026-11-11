@@ -46,7 +46,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace pcomm::providers::nccl {
+namespace comshu::providers::nccl {
 
 // Verbatim reimplementation of NCCL's eatHash/digestHash pair. The two-word
 // accumulator and the constants are NCCL's; changing any of them changes the
@@ -89,4 +89,4 @@ inline std::uint64_t nccl_comm_hash(const void* unique_id, std::size_t size) {
     return nccl_digest_hash(acc);
 }
 
-}  // namespace pcomm::providers::nccl
+}  // namespace comshu::providers::nccl

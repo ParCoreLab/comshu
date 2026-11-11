@@ -1,4 +1,4 @@
-// Minimal NCCL all-reduce over MPI bootstrap, for exercising the pcomm ibverbs
+// Minimal NCCL all-reduce over MPI bootstrap, for exercising the comshu ibverbs
 // provider on a real collective. Inter-node all-reduce drives NCCL's IB
 // transport (ibv_reg_mr on GPU buffers, create_qp/modify_qp topology,
 // ibv_post_send/poll_cq on the proxy threads).

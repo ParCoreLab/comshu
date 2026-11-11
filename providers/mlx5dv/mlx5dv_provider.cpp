@@ -34,16 +34,16 @@
 #include <mlx5/mlx5_ifc.h>
 #include <mlx5/mlx5_prm.h>
 
-#include "pcomm/core/ids.hpp"
-#include "pcomm/core/mem_attr.hpp"
-#include "pcomm/core/records.hpp"
-#include "pcomm/engine_abi.h"
-#include "pcomm/provider/provider.hpp"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/ids.hpp"
+#include "comshu/core/mem_attr.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/provider/provider.hpp"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/tracer.hpp"
 
 #include "mlx5_event_source.hpp"
-#include "pcomm/core/dmabuf_registry.hpp"
+#include "comshu/core/dmabuf_registry.hpp"
 #include "mlx5_records.hpp"
 #include "host_doorbell.hpp"
 #include "sq_watch.hpp"
@@ -52,18 +52,18 @@
 
 namespace mlx5 {
 
-namespace rr = pcomm::providers::mlx5dv::records;
-using pcomm::rec::InternDomain;
+namespace rr = comshu::providers::mlx5dv::records;
+using comshu::rec::InternDomain;
 using rr::kUnknownDevice;
 using rr::UmemBinding;
 using rr::UmemEntry;
 
-static pcomm::rec::Recorder<>& rec() {
-    static pcomm::rec::Recorder<> proxy;
+static comshu::rec::Recorder<>& rec() {
+    static comshu::rec::Recorder<> proxy;
     return proxy;
 }
 
-static pcomm::core::Handle h(const void* p) {
+static comshu::core::Handle h(const void* p) {
     return rec().intern(InternDomain::Pointer, reinterpret_cast<std::uint64_t>(p));
 }
 
@@ -88,7 +88,7 @@ static pcomm::core::Handle h(const void* p) {
 struct UmemInfo {
     std::uint64_t         addr{0};
     std::uint64_t         size{0};
-    pcomm::core::DeviceId device{kUnknownDevice};
+    comshu::core::DeviceId device{kUnknownDevice};
     UmemBinding           binding{UmemBinding::ByAddress};
     std::int32_t          dmabuf_fd{-1};
     // The buffer's real GPU virtual address base: the umem addr for a by_addr
@@ -156,7 +156,7 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
     //
     // What the descriptor can NOW yield is the range it was exported from:
     // NVSHMEM called cuMemGetHandleForAddressRange(&fd, dptr, size, ...) one
-    // step earlier and pcomm::core::dmabuf::lookup carries that here. It feeds two things
+    // step earlier and comshu::core::dmabuf::lookup carries that here. It feeds two things
     // that were previously impossible, neither of which is the umem's address:
     //
     //   - the owning device, which gpu_driven otherwise has to infer from the
@@ -166,21 +166,21 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
     // If the conversion was not observed, both stay unknown. That is the answer
     // this provider gave for every dmabuf umem until now, so a miss is a
     // regression to the previous behaviour rather than a new fiction.
-    pcomm::core::dmabuf::Range dmabuf_range{};
-    const bool resolved = by_dmabuf && pcomm::core::dmabuf::lookup(dmabuf_fd, &dmabuf_range);
+    comshu::core::dmabuf::Range dmabuf_range{};
+    const bool resolved = by_dmabuf && comshu::core::dmabuf::lookup(dmabuf_fd, &dmabuf_range);
 
     const std::uint64_t gpu_base =
         by_dmabuf ? (resolved ? dmabuf_range.base : 0) : reinterpret_cast<std::uint64_t>(addr);
     UmemInfo info{reinterpret_cast<std::uint64_t>(addr),
                   size,
                   by_dmabuf ? (resolved ? dmabuf_range.device : kUnknownDevice)
-                            : pcomm::core::device_of(addr),
+                            : comshu::core::device_of(addr),
                   by_dmabuf ? UmemBinding::ByDmabuf : UmemBinding::ByAddress,
                   dmabuf_fd,
                   gpu_base,
                   out};
     remember_umem(ctx, out->umem_id, info);
-    rec().record(pcomm::core::Temporal::none(),
+    rec().record(comshu::core::Temporal::none(),
                  rr::Mlx5Umem{{},
                               {},
                               h(out),
@@ -213,15 +213,15 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
     if (!by_dmabuf) {
         rec().record(
             rec().now_instant(),
-            pcomm::core::records::MemObject{
-                {}, {}, h(addr), pcomm::core::kNullHandle, {info.addr, info.size}, info.device});
+            comshu::core::records::MemObject{
+                {}, {}, h(addr), comshu::core::kNullHandle, {info.addr, info.size}, info.device});
     } else if (resolved) {
         const std::uint64_t base = dmabuf_range.base + reinterpret_cast<std::uint64_t>(addr);
         rec().record(rec().now_instant(),
-                     pcomm::core::records::MemObject{{},
+                     comshu::core::records::MemObject{{},
                                                      {},
                                                      h(reinterpret_cast<const void*>(base)),
-                                                     pcomm::core::kNullHandle,
+                                                     comshu::core::kNullHandle,
                                                      {base, info.size},
                                                      info.device});
     }
@@ -336,7 +336,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
         std::fprintf(stderr, "[hostdb] CREATE_QP qpn=%u uar_page=%u gpu_driven=%d\n", qp_num,
                      DEVX_GET(qpc, qpc, uar_page), gpu_driven ? 1 : 0);
 
-    rec().record(pcomm::core::Temporal::none(),
+    rec().record(comshu::core::Temporal::none(),
                  rr::Mlx5DevxQp{{},
                                 {},
                                 h(obj),
@@ -463,7 +463,7 @@ static void decode_create_cq(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
     UmemInfo   cq{};
     const bool known = lookup_umem(ctx, umem_id, &cq);
 
-    rec().record(pcomm::core::Temporal::none(),
+    rec().record(comshu::core::Temporal::none(),
                  rr::Mlx5DevxCq{{},
                                 {},
                                 h(obj),
@@ -538,13 +538,13 @@ Profiler::Profiler() {
     // Registering costs nothing on a host with no CUDA: the symbols are simply
     // never resolved, the callbacks never run, and every dmabuf umem reports the
     // unknown device it reported before.
-    pcomm::core::dmabuf::install();
+    comshu::core::dmabuf::install();
     // ...and the route the dynamic doors cannot see: cudart_static's, through
     // the driver export table. NCCL GIN's window conversion arrives only here.
     dmabuf_door::install();
 
     // The doorbell hijack (cudaHost* interposers below) is opt-in and OFF by
-    // default: it is the one pcomm mechanism that sits in the application's data
+    // default: it is the one comshu mechanism that sits in the application's data
     // path. The exported interposers pass through untouched unless enabled; here
     // we only announce it, because from an enabled run the timing is a
     // measurement of the instrumented system, not the application.
@@ -585,7 +585,7 @@ Profiler::Profiler() {
                 // between two of its looks, and says exactly that: a Window, the
                 // TimeKind that exists for a bound rather than a measurement.
                 const auto domain = rec().now().domain;
-                rec().record(pcomm::core::Temporal::window({domain, ticks_lo}, {domain, ticks_hi}),
+                rec().record(comshu::core::Temporal::window({domain, ticks_lo}, {domain, ticks_hi}),
                              r);
             });
         static_assert(hijack::kSubmitterGpuDoorbell ==
@@ -602,7 +602,7 @@ Profiler::Profiler() {
     if (sqwatch::enabled()) {
         sqwatch::set_coverage_sink(
             [](const sqwatch::Coverage& c) {
-                rec().record(pcomm::core::Temporal::none(),
+                rec().record(comshu::core::Temporal::none(),
                              rr::Mlx5SendCoverage{{},
                                                   {},
                                                   c.published,
@@ -619,7 +619,7 @@ Profiler::Profiler() {
                                                   0,
                                                   0});
             },
-            pcomm::Config::from_env().rank);
+            comshu::Config::from_env().rank);
     }
 
     // ...but the CUDA export-table patcher is the GPU path's alone. The host
@@ -628,7 +628,7 @@ Profiler::Profiler() {
     // exists for.
     if (hijack::enabled()) {
         hijack::install();
-        std::fprintf(stderr, "[pcomm] doorbell hijack ENABLED — this run sits in the data "
+        std::fprintf(stderr, "[comshu] doorbell hijack ENABLED — this run sits in the data "
                              "path and its timing is perturbed; do not draw latency "
                              "conclusions from it\n");
     }
@@ -640,16 +640,16 @@ Profiler::Profiler() {
     // directory came back empty because no engine had been acquired to hold a
     // sink. "The provider captured nothing" looked exactly like "the hooks do
     // not work", which is the wrong half of the system to go debugging.
-    const pcomm::Config cfg = pcomm::Config::from_env();
+    const comshu::Config cfg = comshu::Config::from_env();
     // Declare before acquiring: checks our ABI against the engine's and that
     // nobody else has claimed 200-299. That matters more here than for ibverbs,
-    // because this provider is designed to co-run with it and pcomm-read merges
+    // because this provider is designed to co-run with it and comshu-read merges
     // provider streams assuming the ranges are disjoint.
-    if (pcomm_engine_declare_provider("mlx5dv", pcomm::core::id_range::mlx5dv_lo,
-                                      pcomm::core::id_range::mlx5dv_hi,
-                                      PCOMM_ENGINE_ABI_VERSION) != 0)
+    if (comshu_engine_declare_provider("mlx5dv", comshu::core::id_range::mlx5dv_lo,
+                                      comshu::core::id_range::mlx5dv_hi,
+                                      COMSHU_ENGINE_ABI_VERSION) != 0)
         return;  // the engine has already explained why on stderr
-    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     this->register_post<devx_umem_reg_tag>(
         [](mlx5dv_devx_umem* out, ibv_context* ctx, void* addr, size_t size, uint32_t access,
@@ -698,7 +698,7 @@ Profiler::Profiler() {
             if (hostdb::debug_on())
                 std::fprintf(stderr, "[hostdb] UAR alloc page_id=%u flags=0x%x reg_addr=%p\n",
                              out->page_id, flags, out->reg_addr);
-            rec().record(pcomm::core::Temporal::none(),
+            rec().record(comshu::core::Temporal::none(),
                          rr::Mlx5Uar{{},
                                      {},
                                      h(out),
@@ -724,8 +724,8 @@ Profiler::Profiler() {
         if (sqwatch::enabled())
             sqwatch::unwatch_umem(umem);
         forget_umem(umem);
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{
-                                              {}, {}, h(umem), rr::Mlx5Umem::pcomm_type_id});
+        rec().record(rec().now_instant(), comshu::core::records::EntityClose{
+                                              {}, {}, h(umem), rr::Mlx5Umem::comshu_type_id});
     });
     this->register_post<devx_free_uar_tag>([](mlx5dv_devx_uar* uar, auto...) {
         if (!uar)
@@ -737,7 +737,7 @@ Profiler::Profiler() {
         if (hostdb::enabled())
             hostdb::disarm(uar);
         rec().record(rec().now_instant(),
-                     pcomm::core::records::EntityClose{{}, {}, h(uar), rr::Mlx5Uar::pcomm_type_id});
+                     comshu::core::records::EntityClose{{}, {}, h(uar), rr::Mlx5Uar::comshu_type_id});
     });
 
     this->register_post<devx_obj_create_tag>([](mlx5dv_devx_obj* obj, ibv_context* ctx,
@@ -779,7 +779,7 @@ Profiler::Profiler() {
             if (!qp)
                 return;
             rec().record(
-                pcomm::core::Temporal::none(),
+                comshu::core::Temporal::none(),
                 rr::Mlx5QueuePair{{},
                                   {},
                                   h(qp),
@@ -790,7 +790,7 @@ Profiler::Profiler() {
             // and both create queue pairs it tears down). Registering the handle
             // is what makes the close name mlx5_queue_pair — the door that
             // actually created it — instead of ib_queue_pair.
-            pcomm_engine_note_qp(qp, rr::Mlx5QueuePair::pcomm_type_id);
+            comshu_engine_note_qp(qp, rr::Mlx5QueuePair::comshu_type_id);
         });
 
     this->register_post<devx_obj_modify_tag>([](int ret, mlx5dv_devx_obj* obj, const void* cmd_in,
@@ -855,7 +855,7 @@ extern "C" ibv_qp* mlx5dv_create_qp(ibv_context* ctx, ibv_qp_init_attr_ex* attr,
 
 // --- provider registration ---------------------------------------------------
 
-namespace pcomm::providers {
+namespace comshu::providers {
 
 class Mlx5dvProvider final : public provider::IProvider {
 public:
@@ -867,26 +867,26 @@ public:
         return true;
     }
     void shutdown() override {
-        pcomm_engine_drain_thread();
-        pcomm_engine_release();
+        comshu_engine_drain_thread();
+        comshu_engine_release();
     }
 };
 
-}  // namespace pcomm::providers
+}  // namespace comshu::providers
 
-PCOMM_EXPORT_PROVIDER(pcomm::providers::Mlx5dvProvider)
+COMSHU_EXPORT_PROVIDER(comshu::providers::Mlx5dvProvider)
 
-static void __attribute__((constructor)) pcomm_mlx5dv_load() {
+static void __attribute__((constructor)) comshu_mlx5dv_load() {
     mlx5::Profiler::instance();
 }
-static void __attribute__((destructor)) pcomm_mlx5dv_unload() {
+static void __attribute__((destructor)) comshu_mlx5dv_unload() {
     if (mlx5::sqwatch::enabled())
-        mlx5::sqwatch::shutdown(pcomm::Config::from_env().rank);
+        mlx5::sqwatch::shutdown(comshu::Config::from_env().rank);
     if (mlx5::hijack::enabled())
-        mlx5::hijack::report_and_shutdown(pcomm::Config::from_env().rank);
+        mlx5::hijack::report_and_shutdown(comshu::Config::from_env().rank);
     if (mlx5::hostdb::enabled())
-        mlx5::hostdb::report_and_shutdown(pcomm::Config::from_env().rank);
-    mlx5::dmabuf_door::report(pcomm::Config::from_env().rank);
-    pcomm_engine_drain_thread();
-    pcomm_engine_release();
+        mlx5::hostdb::report_and_shutdown(comshu::Config::from_env().rank);
+    mlx5::dmabuf_door::report(comshu::Config::from_env().rank);
+    comshu_engine_drain_thread();
+    comshu_engine_release();
 }

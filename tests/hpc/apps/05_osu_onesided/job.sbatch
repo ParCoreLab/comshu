@@ -1,10 +1,10 @@
 #!/bin/bash
-# 05_osu_onesided — the OSU one-sided benchmarks against pcomm's remote-key and
+# 05_osu_onesided — the OSU one-sided benchmarks against comshu's remote-key and
 # one-sided doors.
 #
 # WHAT THIS JOB IS FOR. `ucx_rkey` (626) and `ucx_rkey_pack` (628) are new, and
 # every one-sided capture this project has ever taken was of a workload the
-# pcomm authors wrote themselves. OSU is third-party code with an EXACT oracle:
+# comshu authors wrote themselves. OSU is third-party code with an EXACT oracle:
 # the number of one-sided operations, their size, their direction and the rank
 # that issues them all follow from four command-line arguments and twenty lines
 # of osu_put_bw.c. PREDICTION.md was committed before this job was ever
@@ -17,7 +17,7 @@
 #   while squeue -u koc296797 -h | grep -q .; do sleep 60; done
 #   sbatch tests/hpc/apps/05_osu_onesided/job.sbatch
 #
-#SBATCH --job-name=pcomm-05-osu_onesided
+#SBATCH --job-name=comshu-05-osu_onesided
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -28,10 +28,10 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-STUDY="$PCOMM_ROOT/tests/hpc/apps/05_osu_onesided"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+STUDY="$COMSHU_ROOT/tests/hpc/apps/05_osu_onesided"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 OSU="${OSU:-$HOME/osu-7.5/libexec/osu-micro-benchmarks/mpi/one-sided}"
 for b in osu_put_bw osu_get_bw osu_acc_latency osu_fop_latency; do
@@ -62,7 +62,7 @@ CHAR_ARGS=(-m 4:4 -T MPI_CHAR -i 20 -x 5)
 # The UCX tree belonging to the MPI THAT WILL ACTUALLY RUN. The provider
 # interposes public UCP symbols; build against one libucp and run against
 # another and the interposition silently does not engage.
-UCX_HOME_RESOLVED="$(pcomm_find_ucx)" || {
+UCX_HOME_RESOLVED="$(comshu_find_ucx)" || {
   echo "!! no HPC-X UCX tree found beside this MPI ($(command -v mpirun))" >&2; exit 1; }
 export LD_LIBRARY_PATH="$UCX_HOME_RESOLVED/lib:$LD_LIBRARY_PATH"
 
@@ -77,12 +77,12 @@ ompi_info --param osc ucx --level 9 2>/dev/null | head -20
 
 # --mca osc ucx is LOAD-BEARING. With osc/rdma or osc/pt2pt the same MPI_Put
 # becomes an active message, no remote key is ever unpacked, and every table
-# this study is about is empty for a reason that has nothing to do with pcomm.
+# this study is about is empty for a reason that has nothing to do with comshu.
 # Set twice on purpose: as an mpirun flag, and in the environment, so that a
 # launch that goes through srun rather than mpirun still gets it.
 export OMPI_MCA_osc=ucx OMPI_MCA_pml=ucx
 MPI_ARGS=(-np 2 --map-by ppr:1:node --mca osc ucx --mca pml ucx
-          -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH -x OMPI_MCA_osc -x OMPI_MCA_pml)
+          -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH -x OMPI_MCA_osc -x OMPI_MCA_pml)
 
 ###############################################################################
 # PHASE 1 — THE BARE RUNS. Not optional, and the apps brief says why: a capture
@@ -121,7 +121,7 @@ bare osu_fop_latency  "${CHAR_ARGS[@]}" || echo "!! bare osu_fop_latency -T MPI_
 echo "############ PHASE 2: CAPTURED ############"
 # The output directory is computed by the CALLER and passed in. Deriving it
 # inside the function and recovering it from the function's stdout would mean
-# piping the whole arm through `tail`, and everything pcomm printed on the way —
+# piping the whole arm through `tail`, and everything comshu printed on the way —
 # which is the first thing to read when an arm goes wrong — would vanish with it.
 #
 # THE PRIMARY ARM IS NAMED FOR THE STUDY, not for the arm: the aggregator looks
@@ -131,23 +131,23 @@ capture() {  # capture <outdir> <providers> <binary> <args...>
   local out="$1" prov="$2" bin="$3"; shift 3
   echo "======== capturing $bin -> $out  (-p $prov)"
   rm -rf "$out"
-  mpirun "${MPI_ARGS[@]}" "$PCOMM" run -p "$prov" -o "$out" -- "$OSU/$bin" "$@"
+  mpirun "${MPI_ARGS[@]}" "$COMSHU" run -p "$prov" -o "$out" -- "$OSU/$bin" "$@"
   local rc=$?
   echo "arm=$(basename "$out") exit=$rc"
   ls -d "$out"/rank-* 2>/dev/null \
-    || echo "!! no rank-* under $out — the workload never started under pcomm"
-  "$PCOMM" read   "$out"
-  "$PCOMM" export "$out" --csv "$out.csv"
-  pcomm_derive    "$out"
+    || echo "!! no rank-* under $out — the workload never started under comshu"
+  "$COMSHU" read   "$out"
+  "$COMSHU" export "$out" --csv "$out.csv"
+  comshu_derive    "$out"
   return $rc
 }
 
-OUT_PUT="$(pcomm_out osu_onesided)"
-OUT_GET="$(pcomm_out osu_onesided_get)"
-OUT_ACC="$(pcomm_out osu_onesided_acc)"
-OUT_FOP="$(pcomm_out osu_onesided_fop)"
-OUT_CHR="$(pcomm_out osu_onesided_char)"
-OUT_IB="$(pcomm_out osu_onesided_ib)"
+OUT_PUT="$(comshu_out osu_onesided)"
+OUT_GET="$(comshu_out osu_onesided_get)"
+OUT_ACC="$(comshu_out osu_onesided_acc)"
+OUT_FOP="$(comshu_out osu_onesided_fop)"
+OUT_CHR="$(comshu_out osu_onesided_char)"
+OUT_IB="$(comshu_out osu_onesided_ib)"
 
 capture "$OUT_PUT" ucx,ucx_deep osu_put_bw      "${BW_ARGS[@]}"   || true
 capture "$OUT_GET" ucx,ucx_deep osu_get_bw      "${BW_ARGS[@]}"   || true
@@ -188,11 +188,11 @@ doors() {
   echo "-- ucx_atomic op/op_size/status"; bycol "$out.csv/ucx_atomic.csv" op op_size status
   echo "-- uct_send op";                  bycol "$out.csv/uct_send.csv"   op
   if [ -d "$out.pq" ]; then
-    "$PCOMM" sql "$out.pq" \
+    "$COMSHU" sql "$out.pq" \
       "SELECT rank, tl_name, op, sum(ops) AS ops, sum(out_bytes) AS out_bytes,
               sum(in_bytes) AS in_bytes FROM transport_mix GROUP BY 1,2,3 ORDER BY 1,2,3" 2>&1
-    "$PCOMM" sql "$out.pq" "SELECT finding, severity, n, note FROM link_health WHERE n > 0 ORDER BY severity" 2>&1
-    "$PCOMM" sql "$out.pq" "SELECT * FROM comm_edges ORDER BY bytes DESC" 2>&1
+    "$COMSHU" sql "$out.pq" "SELECT finding, severity, n, note FROM link_health WHERE n > 0 ORDER BY severity" 2>&1
+    "$COMSHU" sql "$out.pq" "SELECT * FROM comm_edges ORDER BY bytes DESC" 2>&1
   fi
 }
 for a in "$OUT_PUT" "$OUT_GET" "$OUT_ACC" "$OUT_FOP" "$OUT_CHR" "$OUT_IB"; do
@@ -220,8 +220,8 @@ done
 ###############################################################################
 echo "############ PHASE 4: ASSERTIONS ############"
 for a in "$OUT_PUT" "$OUT_GET"; do
-  [ -n "$a" ] && bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$a.csv" "$STUDY"
+  [ -n "$a" ] && bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$a.csv" "$STUDY"
 done
 for a in "$OUT_ACC" "$OUT_FOP"; do
-  [ -n "$a" ] && bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$a.csv" "$STUDY/arms/atomic"
+  [ -n "$a" ] && bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$a.csv" "$STUDY/arms/atomic"
 done

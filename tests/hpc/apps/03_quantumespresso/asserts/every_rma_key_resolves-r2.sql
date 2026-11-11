@@ -17,7 +17,7 @@
 --     TESTABLE ON QUANTUM ESPRESSO. That gap belongs to a one-sided workload
 --     (05_osu_onesided). What CAN be said from the documentation alone, without
 --     a capture: the join is documented but nothing performs it. ucx_rma names
---     an endpoint (pcomm.fbs 610); ucx_ep_connection maps an endpoint to a
+--     an endpoint (comshu.fbs 610); ucx_ep_connection maps an endpoint to a
 --     remote_prefix_hash (624); demos/figures/11-cross-rank-keys.svg names
 --     prefix_hash as one of the five cross-rank keys, joining to another rank's
 --     ucx_worker_address (622). So the chain exists on paper. What does not

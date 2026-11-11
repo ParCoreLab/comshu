@@ -45,14 +45,14 @@
 # key. A run that only exercised perftest would prove nothing about the case we
 # actually need.
 #
-# POSITIVE CONTROL: any [pcomm-cqeprobe] line at all. A run with none did not
+# POSITIVE CONTROL: any [comshu-cqeprobe] line at all. A run with none did not
 # execute the probe, and nothing it did not print is a finding. An earlier probe
 # here mis-stated its own control and another reported a false positive because
 # grep -c matched the filename rather than a line in it.
 #
 #   sbatch tests/hpc/probes/cqeread/job.sbatch
 #
-#SBATCH --job-name=pcomm-probe-cqeread
+#SBATCH --job-name=comshu-probe-cqeread
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -62,14 +62,14 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
-export PCOMM_CQE_PROBE=1
+export COMSHU_CQE_PROBE=1
 
 # --- arm 1: perftest, QP receives -------------------------------------------
-OUT=$(pcomm_out probe_cqeread_qp); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out probe_cqeread_qp); rm -rf "$OUT"; mkdir -p "$OUT"
 nodes=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
 server=${nodes[0]}; client=${nodes[1]}
 echo "=== ARM 1 (QP receives): ib_send_bw server=$server client=$client"
@@ -77,39 +77,39 @@ echo "=== ARM 1 (QP receives): ib_send_bw server=$server client=$client"
 devcmd='DEV=$(ibv_devinfo 2>/dev/null | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print d; exit}")'
 
 srun --nodes=1 --ntasks=1 --nodelist="$server" --overlap bash -c \
-  "$devcmd; PCOMM_CQE_PROBE=1 PCOMM_RANK=0 '$PCOMM' run -p ib -o '$OUT' -- ib_send_bw -d \$DEV -n 1000 -s 8192" &
+  "$devcmd; COMSHU_CQE_PROBE=1 COMSHU_RANK=0 '$COMSHU' run -p ib -o '$OUT' -- ib_send_bw -d \$DEV -n 1000 -s 8192" &
 SRV=$!
 sleep 6
 srun --nodes=1 --ntasks=1 --nodelist="$client" --overlap bash -c \
-  "$devcmd; PCOMM_CQE_PROBE=1 PCOMM_RANK=1 '$PCOMM' run -p ib -o '$OUT' -- ib_send_bw -d \$DEV -n 1000 -s 8192 $server"
+  "$devcmd; COMSHU_CQE_PROBE=1 COMSHU_RANK=1 '$COMSHU' run -p ib -o '$OUT' -- ib_send_bw -d \$DEV -n 1000 -s 8192 $server"
 CLI=$?; wait $SRV; SRV_RC=$?
 echo "arm1 client_rc=$CLI server_rc=$SRV_RC"
 
 # --- arm 2: NVSHMEM hub, SRQ receives ---------------------------------------
 # Same binary and build discipline as case 16 — see its job.sbatch for why the
 # arch is in the name and why LD_LIBRARY_PATH is exported after the build.
-PCOMM_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-PCOMM_SM=${PCOMM_SM:-90}
-APP="$HOME/asym_patterns-sm$PCOMM_SM"
+COMSHU_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+COMSHU_SM=${COMSHU_SM:-90}
+APP="$HOME/asym_patterns-sm$COMSHU_SM"
 
-if [ ! -x "$APP" ] || [ "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
-  pcomm_load_build
+if [ ! -x "$APP" ] || [ "$COMSHU_ROOT/tests/hpc/asym_patterns.cu" -nt "$APP" ]; then
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
-    -gencode arch=compute_$PCOMM_SM,code=sm_$PCOMM_SM -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
+    -gencode arch=compute_$COMSHU_SM,code=sm_$COMSHU_SM -Wno-deprecated-gpu-targets \
+    "$COMSHU_ROOT/tests/hpc/asym_patterns.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -Xlinker --disable-new-dtags -Xlinker -rpath -Xlinker "$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart \
     || { echo "!! nvcc failed — refusing to run a stale or missing binary" >&2; exit 1; }
 fi
-pcomm_load_runtime
+comshu_load_runtime
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
-OUT2=$(pcomm_out probe_cqeread_srq); rm -rf "$OUT2"; mkdir -p "$OUT2"
+OUT2=$(comshu_out probe_cqeread_srq); rm -rf "$OUT2"; mkdir -p "$OUT2"
 echo "=== ARM 2 (SRQ receives): NVSHMEM hub, one rank per node"
 mpirun -np 2 --map-by ppr:1:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x PCOMM_CQE_PROBE -x NVSHMEM_BOOTSTRAP=MPI \
-  "$PCOMM" run -p ib -o "$OUT2" -- "$APP" hub 4096 3
+  -x COMSHU_PROVIDER_PATH -x COMSHU_CQE_PROBE -x NVSHMEM_BOOTSTRAP=MPI \
+  "$COMSHU" run -p ib -o "$OUT2" -- "$APP" hub 4096 3
 echo "arm2 mpirun exit=$?"
 
 # --- the reading -------------------------------------------------------------
@@ -123,14 +123,14 @@ echo "arm2 mpirun exit=$?"
 # mismatch" against 14,957 CQEs that all agreed. That is the exact false
 # positive this probe's own header warns about, committed by the probe.
 set +x
-LOG="$SLURM_SUBMIT_DIR/pcomm-probe-cqeread.$SLURM_JOB_ID.out"
+LOG="$SLURM_SUBMIT_DIR/comshu-probe-cqeread.$SLURM_JOB_ID.out"
 sync; sleep 2
 echo "=== POSITIVE CONTROL: probe lines present? ==="
-grep -c '\[pcomm-cqeprobe\]' "$LOG" || echo "0 — PROBE DID NOT RUN, nothing below is a finding"
+grep -c '\[comshu-cqeprobe\]' "$LOG" || echo "0 — PROBE DID NOT RUN, nothing below is a finding"
 echo "=== per-rank summaries ==="
-grep '\[pcomm-cqeprobe\] rank=' "$LOG" | sort -u
+grep '\[comshu-cqeprobe\] rank=' "$LOG" | sort -u
 echo "=== sample CQE rows ==="
-grep '\[pcomm-cqeprobe\] rank=.* cqe idx=' "$LOG" | head -24
+grep '\[comshu-cqeprobe\] rank=.* cqe idx=' "$LOG" | head -24
 echo "=== THE RECORDS: does the exact join actually resolve? ==="
 # The probe above proves the CQE is readable. This proves the two records built
 # on that reading agree with each other and with the wr_id path they replace.
@@ -153,8 +153,8 @@ echo "=== THE RECORDS: does the exact join actually resolve? ==="
 #                                    here is the first that actually tests it.
 #                                    slot_matched counts pairs, so it exceeds
 #                                    recv_cqe once this is nonzero.
-"$PCOMM" export "$OUT2" --csv "$OUT2.csv" >/dev/null 2>&1
-"$PCOMM" sql "$OUT2.csv" "
+"$COMSHU" export "$OUT2" --csv "$OUT2.csv" >/dev/null 2>&1
+"$COMSHU" sql "$OUT2.csv" "
   WITH slotted AS (
     SELECT * FROM ib_post_recv WHERE origin = 'srq' AND slot >= 0
   )
@@ -172,10 +172,10 @@ echo "=== THE RECORDS: does the exact join actually resolve? ==="
             GROUP BY 1,2,3 HAVING count(*) > 1))           AS reused_slots" 2>&1 | head -6
 
 echo "=== and what object_access made of it ==="
-"$PCOMM" link "$OUT2.csv" >/dev/null 2>&1
-"$PCOMM" sql "$OUT2.csv" \
+"$COMSHU" link "$OUT2.csv" >/dev/null 2>&1
+"$COMSHU" sql "$OUT2.csv" \
   "SELECT source, count(*) rows_, sum(CAST(exact AS INT)) exact_ FROM object_access GROUP BY 1 ORDER BY 1" 2>&1 | head -6
 
 echo "=== any mismatch at all ==="
-grep -E '\[pcomm-cqeprobe\].*(QPN-MISMATCH|CLASS-BAD|unusable|not resolvable|WITHOUT mlx5dv)' "$LOG" | head -20 \
+grep -E '\[comshu-cqeprobe\].*(QPN-MISMATCH|CLASS-BAD|unusable|not resolvable|WITHOUT mlx5dv)' "$LOG" | head -20 \
   || echo "  (none)"

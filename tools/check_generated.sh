@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fail if libpcomm/schema/generated/pcomm_generated.h is not what flatc produces
-# from libpcomm/schema/pcomm.fbs today.
+# Fail if libcomshu/schema/generated/comshu_generated.h is not what flatc produces
+# from libcomshu/schema/comshu.fbs today.
 #
 # The header is committed on purpose — MN5's login node is airgapped and has no
 # flatc, so the build must never need to run it. The cost of committing it is
@@ -15,7 +15,7 @@
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-schema="$root/libpcomm/schema/pcomm.fbs"
+schema="$root/libcomshu/schema/comshu.fbs"
 
 # PRESENT AND EXECUTABLE IS NOT THE SAME AS RUNNABLE, which cost a real
 # investigation. `.tools/flatc` is gitignored and ARCH-SPECIFIC: the copy sitting
@@ -25,7 +25,7 @@ schema="$root/libpcomm/schema/pcomm.fbs"
 # "flatc rejected the schema" branch below and reported a SCHEMA defect on two
 # machines whose schema was fine. Probe by running it, the same reasoning
 # build_all.sh gives for probing a toolchain rather than assuming one.
-flatc="${PCOMM_FLATC:-}"
+flatc="${COMSHU_FLATC:-}"
 runnable() { [[ -n "$1" ]] && "$1" --version >/dev/null 2>&1; }
 if [[ -z "$flatc" ]]; then
     if runnable "$root/.tools/flatc"; then flatc="$root/.tools/flatc"
@@ -36,7 +36,7 @@ fi
 
 if ! runnable "$flatc"; then
     echo "generated-header check: SKIPPED — no flatc that runs on this host"
-    echo "  looked at: \$PCOMM_FLATC, $root/.tools/flatc, PATH"
+    echo "  looked at: \$COMSHU_FLATC, $root/.tools/flatc, PATH"
     if [[ -e "$root/.tools/flatc" ]] && ! runnable "$root/.tools/flatc"; then
         echo "  NOTE: $root/.tools/flatc exists but does not execute here —"
         echo "        it is arch-specific and was almost certainly synced from"
@@ -50,7 +50,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 if ! "$flatc" --cpp -o "$tmp/cpp" "$schema" || ! "$flatc" --python -o "$tmp/py" "$schema"; then
-    echo "generated-header check: FAIL — flatc rejected libpcomm/schema/pcomm.fbs"
+    echo "generated-header check: FAIL — flatc rejected libcomshu/schema/comshu.fbs"
     exit 1
 fi
 
@@ -63,7 +63,7 @@ check_tree() {   # <label> <committed path> <fresh path> <regen command>
         echo "  [ok ] $1"
         return
     fi
-    echo "  [XX ] $1 — committed output is not what pcomm.fbs generates"
+    echo "  [XX ] $1 — committed output is not what comshu.fbs generates"
     echo "        regenerate: $4"
     sed -n '1,40p' "$tmp/drift.diff"
     lines=$(wc -l < "$tmp/drift.diff")
@@ -71,15 +71,15 @@ check_tree() {   # <label> <committed path> <fresh path> <regen command>
     rc=1
 }
 
-echo "generated-code check vs libpcomm/schema/pcomm.fbs ($("$flatc" --version))"
-check_tree "generated/pcomm_generated.h" \
-           "$root/libpcomm/schema/generated/pcomm_generated.h" \
-           "$tmp/cpp/pcomm_generated.h" \
-           "cd libpcomm/schema && flatc --cpp -o generated/ pcomm.fbs"
+echo "generated-code check vs libcomshu/schema/comshu.fbs ($("$flatc" --version))"
+check_tree "generated/comshu_generated.h" \
+           "$root/libcomshu/schema/generated/comshu_generated.h" \
+           "$tmp/cpp/comshu_generated.h" \
+           "cd libcomshu/schema && flatc --cpp -o generated/ comshu.fbs"
 check_tree "generated-python/" \
-           "$root/libpcomm/schema/generated-python" \
+           "$root/libcomshu/schema/generated-python" \
            "$tmp/py" \
-           "cd libpcomm/schema && flatc --python -o generated-python/ pcomm.fbs"
+           "cd libcomshu/schema && flatc --python -o generated-python/ comshu.fbs"
 
 if (( rc )); then echo "FAIL"; else echo "PASS — generated code is current"; fi
 exit $rc

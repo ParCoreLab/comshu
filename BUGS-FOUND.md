@@ -1,9 +1,9 @@
-# Bugs found with pcomm
+# Bugs found with comshu
 
-Defects in **other people's software** that pcomm found, with the evidence that
+Defects in **other people's software** that comshu found, with the evidence that
 identified each one and the measurements that attributed it. Kept separate from
-`plans/` on purpose: a plan records how we decided something about pcomm, while
-this file records what pcomm found out about the world — which is the claim a
+`plans/` on purpose: a plan records how we decided something about comshu, while
+this file records what comshu found out about the world — which is the claim a
 paper actually makes for a tool.
 
 The standard for an entry here is that the tool found it, not that a human
@@ -33,7 +33,7 @@ multicast.
 
 ### What fired
 
-`entity_close_accounted`, a pcomm suite assertion stating that every entity a
+`entity_close_accounted`, a comshu suite assertion stating that every entity a
 capture records as opened is also recorded as closed, checked per rank. On a
 64-rank capture (16 nodes × 4 ranks, job 44514759):
 
@@ -50,7 +50,7 @@ resolved exactly, with zero unresolved peers and zero self-edges across 16 LIDs.
 
 ### The evidence that names the owner
 
-pcomm's MR-caller diagnostic `dladdr`s `__builtin_return_address(0)` inside each
+comshu's MR-caller diagnostic `dladdr`s `__builtin_return_address(0)` inside each
 registration interposer. Keyed on `(door, library)` it could not answer this —
 `ibv_reg_mr` has two callers in this workload — so the key was extended to
 include the region length, because the leak had been identified *by* size:
@@ -65,14 +65,14 @@ Three registrations, one deregistration, one library.
 
 ### Competing explanations, and why each is excluded
 
-**"pcomm misses the deregistration door."** Excluded by the balanced row. Every
+**"comshu misses the deregistration door."** Excluded by the balanced row. Every
 `ibv_dereg_mr` this library makes is visible to the same interposer, including
 the one for the 20 MiB region. Its frees are not escaping through an unhooked
 path; there are no frees for the other two sizes. `ibv_dereg_mr` is also the
 only deregistration entry point in the verbs API, so there is no second door to
 miss.
 
-**"It frees them after pcomm stops recording."** Excluded because the caller
+**"It frees them after comshu stops recording."** Excluded because the caller
 trace prints from the interposer itself, independent of capture state. A free
 during teardown — after finalize, after the last flush — would still have
 printed its line. None exists.
@@ -151,7 +151,7 @@ hcoll is closed source and its source was not read — which is worth stating in
 any report: what is demonstrated is that the library registers three regions and
 deregisters one, not what its code intends.
 
-Recorded in pcomm as `expect_fail_asserts` on the single capture that crosses
+Recorded in comshu as `expect_fail_asserts` on the single capture that crosses
 the threshold, with the measurement attached, so the suite neither goes red for
 a third-party defect nor hides it. `sql_check` reports **XPASS** if it ever
 starts passing, which is the signal that HPC-X fixed it.
@@ -174,7 +174,7 @@ barrier.
 | What fired | `tests/hpc/apps/04_llmc/asserts/scalar_reduction_count_is_sizeof_float.sql`, over `nccl_collective` from job 45082117 and the du04 run |
 | Evidence | `ncclAllReduce`'s third parameter is `size_t count`, a COUNT OF ELEMENTS, with the datatype given separately as the fourth. `sizeof(float)` is 4. The capture records `count = 4` with `datatype = ncclFloat` at all four sites, where the surrounding code reduces one scalar. The allocation is `cudaMallocManaged(&result.unified_buffer, sizeof(float))` — 4 bytes — at `llmc/zero.cuh:455`; `multi_gpu_barrier` (`zero.cuh:483`) reduces into it with `count = 4`, i.e. 16 bytes. |
 | Sites | `llmc/zero.cuh:483` (barrier, the overflowing one), `llmc/zero.cuh:588`, `train_gpt2.cu:958` (`accumulated_mean_loss`), `train_gpt2.cu:1022` (`grad_norm_squared`, stage-1 only) |
-| Excluded | *Not* a capture artefact: the number is `4` in the capture because `4` is what the source passes, and the assertion derives its expectation from `sizeof(float)` in the C language rather than from the capture. *Not* a datatype confusion in pcomm's decode: `datatype` decodes as `ncclFloat` while `count` decodes as `4`, and the two are separate fields recorded from separate arguments. *Not* deliberate padding: the allocation is `sizeof(float)`, so the code's own two uses of the constant contradict each other. |
+| Excluded | *Not* a capture artefact: the number is `4` in the capture because `4` is what the source passes, and the assertion derives its expectation from `sizeof(float)` in the C language rather than from the capture. *Not* a datatype confusion in comshu's decode: `datatype` decodes as `ncclFloat` while `count` decodes as `4`, and the two are separate fields recorded from separate arguments. *Not* deliberate padding: the allocation is `sizeof(float)`, so the code's own two uses of the constant contradict each other. |
 | Impact | Honest limits: the three non-buffer sites reduce a scalar redundantly and are *harmless in result* — a sum or average over 4 copies of correlated garbage is still written back to a slot the code then reads as one float, and the extra 12 bytes read are within the surrounding allocation for those three. The barrier site is the real defect: the 4-byte managed allocation has 12 bytes written past its end, every barrier, on every rank. Whether it corrupts anything depends on what the CUDA managed allocator placed after it, which is why this is a latent memory-safety bug rather than an observed wrong answer. Bare and captured runs print identical losses to six decimals, so it is not currently producing visible numerical damage. |
 | Reproduction | `tests/hpc/apps/04_llmc/run.sh` on du04, or `job.sbatch` on MN5; the assertion is `asserts/scalar_reduction_count_is_sizeof_float.sql` |
 | How found | Not by suspicion. The `nccl` provider records the arguments the application passed, so `count` was in the capture as an ordinary column; the study was predicting collective counts and volumes from `llmc/zero.cuh`, and the scalar reductions were the one place where predicted and recorded element counts could not be reconciled by any reading of the source. The allocation size was then read to see what the count implied. |
@@ -186,18 +186,18 @@ barrier.
 
 **One line.** NVSHMEM 3.3.24's ibdevx proxy intermittently stops seeing
 completions at ~20M WQEs per rank: the GPU waits on the proxy, the proxy spins
-waiting on the NIC, and the job never finishes — with or without pcomm.
+waiting on the NIC, and the job never finishes — with or without comshu.
 
 | | |
 |---|---|
 | Environment | du04 (4x A100), NVSHMEM 3.3.24 from HPC SDK 25.9, ibdevx transport; case 11's put-ring workload at `1024 20000` (20.5M WQEs per rank) |
-| What fired | A watchdog timeout while measuring the send-queue watcher's overhead: case 11 at `1024 20000` hung intermittently. `~/pcomm-parity/hang/hang_hunt.sh` on du04 backtraces every thread before it kills |
-| Evidence | Identical hang signature in every hung run, containing no pcomm frame. Main thread: spinning in `sched_yield` inside `cuLaunchKernel`, waiting for a kernel that never finishes. NVSHMEM proxy: spinning in `nvshmemi_proxy_progress → nvshmemt_ibdevx_quiet → check_poll_avail → progress_send`, taking and releasing its lock, waiting for completions that never come |
-| Excluded | *Not pcomm:* it hangs BARE, with no preload at all — 1 of 6 runs; 2 of 6 under pcomm with the watcher off; 0 of 3 with it on. *Not a lock deadlock:* the proxy takes and releases its lock; it spins, it does not block |
+| What fired | A watchdog timeout while measuring the send-queue watcher's overhead: case 11 at `1024 20000` hung intermittently. `~/comshu-parity/hang/hang_hunt.sh` on du04 backtraces every thread before it kills |
+| Evidence | Identical hang signature in every hung run, containing no comshu frame. Main thread: spinning in `sched_yield` inside `cuLaunchKernel`, waiting for a kernel that never finishes. NVSHMEM proxy: spinning in `nvshmemi_proxy_progress → nvshmemt_ibdevx_quiet → check_poll_avail → progress_send`, taking and releasing its lock, waiting for completions that never come |
+| Excluded | *Not comshu:* it hangs BARE, with no preload at all — 1 of 6 runs; 2 of 6 under comshu with the watcher off; 0 of 3 with it on. *Not a lock deadlock:* the proxy takes and releases its lock; it spins, it does not block |
 | Threshold | Never seen at `1024 2` (the case) up to `1024 10000`; intermittent at `1024 20000` |
-| Impact | Any long ibdevx run can hang without warning. For pcomm's own measurements, a hung run shows up as a 580 s "cost" unless measurements at this size run under a watchdog and report hangs separately |
+| Impact | Any long ibdevx run can hang without warning. For comshu's own measurements, a hung run shows up as a 580 s "cost" unless measurements at this size run under a watchdog and report hangs separately |
 | Reproduction | `tests/hpc/cases/11_ibdevx_peermem` workload at `1024 20000`, bare, repeated under a watchdog |
-| How found | By the watchdog that overhead measurement needed, not by suspicion; the bare control was run precisely to exclude pcomm, and it hung too |
+| How found | By the watchdog that overhead measurement needed, not by suspicion; the bare control was run precisely to exclude comshu, and it hung too |
 | Status | Not reported upstream. Not checked on later NVSHMEM releases or on MN5 |
 
 ## Template for the next entry
@@ -206,7 +206,7 @@ waiting on the NIC, and the job never finishes — with or without pcomm.
 ## N. <one-line claim: component, defect, condition>
 
 Environment | table of exact versions
-What fired  | which pcomm check, on which capture, with the numbers
+What fired  | which comshu check, on which capture, with the numbers
 Evidence    | the measurement that names the owner
 Excluded    | each competing explanation and what rules it out
 Threshold   | where it starts and stops, with job ids

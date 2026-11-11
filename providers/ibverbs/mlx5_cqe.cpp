@@ -12,7 +12,7 @@
 
 #include <infiniband/verbs.h>
 
-#if PCOMM_HAVE_MLX5DV
+#if COMSHU_HAVE_MLX5DV
 #include <dlfcn.h>
 #include <endian.h>
 #include <infiniband/mlx5dv.h>
@@ -22,13 +22,13 @@ namespace ibv::cqeprobe {
 
 bool enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("PCOMM_CQE_PROBE");
+        const char* v = std::getenv("COMSHU_CQE_PROBE");
         return v && *v && std::strcmp(v, "0") != 0;
     }();
     return on;
 }
 
-#if !PCOMM_HAVE_MLX5DV
+#if !COMSHU_HAVE_MLX5DV
 
 // No mlx5dv headers at build time: the probe cannot exist, and says so once
 // rather than being silently absent — an absent diagnostic that looks like a
@@ -51,7 +51,7 @@ void on_poll(ibv_cq*, int, ibv_wc*) {
     static bool said = false;
     if (!said) {
         said = true;
-        std::fprintf(stderr, "[pcomm-cqeprobe] built WITHOUT mlx5dv headers — probe unavailable\n");
+        std::fprintf(stderr, "[comshu-cqeprobe] built WITHOUT mlx5dv headers — probe unavailable\n");
         std::fflush(stderr);
     }
 }
@@ -117,16 +117,16 @@ inline void report() {
     if (s.completions == 0 && s.cqs_seen == 0)
         return;
     std::fprintf(stderr,
-                 "[pcomm-cqeprobe] rank=%d cqs=%llu mapped=%llu polls=%llu completions=%llu\n", r,
+                 "[comshu-cqeprobe] rank=%d cqs=%llu mapped=%llu polls=%llu completions=%llu\n", r,
                  (unsigned long long)s.cqs_seen, (unsigned long long)s.cqs_mapped,
                  (unsigned long long)s.polls, (unsigned long long)s.completions);
     std::fprintf(
-        stderr, "[pcomm-cqeprobe] rank=%d read=%llu qpn_ok=%llu class_ok=%llu len_ok=%llu/%llu\n",
+        stderr, "[comshu-cqeprobe] rank=%d read=%llu qpn_ok=%llu class_ok=%llu len_ok=%llu/%llu\n",
         r, (unsigned long long)s.read, (unsigned long long)s.qpn_ok, (unsigned long long)s.class_ok,
         (unsigned long long)s.len_ok, (unsigned long long)s.len_checked);
     if (s.recv)
         std::fprintf(
-            stderr, "[pcomm-cqeprobe] rank=%d recv=%llu with_srqn=%llu wqe_counter=[%u,%u]\n", r,
+            stderr, "[comshu-cqeprobe] rank=%d recv=%llu with_srqn=%llu wqe_counter=[%u,%u]\n", r,
             (unsigned long long)s.recv, (unsigned long long)s.recv_with_srqn, s.wqe_lo, s.wqe_hi);
     std::fflush(stderr);
 }
@@ -160,7 +160,7 @@ inline const Ring& ring_for(ibv_cq* cq) {
         void* sym = h ? dlsym(h, "mlx5dv_init_obj") : nullptr;
         if (!sym)  // last resort: a binary that did link it
             sym = dlsym(RTLD_DEFAULT, "mlx5dv_init_obj");
-        std::fprintf(stderr, "[pcomm-cqeprobe] mlx5dv_init_obj via %s = %p\n",
+        std::fprintf(stderr, "[comshu-cqeprobe] mlx5dv_init_obj via %s = %p\n",
                      h ? "libmlx5.so.1" : "RTLD_DEFAULT", sym);
         std::fflush(stderr);
         return reinterpret_cast<int (*)(mlx5dv_obj*, std::uint64_t)>(sym);
@@ -183,14 +183,14 @@ inline const Ring& ring_for(ibv_cq* cq) {
             if (r.usable)
                 stats().cqs_mapped++;
             else
-                std::fprintf(stderr, "[pcomm-cqeprobe] cq %p unusable: cnt=%u size=%u dbrec=%p\n",
+                std::fprintf(stderr, "[comshu-cqeprobe] cq %p unusable: cnt=%u size=%u dbrec=%p\n",
                              (void*)cq, r.cnt, r.size, (void*)r.dbrec);
         }
     } else {
         static bool said = false;
         if (!said) {
             said = true;
-            std::fprintf(stderr, "[pcomm-cqeprobe] mlx5dv_init_obj not resolvable\n");
+            std::fprintf(stderr, "[comshu-cqeprobe] mlx5dv_init_obj not resolvable\n");
         }
     }
     return rings().emplace(cq, r).first->second;
@@ -296,7 +296,7 @@ void on_poll(ibv_cq* cq, int ret, ibv_wc* wc) {
 
     static bool once = [] {
         std::atexit(report);
-        std::fprintf(stderr, "[pcomm-cqeprobe] enabled\n");
+        std::fprintf(stderr, "[comshu-cqeprobe] enabled\n");
         std::fflush(stderr);
         return true;
     }();
@@ -349,7 +349,7 @@ void on_poll(ibv_cq* cq, int ret, ibv_wc* wc) {
         if (s.shown < 12) {
             s.shown++;
             std::fprintf(stderr,
-                         "[pcomm-cqeprobe] rank=%d cqe idx=%u ci=%u cqe_op=%u qpn=%u/%u "
+                         "[comshu-cqeprobe] rank=%d cqe idx=%u ci=%u cqe_op=%u qpn=%u/%u "
                          "byte=%u/%u wr_id=%llu wqe_counter=%u srqn=%u %s%s\n",
                          rank_hint(), idx, ci, op, qpn, wc[i].qp_num, len, wc[i].byte_len,
                          (unsigned long long)wc[i].wr_id, (unsigned)be16toh(cqe->wqe_counter),
@@ -360,6 +360,6 @@ void on_poll(ibv_cq* cq, int ret, ibv_wc* wc) {
     }
 }
 
-#endif  // PCOMM_HAVE_MLX5DV
+#endif  // COMSHU_HAVE_MLX5DV
 
 }  // namespace ibv::cqeprobe

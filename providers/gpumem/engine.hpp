@@ -1,7 +1,7 @@
 #pragma once
 // gpumem engine — the vendor-free half of the provider. The GPU backend
 // (gpu-backends/nvbit) translates vendor callbacks into these calls; the
-// engine owns the attribution pipeline and writes pcomm records.
+// engine owns the attribution pipeline and writes comshu records.
 //
 // pc identity: the backend assigns each instrumented instruction a dense
 // global index; handle = index + 1 (0 stays null). GpuAccess.pc and
@@ -14,13 +14,13 @@
 #include <string_view>
 #include <vector>
 
-#include "pcomm/attr/pipeline.hpp"
-#include "pcomm/core/ids.hpp"
-#include "pcomm/core/records.hpp"
-#include "pcomm/engine_abi.h"
-#include "pcomm/tracer.hpp"
+#include "comshu/attr/pipeline.hpp"
+#include "comshu/core/ids.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/tracer.hpp"
 
-namespace pcomm::gpumem {
+namespace comshu::gpumem {
 
 inline core::Handle pc_handle(std::uint32_t instr_index) {
     return instr_index + 1;
@@ -154,7 +154,7 @@ public:
         std::uint64_t cbase = 0, csize = 0;
         std::uint32_t cobj = 0;
         std::uint16_t cdev = 0;
-        if (pcomm_engine_object_at(a.address, &cbase, &csize, &cobj, &cdev) && cobj)
+        if (comshu_engine_object_at(a.address, &cbase, &csize, &cobj, &cdev) && cobj)
             out.object = cobj;
 
         const auto alloc = m_allocs->find(a.address);
@@ -174,7 +174,7 @@ public:
             // The core's table is keyed by symmetric address, which is what the
             // translation produces — so a peer access lands on the very buffer
             // the application allocated, named identically on every PE.
-            if (pcomm_engine_object_at(sym, &cbase, &csize, &cobj, &cdev) && cobj) {
+            if (comshu_engine_object_at(sym, &cbase, &csize, &cobj, &cdev) && cobj) {
                 out.object = cobj;
             } else if (const auto fine = m_allocs->find(sym);
                        fine && fine->object != core::kNullHandle) {
@@ -202,10 +202,10 @@ public:
         // POD crosses the boundary.
         const Config cfg = Config::from_env();
         // See ibverbs: declare the 700-799 range and our ABI before acquiring.
-        if (pcomm_engine_declare_provider("gpumem", core::id_range::gpumem_lo,
-                                          core::id_range::gpumem_hi, PCOMM_ENGINE_ABI_VERSION) != 0)
+        if (comshu_engine_declare_provider("gpumem", core::id_range::gpumem_lo,
+                                          core::id_range::gpumem_hi, COMSHU_ENGINE_ABI_VERSION) != 0)
             return;
-        pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+        comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
         auto& rec = recorder();
         m_pipeline = std::make_unique<attr::AttributionPipeline>(rec);
         m_pipeline->add_filter(std::make_unique<RemoteFilter>());
@@ -318,7 +318,7 @@ public:
             return;
         auto& rec = recorder();
         rec.record(rec.now_instant(), core::records::EntityClose{
-                                          {}, {}, object, core::records::MemObject::pcomm_type_id});
+                                          {}, {}, object, core::records::MemObject::comshu_type_id});
     }
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
@@ -389,7 +389,7 @@ public:
     // inside an exit handler — everything reachable from here is leak-safe).
     void shutdown() {
         drain_thread();
-        pcomm_engine_release();
+        comshu_engine_release();
     }
 
 private:
@@ -397,4 +397,4 @@ private:
     std::unique_ptr<attr::AttributionPipeline> m_pipeline;
 };
 
-}  // namespace pcomm::gpumem
+}  // namespace comshu::gpumem

@@ -94,12 +94,12 @@ test('spec fields are collected so a chart can be checked against its query', ()
 // The rest needs a capture. Skipped rather than mocked: a fake /query that
 // agrees with our expectations proves nothing about the one thing this layer
 // does, which is talk to the real server.
-const UI = process.env.PCOMM_UI_URL ?? 'http://127.0.0.1:8777';
+const UI = process.env.COMSHU_UI_URL ?? 'http://127.0.0.1:8777';
 const live = await fetch(`${UI}/query`, { method: 'POST', body: 'SELECT 1', signal: AbortSignal.timeout(2000) })
   .then((r) => r.ok)
   .catch(() => false);
 
-test('the row cap bites and reports the true total', { skip: live ? false : `no pcomm ui at ${UI}` }, async () => {
+test('the row cap bites and reports the true total', { skip: live ? false : `no comshu ui at ${UI}` }, async () => {
   const capture = new Capture(UI);
   const r = await capture.modelQuery('SELECT * FROM timeline_span', { limit: 5 });
   assert.equal(r.rows.length, 5);
@@ -107,13 +107,13 @@ test('the row cap bites and reports the true total', { skip: live ? false : `no 
   assert.ok(r.total > 5);
 });
 
-test('a commented query still runs', { skip: live ? false : `no pcomm ui at ${UI}` }, async () => {
+test('a commented query still runs', { skip: live ? false : `no comshu ui at ${UI}` }, async () => {
   const capture = new Capture(UI);
   const r = await capture.modelQuery('-- the heaviest pairs\nSELECT src_rank, bytes FROM comm_edges');
   assert.deepEqual(r.columns, ['src_rank', 'bytes']);
 });
 
-test('a write is refused before it reaches the server', { skip: live ? false : `no pcomm ui at ${UI}` }, async () => {
+test('a write is refused before it reaches the server', { skip: live ? false : `no comshu ui at ${UI}` }, async () => {
   const capture = new Capture(UI);
   await assert.rejects(() => capture.modelQuery('CREATE TABLE t AS SELECT 1'), /only SELECT/);
 });

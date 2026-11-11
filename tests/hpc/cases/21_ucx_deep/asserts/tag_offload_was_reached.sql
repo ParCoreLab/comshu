@@ -4,7 +4,7 @@
 -- THIS IS THE ONE ASSERTION HERE THAT IS AN EXPERIMENT. The others state
 -- properties of the tracer; this states a property of the fabric plus the
 -- tracer, and the two failure modes are different:
---   * pcomm does not instrument the tag doors — a defect, ours;
+--   * comshu does not instrument the tag doors — a defect, ours;
 --   * ConnectX tag matching did not engage on this stack — a fact about MN5,
 --     and the job's tm_off arm is the control that tells them apart.
 --

@@ -250,7 +250,7 @@
     <p class="text-[13px] m-0" style="color: var(--critical)">{error}</p>
     <p class="text-xs mt-1 m-0" style="color: var(--text-2)">
       Needs the derived <code>comm_edges</code> table — a capture, or an export
-      run through <code>pcomm link</code>.
+      run through <code>comshu link</code>.
     </p>
   {:else if !facet.length}
     <p class="text-[13px] m-0" style="color: var(--text-2)">loading…</p>

@@ -35,10 +35,10 @@
 # table empty with the right columns.
 set -uo pipefail
 
-PCOMM=${1:?usage: nccl_execution_rule.sh <pcomm-binary>}
-if [ ! -x "$PCOMM" ]; then echo "SKIP: no pcomm binary at $PCOMM"; exit 0; fi
+COMSHU=${1:?usage: nccl_execution_rule.sh <comshu-binary>}
+if [ ! -x "$COMSHU" ]; then echo "SKIP: no comshu binary at $COMSHU"; exit 0; fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcomm-nccl-exec-rule-XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/comshu-nccl-exec-rule-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 # Two ranks of one communicator (hash 111), plus a SPLIT communicator on rank 0
@@ -99,8 +99,8 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 CSV
 
 # The profiler's own view of the communicator, which is what a capture has when
-# NCCL loaded the plugin but pcomm's nccl INTERPOSER was not selected — the
-# shape case 02 produces with `pcomm run -p ib`. It carries nnodes, which the
+# NCCL loaded the plugin but comshu's nccl INTERPOSER was not selected — the
+# shape case 02 produces with `comshu run -p ib`. It carries nnodes, which the
 # host-API door has no column for, so a non-null nnodes downstream proves this
 # table is actually joined rather than the layout coming entirely from
 # nccl_comm.
@@ -139,7 +139,7 @@ rank,domain,handle,text
 1,2,6,TREE
 CSV
 
-"$PCOMM" link "$WORK" > "$WORK/link.out" 2>&1
+"$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
     echo "SKIP: build without DuckDB"; exit 0
@@ -153,7 +153,7 @@ fi
 fail=0
 expect() {  # <label> <sql> <expected>
     local got
-    got=$("$PCOMM" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
+    got=$("$COMSHU" sql "$WORK" "$2" 2>/dev/null | tail -1 | tr -d '"')
     if [ "$got" != "$3" ]; then
         echo "FAIL: $1"
         echo "  expected: $3"
@@ -288,14 +288,14 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,2,0,110,0,210,0,1,10,11,12,65536,-1,0,7,0,0
 CSV
 
-"$PCOMM" link "$SHUT" > "$SHUT/link.out" 2>&1
+"$COMSHU" link "$SHUT" > "$SHUT/link.out" 2>&1
 if [ $? -ne 0 ] || grep -q "SOME FAILED" "$SHUT/link.out"; then
     cat "$SHUT/link.out"
     echo "FAIL: link did not complete on the door-shut capture"
     exit 1
 fi
 
-got=$("$PCOMM" sql "$SHUT" \
+got=$("$COMSHU" sql "$SHUT" \
       "SELECT n FROM link_health WHERE finding = 'nccl_profiler_door_shut'" 2>/dev/null | tail -1)
 if [ "$got" != "3" ]; then
     echo "FAIL: the door-shut row did not fire on a capture with no execution rows"
@@ -310,8 +310,8 @@ fi
 NONE="$WORK/none"
 mkdir -p "$NONE"
 cp "$WORK/clock_anchor.csv" "$NONE/"
-"$PCOMM" link "$NONE" > "$NONE/link.out" 2>&1
-got=$("$PCOMM" sql "$NONE" \
+"$COMSHU" link "$NONE" > "$NONE/link.out" 2>&1
+got=$("$COMSHU" sql "$NONE" \
       "SELECT n FROM link_health WHERE finding = 'nccl_profiler_door_shut'" 2>/dev/null | tail -1)
 if [ "$got" != "0" ]; then
     echo "FAIL: the door-shut row fired on a capture that has no NCCL in it"

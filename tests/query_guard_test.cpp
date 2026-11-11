@@ -1,12 +1,12 @@
-// pcomm-ui's read-only guard: leading comments are skipped, and skipping them
-// opens no way around the check. See pcomm-ui/query_guard.hpp.
+// comshu-ui's read-only guard: leading comments are skipped, and skipping them
+// opens no way around the check. See comshu-ui/query_guard.hpp.
 #include <cassert>
 #include <cstdio>
 #include <string>
 
 #include "query_guard.hpp"
 
-using pcomm::ui::looks_like_select;
+using comshu::ui::looks_like_select;
 
 int main() {
     // The reads, including every shape a commented catalog example takes.

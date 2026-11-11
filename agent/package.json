@@ -1,8 +1,8 @@
 {
-  "name": "pcomm-agent",
+  "name": "comshu-agent",
   "private": true,
   "type": "module",
-  "description": "the chat pane's sidecar: pi + three tools over a running `pcomm ui`",
+  "description": "the chat pane's sidecar: pi + three tools over a running `comshu ui`",
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "ask": "node ask.mjs",

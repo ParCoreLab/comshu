@@ -9,7 +9,7 @@
 // indistinguishable from a capture that simply had no strings.
 //
 // This writes through Tracer (the path a real run takes, engine and all) and
-// reads through rec::InternDictionary (the path pcomm-read takes), then breaks
+// reads through rec::InternDictionary (the path comshu-read takes), then breaks
 // the capture four ways and checks each is reported.
 
 #include <cassert>
@@ -24,14 +24,14 @@
 #include <unordered_map>
 #include <unistd.h>
 
-#include "pcomm/core/records.hpp"
-#include "pcomm/engine_abi.h"
-#include "pcomm/rec/intern_reader.hpp"
-#include "pcomm/rec/stream_header.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/rec/intern_reader.hpp"
+#include "comshu/rec/stream_header.hpp"
+#include "comshu/tracer.hpp"
 
 namespace fs = std::filesystem;
-using namespace pcomm;
+using namespace comshu;
 using rec::InternDomain;
 
 namespace {
@@ -66,7 +66,7 @@ void dump_diags() {
 int main() {
     std::printf("intern dictionary: real capture path, real reader\n");
 
-    const auto root = fs::temp_directory_path() / ("pcomm-intern-" + std::to_string(::getpid()));
+    const auto root = fs::temp_directory_path() / ("comshu-intern-" + std::to_string(::getpid()));
     fs::remove_all(root);
 
     // --- interning before there is anywhere to put it ------------------------
@@ -77,10 +77,10 @@ int main() {
     // so such a record degrades to unattributed instead of crashing the target.
     // This must run first: once the Tracer starts there is no way back.
     {
-        const auto h_str = pcomm_engine_intern_str(static_cast<std::uint8_t>(InternDomain::String),
+        const auto h_str = comshu_engine_intern_str(static_cast<std::uint8_t>(InternDomain::String),
                                                    "before-start", 12);
         const auto h_key =
-            pcomm_engine_intern_key(static_cast<std::uint8_t>(InternDomain::Pc), 0xDEAD);
+            comshu_engine_intern_key(static_cast<std::uint8_t>(InternDomain::Pc), 0xDEAD);
         expect(h_str == 0 && h_key == 0,
                "interning before the tracer has a recorder yields the null handle, "
                "not a crash and not a plausible handle");
@@ -251,7 +251,7 @@ int main() {
             std::fwrite(&h, sizeof h, 1, f);
             std::fclose(f);
         },
-        "magic", "a blob that is not a pcomm blob is refused by magic");
+        "magic", "a blob that is not a comshu blob is refused by magic");
 
     {  // An index from a different (longer) run against this blob: offsets are
         // plausible integers, and nothing but a bounds check notices.

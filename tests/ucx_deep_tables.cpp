@@ -17,7 +17,7 @@
  * that cannot fail is not a check. So this drives all five deliberately.
  *
  * It needs no UCX and no engine, so it runs in EVERY configuration rather than
- * only in the one built with -DPCOMM_PROVIDER_UCX=ON — which matters, because
+ * only in the one built with -DCOMSHU_PROVIDER_UCX=ON — which matters, because
  * "the thing you did not build is the thing that is broken" is the rule
  * tools/build_all.sh exists to enforce and the UCX configuration is not in it.
  */
@@ -26,7 +26,7 @@
 
 #include "ucx_deep_tables.hpp"
 
-namespace d = pcomm::providers::ucx_deep::detail;
+namespace d = comshu::providers::ucx_deep::detail;
 
 static int g_fail = 0;
 

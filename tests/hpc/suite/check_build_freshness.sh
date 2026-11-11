@@ -73,7 +73,7 @@ src="$(newest "$ROOT")"
 # What actually loads: the launcher, the engine, and every provider .so under
 # the build directory the cases will use. The side build trees are not checked —
 # their libraries are COPIED into build/providers/, and the copy is what runs.
-art="$(find "$BUILD" -type f \( -name '*.so' -o -name 'pcomm' \) -printf '%T@ %p\n' 2>/dev/null |
+art="$(find "$BUILD" -type f \( -name '*.so' -o -name 'comshu' \) -printf '%T@ %p\n' 2>/dev/null |
        sort -rn | head -1)"
 if [ -z "$art" ]; then
   echo "!! nothing is built under $BUILD — there is no binary to run" >&2

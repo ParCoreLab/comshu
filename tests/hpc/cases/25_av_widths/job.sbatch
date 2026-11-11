@@ -36,7 +36,7 @@
 # have. The skip reason names the missing hardware.
 #
 # ONE NODE, TWO PEs — case 12's shape, and not the two-node shape the probes
-# use. That is a workaround for a pcomm defect, and it is written down here
+# use. That is a workaround for a comshu defect, and it is written down here
 # rather than left as an unexplained #SBATCH line.
 #
 # Under `mpirun` with the MPI bootstrap, `--enable-host-doorbell` hangs on a
@@ -57,7 +57,7 @@
 #
 # See things-to-circle-back-to.md; this case is not the place to fix it, but it
 # must not be the place that quietly hides it either.
-#SBATCH --job-name=pcomm-25-av-widths
+#SBATCH --job-name=comshu-25-av-widths
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -68,10 +68,10 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-CASE_DIR="$PCOMM_ROOT/tests/hpc/cases/25_av_widths"
-OUT=$(pcomm_out av_widths)            # the roce_dc capture, the one asserted
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+CASE_DIR="$COMSHU_ROOT/tests/hpc/cases/25_av_widths"
+OUT=$(comshu_out av_widths)            # the roce_dc capture, the one asserted
 mkdir -p "$(dirname "$OUT")"
 
 skip() {
@@ -147,22 +147,22 @@ echo "=== 25_av_widths : arm=$ARM (NIC handler $HANDLER, $DOORBELL_FLAG) ==="
 
 # Runtime BEFORE the launcher check, and LD_LIBRARY_PATH after the build block.
 # Both orderings are the ones case 04 documents and case 12 paid for.
-pcomm_load_runtime
-MPIRUN="${PCOMM_MPIRUN:-mpirun}"
+comshu_load_runtime
+MPIRUN="${COMSHU_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
-APP="${PCOMM_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
+APP="${COMSHU_IBGDA_APP:-$HOME/nvshmem_putget-$(sha1sum "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" | cut -c1-10)}"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
-  command -v "${PCOMM_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (PCOMM_SDK=${PCOMM_SDK:-unset})"
+  comshu_load_build
+  command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
   [ -n "${NVSHMEM_HOME:-}" ] && [ -d "$NVSHMEM_HOME" ] || fail "NVSHMEM_HOME did not resolve"
-  ${PCOMM_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
+  ${COMSHU_NVCC:-nvcc} -ccbin=mpic++ -O2 -rdc=true \
     -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart || fail "workload did not build"
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:${NCCL_HOME:+$NCCL_HOME/lib:}${LD_LIBRARY_PATH:-}"
 
@@ -207,14 +207,14 @@ leg() {  # leg <name> <out-dir> <hca> <gid-or-empty> <extra NVSHMEM env...>
   ( export NVSHMEM_HCA_LIST="$hca:1"
     [ -n "$gid" ] && export NVSHMEM_IB_GID_INDEX="$gid"
     export "$@"
-    timeout 300 "$MPIRUN" -np 2 --map-by ppr:2:node ${PCOMM_MPIRUN_EXTRA:-} \
-      -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
+    timeout 300 "$MPIRUN" -np 2 --map-by ppr:2:node ${COMSHU_MPIRUN_EXTRA:-} \
+      -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
       -x NVSHMEM_BOOTSTRAP -x NVSHMEM_DISABLE_P2P -x NVSHMEM_REMOTE_TRANSPORT \
       -x NVSHMEM_IB_ENABLE_IBGDA -x NVSHMEM_IBGDA_NIC_HANDLER \
       -x NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE \
       -x NVSHMEM_HCA_LIST -x NVSHMEM_IB_GID_INDEX \
       -x NVSHMEM_IBGDA_NUM_RC_PER_PE -x NVSHMEM_IBGDA_NUM_DCI \
-      "$PCOMM" run -p ib,mlx5dv "$DOORBELL_FLAG" -o "$out" -- "$APP" "$ELEMS" "$ITERS" \
+      "$COMSHU" run -p ib,mlx5dv "$DOORBELL_FLAG" -o "$out" -- "$APP" "$ELEMS" "$ITERS" \
       > "$out.app" 2> "$out.err" )
   local rc=$?
   echo "-- leg $name rc=$rc --"
@@ -226,7 +226,7 @@ leg() {  # leg <name> <out-dir> <hca> <gid-or-empty> <extra NVSHMEM env...>
   if [ "$ARM" = host ] && grep -q "DOES map the NIC doorbell page" "$out.err" 2>/dev/null; then
     fail "host arm refused to arm on leg $name — this host supports GPU submission"
   fi
-  "$PCOMM" export "$out" --csv "$out.csv" > /dev/null || fail "leg $name did not export"
+  "$COMSHU" export "$out" --csv "$out.csv" > /dev/null || fail "leg $name did not export"
   [ -f "$out.csv/mlx5_device_send.csv" ] || fail "leg $name decoded no sends at all"
 }
 
@@ -321,6 +321,6 @@ echo "roce_dc: $(echo "$b_roce" | tr '\n' ';')"
 # nowhere else on the board, so it is the one the suite's cross-cutting
 # assertions — av_width_is_stable_per_qp, dc_send_names_its_destination,
 # atomic_operand_is_a_word — should run against.
-echo "=== captured streams (roce_dc) ==="; "$PCOMM" read "$OUT"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
+echo "=== captured streams (roce_dc) ==="; "$COMSHU" read "$OUT"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"

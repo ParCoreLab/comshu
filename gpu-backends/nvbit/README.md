@@ -1,6 +1,6 @@
 # NVBit backend (phase-1 default)
 
-GPU capture engine over NVBit, feeding `pcomm::gpumem::Engine` directly
+GPU capture engine over NVBit, feeding `comshu::gpumem::Engine` directly
 through its callbacks (no abstraction layer sits between them — a shared
 backend interface gets introduced when a second backend exists to share
 it; see `../sanitizer/README.md`). The port target is
@@ -15,7 +15,7 @@ source-line artifact, clock anchors). Files:
 
 - `nvbit-1.7.7.1/` — vendored NVBit (headers + libnvbit.a + channel utils).
 - `nvbit_backend.cu` — nvbit_at_* callbacks; instrumentation pass; recv thread
-  translating `pcomm_gpu_access_t` -> `attr::RawAccess` -> `gpumem::Engine`.
+  translating `comshu_gpu_access_t` -> `attr::RawAccess` -> `gpumem::Engine`.
 - `inject_funcs.cu` / `dev_common.h` — device-side instrumentation function
   (warp-coalesced channel pushes, per-instruction access size).
 
@@ -34,5 +34,5 @@ a vendor-neutral backend interface once the Sanitizer port makes it real.
 
 Build on du04 (no spack needed): `PATH=$HOME/.local/bin:/usr/local/cuda/bin:$PATH`
 (pip-installed cmake ≥3.26; node cmake 3.23 lacks CUDA20), `CUDACXX=/usr/local/cuda/bin/nvcc`,
-`cmake -B build -DPCOMM_PROVIDER_GPUMEM=ON`. At *run* time NVBit needs nvdisasm:
+`cmake -B build -DCOMSHU_PROVIDER_GPUMEM=ON`. At *run* time NVBit needs nvdisasm:
 `PATH+=/opt/nvidia/hpc_sdk/Linux_x86_64/25.9/cuda/13.0/bin`.

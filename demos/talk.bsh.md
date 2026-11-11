@@ -1,4 +1,4 @@
-# pcomm — live demo
+# comshu — live demo
 
 Workload: `asym_patterns hub` — NVSHMEM hub-and-spoke across **all 16 H100s** on
 four nodes. Fifteen spokes push a full 16 KB slot to rank 0; rank 0 answers each
@@ -23,9 +23,9 @@ koc296797@alogin2.bsc.es%% ls -l ~/asym_patterns-li-sm90
 -rwxr-xr-x 1 koc296797 koc 7583976 Aug 17 10:34 /home/koc/koc296797/asym_patterns-li-sm90
 ```
 
-koc296797@alogin2.bsc.es%% command -v pcomm
+koc296797@alogin2.bsc.es%% command -v comshu
 ```out
-/home/koc/koc296797/.local/bin/pcomm
+/home/koc/koc296797/.local/bin/comshu
 ```
 
 koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=4 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:40:00
@@ -46,19 +46,19 @@ as02r2b22
 ```
 
 `mpirun` is not on a bare login PATH — it comes from the NVHPC module, which is
-what `pcomm_load_runtime` loads. Run this INSIDE the allocation, before the
+what `comshu_load_runtime` loads. Run this INSIDE the allocation, before the
 capture cell, or that cell dies with `mpirun: command not found`:
 
-koc296797@alogin2.bsc.es%% source ~/proj/pcomm/tests/hpc/suite/common.sh && pcomm_load_runtime && export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH" && command -v mpirun
+koc296797@alogin2.bsc.es%% source ~/proj/comshu/tests/hpc/suite/common.sh && comshu_load_runtime && export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH" && command -v mpirun
 ```out
 /apps/ACC/NVIDIA-HPC-SDK/25.7/Linux_x86_64/25.7/comm_libs/mpi/bin/mpirun
 ```
 
 ---
 
-koc296797@alogin2.bsc.es%% pcomm list
+koc296797@alogin2.bsc.es%% comshu list
 ```out
-pcomm providers — pick with -p <name>[,<name>...]
+comshu providers — pick with -p <name>[,<name>...]
 
   name     scope        capture
   ───────  ───────────  ─────────────────────────────────────────────
@@ -80,7 +80,7 @@ pcomm providers — pick with -p <name>[,<name>...]
   nccl     collective   NCCL collective layer — communicators, collectives, peers, groups
                         aliases: nccl, collectives, coll
 
-Providers that must own the runtime run in their own pass: pcomm re-runs
+Providers that must own the runtime run in their own pass: comshu re-runs
 the workload once each and merges the passes under one -o directory.
 ```
 
@@ -93,9 +93,9 @@ koc296797@alogin2.bsc.es%% ls -l ~/asym_patterns-li-sm90
 
 ---
 
-koc296797@alogin2.bsc.es%% rm -rf ~/demo-out && mpirun -np 16 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 pcomm run -p ib -o ~/demo-out -- ~/asym_patterns-li-sm90 hub 4096 3
+koc296797@alogin2.bsc.es%% rm -rf ~/demo-out && mpirun -np 16 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_DISABLE_P2P=1 comshu run -p ib -o ~/demo-out -- ~/asym_patterns-li-sm90 hub 4096 3
 ```out
-pcomm: 1 provider → 1 pass
+comshu: 1 provider → 1 pass
   · ib           → /home/koc/koc296797/demo-out
         … (once per rank)
 asym_patterns[hub] PE 0/16: 15 edges, 7680 elems/iter, 3 iters
@@ -115,7 +115,7 @@ rank-1   rank-11  rank-13  rank-15  rank-3  rank-5  rank-7  rank-9
 512.pcs  520.pcs  522.pcs  524.pcs  590.pcs  intern-blob.bin
 ```
 
-koc296797@alogin2.bsc.es%% pcomm read ~/demo-out | head -24
+koc296797@alogin2.bsc.es%% comshu read ~/demo-out | head -24
 ```out
 streams in /home/koc/koc296797/demo-out:
   file                                 type kind       stride   records           schema
@@ -149,17 +149,17 @@ koc296797@alogin2.bsc.es%% du -sh ~/demo-out
 
 ---
 
-%% rsync -az alogin2.bsc.es:demo-out ~/waste/pcomm/demo/
-%% ~/pockt/uni/lab/pcomm/agent/run.sh ~/waste/pcomm/demo/demo-out 8777 --bind 100.64.0.3
+%% rsync -az alogin2.bsc.es:demo-out ~/waste/comshu/demo/
+%% ~/pockt/uni/lab/comshu/agent/run.sh ~/waste/comshu/demo/demo-out 8777 --bind 100.64.0.3
 
 ```out
 !! serving on 100.64.0.3 — no authentication on either half.
-pcomm ui: capture …/demo-out — 16 ranks, 21 tables, 968956 rows
-pcomm ui: http://100.64.0.3:8777/  (5 embedded assets)
+comshu ui: capture …/demo-out — 16 ranks, 21 tables, 968956 rows
+comshu ui: http://100.64.0.3:8777/  (5 embedded assets)
 
   open  http://100.64.0.3:8777/?agent=http://100.64.0.3:8778
 
-pcomm agent bridge: http://100.64.0.3:8778  ->  capture http://100.64.0.3:8777
+comshu agent bridge: http://100.64.0.3:8778  ->  capture http://100.64.0.3:8777
   model: muse-glimmer-30b
 ```
 
@@ -205,19 +205,19 @@ both.
 
 ---
 
-% echo 'pcomm run -p ib,gpumem,nccl -o out -- <your-app>'
+% echo 'comshu run -p ib,gpumem,nccl -o out -- <your-app>'
 
 ---
 
 ## fallback
 
-%% ~/pockt/uni/lab/pcomm/agent/run.sh ~/waste/pcomm/corpus/hubspoke_ib-44698048 8777
+%% ~/pockt/uni/lab/comshu/agent/run.sh ~/waste/comshu/corpus/hubspoke_ib-44698048 8777
 
 ## check first
 
-- `pcomm list` prints six providers (a stale `pcomm` on `PATH` fails at step 1)
-- `~/waste/pcomm/corpus` exists on the presenting machine — syncthing skips it
-- `agent/run.sh`, never `pcomm ui`: the latter starts no bridge and says nothing
-- `pcomm read` prints all 16 ranks × 21 streams — 336 lines. Pipe through
+- `comshu list` prints six providers (a stale `comshu` on `PATH` fails at step 1)
+- `~/waste/comshu/corpus` exists on the presenting machine — syncthing skips it
+- `agent/run.sh`, never `comshu ui`: the latter starts no bridge and says nothing
+- `comshu read` prints all 16 ranks × 21 streams — 336 lines. Pipe through
   `head -24` or it scrolls off the projector
 - the capture is 84 MB, so start the `rsync` before you need it, not during

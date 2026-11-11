@@ -1,5 +1,5 @@
 #!/bin/bash
-# sql_check.sh — run a case's SQL checks against a `pcomm export --csv` export.
+# sql_check.sh — run a case's SQL checks against a `comshu export --csv` export.
 #
 #   sql_check.sh <csv-dir> <case-dir> [--update]
 #
@@ -58,7 +58,7 @@
 # --- ASSERTIONS PREFER PARQUET, GOLDENS NEVER DO ----------------------------
 #
 # The CSV export cannot carry the derived layer. It re-derives ONE derived table,
-# comm_edges, in C++ (CsvAgg, pcomm-read/main.cpp) — a second implementation of
+# comm_edges, in C++ (CsvAgg, comshu-read/main.cpp) — a second implementation of
 # the most-asserted table in the suite, kept byte-identical to link_sql.hpp's
 # version by inspection. Everything else the UI computes (object_access,
 # link_health, rank_identity, endpoint, timeline_span, wr_flow) is invisible to
@@ -71,7 +71,7 @@
 # see it — it counts writers straight off gpu_access — so it passed throughout.
 #
 # So when a linked Parquet export is available, ASSERTIONS run against it via
-# `pcomm sql`, which is the same DuckDB and the same link_sql.hpp the UI serves.
+# `comshu sql`, which is the same DuckDB and the same link_sql.hpp the UI serves.
 # One derived layer, asserted directly.
 #
 # GOLDENS STAY ON SQLITE/CSV, deliberately. A golden is a characterization test
@@ -82,7 +82,7 @@
 # why they are the half that can move.
 #
 # Falls back silently to CSV+sqlite when there is no Parquet export or no
-# DuckDB-capable pcomm: MN5 builds with PCOMM_DUCKDB=OFF by default because
+# DuckDB-capable comshu: MN5 builds with COMSHU_DUCKDB=OFF by default because
 # tools/get_duckdb.sh needs network and MN5 has none. The fallback must stay
 # exact — a suite that only works on the workstation is not a suite.
 set -u
@@ -95,11 +95,11 @@ SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The linked Parquet export, if one was made. Convention: beside the CSV dir,
 # with .pq where .csv is — so a case that adds `--parquet` gets this for free and
 # one that does not is unaffected.
-PQ_DIR="${PCOMM_PQ_DIR:-${CSV_DIR%.csv}.pq}"
-# A pcomm that actually has DuckDB. $PCOMM is set by common.sh; the verb list is
+PQ_DIR="${COMSHU_PQ_DIR:-${CSV_DIR%.csv}.pq}"
+# A comshu that actually has DuckDB. $COMSHU is set by common.sh; the verb list is
 # the only honest test, because a build without DuckDB still ADVERTISES `sql` and
 # refuses at runtime.
-PQ_BIN="${PCOMM_PQ_BIN:-${PCOMM:-}}"
+PQ_BIN="${COMSHU_PQ_BIN:-${COMSHU:-}}"
 PQ_MODE=0
 if [ -n "$PQ_BIN" ] && [ -x "$PQ_BIN" ] && [ -d "$PQ_DIR" ] &&
    ls "$PQ_DIR"/*.parquet >/dev/null 2>&1 &&
@@ -306,13 +306,13 @@ sql "$params_sql"
 # this suite's most common defect with its own heading in README.md — the
 # vacuous pass — and it would be especially sharp here, because a capture with
 # no provenance is exactly the state the check exists to refuse.
-prov_commit="${PCOMM_EXPECT_COMMIT:-}"
+prov_commit="${COMSHU_EXPECT_COMMIT:-}"
 # Checked by VALUE, like workload_params above and for the same reason: this
 # string is spliced into SQL. A commit id is hex, plus write_build_id.cmake's
 # `-dirty` suffix; anything else is a runner passing something that is not a
 # commit, which must fail loudly rather than produce a broken assertion.
 case "$prov_commit" in
-  *[!a-zA-Z0-9._-]*) echo "$case_name: PCOMM_EXPECT_COMMIT is not a commit id: $prov_commit" >&2; exit 2 ;;
+  *[!a-zA-Z0-9._-]*) echo "$case_name: COMSHU_EXPECT_COMMIT is not a commit id: $prov_commit" >&2; exit 2 ;;
 esac
 sql "CREATE TABLE provenance (expect_commit TEXT);"
 if [ -n "$prov_commit" ]; then
@@ -388,7 +388,7 @@ PY
 # contradict. meta.json lists what the workload must have produced.
 echo "  -- assertions (derived from the workload; empty result = pass)"
 # Say whether the provenance checks are armed, once, on every board. Without
-# this line an unset PCOMM_EXPECT_COMMIT is visible only as a [skip] among
+# this line an unset COMSHU_EXPECT_COMMIT is visible only as a [skip] among
 # twenty others, and a check that silently stopped running is the thing this
 # whole mechanism exists to prevent.
 echo "     provenance: ${prov_commit:-<unset> — nothing claims a commit, so the build checks SKIP}"
@@ -418,7 +418,7 @@ if [ -n "$expect_tables" ]; then
 fi
 
 # --------------------------------------------------- the Parquet assertion path
-# `pcomm sql` wraps its argument in COPY (...) TO, so it takes exactly ONE
+# `comshu sql` wraps its argument in COPY (...) TO, so it takes exactly ONE
 # statement and no DDL. `params` and `ranks_seen` are synthetic tables that exist
 # only in the sqlite DB, so on this path they have to arrive as CTEs spliced onto
 # the front of the assertion. Splicing is done in python rather than sed because
@@ -511,11 +511,11 @@ else:
 PY
 )"
   out="$(pq_sql "$spliced")"
-  # `pcomm sql` prints a header row for a successful empty result; the header
+  # `comshu sql` prints a header row for a successful empty result; the header
   # alone therefore means PASS. Anything with a second line is a violation, and
   # its own error text (no header) is a broken assertion, not a passing one.
   case "$out" in
-    pcomm:*|*"Error"*) echo "  [XX ] $name (derived) — query failed:"
+    comshu:*|*"Error"*) echo "  [XX ] $name (derived) — query failed:"
                        printf '%s\n' "$out" | head -6 | sed 's/^/        /'; afail=1; return ;;
   esac
   rows="$(printf '%s\n' "$out" | tail -n +2)"
@@ -584,7 +584,7 @@ done
 # finding worth reading — it means CsvAgg's comm_edges and link_sql.hpp's have
 # drifted, which is precisely the fork this path exists to expose.
 if [ "$PQ_MODE" -eq 1 ]; then
-  echo "  -- assertions against the derived layer ($(basename "$PQ_DIR"), via pcomm sql)"
+  echo "  -- assertions against the derived layer ($(basename "$PQ_DIR"), via comshu sql)"
   for q in "$SUITE_DIR"/asserts/*.sql "$CASE_DIR"/asserts/*.sql; do
     [ -e "$q" ] || continue
     pq_only "$q" || continue
@@ -595,7 +595,7 @@ fi
 # --- the two comm_edges must agree ------------------------------------------
 #
 # comm_edges is computed twice: in C++ for the CSV export (CsvAgg,
-# pcomm-read/main.cpp) and in SQL for the derived layer (link_sql.hpp). The
+# comshu-read/main.cpp) and in SQL for the derived layer (link_sql.hpp). The
 # second implementation exists to be an oracle, and for months it was not one
 # in practice: CsvAgg never read a device send, so case 12's CSV comm_edges was
 # EMPTY over 1,347 GPU-initiated sends (MN5 48812895) while the derived one had
@@ -627,7 +627,7 @@ else echo "=== $case_name : FAIL (goldens $([ $gfail -eq 0 ] && echo ok || echo 
 [ "$axpass" -gt 0 ] && echo "  !! $axpass assertion(s) marked expect_fail now pass — update meta.json"
 
 # The directory may not exist: when the workload produced no capture at all,
-# `pcomm export --csv` writes nothing and $CSV_DIR was never created. The verdict
+# `comshu export --csv` writes nothing and $CSV_DIR was never created. The verdict
 # still has to be written — a case that failed hardest is exactly the one whose
 # result the aggregator must see. Without this the check died with
 # "result.json: No such file or directory", which reads as a broken harness

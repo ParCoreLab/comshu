@@ -13,7 +13,7 @@ MN5 has **no outbound network**. Fetch on a networked machine and rsync:
 ```bash
 curl -LO https://mvapich.cse.ohio-state.edu/download/mvapich/osu-micro-benchmarks-7.5.tar.gz
 rsync -av osu-micro-benchmarks-7.5.tar.gz koc296797@alogin2.bsc.es:~/
-bash -lc 'bash ~/proj/pcomm/tests/hpc/apps/05_osu_onesided/build_osu.sh'   # login shell is tcsh
+bash -lc 'bash ~/proj/comshu/tests/hpc/apps/05_osu_onesided/build_osu.sh'   # login shell is tcsh
 ```
 
 `build_osu.sh` checks the tarball's sha256 and **refuses a different one**. That
@@ -58,7 +58,7 @@ exact filter instead of an estimate.
 ## Toolchain, inherited from 01_gromacs and still true
 
 Build the benchmark with the **same** `mpicc` the job will launch with.
-`pcomm_load_runtime` puts `nvidia-hpc-sdk/25.7` on PATH (HPC-X 2.22.1); a
+`comshu_load_runtime` puts `nvidia-hpc-sdk/25.7` on PATH (HPC-X 2.22.1); a
 binary built against a different HPC-X and launched by this one mixes two Open
 MPI releases in one process, and the UCX provider — `LD_PRELOAD`ed, so resolved
 first — then wins the `libucp.so.0` SONAME for a `pml_ucx` that was built

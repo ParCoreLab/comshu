@@ -9,9 +9,9 @@
 #
 #   H1  UCX never did GPUDirect RDMA. It pipelined the device buffers through
 #       host bounce buffers, so the NIC really only ever saw host memory and
-#       pcomm's capture is CORRECT and complete.
+#       comshu's capture is CORRECT and complete.
 #   H2  UCX did register device memory, through mlx5dv_devx_umem_reg — which
-#       `libuct_ib.so.0` imports twice — and pcomm was BLIND to it because the
+#       `libuct_ib.so.0` imports twice — and comshu was BLIND to it because the
 #       main job ran `-p ib,ucx` and the mlx5dv provider was not loaded.
 #
 # Two things separate them, and both are cheap:
@@ -23,7 +23,7 @@
 #
 # 200 steps, ON arm only — this is a door probe, not a measurement.
 #
-#SBATCH --job-name=pcomm-app-gromacs-probe
+#SBATCH --job-name=comshu-app-gromacs-probe
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -34,9 +34,9 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 module load fftw/3.3.10-gcc-nvhpcx
 module load gromacs/2025.2-gcc-nvhpcx
 HPCX=/gpfs/apps/MN5/ACC/NVIDIA-HPC-SDK/23.11/Linux_x86_64/23.11/comm_libs/12.3/hpcx/hpcx-2.16
@@ -47,7 +47,7 @@ export SLURM_CPU_BIND=none
 unset GMX_ENABLE_DIRECT_GPU_COMM
 unset GMX_DISABLE_DIRECT_GPU_COMM
 
-WORK="$HOME/pcomm-apps/gromacs"
+WORK="$HOME/comshu-apps/gromacs"
 RUN="$WORK/probe-$SLURM_JOB_ID"; mkdir -p "$RUN"; cd "$RUN" || exit 1
 
 # What UCX itself thinks it can do with GPU memory, from a compute node.
@@ -57,9 +57,9 @@ echo "=== ucx_info: registration methods and GPUDirect ==="
 
 OUT="$WORK/gromacs-probe-$SLURM_JOB_ID"; rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 mpirun -np 8 --map-by ppr:4:node --bind-to none \
-  -x PATH -x LD_LIBRARY_PATH -x OPAL_PREFIX -x PCOMM_PROVIDER_PATH \
+  -x PATH -x LD_LIBRARY_PATH -x OPAL_PREFIX -x COMSHU_PROVIDER_PATH \
   -x UCX_LOG_LEVEL=info \
-  "$PCOMM" run -p ib,ucx,mlx5dv -o "$OUT" -- \
+  "$COMSHU" run -p ib,ucx,mlx5dv -o "$OUT" -- \
   gmx_mpi mdrun -s "$WORK/benchRIB.tpr" -nsteps 200 -npme 1 -dd 7 1 1 -ddorder pp_pme \
     -nb gpu -pme gpu -notunepme -dlb no -nstlist 100 \
     -ntomp "${SLURM_CPUS_PER_TASK:-20}" -pin on -noconfout \
@@ -67,8 +67,8 @@ mpirun -np 8 --map-by ppr:4:node --bind-to none \
 echo "probe exit=$?"
 
 echo "=== GPUDirect verdict, straight from UCX ==="
-grep -hiE 'GPUDirect RDMA is|gdr_copy|dmabuf|nv_peer_mem' "$SLURM_SUBMIT_DIR"/pcomm-app-gromacs-probe."$SLURM_JOB_ID".out 2>/dev/null | sort -u | head -20
+grep -hiE 'GPUDirect RDMA is|gdr_copy|dmabuf|nv_peer_mem' "$SLURM_SUBMIT_DIR"/comshu-app-gromacs-probe."$SLURM_JOB_ID".out 2>/dev/null | sort -u | head -20
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
 grep -c . "$OUT.csv"/mlx5_umem.csv "$OUT.csv"/mlx5_device_send.csv "$OUT.csv"/ib_post_send.csv 2>/dev/null

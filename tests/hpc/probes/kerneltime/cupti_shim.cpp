@@ -3,7 +3,7 @@
 // This is deliberately shaped like the real thing rather than like a benchmark:
 // a constructor turns CUPTI's concurrent-kernel activity on, records land in a
 // buffer, and a destructor reports. That is exactly the shape the engine would
-// take (pcomm_engine_acquire turning it on, finalize draining it), so what this
+// take (comshu_engine_acquire turning it on, finalize draining it), so what this
 // measures on a real workload is what the feature would cost.
 //
 // It answers the two questions the microbenchmarks could not:
@@ -91,7 +91,7 @@ void CUPTIAPI on_done(CUcontext, uint32_t, uint8_t* buf, size_t, size_t valid) {
 }
 
 __attribute__((constructor)) void shim_init() {
-    if (std::getenv("PCOMM_SHIM_OFF"))
+    if (std::getenv("COMSHU_SHIM_OFF"))
         return;
     g_t_start = now_ns();
     CUptiResult r = cuptiActivityRegisterCallbacks(on_req, on_done);

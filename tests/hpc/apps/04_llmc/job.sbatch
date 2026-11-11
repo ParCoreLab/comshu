@@ -6,7 +6,7 @@
 #   while squeue -u koc296797 -h | grep -q .; do sleep 60; done
 #   sbatch tests/hpc/apps/04_llmc/job.sbatch
 #
-#SBATCH --job-name=pcomm-app-04-llmc
+#SBATCH --job-name=comshu-app-04-llmc
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -18,7 +18,7 @@
 # FOUR CONFIGURATIONS IN ONE ALLOCATION, because the queue slot is the scarce
 # resource and four agents serialise through one of them (apps/README.md):
 #
-#   bare    -z 0            no pcomm. If this fails nothing below means anything.
+#   bare    -z 0            no comshu. If this fails nothing below means anything.
 #   z0      -z 0            plain data-parallel — one all-reduce per gradient tensor
 #   z1      -z 1            ZeRO-1 — reduce-scatter + all-gather instead
 #   z0d2    -z 0, -d x2     grad_accum_steps=2, every other variable identical
@@ -29,10 +29,10 @@
 # single collective count.
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
-export LD_LIBRARY_PATH="$NCCL_HOME/lib:$PCOMM_SDK/math_libs/12.9/lib64:$LD_LIBRARY_PATH"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
+export LD_LIBRARY_PATH="$NCCL_HOME/lib:$COMSHU_SDK/math_libs/12.9/lib64:$LD_LIBRARY_PATH"
 
 LLMC="${LLMC:-$HOME/llmc}"                        # karpathy/llm.c at f1e2ace
 APP="$LLMC/train_gpt2cu"
@@ -45,18 +45,18 @@ APP="$LLMC/train_gpt2cu"
 # so CUDART_VERSION < 13000 takes the original arm) but is applied anyway so the
 # two machines build the same source.
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
-  ( cd "$LLMC" && patch -p1 -N < "$PCOMM_ROOT/tests/hpc/apps/04_llmc/llmc-cuda13-memadvise.patch" || true
+  comshu_load_build
+  ( cd "$LLMC" && patch -p1 -N < "$COMSHU_ROOT/tests/hpc/apps/04_llmc/llmc-cuda13-memadvise.patch" || true
     OMPI_CXX=g++ nvcc --threads=0 -t=0 --use_fast_math -std=c++17 -O3 \
       --generate-code arch=compute_90,code=[compute_90,sm_90] \
       -DMULTI_GPU -DUSE_MPI -DENABLE_BF16 -ccbin=mpic++ \
       train_gpt2.cu -o train_gpt2cu \
-      -I"$PCOMM_SDK/math_libs/12.9/include" -L"$PCOMM_SDK/math_libs/12.9/lib64" \
+      -I"$COMSHU_SDK/math_libs/12.9/include" -L"$COMSHU_SDK/math_libs/12.9/lib64" \
       -lcublas -lcublasLt \
       -I"$NCCL_HOME/include" -L"$NCCL_HOME/lib" -lnccl \
-      -L"$PCOMM_SDK/cuda/lib64/stubs" -lnvidia-ml )
-  pcomm_load_runtime
-  export LD_LIBRARY_PATH="$NCCL_HOME/lib:$PCOMM_SDK/math_libs/12.9/lib64:$LD_LIBRARY_PATH"
+      -L"$COMSHU_SDK/cuda/lib64/stubs" -lnvidia-ml )
+  comshu_load_runtime
+  export LD_LIBRARY_PATH="$NCCL_HOME/lib:$COMSHU_SDK/math_libs/12.9/lib64:$LD_LIBRARY_PATH"
 fi
 
 # gpt2-tiny (-e d6): L=6, C=384, Vp=50304, max_seq_len=1024 -> 30,357,504
@@ -75,7 +75,7 @@ TOKENS_PER_FWDBWD=$((2 * 1024 * NP))              # 16384
 
 cd "$LLMC"
 
-echo "########## BARE — no pcomm, 8 ranks over 2 nodes"
+echo "########## BARE — no comshu, 8 ranks over 2 nodes"
 mpirun -np $NP --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
   "$APP" $COMMON -z 0 -d $TOKENS_PER_FWDBWD
 echo "bare exit=$?"
@@ -89,19 +89,19 @@ echo "bare exit=$?"
 # application people actually run, for no gain in what is checked.
 run_capture() {                                   # $1 = label, $2 = providers, rest = llm.c args
   local label="$1" providers="$2"; shift 2
-  local out; out="$(pcomm_out "llmc-$label")"
+  local out; out="$(comshu_out "llmc-$label")"
   rm -rf "$out"; mkdir -p "$out"
   echo "########## CAPTURE $label  (-p $providers) : $*"
   mpirun -np $NP --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-    -x PCOMM_PROVIDER_PATH -x NCCL_DEBUG=WARN \
-    "$PCOMM" run -p "$providers" -o "$out" -- "$APP" $COMMON "$@"
+    -x COMSHU_PROVIDER_PATH -x NCCL_DEBUG=WARN \
+    "$COMSHU" run -p "$providers" -o "$out" -- "$APP" $COMMON "$@"
   echo "mpirun exit=$?"
-  echo "=== captured streams ($label) ==="; "$PCOMM" read "$out"
-  "$PCOMM" export "$out" --csv "$out.csv"
-  pcomm_derive "$out"
+  echo "=== captured streams ($label) ==="; "$COMSHU" read "$out"
+  "$COMSHU" export "$out" --csv "$out.csv"
+  comshu_derive "$out"
   echo "=== sql_check ($label) ==="
-  bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$out.csv" \
-       "$PCOMM_ROOT/tests/hpc/apps/04_llmc" || true
+  bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$out.csv" \
+       "$COMSHU_ROOT/tests/hpc/apps/04_llmc" || true
 }
 
 run_capture z0   nccl,ib -z 0 -d $TOKENS_PER_FWDBWD
@@ -111,7 +111,7 @@ run_capture z0d2 nccl    -z 0 -d $((TOKENS_PER_FWDBWD * 2))
 # The breakdown the report quotes. Written here rather than run by hand so the
 # numbers in REPORT.md are reproducible from the job's own stdout.
 for label in z0 z1 z0d2; do
-  out="$(pcomm_out "llmc-$label")"
+  out="$(comshu_out "llmc-$label")"
   echo "########## BREAKDOWN $label"
   sqlite3 <<SQL
 .mode column
@@ -127,7 +127,7 @@ SQL
 done
 
 echo "########## IB SIDE (z0) — intent vs wire, one execution"
-out="$(pcomm_out llmc-z0)"
+out="$(comshu_out llmc-z0)"
 sqlite3 <<SQL
 .mode column
 .headers on

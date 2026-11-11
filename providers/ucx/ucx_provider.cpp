@@ -5,37 +5,37 @@
 #include <ucp/api/ucp.h>
 #include <ucs/type/status.h>
 
-#include "pcomm/core/mem_attr.hpp"
-#include "pcomm/core/records.hpp"
-#include "pcomm/engine_abi.h"
-#include "pcomm/provider/provider.hpp"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/tracer.hpp"
+#include "comshu/core/mem_attr.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/engine_abi.h"
+#include "comshu/provider/provider.hpp"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/tracer.hpp"
 
 #include "ucx_event_source.hpp"
 #include "ucx_records.hpp"
 
 namespace ucx {
-namespace rr = pcomm::providers::ucx::records;
-using pcomm::rec::InternDomain;
+namespace rr = comshu::providers::ucx::records;
+using comshu::rec::InternDomain;
 
-static pcomm::rec::Recorder<>& rec() {
-    static pcomm::rec::Recorder<> proxy;
+static comshu::rec::Recorder<>& rec() {
+    static comshu::rec::Recorder<> proxy;
     return proxy;
 }
 
-static pcomm::core::Handle h(const void* p) {
+static comshu::core::Handle h(const void* p) {
     return rec().intern(InternDomain::Pointer, reinterpret_cast<std::uint64_t>(p));
 }
 
-static pcomm::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
-    return pcomm::core::Temporal::interval({pcomm::core::kDomainHostTsc, begin},
-                                           {pcomm::core::kDomainHostTsc, end});
+static comshu::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
+    return comshu::core::Temporal::interval({comshu::core::kDomainHostTsc, begin},
+                                           {comshu::core::kDomainHostTsc, end});
 }
 
-static void close(const void* p, pcomm::core::RecordTypeId opener) {
+static void close(const void* p, comshu::core::RecordTypeId opener) {
     if (p)
-        rec().record(rec().now_instant(), pcomm::core::records::EntityClose{{}, {}, h(p), opener});
+        rec().record(rec().now_instant(), comshu::core::records::EntityClose{{}, {}, h(p), opener});
 }
 
 // ONE DESTRUCTION, ONE CLOSE — for endpoints, which are the only entity here
@@ -106,7 +106,7 @@ static void close_endpoint_once(const void* p) {
             return;  // already closed by an outer door in this same teardown
         open[p] = false;
     }
-    close(p, pcomm::core::RecordTrait<rr::UcxEndpoint>::type_id);
+    close(p, comshu::core::RecordTrait<rr::UcxEndpoint>::type_id);
 }
 
 // FNV-1a, the same construction tools/schema_check.py uses for the schema hash,
@@ -171,12 +171,12 @@ static constexpr std::size_t kAddressHashPrefix = 32;
 // getenv per call would be its own performance story.
 static bool record_progress() noexcept {
     static const bool on =
-        pcomm_engine_trace_mode() >= static_cast<int>(pcomm::core::TraceMode::Full);
+        comshu_engine_trace_mode() >= static_cast<int>(comshu::core::TraceMode::Full);
     return on;
 }
 
 struct ClassifiedStatus {
-    pcomm::core::Handle request{};
+    comshu::core::Handle request{};
     std::int32_t        status{UCS_OK};
     rr::StatusClass     kind{rr::StatusClass::Immediate};
 };
@@ -185,7 +185,7 @@ static ClassifiedStatus classify(ucs_status_ptr_t value) {
     if (value == nullptr)
         return {};
     if (UCS_PTR_IS_ERR(value))
-        return {pcomm::core::kNullHandle, static_cast<std::int32_t>(UCS_PTR_STATUS(value)),
+        return {comshu::core::kNullHandle, static_cast<std::int32_t>(UCS_PTR_STATUS(value)),
                 rr::StatusClass::Error};
     return {h(value), UCS_INPROGRESS, rr::StatusClass::Request};
 }
@@ -208,7 +208,7 @@ static void emit_tag_send(ucp_ep_h endpoint, const void* buffer, size_t count, u
                                                   s.status,
                                                   static_cast<std::uint8_t>(s.kind),
                                                   static_cast<std::uint8_t>(door),
-                                                  pcomm::core::device_of(buffer)});
+                                                  comshu::core::device_of(buffer)});
 }
 
 static void emit_tag_recv(ucp_worker_h worker, void* buffer, size_t count, ucp_tag_t tag,
@@ -223,7 +223,7 @@ static void emit_tag_recv(ucp_worker_h worker, void* buffer, size_t count, ucp_t
                                                   count,
                                                   tag,
                                                   tag_mask,
-                                                  message ? h(message) : pcomm::core::kNullHandle,
+                                                  message ? h(message) : comshu::core::kNullHandle,
                                                   s.status,
                                                   static_cast<std::uint8_t>(s.kind),
                                                   static_cast<std::uint8_t>(door)});
@@ -291,7 +291,7 @@ static void emit_atomic(ucp_ep_h endpoint, const void* buffer, ClassifiedStatus 
     rec().record(span(begin, end), rr::UcxAtomic{{},
                                                  {},
                                                  h(endpoint),
-                                                 buffer ? h(buffer) : pcomm::core::kNullHandle,
+                                                 buffer ? h(buffer) : comshu::core::kNullHandle,
                                                  s.request,
                                                  h(rkey),
                                                  value,
@@ -319,7 +319,7 @@ static void emit_rma(ucp_ep_h endpoint, const void* buffer, size_t count, std::u
                                               static_cast<std::uint8_t>(s.kind),
                                               static_cast<std::uint8_t>(op),
                                               static_cast<std::uint8_t>(door),
-                                              pcomm::core::device_of(buffer)});
+                                              comshu::core::device_of(buffer)});
 }
 
 // A `_nbi` call returns a plain status and never a request: the operation is
@@ -328,7 +328,7 @@ static void emit_rma(ucp_ep_h endpoint, const void* buffer, size_t count, std::u
 static ClassifiedStatus classify_status(ucs_status_t status) {
     if (status == UCS_OK)
         return {};
-    return {pcomm::core::kNullHandle, static_cast<std::int32_t>(status), rr::StatusClass::Error};
+    return {comshu::core::kNullHandle, static_cast<std::int32_t>(status), rr::StatusClass::Error};
 }
 
 // UCX IMPLEMENTS ITS LEGACY DOORS ON TOP OF THE MODERN ONES, and because our
@@ -360,11 +360,11 @@ static bool nested_in_legacy() noexcept {
 }
 
 Profiler::Profiler() {
-    const pcomm::Config cfg = pcomm::Config::from_env();
-    if (pcomm_engine_declare_provider("ucx", pcomm::core::id_range::ucx_lo,
-                                      pcomm::core::id_range::ucx_hi, PCOMM_ENGINE_ABI_VERSION) != 0)
+    const comshu::Config cfg = comshu::Config::from_env();
+    if (comshu_engine_declare_provider("ucx", comshu::core::id_range::ucx_lo,
+                                      comshu::core::id_range::ucx_hi, COMSHU_ENGINE_ABI_VERSION) != 0)
         return;
-    pcomm_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
     register_post<init_version_tag>([](ucs_status_t status, unsigned major, unsigned minor,
                                        const ucp_params_t*, const ucp_config_t*, ucp_context_h* out,
@@ -373,7 +373,7 @@ Profiler::Profiler() {
             rec().record(span(begin, end), rr::UcxContext{{}, {}, h(*out), major, minor});
     });
     register_pre<cleanup_tag>([](ucp_context_h context, auto) {
-        close(context, pcomm::core::RecordTrait<rr::UcxContext>::type_id);
+        close(context, comshu::core::RecordTrait<rr::UcxContext>::type_id);
     });
     register_post<worker_create_tag>([](ucs_status_t status, ucp_context_h        context,
                                         const ucp_worker_params_t*, ucp_worker_h* out, auto begin,
@@ -425,7 +425,7 @@ Profiler::Profiler() {
                              static_cast<std::uint32_t>(attr->address_length)});
         });
     register_pre<worker_destroy_tag>([](ucp_worker_h worker, auto) {
-        close(worker, pcomm::core::RecordTrait<rr::UcxWorker>::type_id);
+        close(worker, comshu::core::RecordTrait<rr::UcxWorker>::type_id);
     });
     register_post<ep_create_tag>([](ucs_status_t status, ucp_worker_h worker,
                                     const ucp_ep_params_t* params, ucp_ep_h* out, auto begin,
@@ -491,7 +491,7 @@ Profiler::Profiler() {
                                                      header_length,
                                                      s.status,
                                                      static_cast<std::uint8_t>(s.kind),
-                                                     pcomm::core::device_of(buffer)});
+                                                     comshu::core::device_of(buffer)});
     });
     // EVERY optional field is read through its field_mask bit, never assumed
     // present: ucp_mem_map_params_t is a masked struct, and a caller passing
@@ -527,7 +527,7 @@ Profiler::Profiler() {
                      rr::UcxMemMap{{}, {}, h(*out), h(context), address, length, resolved});
     });
     register_pre<mem_unmap_tag>([](ucp_context_h, ucp_mem_h memh, auto) {
-        close(memh, pcomm::core::RecordTrait<rr::UcxMemMap>::type_id);
+        close(memh, comshu::core::RecordTrait<rr::UcxMemMap>::type_id);
     });
     // The remote keys. See UcxRkey for why this record exists and for the one
     // thing it deliberately does not carry.
@@ -538,7 +538,7 @@ Profiler::Profiler() {
         rec().record(span(begin, end), rr::UcxRkey{{}, {}, h(*out), h(endpoint)});
     });
     register_pre<rkey_destroy_tag>(
-        [](ucp_rkey_h rkey, auto) { close(rkey, pcomm::core::RecordTrait<rr::UcxRkey>::type_id); });
+        [](ucp_rkey_h rkey, auto) { close(rkey, comshu::core::RecordTrait<rr::UcxRkey>::type_id); });
     // The rendezvous door. ucx_hooks.hpp explains why this symbol is declared
     // with one more parameter than it has here; this is where that is resolved.
     //
@@ -905,7 +905,7 @@ extern "C" ucs_status_ptr_t ucp_atomic_op_nbx(ucp_ep_h endpoint, ucp_atomic_op_t
                                                                  remote_addr, rkey, param);
 }
 
-namespace pcomm::providers {
+namespace comshu::providers {
 class UcxProvider final : public provider::IProvider {
 public:
     provider::ProviderInfo info() const override {
@@ -916,18 +916,18 @@ public:
         return true;
     }
     void shutdown() override {
-        pcomm_engine_drain_thread();
-        pcomm_engine_release();
+        comshu_engine_drain_thread();
+        comshu_engine_release();
     }
 };
-}  // namespace pcomm::providers
+}  // namespace comshu::providers
 
-PCOMM_EXPORT_PROVIDER(pcomm::providers::UcxProvider)
+COMSHU_EXPORT_PROVIDER(comshu::providers::UcxProvider)
 
-static void __attribute__((constructor)) pcomm_ucx_load() {
+static void __attribute__((constructor)) comshu_ucx_load() {
     ucx::Profiler::instance();
 }
-static void __attribute__((destructor)) pcomm_ucx_unload() {
-    pcomm_engine_drain_thread();
-    pcomm_engine_release();
+static void __attribute__((destructor)) comshu_ucx_unload() {
+    comshu_engine_drain_thread();
+    comshu_engine_release();
 }

@@ -10,7 +10,7 @@
 
 #include <uct/api/uct.h>
 
-#include "pcomm/hook/HookTrait.hpp"
+#include "comshu/hook/HookTrait.hpp"
 
 DEFINE_PRELOAD_HOOK(uctd, iface_open, "uct_iface_open", ucs_status_t, uct_md_h, uct_worker_h,
                     const uct_iface_params_t*, const uct_iface_config_t*, uct_iface_h*);

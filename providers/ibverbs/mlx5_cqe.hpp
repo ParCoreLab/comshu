@@ -74,8 +74,8 @@
 // involved. The entry survives the driver consuming it, and the addressing
 // below is right. Jobs 44542213 / 44542243, and tests/hpc/probes/cqeread.
 //
-// Enabled by PCOMM_CQE_PROBE=1. Off, this costs one branch per poll.
-// POSITIVE CONTROL: any [pcomm-cqeprobe] line at all. A run with none did not
+// Enabled by COMSHU_CQE_PROBE=1. Off, this costs one branch per poll.
+// POSITIVE CONTROL: any [comshu-cqeprobe] line at all. A run with none did not
 // execute this code, and nothing it did not print is a finding.
 
 //
@@ -93,7 +93,7 @@
 
 namespace ibv::cqeprobe {
 
-/** True when PCOMM_CQE_PROBE names a non-zero value. Read once. */
+/** True when COMSHU_CQE_PROBE names a non-zero value. Read once. */
 bool enabled();
 
 /**

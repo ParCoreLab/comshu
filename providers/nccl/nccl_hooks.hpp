@@ -44,7 +44,7 @@
 #include <cuda_runtime_api.h>
 #include <nccl.h>
 
-#include "pcomm/hook/HookTrait.hpp"
+#include "comshu/hook/HookTrait.hpp"
 
 // --- communicator lifecycle -------------------------------------------------
 // ncclCommInitRank carries the ncclUniqueId BY VALUE, which is the only place
@@ -98,7 +98,7 @@ DEFINE_PRELOAD_HOOK(nccl, recv, "ncclRecv", ncclResult_t, void*, size_t, ncclDat
 // older header; the hook simply does not exist there, and a capture from such a
 // build has no nccl_window table rather than an empty one.
 #if defined(NCCL_MAJOR) && (NCCL_MAJOR > 2 || (NCCL_MAJOR == 2 && NCCL_MINOR >= 27))
-#define PCOMM_NCCL_HAS_WINDOW 1
+#define COMSHU_NCCL_HAS_WINDOW 1
 DEFINE_PRELOAD_HOOK(nccl, window_register, "ncclCommWindowRegister", ncclResult_t, ncclComm_t,
                     void*, size_t, ncclWindow_t*, int);
 DEFINE_PRELOAD_HOOK(nccl, window_deregister, "ncclCommWindowDeregister", ncclResult_t, ncclComm_t,
@@ -113,5 +113,5 @@ DEFINE_PRELOAD_HOOK(nccl, window_deregister, "ncclCommWindowDeregister", ncclRes
 DEFINE_PRELOAD_HOOK(nccl, dev_comm_create, "ncclDevCommCreate", ncclResult_t, ncclComm_t,
                     const void*, void*);
 #else
-#define PCOMM_NCCL_HAS_WINDOW 0
+#define COMSHU_NCCL_HAS_WINDOW 0
 #endif

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=pcomm-ucx-api
+#SBATCH --job-name=comshu-ucx-api
 #SBATCH --account=etur02
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
@@ -14,9 +14,9 @@
 # provider, so an absent hook becomes evidence before it becomes an empty table.
 set -euo pipefail
 
-ROOT="${PCOMM_ROOT:-$SLURM_SUBMIT_DIR}"
+ROOT="${COMSHU_ROOT:-$SLURM_SUBMIT_DIR}"
 HERE="$ROOT/tests/hpc/probes/ucx_api_coverage"
-OUT="${PCOMM_UCX_API_OUT:-$HERE/out-$SLURM_JOB_ID}"
+OUT="${COMSHU_UCX_API_OUT:-$HERE/out-$SLURM_JOB_ID}"
 mkdir -p "$OUT"
 
 module load gcc/13.2.0 nvidia-hpc-sdk/25.7 >/dev/null 2>&1

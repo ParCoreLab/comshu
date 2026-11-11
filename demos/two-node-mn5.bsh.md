@@ -1,6 +1,6 @@
-# pcomm demo — two captures on a MareNostrum 5 allocation
+# comshu demo — two captures on a MareNostrum 5 allocation
 
-`pcomm` is the ParCore lab's GPU-communication profiler. This session captures
+`comshu` is the ParCore lab's GPU-communication profiler. This session captures
 the two transports it exists to see, one demo each:
 
 1. **GPU memory writes over NVLink** (`-p p2p`, the gpumem/NVBit provider) —
@@ -28,13 +28,13 @@ nodes, 4× H100 each, NDR InfiniBand between:
 koc296797@alogin2.bsc.es%% salloc --account=etur02 --qos=acc_debug --nodes=2 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=20 --time=00:30:00
 
 Environment for every cell below (persistent `%%` session — the suite's
-common.sh sets $PCOMM, $PCOMM_READ, provider paths, and the gcc-13.2 runtime):
+common.sh sets $COMSHU, $COMSHU_READ, provider paths, and the gcc-13.2 runtime):
 
-koc296797@alogin2.bsc.es%% export PCOMM_ROOT=$HOME/proj/pcomm
-koc296797@alogin2.bsc.es%% source $PCOMM_ROOT/tests/hpc/suite/common.sh && pcomm_load_runtime && $PCOMM --list
+koc296797@alogin2.bsc.es%% export COMSHU_ROOT=$HOME/proj/comshu
+koc296797@alogin2.bsc.es%% source $COMSHU_ROOT/tests/hpc/suite/common.sh && comshu_load_runtime && $COMSHU --list
 
 ```out
-pcomm providers — pick with -p <name>[,<name>...]
+comshu providers — pick with -p <name>[,<name>...]
 
   name     scope        capture
   ───────  ───────────  ─────────────────────────────────────────────
@@ -56,18 +56,18 @@ NVLink and loads its own. Deterministic by construction: N GPUs × ELEMS threads
 
 Build it once (nvcc wants the gcc-11.4 host compiler; run time wants 13.2):
 
-koc296797@alogin2.bsc.es%% pcomm_load_build && nvcc -O2 -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets $PCOMM_ROOT/tests/hpc/cases/03_p2p_kernel/p2p_kernel.cu -o ~/p2p_kernel -lcudart && pcomm_load_runtime
+koc296797@alogin2.bsc.es%% comshu_load_build && nvcc -O2 -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets $COMSHU_ROOT/tests/hpc/cases/03_p2p_kernel/p2p_kernel.cu -o ~/p2p_kernel -lcudart && comshu_load_runtime
 
-### 1.1 Run it under pcomm
+### 1.1 Run it under comshu
 
 1024 elements × 2 iters on one node's 4 GPUs. Expected peer stores:
 4 GPUs × 2 iters × 1024 threads = **8192 stores of 4 B** — 2048 per ring edge.
-(`PCOMM_RANK=0` pins the rank; no MPI here, so it would fall back to the pid.)
+(`COMSHU_RANK=0` pins the rank; no MPI here, so it would fall back to the pid.)
 
-koc296797@alogin2.bsc.es%% rm -rf /tmp/demo-p2p && srun --nodes=1 --ntasks=1 --gres=gpu:4 --overlap env PCOMM_RANK=0 $PCOMM -p p2p -o /tmp/demo-p2p -- ~/p2p_kernel 1024 2
+koc296797@alogin2.bsc.es%% rm -rf /tmp/demo-p2p && srun --nodes=1 --ntasks=1 --gres=gpu:4 --overlap env COMSHU_RANK=0 $COMSHU -p p2p -o /tmp/demo-p2p -- ~/p2p_kernel 1024 2
 
 ```out
-pcomm: 1 provider → 1 pass
+comshu: 1 provider → 1 pass
   · p2p          → /tmp/demo-p2p
 p2p_kernel OK: 4 GPUs, 1024 elems, 2 iters (ring peer writes)
 ```
@@ -80,7 +80,7 @@ startup cost, not the workload; it is why the payload being small matters.)
 The inventory reads each stream's own header — the capture tells you what it
 is, you never infer from filenames:
 
-koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-p2p
+koc296797@alogin2.bsc.es%% $COMSHU_READ /tmp/demo-p2p
 
 ```out
 streams in /tmp/demo-p2p:
@@ -94,10 +94,10 @@ streams in /tmp/demo-p2p:
 
 Export to relational CSVs (one table per record type, intern handles resolved):
 
-koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-p2p --csv /tmp/demo-p2p.csv
+koc296797@alogin2.bsc.es%% $COMSHU_READ /tmp/demo-p2p --csv /tmp/demo-p2p.csv
 
 ```out
-pcomm-read: 1 ranks, 8192 gpu-accesses, 0 ib-sends -> /tmp/demo-p2p.csv/{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv
+comshu-read: 1 ranks, 8192 gpu-accesses, 0 ib-sends -> /tmp/demo-p2p.csv/{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv
 ```
 
 ### 1.3 Insights
@@ -159,17 +159,17 @@ koc296797@alogin2.bsc.es%% nodes=($(scontrol show hostnames $SLURM_JOB_NODELIST)
 server=as04r1b02 client=as04r1b09
 ```
 
-### 2.1 Run it under pcomm
+### 2.1 Run it under comshu
 
-Both endpoints run under `pcomm -p ib` into one shared output dir, with
+Both endpoints run under `comshu -p ib` into one shared output dir, with
 explicit ranks (server backgrounded; the client connects to it out-of-band):
 
 koc296797@alogin2.bsc.es%% rm -rf /tmp/demo-ib && DEVCMD='DEV=$(ibv_devinfo | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print d; exit}")'
-koc296797@alogin2.bsc.es%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[0]} --overlap bash -c "$DEVCMD; PCOMM_RANK=0 $PCOMM -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024" & sleep 6
-koc296797@alogin2.bsc.es%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[1]} --overlap bash -c "$DEVCMD; PCOMM_RANK=1 $PCOMM -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024 ${nodes[0]}"; wait
+koc296797@alogin2.bsc.es%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[0]} --overlap bash -c "$DEVCMD; COMSHU_RANK=0 $COMSHU -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024" & sleep 6
+koc296797@alogin2.bsc.es%% srun --nodes=1 --ntasks=1 --nodelist=${nodes[1]} --overlap bash -c "$DEVCMD; COMSHU_RANK=1 $COMSHU -p ib -o /tmp/demo-ib -- ibv_rc_pingpong -d \$DEV -n 10 -s 1024 ${nodes[0]}"; wait
 
 ```out
-pcomm: 1 provider → 1 pass
+comshu: 1 provider → 1 pass
   · ib           → /tmp/demo-ib
   local address:  LID 0x1eda, QPN 0x0023e5, PSN 0x123456
   remote address: LID 0x1f0e, QPN 0x015f84, PSN 0x654321
@@ -179,7 +179,7 @@ pcomm: 1 provider → 1 pass
 
 ### 2.2 Parse the capture
 
-koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-ib
+koc296797@alogin2.bsc.es%% $COMSHU_READ /tmp/demo-ib
 
 ```out
 streams in /tmp/demo-ib:
@@ -196,10 +196,10 @@ Read that as physics before touching SQL: 1 memory region, 1 queue pair,
 3 QP state transitions (INIT→RTR→RTS), 10 posted sends, 20 completions —
 per rank. The oracle, straight from the stream headers.
 
-koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-ib --csv /tmp/demo-ib.csv
+koc296797@alogin2.bsc.es%% $COMSHU_READ /tmp/demo-ib --csv /tmp/demo-ib.csv
 
 ```out
-pcomm-read: 2 ranks, 0 gpu-accesses, 20 ib-sends -> /tmp/demo-ib.csv/{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv
+comshu-read: 2 ranks, 0 gpu-accesses, 20 ib-sends -> /tmp/demo-ib.csv/{gpu_access,mem_object,source_line,clock_anchor,comm_edges,ib_*}.csv
 ```
 
 ### 2.3 Insights
@@ -216,7 +216,7 @@ rank  opcode  n   bytes
 1     send    10  10240
 ```
 
-**Topology** — `comm_edges` is derived rank-space: pcomm-read maps each QP's
+**Topology** — `comm_edges` is derived rank-space: comshu-read maps each QP's
 RTR destination to the rank that owns it, collapsing run-varying wire ids
 (QPNs, LIDs) into a stable src→dst graph:
 
@@ -259,10 +259,10 @@ rank  qp_num  dest_qp_num  dest_lid  state
 completions as slices with real durations, cross-node clocks aligned via each
 rank's ClockAnchors) and load it at https://ui.perfetto.dev:
 
-koc296797@alogin2.bsc.es%% $PCOMM_READ /tmp/demo-ib --pftrace /tmp/demo-ib.pftrace
+koc296797@alogin2.bsc.es%% $COMSHU_READ /tmp/demo-ib --pftrace /tmp/demo-ib.pftrace
 
 ```out
-pcomm-read: 2 ranks, 60 events -> /tmp/demo-ib.pftrace (4821 bytes; load in ui.perfetto.dev)
+comshu-read: 2 ranks, 60 events -> /tmp/demo-ib.pftrace (4821 bytes; load in ui.perfetto.dev)
 ```
 
 ---
@@ -273,12 +273,12 @@ The point of one tool for both transports: a real application (NCCL, NVSHMEM)
 moves data over NVLink *and* IB in the same run, and the providers co-run in
 one process, one recorder, one timeline:
 
-% echo 'pcomm -p ib,p2p -o out -- <your-app>   # one pass, both transports, one merged capture'
+% echo 'comshu -p ib,p2p -o out -- <your-app>   # one pass, both transports, one merged capture'
 ```out
-pcomm -p ib,p2p -o out -- <your-app>   # one pass, both transports, one merged capture
+comshu -p ib,p2p -o out -- <your-app>   # one pass, both transports, one merged capture
 ```
 
 The suite's case 06 (`nvshmem_coexist`) is exactly that, asserted with goldens;
-`pcomm-read out --csv` merges both providers' tables by rank, and the same SQL
+`comshu-read out --csv` merges both providers' tables by rank, and the same SQL
 as above answers "which GPU write caused which wire send" questions across
 transports. See `tests/hpc/cases/` for the full oracle set.

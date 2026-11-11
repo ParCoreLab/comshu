@@ -19,7 +19,7 @@
 -- nothing.
 --
 -- ON THE UNIT. sum(ucx_tag_send.count) is bytes here and that is an Open MPI
--- fact rather than a pcomm one: pml_ucx_datatype.h:87 pre-multiplies count by
+-- fact rather than a comshu one: pml_ucx_datatype.h:87 pre-multiplies count by
 -- the element size for a contiguous power-of-two datatype, and every halo
 -- message LAMMPS sends is MPI_DOUBLE (comm_brick.cpp / comm_kokkos.cpp pass
 -- MPI_DOUBLE throughout). It is recorded in QUESTIONS.md because nothing in the

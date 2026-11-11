@@ -4,8 +4,8 @@
 --
 -- The failure this is for: a capture that is short a rank still produces a
 -- perfectly self-consistent set of tables, and every other check aggregates by
--- rank and so simply has one group fewer. `pcomm` falls back to the pid when
--- PCOMM_RANK is unset and the launcher exports nothing, which turns "8 ranks"
+-- rank and so simply has one group fewer. `comshu` falls back to the pid when
+-- COMSHU_RANK is unset and the launcher exports nothing, which turns "8 ranks"
 -- into eight five-digit rank ids — the upper half of this query is what
 -- notices.
 --

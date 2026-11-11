@@ -1,9 +1,9 @@
 #pragma once
 // mlx5dv hook definitions — the per-symbol traits supplying the vendor types
-// the engine (pcomm::hook) is deliberately free of.
+// the engine (comshu::hook) is deliberately free of.
 //
 // DEFINE_*_HOOK must be invoked at global scope: each expands to a tag struct in
-// `namespace mlx5` plus a specialization of ::pcomm::hook::HookTrait.
+// `namespace mlx5` plus a specialization of ::comshu::hook::HookTrait.
 //
 // All of these are plain LD_PRELOAD interposers. That is worth stating because
 // the CUDA half of IBGDA is *not* reachable that way: NVSHMEM dlopens
@@ -16,7 +16,7 @@
 
 #include <infiniband/mlx5dv.h>
 
-#include "pcomm/hook/HookTrait.hpp"
+#include "comshu/hook/HookTrait.hpp"
 
 // Registration. Both entry points are hooked, on purpose.
 //

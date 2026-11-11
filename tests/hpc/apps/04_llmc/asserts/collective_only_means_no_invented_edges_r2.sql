@@ -4,7 +4,7 @@
 -- ROUND 2. llm.c calls ncclSend and ncclRecv exactly zero times
 -- (`grep -c 'ncclSend\|ncclRecv' train_gpt2.cu llmc/*.cuh` = 0, and
 -- params.p2p_per_iter = 0 records that), and this study runs `-p nccl,kernel`
--- only: no ibverbs, no UCX, no NVBit. pcomm.fbs type 904 says NcclP2p is "the
+-- only: no ibverbs, no UCX, no NVBit. comshu.fbs type 904 says NcclP2p is "the
 -- only NCCL call that names a peer, and so the only one an exact edge follows
 -- from". So there is nothing in this capture from which a src->dst pair can
 -- honestly be derived, and comm_edges must be empty.
@@ -39,14 +39,14 @@ SELECT * FROM (
   --
   -- WRITTEN AS A PRESENCE TEST, NOT `SELECT count(*) FROM nccl_p2p`, and the
   -- reason is a difference between the two exporters that this study measured:
-  -- `pcomm export --csv` writes a header-only file for EVERY known record type,
-  -- so nccl_p2p.csv exists with zero rows; `pcomm export --parquet` materialises
+  -- `comshu export --csv` writes a header-only file for EVERY known record type,
+  -- so nccl_p2p.csv exists with zero rows; `comshu export --parquet` materialises
   -- a raw table only when it has rows, so `FROM nccl_p2p` is a hard Catalog
   -- Error there (an export is a set of DuckDB VIEWS over the parquet files, so
   -- duckdb_views() is where a presence test has to look; duckdb_tables() is
   -- empty) — and the derived tables behave the third way, being written out
   -- empty (comm_edges above is a real, empty table in the same export).
-  -- Since `pcomm link` accepts only a Parquet export, an assertion over the
+  -- Since `comshu link` accepts only a Parquet export, an assertion over the
   -- derived layer has to survive on the representation where empty raw tables
   -- are absent. On Parquet, "nccl_p2p exists" and "llm.c called ncclSend" are
   -- the same statement.

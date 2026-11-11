@@ -13,7 +13,7 @@
 # Expected: "the driver refuses ... NOT_PERMITTED" and uars_armed=1.
 # If it says "DOES map" instead, the plan's premise is wrong and the host path
 # is not what MN5 needs — which would be worth knowing immediately.
-#SBATCH --job-name=pcomm-uar-mode
+#SBATCH --job-name=comshu-uar-mode
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=20
@@ -27,7 +27,7 @@ module load gcc/13.2.0 cmake >/dev/null 2>&1
 module load cuda/12.6 >/dev/null 2>&1 || module load nvidia-hpc-sdk >/dev/null 2>&1
 
 : "${TMPDIR:=/tmp}"
-REPO="${PCOMM_REPO:-$HOME/proj/pcomm}"
+REPO="${COMSHU_REPO:-$HOME/proj/comshu}"
 PROBE_SRC="$REPO/tests/hpc/probes/uar_doorbell_mode/probe.c"
 PROBE_BIN="$TMPDIR/uar_probe"
 
@@ -46,17 +46,17 @@ echo "== building probe (${CUDA_INC:-no cuda include found}) =="
 gcc -O0 -o "$PROBE_BIN" "$PROBE_SRC" $CUDA_INC $CUDA_STUB -libverbs -lmlx5 -lcuda || {
   echo "PROBE BUILD FAILED"; exit 1; }
 
-PCOMM="$REPO/build/pcomm/pcomm"
+COMSHU="$REPO/build/comshu/comshu"
 PROV="$REPO/build/providers/mlx5dv"
 
 echo
 echo "===== --enable-host-doorbell (the mode this cluster is expected to need) ====="
-PCOMM_PROVIDER_PATH="$PROV" "$PCOMM" run -p mlx5dv --enable-host-doorbell \
+COMSHU_PROVIDER_PATH="$PROV" "$COMSHU" run -p mlx5dv --enable-host-doorbell \
     -o "$TMPDIR/hd-out" -- "$PROBE_BIN" 2>&1
 
 echo
 echo "===== --enable-doorbell-hijack (the GPU path, for contrast) ====="
-PCOMM_PROVIDER_PATH="$PROV" "$PCOMM" run -p mlx5dv --enable-doorbell-hijack \
+COMSHU_PROVIDER_PATH="$PROV" "$COMSHU" run -p mlx5dv --enable-doorbell-hijack \
     -o "$TMPDIR/gh-out" -- "$PROBE_BIN" 2>&1
 
 echo

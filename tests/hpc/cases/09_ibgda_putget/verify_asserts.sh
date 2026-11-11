@@ -18,7 +18,7 @@
 # would have failed a perfectly correct loopback run.
 set -u
 A="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/asserts}"
-DB="$(mktemp -t pcomm-verify-XXXXXX.db)"
+DB="$(mktemp -t comshu-verify-XXXXXX.db)"
 trap 'rm -f "$DB"' EXIT
 
 mk() {  # mk <db> <extra-sql>

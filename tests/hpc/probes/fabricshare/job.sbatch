@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=pcomm-fabricshare
+#SBATCH --job-name=comshu-fabricshare
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -16,35 +16,35 @@
 # and a crash under NVBit came back looking like an empty capture; the filter
 # hid the only line that said what happened.
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 APP="$HOME/fabricshare_probe"
-SRC="$PCOMM_ROOT/tests/hpc/probes/fabricshare/probe.cu"
+SRC="$COMSHU_ROOT/tests/hpc/probes/fabricshare/probe.cu"
 if [ ! -x "$APP" ] || [ "$SRC" -nt "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -lineinfo -gencode arch=compute_90,code=sm_90 \
     -Wno-deprecated-gpu-targets "$SRC" -o "$APP" -lcuda \
     || { echo "!! nvcc failed" >&2; exit 1; }
-  pcomm_load_runtime
+  comshu_load_runtime
 fi
 
 # Bare first: whether fabric sharing works between two processes on this machine
-# is a question about the driver and the fabric manager, not about pcomm.
+# is a question about the driver and the fabric manager, not about comshu.
 echo "=== BARE ==="
 mpirun -np 2 --map-by ppr:2:node -x PATH -x LD_LIBRARY_PATH "$APP"
 echo "bare exit=$?"
 
-OUT=$(pcomm_out fabricshare); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out fabricshare); rm -rf "$OUT"; mkdir -p "$OUT"
 echo "=== UNDER the tracer ==="
-mpirun -np 2 --map-by ppr:2:node -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH \
-  -x PCOMM_KERNEL_NAME=poke -x PCOMM_VERBOSE=1 \
-  "$PCOMM" run -p p2p -o "$OUT" -- "$APP"
+mpirun -np 2 --map-by ppr:2:node -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
+  -x COMSHU_KERNEL_NAME=poke -x COMSHU_VERBOSE=1 \
+  "$COMSHU" run -p p2p -o "$OUT" -- "$APP"
 echo "traced exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
 echo "=== peer_mapping rows (THE POINT) ==="
 cat "$OUT.csv/peer_mapping.csv" 2>/dev/null || echo "  (no peer_mapping.csv — nothing was fabric-shared)"
 echo "=== do the two ranks agree on the allocation id? ==="

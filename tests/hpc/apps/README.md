@@ -7,7 +7,7 @@ beside it. Three separate items in `plans/todos.txt` are stuck for exactly this
 reason — they need behaviour our own workloads have no reason to produce.
 
 This directory is the other kind of evidence: **third-party applications nobody
-here wrote, run under `pcomm`, with the capture judged against what the
+here wrote, run under `comshu`, with the capture judged against what the
 application's own source says should have happened.**
 
 Started 2026-08-26. One agent per application.
@@ -16,7 +16,7 @@ Started 2026-08-26. One agent per application.
 
 ## The claim each agent is asked to defend
 
-Not "pcomm ran without crashing". That is table stakes and is not a finding.
+Not "comshu ran without crashing". That is table stakes and is not a finding.
 The deliverable is one of these, with evidence:
 
 1. **The capture is right.** Some number the application itself determines —
@@ -49,13 +49,13 @@ question. N rows of *what*, and how do you know N is right?
 ## Hard rules
 
 **Do not edit anything outside your own case directory and your report.** In
-particular: no changes to `libpcomm/`, `providers/`, `gpu-backends/`,
-`pcomm-read/`. If you believe you found a tool bug, that is a *finding* — write
+particular: no changes to `libcomshu/`, `providers/`, `gpu-backends/`,
+`comshu-read/`. If you believe you found a tool bug, that is a *finding* — write
 it up with the reproduction. Fixing it is a separate decision by the human, made
 after the finding is on the table. Four agents editing the tracer concurrently
 would make every capture unattributable.
 
-**Never edit an assertion to match what pcomm emitted.** That inverts the test.
+**Never edit an assertion to match what comshu emitted.** That inverts the test.
 `suite/README.md` says why, and the suite has an `expect_fail_asserts`
 mechanism for exactly this: record the failure with evidence and let a fix flip
 it.
@@ -74,7 +74,7 @@ holds the slot looks identical to a broken script.
 **Queue slots are the scarce resource, not your time.** Every job costs a wait
 measured in minutes to hours, and four agents are serialising through one slot.
 So do not spend a slot on a single question. **Every job script runs the
-workload bare first, then again under `pcomm`, inside the one allocation** —
+workload bare first, then again under `comshu`, inside the one allocation** —
 `suite/all_in_one.sbatch` is the pattern. The bare run is not optional: a
 capture of a workload that did not work is indistinguishable from a tracer that
 captured nothing, and that specific confusion has cost this project several
@@ -108,29 +108,29 @@ Without it NVBit prints an error, **exits 0**, and leaves an empty capture. Use
 
 ---
 
-## Running pcomm
+## Running comshu
 
-pcomm is already built on MN5 at `$HOME/proj/pcomm/build`. Do **not** rebuild it
+comshu is already built on MN5 at `$HOME/proj/comshu/build`. Do **not** rebuild it
 or run `tests/hpc/run_on_mn5.sh` — that syncs the whole repo and would clobber
 another agent's tree. Source the suite environment and use what is there:
 
 ```bash
-source $HOME/proj/pcomm/tests/hpc/suite/common.sh
-pcomm_load_runtime                       # gcc 13.2 + HPC SDK 25.7 + CUDA on PATH
+source $HOME/proj/comshu/tests/hpc/suite/common.sh
+comshu_load_runtime                       # gcc 13.2 + HPC SDK 25.7 + CUDA on PATH
 
-OUT=$HOME/pcomm-apps/<app>-$SLURM_JOB_ID
-$PCOMM run -p <providers> -o "$OUT" -- <the application and its arguments>
+OUT=$HOME/comshu-apps/<app>-$SLURM_JOB_ID
+$COMSHU run -p <providers> -o "$OUT" -- <the application and its arguments>
 
-$PCOMM read   "$OUT"                     # what streams exist, and their row counts
-$PCOMM export "$OUT" --csv "$OUT.csv"    # one CSV per record type
-pcomm_derive  "$OUT"                     # parquet + the derived layer (needs DuckDB)
+$COMSHU read   "$OUT"                     # what streams exist, and their row counts
+$COMSHU export "$OUT" --csv "$OUT.csv"    # one CSV per record type
+comshu_derive  "$OUT"                     # parquet + the derived layer (needs DuckDB)
 ```
 
-Under MPI, `pcomm run` wraps the *ranked* binary, not `mpirun`:
+Under MPI, `comshu run` wraps the *ranked* binary, not `mpirun`:
 
 ```bash
-srun --mpi=pmix ... $PCOMM run -p ib -o "$OUT" -- ./app args      # preferred on MN5
-mpirun -np N ... $PCOMM run -p ib -o "$OUT" -- ./app args
+srun --mpi=pmix ... $COMSHU run -p ib -o "$OUT" -- ./app args      # preferred on MN5
+mpirun -np N ... $COMSHU run -p ib -o "$OUT" -- ./app args
 ```
 
 Each rank writes `$OUT/rank-<N>/`. **A capture directory with no `rank-*`
@@ -155,19 +155,19 @@ agree. That question — does UCX's `ucp_tag_send` correspond to the
 
 ### Reading the capture
 
-Row counts come from `$PCOMM read`. Real analysis is SQL over the derived layer:
+Row counts come from `$COMSHU read`. Real analysis is SQL over the derived layer:
 
 ```bash
-$PCOMM sql "$OUT.pq" "SELECT src_rank, dst_rank, sends, bytes FROM comm_edges ORDER BY bytes DESC"
+$COMSHU sql "$OUT.pq" "SELECT src_rank, dst_rank, sends, bytes FROM comm_edges ORDER BY bytes DESC"
 ```
 
 Derived tables: `comm_edges` (rank→rank traffic), `object_access` (which
 allocation a GPU access landed in), `wr_flow` (work request → completion
 pairing), `timeline_span`, `rank_identity`, `endpoint`, `link_health`.
 Raw tables are one per record type — `ib_post_send`, `ucx_tag_send`,
-`nccl_collective`, `mem_object`, `gpu_access`, … — see `$PCOMM types`.
+`nccl_collective`, `mem_object`, `gpu_access`, … — see `$COMSHU types`.
 
-Known reader wart: `POST /query` and `pcomm sql` reject a statement whose first
+Known reader wart: `POST /query` and `comshu sql` reject a statement whose first
 token is a comment. Put comments *after* the `SELECT`.
 
 ---
@@ -227,8 +227,8 @@ merge gate would be worse than no gate.
 ## What to write down even if it fails
 
 A job that produced nothing is still evidence, provided you can say **which**
-nothing: the app failed to launch, the app ran and pcomm captured zero rows,
-pcomm captured rows and the export failed, or the export worked and the
+nothing: the app failed to launch, the app ran and comshu captured zero rows,
+comshu captured rows and the export failed, or the export worked and the
 assertion was wrong. Those four have completely different causes and look
 identical in a summary that says "no data". Say which one, with the stdout that
 shows it.

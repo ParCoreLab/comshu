@@ -6,7 +6,7 @@
 // case's assertions derive from those rather than from anything the tool
 // emitted.
 //
-// It is also the shape of workload pcomm was structurally blind to until
+// It is also the shape of workload comshu was structurally blind to until
 // cuda_memcpy (534) existed: no kernels that touch peer memory (so gpumem/NVBit
 // sees nothing), no verbs, no UCX, no NCCL. Before this record a capture of this
 // program was an empty communication matrix.

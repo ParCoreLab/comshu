@@ -2,7 +2,7 @@
 -- The PME ranks' outbound volume follows from the system size alone.
 --
 -- SAME ORACLE as pme_coord_volume.sql, asked in a way that does not depend on
--- pcomm being able to name the peer. A PME-only rank does exactly one thing with
+-- comshu being able to name the peer. A PME-only rank does exactly one thing with
 -- MPI: it receives coordinates from the PP ranks it serves and sends the mesh
 -- forces back (src/gromacs/ewald/pme_only.cpp, gmx_pme_send_force_vir_ener ->
 -- pme_pp.cpp). Its home-atom sets partition the system, so its outbound volume

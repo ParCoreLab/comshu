@@ -1,10 +1,10 @@
 // NVBit backend for the gpumem provider — port of snoopie's mem_multigpu.cu,
-// reduced to the capture path and re-targeted at pcomm::gpumem::Engine:
+// reduced to the capture path and re-targeted at comshu::gpumem::Engine:
 //
 //   nvbit_at_cuda_event  -> instrument mem ops, track allocations
 //   instrumentation pass -> Engine::on_source_line (SourceLine artifacts)
 //   alloc callbacks      -> Engine::on_alloc (MemObject entities + registry)
-//   recv thread          -> pcomm_gpu_access_t -> RawAccess -> Engine::process
+//   recv thread          -> comshu_gpu_access_t -> RawAccess -> Engine::process
 //
 // Not yet ported from snoopie (phase-1 follow-ups): sampling, python/NCCL
 // attribution, data-object callstack attribution (adm), cuMemcpyDtoD synthesis.
@@ -41,16 +41,16 @@
 #include "dev_common.h"
 #include "engine.hpp"
 
-#include "pcomm/core/ids.hpp"
-#include "pcomm/core/vocab.hpp"
-#include "pcomm/engine_abi.h"
+#include "comshu/core/ids.hpp"
+#include "comshu/core/vocab.hpp"
+#include "comshu/engine_abi.h"
 // Same clock as the recorder and the ClockAnchors, so an access's window is
 // comparable with ibverbs call intervals without any conversion. Safe here:
 // this .cu is compiled by nvcc with a *gcc* host compiler, and these are host
 // functions. Do not move the call into providers/gpumem/gpumem_provider.cpp —
 // that TU is compiled by nvc++, which emits an undefined reference to
 // __builtin_ia32_rdtsc instead of inlining it (see things-to-circle-back-to.md).
-#include "pcomm/helpers/clock.hpp"
+#include "comshu/helpers/clock.hpp"
 
 // Defined HERE rather than in inject_funcs.cu, even though it is a sibling of
 // the injected code: launching a __global__ across a translation unit needs
@@ -58,7 +58,7 @@
 // -maxrregcount=24 --keep-device-functions for the injection path, and a tool
 // kernel has no business inheriting those. It is two instructions; it lives
 // where it is launched.
-__global__ void pcomm_read_globaltimer(uint64_t* out) {
+__global__ void comshu_read_globaltimer(uint64_t* out) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         uint64_t t;
         asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
@@ -66,17 +66,17 @@ __global__ void pcomm_read_globaltimer(uint64_t* out) {
     }
 }
 
-using pcomm::attr::RawAccess;
-using pcomm::core::MemOp;
+using comshu::attr::RawAccess;
+using comshu::core::MemOp;
 
-// Ring size per CUDA context, host-pinned. Overridable with PCOMM_CHANNEL_SIZE
+// Ring size per CUDA context, host-pinned. Overridable with COMSHU_CHANNEL_SIZE
 // (bytes) — needed to test whether the case 07 hang tracks the ring size, and
 // useful anyway: 1 GiB *per context* is a lot to pin on a 4-GPU node, and the
 // recv thread mallocs the same amount again for its staging buffer.
 #define CHANNEL_SIZE_DEFAULT (1l << 30)
 static long channel_size() {
     static long sz = [] {
-        if (const char* e = std::getenv("PCOMM_CHANNEL_SIZE")) {
+        if (const char* e = std::getenv("COMSHU_CHANNEL_SIZE")) {
             long v = std::atol(e);
             if (v >= (1l << 20))
                 return v;  // sanity floor: 1 MiB
@@ -91,7 +91,7 @@ namespace {
 struct CtxState {
     ChannelDev*                  channel_dev{nullptr};
     ChannelHost                  channel_host;
-    volatile unsigned long long* dbg_host{nullptr};  // PCOMM_CHANNEL_DEBUG counters
+    volatile unsigned long long* dbg_host{nullptr};  // COMSHU_CHANNEL_DEBUG counters
     // The recv thread's only other way out. It normally exits on the flush
     // token the terminating kernel writes; if that kernel cannot run — a
     // poisoned context, where every launch returns the sticky error — the token
@@ -150,7 +150,7 @@ Globals& G() {
     return *g;
 }
 
-pcomm::gpumem::Engine* g_engine = nullptr;
+comshu::gpumem::Engine* g_engine = nullptr;
 bool                   g_skip_callback = false;
 bool                   g_shutdown_done = false;
 uint32_t               g_next_instr_index = 0;
@@ -209,7 +209,7 @@ std::unordered_map<uint64_t, LaunchMeta> g_launch_meta;  // written by the callb
 std::unordered_map<uint64_t, LaunchSpan> g_launch_span;  // written by the recv thread
 
 // (globaltimer, CLOCK_REALTIME) per device, sampled at first launch and at
-// teardown. Two points per GPU is what pcomm-read's per-(rank, domain) fit
+// teardown. Two points per GPU is what comshu-read's per-(rank, domain) fit
 // needs, and per-GPU is not optional: drift measured at -13.9 ppm on H100 and
 // +5.7 ppm on A100, opposite signs.
 std::unordered_set<int> g_gpu_anchored;
@@ -247,7 +247,7 @@ inline void note_launch_time(std::uint64_t id) {
     }
     const std::size_t slot = id % kLaunchRing;
     g_launch_owner[slot] = id;
-    g_launch_ticks[slot] = pcomm::helpers::TscClock::now();
+    g_launch_ticks[slot] = comshu::helpers::TscClock::now();
 }
 
 // The launch time for `id`, or 0 if that launch has aged out of the ring or was
@@ -340,7 +340,7 @@ inline std::string fabric_hex(const void* blob) {
     return s;
 }
 
-// PROBE, gated on PCOMM_TRACE_VMM=1 — which memory-sharing doors does this
+// PROBE, gated on COMSHU_TRACE_VMM=1 — which memory-sharing doors does this
 // workload actually use, and with what identity?
 //
 // It exists because the last attempt to name VMM memory was built on an
@@ -357,7 +357,7 @@ inline std::string fabric_hex(const void* blob) {
 // Diagnostic only: no record, no registry entry, and silent unless asked.
 inline bool vmm_trace_on() {
     static const bool on = [] {
-        const char* e = std::getenv("PCOMM_TRACE_VMM");
+        const char* e = std::getenv("COMSHU_TRACE_VMM");
         return e && *e && std::strcmp(e, "0") != 0;
     }();
     return on;
@@ -370,10 +370,10 @@ inline bool vmm_trace_on() {
 inline void vmm_trace_fd(const char* what, long long fd, unsigned int type) {
     struct stat st{};
     if (fd >= 0 && fstat((int)fd, &st) == 0)
-        std::fprintf(stderr, "[pcomm-vmm] %s type=%u fd=%lld dev=%llu ino=%llu\n", what, type, fd,
+        std::fprintf(stderr, "[comshu-vmm] %s type=%u fd=%lld dev=%llu ino=%llu\n", what, type, fd,
                      (unsigned long long)st.st_dev, (unsigned long long)st.st_ino);
     else
-        std::fprintf(stderr, "[pcomm-vmm] %s type=%u handle=%lld (not an fd)\n", what, type, fd);
+        std::fprintf(stderr, "[comshu-vmm] %s type=%u handle=%lld (not an fd)\n", what, type, fd);
     std::fflush(stderr);
 }
 
@@ -389,7 +389,7 @@ int device_of(uint64_t p, int ndev, const char* what) {
     // loudly, instead of quietly inflating the capture.
     if (dev < 0 || dev >= ndev) {
         std::fprintf(stderr,
-                     "[pcomm-gpumem] %s owner out of range: dev=%d of %d "
+                     "[comshu-gpumem] %s owner out of range: dev=%d of %d "
                      "GPUs; 0x%llx dropped\n",
                      what, dev, ndev, (unsigned long long)p);
         return -1;
@@ -432,13 +432,13 @@ void refresh_mapped_regions() {
     //    peer traffic used to appear only because the NVSHMEM positional guess
     //    was being applied to NCCL's regions — it reported mem_dev up to 8 on a
     //    4-GPU node, i.e. it was fabricating the answer that made the case pass.
-    const bool verbose = std::getenv("PCOMM_VERBOSE") != nullptr;
+    const bool verbose = std::getenv("COMSHU_VERBOSE") != nullptr;
     int        by_cuda = 0, fabric = 0;
     for (size_t i = g.regions_resolved; i < n; i++) {
         const auto& r = g.mapped_regions[i];
         const int   dev = device_of(r.base, ndev, "mapped region");
         if (dev >= 0) {
-            g_engine->allocs().add_range(r.base, r.size, static_cast<pcomm::core::DeviceId>(dev));
+            g_engine->allocs().add_range(r.base, r.size, static_cast<comshu::core::DeviceId>(dev));
             by_cuda++;
             // A fabric-shared allocation is the one case where a peer mapping
             // can be tied back to the owner's address, so record the pairing.
@@ -447,14 +447,14 @@ void refresh_mapped_regions() {
             // function already trusts over anything inferred.
             if (!r.alloc_hex.empty()) {
                 g_engine->on_peer_mapping(r.alloc_hex, r.base, r.size, r.alloc_offset,
-                                          static_cast<pcomm::core::DeviceId>(dev), r.exporter);
+                                          static_cast<comshu::core::DeviceId>(dev), r.exporter);
                 fabric++;
             }
         }
     }
     if (verbose && g.regions_resolved != n)
         std::fprintf(stderr,
-                     "[pcomm-gpumem] %d/%zu new mapped regions attributed by CUDA, "
+                     "[comshu-gpumem] %d/%zu new mapped regions attributed by CUDA, "
                      "%d fabric-shared (%zu total)\n",
                      by_cuda, n - g.regions_resolved, fabric, n);
     g.regions_resolved = n;
@@ -466,12 +466,12 @@ void refresh_mapped_regions() {
     const NvshmemApi& api = nvshmem_api();
     if (!api.ok()) {
         // Not an error: most workloads are not NVSHMEM. Say it once under
-        // PCOMM_VERBOSE rather than either staying silent or annotating every
+        // COMSHU_VERBOSE rather than either staying silent or annotating every
         // run that was never going to have a symmetric heap.
         static bool said = false;
-        if (!said && std::getenv("PCOMM_VERBOSE")) {
+        if (!said && std::getenv("COMSHU_VERBOSE")) {
             said = true;
-            std::fprintf(stderr, "[pcomm-gpumem] no NVSHMEM symbols; mapped regions "
+            std::fprintf(stderr, "[comshu-gpumem] no NVSHMEM symbols; mapped regions "
                                  "attributed from CUDA alone\n");
         }
         return;  // retried at the next launch — NVSHMEM may load later
@@ -515,8 +515,8 @@ void refresh_mapped_regions() {
         const int  my_dev = device_of(r.base, ndev, "NVSHMEM heap (local)");
         const auto object =
             my_dev >= 0 ? g_engine->on_symmetric_region(r.base, r.size,
-                                                        static_cast<pcomm::core::DeviceId>(my_dev))
-                        : pcomm::core::kNullHandle;
+                                                        static_cast<comshu::core::DeviceId>(my_dev))
+                        : comshu::core::kNullHandle;
 
         for (int pe = 0; pe < npes; pe++) {
             void* q = api.ptr((const void*)r.base, pe);
@@ -537,14 +537,14 @@ void refresh_mapped_regions() {
                 // the same logical buffer, at the same offset. Dropping r.base
                 // here is why gpu_access.object was 0 for every recorded access.
                 g_engine->on_peer_range((uint64_t)q, r.size,
-                                        static_cast<pcomm::core::DeviceId>(dev), object, r.base);
+                                        static_cast<comshu::core::DeviceId>(dev), object, r.base);
                 peers++;
             }
         }
     }
     if (verbose && g.heap_resolved != n)
         std::fprintf(stderr,
-                     "[pcomm-gpumem] NVSHMEM pe %d/%d: %d of %zu new regions "
+                     "[comshu-gpumem] NVSHMEM pe %d/%d: %d of %zu new regions "
                      "are my heap, %d peer ranges registered\n",
                      mype, npes, mine, n - g.heap_resolved, peers);
     g.heap_resolved = n;
@@ -577,7 +577,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
         // and that separation is required rather than tidy. The loop below
         // `continue`s on any instruction that is not a global memory reference,
         // so an EXIT would never reach an injection placed inside it; it also
-        // applies the PCOMM_INSTR_LO/HI bisect window, which must not silently
+        // applies the COMSHU_INSTR_LO/HI bisect window, which must not silently
         // disable kernel timing while someone is bisecting an unrelated hang.
         //
         // Two injection sites per function: the first instruction, and every
@@ -592,7 +592,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
                 const bool is_exit = std::strncmp(instr->getOpcode(), "EXIT", 4) == 0;
                 if (i != 0 && !is_exit)
                     continue;
-                nvbit_insert_call(instr, "pcomm_kernel_stamp", IPOINT_BEFORE);
+                nvbit_insert_call(instr, "comshu_kernel_stamp", IPOINT_BEFORE);
                 nvbit_add_call_arg_const_val32(instr, is_exit ? 1 : 0);
                 nvbit_add_call_arg_const_val32(instr, dev_id);
                 nvbit_add_call_arg_launch_val64(instr, 0);  // grid launch id
@@ -633,7 +633,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 
             uint32_t instr_index = g_next_instr_index++;
 
-            // PCOMM_INSTR_LO/HI: instrument only instructions whose dense index
+            // COMSHU_INSTR_LO/HI: instrument only instructions whose dense index
             // falls in [LO, HI). Diagnostic for case 07 — the hang needs push()
             // to run, so bisecting the instrumented set names the instruction
             // whose records trigger it. Indices are assigned in a fixed order
@@ -642,24 +642,24 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
             // Unset = instrument everything, the normal path.
             {
                 static const uint32_t lo = [] {
-                    const char* e = std::getenv("PCOMM_INSTR_LO");
+                    const char* e = std::getenv("COMSHU_INSTR_LO");
                     return e ? (uint32_t)std::strtoul(e, nullptr, 10) : 0u;
                 }();
                 static const uint32_t hi = [] {
-                    const char* e = std::getenv("PCOMM_INSTR_HI");
+                    const char* e = std::getenv("COMSHU_INSTR_HI");
                     return e ? (uint32_t)std::strtoul(e, nullptr, 10) : UINT32_MAX;
                 }();
                 if (instr_index < lo || instr_index >= hi)
                     continue;
             }
 
-            // PCOMM_INSTR_DUMP: print the index -> instruction mapping so a
+            // COMSHU_INSTR_DUMP: print the index -> instruction mapping so a
             // bisect result (an index) can be turned back into an opcode, a
             // function and an offset. Diagnostic only.
-            if (std::getenv("PCOMM_INSTR_DUMP")) {
+            if (std::getenv("COMSHU_INSTR_DUMP")) {
                 const char* fn = nvbit_get_func_name(ctx, f, true);
                 std::fprintf(stderr,
-                             "[pcomm-instr] idx=%u opcode=%s space=%d size=%d off=0x%x fn=%s\n",
+                             "[comshu-instr] idx=%u opcode=%s space=%d size=%d off=0x%x fn=%s\n",
                              instr_index, instr->getOpcode(), (int)instr->getMemorySpace(),
                              instr->getSize(), (unsigned)instr->getOffset(), fn ? fn : "?");
             }
@@ -681,7 +681,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
                 if (op->type != InstrType::OperandType::MREF)
                     continue;
 
-                nvbit_insert_call(instr, "pcomm_instrument_mem", IPOINT_BEFORE);
+                nvbit_insert_call(instr, "comshu_instrument_mem", IPOINT_BEFORE);
                 nvbit_add_call_arg_guard_pred_val(instr);
                 nvbit_add_call_arg_const_val32(instr, opcode_id);
                 nvbit_add_call_arg_const_val32(instr, dev_id);
@@ -696,7 +696,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
     }
 }
 
-// Launch pcomm_read_globaltimer and pair its result with CLOCK_REALTIME.
+// Launch comshu_read_globaltimer and pair its result with CLOCK_REALTIME.
 //
 // The host clock is read on BOTH sides of the device read and the midpoint is
 // used, because the pairing is only as tight as that bracket — measured at
@@ -728,7 +728,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 // It was `static uint64_t* d_out` — one allocation for the whole process, made
 // in whichever context happened to be current at the first call. A device
 // pointer belongs to the device it was allocated on, so every subsequent
-// `pcomm_read_globaltimer<<<1,1>>>(d_out)` on a *different* device wrote through
+// `comshu_read_globaltimer<<<1,1>>>(d_out)` on a *different* device wrote through
 // a foreign pointer: an illegal memory access, which poisons the context and
 // costs the whole capture. Case 03 is the only case in the suite that puts four
 // GPUs in one process (cudaSetDevice in a loop, four contexts), and it is the
@@ -741,7 +741,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 // launches on the CURRENT device regardless of what dev_id says, so without the
 // switch the closing anchor samples the wrong GPU's clock and files it under the
 // right GPU's domain — a wrong anchor rather than a missing one, which is worse:
-// pcomm-read fits rate from the two anchors, so it would have silently skewed
+// comshu-read fits rate from the two anchors, so it would have silently skewed
 // every span in that domain.
 // A PLAIN ARRAY, NOT A MAP, AND THAT IS NOT A MICRO-OPTIMISATION. The first
 // version of this fix used `static std::unordered_map<int, uint64_t*>` and
@@ -794,7 +794,7 @@ void sample_gpu_anchor(int dev_id) {
     for (int i = 0; i < 8; i++) {
         timespec a{}, b{};
         clock_gettime(CLOCK_REALTIME, &a);
-        pcomm_read_globaltimer<<<1, 1>>>(d_out);
+        comshu_read_globaltimer<<<1, 1>>>(d_out);
         if (cudaDeviceSynchronize() != cudaSuccess)
             return;
         clock_gettime(CLOCK_REALTIME, &b);
@@ -811,10 +811,10 @@ void sample_gpu_anchor(int dev_id) {
     }
     if (!best_ticks)
         return;
-    if (std::getenv("PCOMM_VERBOSE"))
-        std::fprintf(stderr, "[pcomm-nvbit] gpu %d anchor: window=%lluns\n", dev_id,
+    if (std::getenv("COMSHU_VERBOSE"))
+        std::fprintf(stderr, "[comshu-nvbit] gpu %d anchor: window=%lluns\n", dev_id,
                      (unsigned long long)best_window);
-    pcomm_engine_clock_anchor((uint16_t)(pcomm::core::kDomainGpuTimerBase + dev_id), best_ticks,
+    comshu_engine_clock_anchor((uint16_t)(comshu::core::kDomainGpuTimerBase + dev_id), best_ticks,
                               best_wall);
 }
 
@@ -834,19 +834,19 @@ void handle_launch(CUcontext ctx, CUfunction func, LaunchGeom geom = {}) {
     std::vector<CUfunction> related = nvbit_get_related_functions(ctx, func);
     related.push_back(func);
 
-    // PCOMM_LAUNCH_DUMP: report the kernel actually being launched, in exactly
+    // COMSHU_LAUNCH_DUMP: report the kernel actually being launched, in exactly
     // the form the filter compares against, once per distinct name. This is the
-    // input PCOMM_KERNEL_NAME has always needed and had no way to discover —
+    // input COMSHU_KERNEL_NAME has always needed and had no way to discover —
     // dumping every *instrumented* function instead gives a list that is both
     // enormous (NCCL ships 223 specializations) and truncated by any timeout.
     // Pair it with a filter that matches nothing to skip instrumentation
     // entirely, so the run finishes in seconds.
-    if (std::getenv("PCOMM_LAUNCH_DUMP")) {
+    if (std::getenv("COMSHU_LAUNCH_DUMP")) {
         static std::unordered_set<std::string>* seen = new std::unordered_set<std::string>();
         std::string                             launched(nvbit_get_func_name(ctx, func));
         launched = launched.substr(0, launched.find('('));
         if (seen->insert(launched).second)
-            std::fprintf(stderr, "[pcomm-launch] %s\n", launched.c_str());
+            std::fprintf(stderr, "[comshu-launch] %s\n", launched.c_str());
     }
 
     for (auto f : related) {
@@ -907,7 +907,7 @@ void handle_launch(CUcontext ctx, CUfunction func, LaunchGeom geom = {}) {
 void handle_alloc(uint64_t base, uint64_t size) {
     int dev = -1;
     cudaGetDevice(&dev);
-    g_engine->on_alloc(base, size, static_cast<pcomm::core::DeviceId>(dev));
+    g_engine->on_alloc(base, size, static_cast<comshu::core::DeviceId>(dev));
 }
 
 void* recv_thread_fun(void* args) {
@@ -935,7 +935,7 @@ void* recv_thread_fun(void* args) {
     char*                  recv_buffer = (char*)malloc(chan_sz);
     std::vector<RawAccess> batch;
 
-    // PCOMM_CHANNEL_DEBUG=1 — diagnostic for the NVBit deadlock (cases 05/07,
+    // COMSHU_CHANNEL_DEBUG=1 — diagnostic for the NVBit deadlock (cases 05/07,
     // plans/PLAN-20260727-1022-nvbit-channel-deadlock-done.md). The decisive
     // question is whether the device is stalled waiting on us.
     //
@@ -948,9 +948,9 @@ void* recv_thread_fun(void* args) {
     //                                           not what is blocking.
     //   recv() returns data then we stall    -> we are the bottleneck; look at
     //                                           process()/the drain path.
-    const bool dbg = std::getenv("PCOMM_CHANNEL_DEBUG") != nullptr;
+    const bool dbg = std::getenv("COMSHU_CHANNEL_DEBUG") != nullptr;
     if (dbg)
-        std::fprintf(stderr, "[pcomm-chan] ctx=%p ring=%ld bytes\n", (void*)ctx, chan_sz);
+        std::fprintf(stderr, "[comshu-chan] ctx=%p ring=%ld bytes\n", (void*)ctx, chan_sz);
     unsigned long long recv_calls = 0, empty_calls = 0, total_bytes = 0;
     unsigned long      max_n = 0;
     auto               t_start = std::chrono::steady_clock::now();
@@ -963,7 +963,7 @@ void* recv_thread_fun(void* args) {
         // the only shape a stuck channel takes.
         if (abort_flag->load(std::memory_order_relaxed)) {
             std::fprintf(stderr,
-                         "pcomm: recv thread for ctx=%p asked to stop before the flush token "
+                         "comshu: recv thread for ctx=%p asked to stop before the flush token "
                          "(%llu bytes drained) — the rest of this context's device records are "
                          "lost\n",
                          (void*)ctx, total_bytes);
@@ -981,7 +981,7 @@ void* recv_thread_fun(void* args) {
                         std::chrono::duration_cast<std::chrono::seconds>(now - t_last_data).count();
                     const volatile unsigned long long* d = dbg_ctrs;
                     std::fprintf(stderr,
-                                 "[pcomm-chan] ctx=%p idle: bytes=%llu no_data_for=%llds "
+                                 "[comshu-chan] ctx=%p idle: bytes=%llu no_data_for=%llds "
                                  "| dev push=%llu full=%llu flusher=%llu waiter=%llu "
                                  "flushbody=%llu ring=%llu cleared=%llu done=%llu\n",
                                  (void*)ctx, total_bytes, (long long)since_data, d ? d[0] : 0ull,
@@ -996,9 +996,9 @@ void* recv_thread_fun(void* args) {
             max_n = n;
         t_last_data = std::chrono::steady_clock::now();
 
-        for (uint32_t off = 0; off + sizeof(pcomm_gpu_access_t) <= n;
-             off += sizeof(pcomm_gpu_access_t)) {
-            auto* ma = (pcomm_gpu_access_t*)&recv_buffer[off];
+        for (uint32_t off = 0; off + sizeof(comshu_gpu_access_t) <= n;
+             off += sizeof(comshu_gpu_access_t)) {
+            auto* ma = (comshu_gpu_access_t*)&recv_buffer[off];
             if (ma->lane_id == -1) {  // flush token: context is terminating
                 done = true;
                 break;
@@ -1008,12 +1008,12 @@ void* recv_thread_fun(void* args) {
             // that launch has retired, and nothing in the stream says which
             // block that was — so the reduction is closed at teardown instead.
             // See emit_kernel_spans().
-            if (ma->lane_id == PCOMM_SPAN_LANE_ID) {
-                const uint64_t id = PCOMM_SPAN_LAUNCH(*ma);
-                const uint64_t t = PCOMM_SPAN_TICKS(*ma);
+            if (ma->lane_id == COMSHU_SPAN_LANE_ID) {
+                const uint64_t id = COMSHU_SPAN_LAUNCH(*ma);
+                const uint64_t t = COMSHU_SPAN_TICKS(*ma);
                 MutexLock      lk(g_span_mutex);
                 LaunchSpan&    s = g_launch_span[id];
-                if (PCOMM_SPAN_IS_END(*ma)) {
+                if (COMSHU_SPAN_IS_END(*ma)) {
                     if (t > s.t1)
                         s.t1 = t;
                 } else {
@@ -1030,7 +1030,7 @@ void* recv_thread_fun(void* args) {
             // Read once per packet, not per lane — one push is one warp, all 32
             // lanes of it from the same launch and the same drain.
             const std::uint64_t t_lo = launch_time(ma->launch_id);
-            const std::uint64_t t_hi = pcomm::helpers::TscClock::now();
+            const std::uint64_t t_hi = comshu::helpers::TscClock::now();
             if (t_lo == 0)
                 ++g_launch_unknown;
 
@@ -1039,12 +1039,12 @@ void* recv_thread_fun(void* args) {
                     continue;
                 RawAccess a;
                 a.address = ma->addrs[lane];
-                a.pc = pcomm::gpumem::pc_handle(ma->instr_index);
+                a.pc = comshu::gpumem::pc_handle(ma->instr_index);
                 a.size = ma->access_size;
                 a.thread = static_cast<uint32_t>(ma->thread_index) + lane;
                 a.op = G().id_to_memop[ma->opcode_id];
-                a.space = pcomm::core::MemSpace::Global;
-                a.run_device = static_cast<pcomm::core::DeviceId>(ma->dev_id);
+                a.space = comshu::core::MemSpace::Global;
+                a.run_device = static_cast<comshu::core::DeviceId>(ma->dev_id);
                 a.ticks_lo = t_lo;
                 a.ticks_hi = t_hi;
                 a.launch = ma->launch_id;
@@ -1065,7 +1065,7 @@ void* recv_thread_fun(void* args) {
         // nothing to compare a hung run's frozen count against.
         const volatile unsigned long long* d = dbg_ctrs;
         std::fprintf(stderr,
-                     "[pcomm-chan] ctx=%p done: recv_calls=%llu empty=%llu bytes=%llu "
+                     "[comshu-chan] ctx=%p done: recv_calls=%llu empty=%llu bytes=%llu "
                      "max_recv=%lu%s",
                      (void*)ctx, recv_calls, empty_calls, total_bytes, max_n, d ? "" : "\n");
         if (d)
@@ -1082,7 +1082,7 @@ void* recv_thread_fun(void* args) {
 }  // namespace
 
 // nvshmem_malloc interposition used to live here. It moved to the engine
-// (libpcomm/src/engine.cpp) because "what did the application allocate" must
+// (libcomshu/src/engine.cpp) because "what did the application allocate" must
 // not depend on which provider ran: an mlx5dv-only capture of the same NVSHMEM
 // workload held none of the buffers the program asked for, and NVBit costs
 // ~435 s of module lifting to find out. See core/object_registry.hpp.
@@ -1091,11 +1091,11 @@ void* recv_thread_fun(void* args) {
 // it for vendor instrumentation types, and interposing a third-party library is
 // not that.
 
-__global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
-    pcomm_gpu_access_t ma;
+__global__ void comshu_flush_channel(ChannelDev* ch_dev) {
+    comshu_gpu_access_t ma;
     memset(&ma, 0, sizeof(ma));
     ma.lane_id = -1;
-    ch_dev->push(&ma, sizeof(pcomm_gpu_access_t));
+    ch_dev->push(&ma, sizeof(comshu_gpu_access_t));
     ch_dev->flush();
 }
 
@@ -1109,7 +1109,7 @@ __global__ void pcomm_flush_channel(ChannelDev* ch_dev) {
 // order.
 //
 // A second anchor per GPU is taken here, so the domain has the two points
-// pcomm-read needs to fit rate as well as offset. Without it the fit falls back
+// comshu-read needs to fit rate as well as offset. Without it the fit falls back
 // to 1.0 ns/tick and the measured 5.7-13.9 ppm drift becomes skew.
 void emit_kernel_spans() {
     if (!g_kernel_timing)
@@ -1132,20 +1132,20 @@ void emit_kernel_spans() {
         auto              it = g_launch_meta.find(id);
         const LaunchMeta* m = it == g_launch_meta.end() ? nullptr : &it->second;
         const int         dev = m && m->dev_id >= 0 ? m->dev_id : s.dev_id;
-        pcomm_engine_record_kernel(
-            s.t0, s.t1, (uint16_t)(pcomm::core::kDomainGpuTimerBase + (dev < 0 ? 0 : dev)),
+        comshu_engine_record_kernel(
+            s.t0, s.t1, (uint16_t)(comshu::core::kDomainGpuTimerBase + (dev < 0 ? 0 : dev)),
             m ? m->name.c_str() : nullptr,
             /*correlation=*/id,
             // No stream: NVBit's launch callback does not carry one for every
             // entry point, and a fabricated 0 would claim every kernel shared a
             // lane. 0 here means "unknown", as it does for correlation.
             /*stream=*/0, (uint16_t)(dev < 0 ? 0 : dev),
-            (uint8_t)pcomm::core::KernelSource::NvbitGlobaltimer, m ? m->grid : nullptr,
+            (uint8_t)comshu::core::KernelSource::NvbitGlobaltimer, m ? m->grid : nullptr,
             m ? m->block : nullptr);
         emitted++;
     }
-    if (std::getenv("PCOMM_VERBOSE") || unmatched)
-        std::fprintf(stderr, "[pcomm-nvbit] kernel spans: %zu emitted, %zu incomplete\n", emitted,
+    if (std::getenv("COMSHU_VERBOSE") || unmatched)
+        std::fprintf(stderr, "[comshu-nvbit] kernel spans: %zu emitted, %zu incomplete\n", emitted,
                      unmatched);
 }
 
@@ -1153,7 +1153,7 @@ void emit_kernel_spans() {
 
 void nvbit_at_init() {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
-    if (const char* k = std::getenv("PCOMM_KERNEL_NAME"))
+    if (const char* k = std::getenv("COMSHU_KERNEL_NAME"))
         G().kernel_filter = k;
     // "Does this run want kernel times", and nothing about CUPTI: the stamp
     // this gates is PTX %globaltimer, which shares no state with the activity
@@ -1163,8 +1163,8 @@ void nvbit_at_init() {
     //
     // Read ONCE: the instrumentation loop runs per instruction over modules
     // with hundreds of specialisations, so a getenv in it would be a real cost.
-    g_kernel_timing = pcomm_engine_kernel_timing_wanted() != 0;
-    g_engine = new pcomm::gpumem::Engine();
+    g_kernel_timing = comshu_engine_kernel_timing_wanted() != 0;
+    g_engine = new comshu::gpumem::Engine();
 }
 
 void nvbit_tool_init(CUcontext) {}
@@ -1219,7 +1219,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
             g_engine->on_free(dptr);
     } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuMemCreate) {
         auto* p = (cuMemCreate_params*)params;
-        std::fprintf(stderr, "[pcomm-vmm] create handle=%llu size=%zu dev=%d type=%d\n",
+        std::fprintf(stderr, "[comshu-vmm] create handle=%llu size=%zu dev=%d type=%d\n",
                      p->handle ? (unsigned long long)*p->handle : 0ull, (size_t)p->size,
                      p->prop ? (int)p->prop->location.id : -1,
                      p->prop ? (int)p->prop->requestedHandleTypes : -1);
@@ -1244,17 +1244,17 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
             vmm_trace_fd("import", fd, (unsigned)p->shHandleType);
         }
     } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuIpcGetMemHandle) {
-        std::fprintf(stderr, "[pcomm-vmm] ipc_get\n");
+        std::fprintf(stderr, "[comshu-vmm] ipc_get\n");
         std::fflush(stderr);
     } else if (is_exit && vmm_trace_on() && cbid == API_CUDA_cuIpcOpenMemHandle) {
         auto* p = (cuIpcOpenMemHandle_params*)params;
-        std::fprintf(stderr, "[pcomm-vmm] ipc_open ptr=0x%llx\n",
+        std::fprintf(stderr, "[comshu-vmm] ipc_open ptr=0x%llx\n",
                      p->pdptr ? (unsigned long long)*p->pdptr : 0ull);
         std::fflush(stderr);
     } else if (is_exit && cbid == API_CUDA_cuMemMap) {
         if (vmm_trace_on()) {
             auto* q = (cuMemMap_params*)params;
-            std::fprintf(stderr, "[pcomm-vmm] map ptr=0x%llx size=%zu offset=%zu handle=%llu\n",
+            std::fprintf(stderr, "[comshu-vmm] map ptr=0x%llx size=%zu offset=%zu handle=%llu\n",
                          (unsigned long long)q->ptr, (size_t)q->size, (size_t)q->offset,
                          (unsigned long long)q->handle);
             std::fflush(stderr);
@@ -1290,9 +1290,9 @@ void nvbit_at_ctx_init(CUcontext ctx) {
     assert(G().ctx_state.find(ctx) == G().ctx_state.end());
     G().ctx_state[ctx] = state;
     cudaMallocManaged(&state->channel_dev, sizeof(ChannelDev));
-    // Diagnostic counters (PCOMM_CHANNEL_DEBUG): host-mapped so the recv thread
-    // can watch where the device stops. See channel.hpp pcomm_bump slots.
-    if (std::getenv("PCOMM_CHANNEL_DEBUG")) {
+    // Diagnostic counters (COMSHU_CHANNEL_DEBUG): host-mapped so the recv thread
+    // can watch where the device stops. See channel.hpp comshu_bump slots.
+    if (std::getenv("COMSHU_CHANNEL_DEBUG")) {
         unsigned long long* h = nullptr;
         if (cudaHostAlloc((void**)&h, 8 * sizeof(unsigned long long), cudaHostAllocMapped) ==
             cudaSuccess) {
@@ -1300,7 +1300,7 @@ void nvbit_at_ctx_init(CUcontext ctx) {
             unsigned long long* d = nullptr;
             if (cudaHostGetDevicePointer((void**)&d, h, 0) == cudaSuccess) {
                 state->dbg_host = h;
-                state->channel_dev->pcomm_dbg = d;
+                state->channel_dev->comshu_dbg = d;
             }
         }
     }
@@ -1320,10 +1320,10 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     // had already done. That is how case 13 died: exit 134, SIGABRT out of a
     // profiler's teardown, with the capture lost.
     if (const cudaError_t stale = cudaGetLastError(); stale != cudaSuccess)
-        std::fprintf(stderr, "pcomm: cuda error already pending at ctx term (not ours): %s\n",
+        std::fprintf(stderr, "comshu: cuda error already pending at ctx term (not ours): %s\n",
                      cudaGetErrorString(stale));
 
-    pcomm_flush_channel<<<1, 1>>>(state->channel_dev);
+    comshu_flush_channel<<<1, 1>>>(state->channel_dev);
     cudaError_t flush = cudaDeviceSynchronize();
     if (flush == cudaSuccess)
         flush = cudaGetLastError();
@@ -1335,7 +1335,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     // writes the streams, so it has to run either way.
     if (flush != cudaSuccess) {
         std::fprintf(stderr,
-                     "pcomm: channel flush failed at ctx term: %s — records still in the "
+                     "comshu: channel flush failed at ctx term: %s — records still in the "
                      "device buffer are lost, the rest of the capture is intact\n",
                      cudaGetErrorString(flush));
         // The flush kernel did not run, so it never wrote the token the recv
@@ -1349,7 +1349,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
     // The CLOSING clock anchor for every GPU this run touched, taken HERE
     // because this is the last moment the context is alive — emit_kernel_spans
     // runs after the context is gone and could not launch the sampling kernel.
-    // Two anchors far apart per domain is what lets pcomm-read fit the rate as
+    // Two anchors far apart per domain is what lets comshu-read fit the rate as
     // well as the offset, and the rate is the part that matters: globaltimer
     // drifts 5.7-13.9 ppm against the wall clock, which over a 7 s capture is
     // ~97 us of skew against kernels lasting tens of microseconds.
@@ -1393,7 +1393,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
         // nvbit_at_graph_node_launch is still a stub.
         if (g_launch_unknown)
             std::fprintf(stderr,
-                         "[pcomm] %llu warp-packets had no launch time — their accesses are "
+                         "[comshu] %llu warp-packets had no launch time — their accesses are "
                          "recorded with an open lower bound (window [0, drain])\n",
                          g_launch_unknown);
         g_engine->shutdown();

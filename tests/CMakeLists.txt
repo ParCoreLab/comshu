@@ -1,9 +1,9 @@
-# These link pcomm::engine, not just pcomm::pcomm. Since 4dd6a69 the recording
+# These link comshu::engine, not just comshu::comshu. Since 4dd6a69 the recording
 # path goes through the C ABI in engine_abi.h and the singletons (Tracer,
 # ThreadBufferRegistry, the arenas) live in the shared engine — a test that
 # links only the header-only interface target fails at link time, which is how
 # all of these rotted unnoticed while every build that ran passed
-# -DPCOMM_BUILD_TESTS=OFF. tools/build_all.sh exists so that cannot recur.
+# -DCOMSHU_BUILD_TESTS=OFF. tools/build_all.sh exists so that cannot recur.
 
 # ── Tests must keep their assertions ────────────────────────────────────────
 # Every test here checks with assert(), and every build that runs them uses a
@@ -18,36 +18,36 @@
 #
 # -UNDEBUG on the test targets only — the library and providers keep NDEBUG, so
 # the asserts on the capture hot path stay compiled out, which is what we want.
-function(pcomm_add_test target)
+function(comshu_add_test target)
   target_compile_options(${target} PRIVATE -UNDEBUG)
 endfunction()
 
 add_executable(core_smoke core_smoke.cpp)
-target_link_libraries(core_smoke PRIVATE pcomm::pcomm pcomm::engine)
-pcomm_add_test(core_smoke)
+target_link_libraries(core_smoke PRIVATE comshu::comshu comshu::engine)
+comshu_add_test(core_smoke)
 add_test(NAME core_smoke COMMAND core_smoke)
 
-# pcomm-ui's read-only guard. Header-only, so it needs neither DuckDB nor the
+# comshu-ui's read-only guard. Header-only, so it needs neither DuckDB nor the
 # server, and runs in every configuration.
 add_executable(query_guard_test query_guard_test.cpp)
-target_include_directories(query_guard_test PRIVATE ${CMAKE_SOURCE_DIR}/pcomm-ui)
-pcomm_add_test(query_guard_test)
+target_include_directories(query_guard_test PRIVATE ${CMAKE_SOURCE_DIR}/comshu-ui)
+comshu_add_test(query_guard_test)
 add_test(NAME query_guard_test COMMAND query_guard_test)
 
 add_executable(hook_smoke hook_smoke.cpp)
-target_link_libraries(hook_smoke PRIVATE pcomm::pcomm pcomm::hook)
-pcomm_add_test(hook_smoke)
+target_link_libraries(hook_smoke PRIVATE comshu::comshu comshu::hook)
+comshu_add_test(hook_smoke)
 add_test(NAME hook_smoke COMMAND hook_smoke)
 
 find_package(Threads REQUIRED)
 add_executable(thread_flush_smoke thread_flush_smoke.cpp)
-target_link_libraries(thread_flush_smoke PRIVATE pcomm::pcomm pcomm::engine Threads::Threads)
-pcomm_add_test(thread_flush_smoke)
+target_link_libraries(thread_flush_smoke PRIVATE comshu::comshu comshu::engine Threads::Threads)
+comshu_add_test(thread_flush_smoke)
 add_test(NAME thread_flush_smoke COMMAND thread_flush_smoke)
 
 add_executable(fork_smoke fork_smoke.cpp)
-target_link_libraries(fork_smoke PRIVATE pcomm::pcomm pcomm::engine Threads::Threads)
-pcomm_add_test(fork_smoke)
+target_link_libraries(fork_smoke PRIVATE comshu::comshu comshu::engine Threads::Threads)
+comshu_add_test(fork_smoke)
 add_test(NAME fork_smoke COMMAND fork_smoke)
 
 # A killed process must still leave a capture that can be placed on a node and a
@@ -56,15 +56,15 @@ add_test(NAME fork_smoke COMMAND fork_smoke)
 # start() flushes those two immediately. This is what stops that line being read
 # as a redundant flush and deleted.
 add_executable(crash_identity_smoke crash_identity_smoke.cpp)
-target_link_libraries(crash_identity_smoke PRIVATE pcomm::pcomm pcomm::engine)
-pcomm_add_test(crash_identity_smoke)
+target_link_libraries(crash_identity_smoke PRIVATE comshu::comshu comshu::engine)
+comshu_add_test(crash_identity_smoke)
 add_test(NAME crash_identity COMMAND crash_identity_smoke)
 
 # The intern dictionary: written through Tracer (so, the engine), read back
 # through rec::InternDictionary — the same path the reader uses.
 add_executable(intern_format intern_format.cpp)
-target_link_libraries(intern_format PRIVATE pcomm::pcomm pcomm::engine)
-pcomm_add_test(intern_format)
+target_link_libraries(intern_format PRIVATE comshu::comshu comshu::engine)
+comshu_add_test(intern_format)
 add_test(NAME intern_format COMMAND intern_format)
 
 # The intern hot path. Providers intern once per RECORD, not once per entity, so
@@ -74,8 +74,8 @@ add_test(NAME intern_format COMMAND intern_format)
 # leaves the capture well-formed), and the cost printed rather than asserted —
 # a threshold on whatever machine builds the tree would be a flaky test.
 add_executable(intern_hot_path intern_hot_path.cpp)
-target_link_libraries(intern_hot_path PRIVATE pcomm::pcomm pcomm::engine Threads::Threads)
-pcomm_add_test(intern_hot_path)
+target_link_libraries(intern_hot_path PRIVATE comshu::comshu comshu::engine Threads::Threads)
+comshu_add_test(intern_hot_path)
 add_test(NAME intern_hot_path COMMAND intern_hot_path)
 
 # The new-WR-API state machine. providers/ibverbs needs libibverbs to build, but
@@ -83,16 +83,16 @@ add_test(NAME intern_hot_path COMMAND intern_hot_path)
 # testable on any machine — which is where its bugs would be.
 add_executable(wr_builder_test wr_builder_test.cpp)
 target_include_directories(wr_builder_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/ibverbs)
-target_link_libraries(wr_builder_test PRIVATE pcomm::pcomm)
-pcomm_add_test(wr_builder_test)
+target_link_libraries(wr_builder_test PRIVATE comshu::comshu)
+comshu_add_test(wr_builder_test)
 add_test(NAME wr_builder COMMAND wr_builder_test)
 
 # InternTable itself: identity, handle numbering, storage stability, and the
 # shared string/key counter. No engine, no NIC — the paths are all reachable
 # from the header.
 add_executable(intern_table_test intern_table_test.cpp)
-target_link_libraries(intern_table_test PRIVATE pcomm::pcomm)
-pcomm_add_test(intern_table_test)
+target_link_libraries(intern_table_test PRIVATE comshu::comshu)
+comshu_add_test(intern_table_test)
 add_test(NAME intern_table COMMAND intern_table_test)
 
 # The sink's failure paths. Every interesting case here is a case where the
@@ -100,18 +100,18 @@ add_test(NAME intern_table COMMAND intern_table_test)
 # until a filesystem quota on MN5 produced captures missing whole streams and
 # three suite cases went red pointing at the wrong layer entirely.
 add_executable(sink_write_errors sink_write_errors.cpp)
-target_link_libraries(sink_write_errors PRIVATE pcomm::pcomm)
-pcomm_add_test(sink_write_errors)
+target_link_libraries(sink_write_errors PRIVATE comshu::comshu)
+comshu_add_test(sink_write_errors)
 add_test(NAME sink_write_errors COMMAND sink_write_errors)
 
 # NCCL's own commHash, which is the key the profiler-plugin rows join on. NOT
-# gated on PCOMM_PROVIDER_NCCL and deliberately so: the header pulls in no NCCL
+# gated on COMSHU_PROVIDER_NCCL and deliberately so: the header pulls in no NCCL
 # and no CUDA, so this runs in every configuration, including the ones where the
 # provider is switched off. A join key that silently stops matching is the kind
 # of defect that only shows up as an empty table three machines later.
 add_executable(nccl_comm_hash_test nccl_comm_hash_test.cpp)
 target_include_directories(nccl_comm_hash_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/nccl)
-pcomm_add_test(nccl_comm_hash_test)
+comshu_add_test(nccl_comm_hash_test)
 add_test(NAME nccl_comm_hash COMMAND nccl_comm_hash_test)
 
 # The MN5 suite's cross-cutting assertions, run against synthetic captures that
@@ -129,11 +129,11 @@ add_test(NAME asserts_fire
 # for the derived layer (which must run over a Parquet export). Neither can
 # adopt the other, so this asserts they agree on a fixture instead. The script
 # skips loudly when the binary has no DuckDB, so it is registered unconditionally
-# rather than behind PCOMM_DUCKDB — a test that silently vanishes from half the
+# rather than behind COMSHU_DUCKDB — a test that silently vanishes from half the
 # builds is how the assertion rot in the comment at the top of this file started.
 add_test(NAME flow_pairing_agree
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/flow_pairing_agree.sh
-                 $<TARGET_FILE:pcomm_launcher>
+                 $<TARGET_FILE:comshu_launcher>
                  ${CMAKE_CURRENT_SOURCE_DIR}/data/ib_pingpong-44578115)
 
 # And the rule itself, on a capture built so that every clause has something to
@@ -141,7 +141,7 @@ add_test(NAME flow_pairing_agree
 # catches divergence and — demonstrated, not assumed — cannot catch a rule that
 # is wrong in BOTH, nor one whose fixture never expresses the defect.
 add_test(NAME wr_flow_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/wr_flow_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/wr_flow_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # The two derived tables the UI actually opens with, on the same pattern and for
 # the reason the pattern exists. Both were verifiable only through tests/hpc
@@ -160,15 +160,15 @@ add_test(NAME wr_flow_rule
 # contained address 0, so the range join dropped the row for the right answer by
 # the wrong reason. The fixture carries an object at base 0 now.
 add_test(NAME comm_edges_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/comm_edges_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/comm_edges_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 add_test(NAME object_access_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_access_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_access_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # Which kernel issued a GPU-initiated send: the window join, per GPU, with the
 # overlap and after-the-kernel cases MN5 job 48813620 could not produce.
 add_test(NAME kernel_sends_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/kernel_sends_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/kernel_sends_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # Transport attribution — the two joins the derived layer gained on 2026-08-27,
 # an intern handle to its string and a uct_send to its interface. It also covers
@@ -176,7 +176,7 @@ add_test(NAME kernel_sends_rule
 # 295 UCT operations and every one was an active message, so the get / rendezvous
 # split is asserted here or nowhere.
 add_test(NAME transport_mix_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/transport_mix_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/transport_mix_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # The only join between what the application asked UCX for and what UCX put on
 # the wire. It rests on one measured fact — uct_send.tag carries the
@@ -184,7 +184,7 @@ add_test(NAME transport_mix_rule
 # OUTER join whose two absences are different facts, and a UCT side selected by
 # DOOR rather than by `tag <> 0`, since tag zero is a real tag.
 add_test(NAME tag_flow_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_flow_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_flow_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # The probe -> msg_recv join, whose rule is TEMPORAL because UCX recycles the
 # message handle out of its request mpool. A fixture rather than a capture for
@@ -192,7 +192,7 @@ add_test(NAME tag_flow_rule
 # reproduces it on demand, and an equality join returns confident wrong pairs
 # rather than an error.
 add_test(NAME tag_recv_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_recv_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tag_recv_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # The invocation record's handle join. A fixture rather than a capture because
 # the two clauses worth testing — handles being scoped to (rank, domain), and a
@@ -200,7 +200,7 @@ add_test(NAME tag_recv_rule
 # appear on a multi-rank or a REPLAYED capture, and neither is something a
 # single local run produces.
 add_test(NAME run_provenance_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_provenance_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_provenance_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # The NCCL profiler layer's two joins. A fixture and not a capture because the
 # cases that break them do not occur on the hardware we can run: a communicator
@@ -211,7 +211,7 @@ add_test(NAME run_provenance_rule
 # non-zero, since a rubric row nobody has seen fire is a row that reads as clean
 # on the day it is right.
 add_test(NAME nccl_execution_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/nccl_execution_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/nccl_execution_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # link_health's capture-completeness rows, over a fixture rather than a real
 # capture for the same reason as above: the interesting states are a rank that
@@ -220,18 +220,18 @@ add_test(NAME nccl_execution_rule
 # no-false-positive case, which is the one that decides whether anyone keeps
 # reading the rubric at all.
 add_test(NAME capture_integrity_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/capture_integrity_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/capture_integrity_rule.sh $<TARGET_FILE:comshu_launcher>)
 
-# What `pcomm sql` accepts as a query. Not about SQL at all — about the
+# What `comshu sql` accepts as a query. Not about SQL at all — about the
 # `COPY (<q>) TO` wrapper, which turns a trailing semicolon and a trailing
 # comment into parse errors that name neither.
 add_test(NAME sql_cli_rule
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/sql_cli_rule.sh $<TARGET_FILE:pcomm_launcher>)
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/sql_cli_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # ucx_deep's hot-path lookup tables, driven directly.
 #
 # UNCONDITIONAL, unlike everything else UCX in this file, and deliberately so:
-# ucx_deep_tables.hpp includes no UCX header and no pcomm header, so this runs
+# ucx_deep_tables.hpp includes no UCX header and no comshu header, so this runs
 # in the core configuration that tools/build_all.sh actually builds. The UCX
 # configuration is not in build_all.sh (PLAN-20260815-1540, Future work 5), so a
 # test that needed it would run for nobody.
@@ -249,7 +249,7 @@ add_test(NAME ucx_deep_tables COMMAND ucx_deep_tables)
 #
 # The workload links against UCX directly rather than going through the provider,
 # so its doors are the ones an application really calls.
-if(PCOMM_PROVIDER_UCX)
+if(COMSHU_PROVIDER_UCX)
   # libucs as well as libucp: the workload reports failures with
   # ucs_status_string, and unlike the provider it links UCX directly rather than
   # interposing it, so the transitive dependency has to be named.
@@ -259,9 +259,9 @@ if(PCOMM_PROVIDER_UCX)
   target_link_libraries(ucx_selftest PRIVATE ${UCX_UCP_LIB} ${UCX_UCS_LIB})
   add_test(NAME ucx_records
            COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/ucx_records.sh
-                   $<TARGET_FILE:pcomm_launcher>
+                   $<TARGET_FILE:comshu_launcher>
                    $<TARGET_FILE:ucx_selftest>
-                   $<TARGET_FILE:pcomm_engine>
+                   $<TARGET_FILE:comshu_engine>
                    $<TARGET_FILE:ucx_trace>)
   # libucp pulls in libuct and libucm, and RUNPATH — which is what the linker
   # emits by default — is NOT inherited by a dependency's dependencies. So the
@@ -273,9 +273,9 @@ if(PCOMM_PROVIDER_UCX)
   # its own, precisely so it cannot become a configuration no gate builds.
   add_test(NAME ucx_deep_records
            COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/ucx_deep_records.sh
-                   $<TARGET_FILE:pcomm_launcher>
+                   $<TARGET_FILE:comshu_launcher>
                    $<TARGET_FILE:ucx_selftest>
-                   $<TARGET_FILE:pcomm_engine>
+                   $<TARGET_FILE:comshu_engine>
                    $<TARGET_FILE:ucx_trace>
                    $<TARGET_FILE:ucx_deep_trace>)
   get_filename_component(_ucx_libdir "${UCX_UCP_LIB}" DIRECTORY)

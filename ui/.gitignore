@@ -1,6 +1,6 @@
 node_modules/
 
-# The build produces this (tools/build_ui.sh, driven by pcomm-ui/CMakeLists),
+# The build produces this (tools/build_ui.sh, driven by comshu-ui/CMakeLists),
 # so it is ignored like any other build output. It was briefly committed, to
 # make the spack +ui variant possible before the build could build it itself;
 # that cost new blobs on every frontend change, since Vite's hashed names never

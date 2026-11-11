@@ -12,7 +12,7 @@
  * This provider coexists with ibverbs in the same process by design, so that
  * failure is live rather than hypothetical here.
  *
- * NB `dlsym` is NOT here: it lives in libpcomm_engine.so, which must own the
+ * NB `dlsym` is NOT here: it lives in libcomshu_engine.so, which must own the
  * single definition.
  */
 {
@@ -25,8 +25,8 @@
     mlx5dv_devx_umem_dereg;
     mlx5dv_devx_umem_reg;
     mlx5dv_devx_umem_reg_ex;
-    pcomm_create_provider;
-    pcomm_abi_version;
+    comshu_create_provider;
+    comshu_abi_version;
   local:
     *;
 };

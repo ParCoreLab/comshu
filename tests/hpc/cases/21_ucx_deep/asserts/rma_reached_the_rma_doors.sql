@@ -6,7 +6,7 @@
 -- the object-heatmap key the whole HPC-X class has never had — the same key
 -- `ib_post_send.remote_addr` gives for raw verbs.
 --
--- It is also the claim most likely to fail for a reason that is not pcomm's.
+-- It is also the claim most likely to fail for a reason that is not comshu's.
 -- MPI one-sided reaches UCT's RMA doors only through the UCX one-sided
 -- component; with osc/rdma or osc/pt2pt the same MPI_Put becomes an active
 -- message and no remote address is ever recorded. The job script asks for

@@ -11,7 +11,7 @@
 -- NO COUNTS, DELIBERATELY. MPI_Send is not obliged to be one ucp_tag_send —
 -- OpenMPI picks eager or rendezvous by size and its collectives take their own
 -- path — so asserting 100 would be asserting OpenMPI's protocol choices, not
--- pcomm's recording, and it would go red on an HPC-X upgrade that broke nothing.
+-- comshu's recording, and it would go red on an HPC-X upgrade that broke nothing.
 -- Presence per rank is the strongest claim that is actually about us.
 SELECT 'a rank posted tagged sends but no tagged receives' AS problem, rank
 FROM (SELECT DISTINCT rank FROM ucx_tag_send)

@@ -22,7 +22,7 @@
 #
 #   sbatch tests/hpc/apps/03_quantumespresso/job-r2.sbatch
 #
-#SBATCH --job-name=pcomm-app-qe-r2
+#SBATCH --job-name=comshu-app-qe-r2
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 # TWO NODES, FOUR RANKS EACH, FOUR GPUS EACH — and every part of that shape is
@@ -43,17 +43,17 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-CASE_DIR="$PCOMM_ROOT/tests/hpc/apps/03_quantumespresso"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+CASE_DIR="$COMSHU_ROOT/tests/hpc/apps/03_quantumespresso"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
 
-# gcc-13.2 for the engine's libstdc++ (GLIBCXX_3.4.31 — without it `pcomm read`
-# and `pcomm export` die and the export directory is never created, which reads
+# gcc-13.2 for the engine's libstdc++ (GLIBCXX_3.4.31 — without it `comshu read`
+# and `comshu export` die and the export directory is never created, which reads
 # exactly like "the workload wrote nothing"), then QE's own stack.
 #
-# NOT pcomm_load_runtime: it loads nvidia-hpc-sdk/25.7, whose HPC-X is 2.22.1,
+# NOT comshu_load_runtime: it loads nvidia-hpc-sdk/25.7, whose HPC-X is 2.22.1,
 # while pw.x is LINKED against 23.11's HPC-X 2.16 (round 1: ldd shows
-# .../hpcx-2.16/ompi/lib). Both pcomm providers here are symbol interposition
+# .../hpcx-2.16/ompi/lib). Both comshu providers here are symbol interposition
 # and ucx_deep additionally patches a table read out of the LOADED libucx, so
 # they must sit in front of the libucp that QE's own mpirun actually dlopens.
 #
@@ -86,7 +86,7 @@ echo "=== which UCX will actually be loaded ==="
 # HPC-X 2.16 / UCX 1.15, which is OLDER than anything this provider has been run
 # against (case 21 measured runtime 1.18.0 against a 1.19.0 build). Whether the
 # guard accepts it is THE open question of this round and cannot be answered
-# offline — `pcomm list` documents what a provider captures, not what it
+# offline — `comshu list` documents what a provider captures, not what it
 # requires. uct_binding answers it after the fact; this says what it was asked.
 ldd "$(command -v pw.x)" 2>/dev/null | grep -Ei "libucp|libucs|libuct|libmpi" | sed 's/^/    /'
 for d in $(echo "$LD_LIBRARY_PATH" | tr ':' ' '); do
@@ -114,7 +114,7 @@ ldd "$(command -v pw.x)" 2>/dev/null | grep -Ei "nvhpcman|nvhpcmanaux|nvhpcatm" 
 nm -D "$(command -v pw.x)" 2>/dev/null | grep -Ei "MallocManaged|MemAllocManaged|MallocHost|uacc_alloc" | sed 's/^/    /'
 
 echo "=== do the three providers compose into one pass? ==="
-"$PCOMM" run --dry-run -p ucx,ucx_deep,ib -o /dev/null -- /bin/true 2>&1 | sed 's/^/    /'
+"$COMSHU" run --dry-run -p ucx,ucx_deep,ib -o /dev/null -- /bin/true 2>&1 | sed 's/^/    /'
 
 # ---------------------------------------------------------------- MPI -------
 # Each option is a correctness requirement, not a preference:
@@ -133,7 +133,7 @@ echo "=== do the three providers compose into one pass? ==="
 # tag_flow non-empty would be tuning the fabric until the tracer looks good.
 # What UCX chose is a MEASUREMENT this capture carries, in uct_iface.
 MPIOPTS=(--bind-to none --map-by ppr:4:node
-         -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH
+         -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH
          -x ESPRESSO_PSEUDO -x OMP_NUM_THREADS
          -mca pml ucx -mca coll_hcoll_enable 0 -mca btl ^openib)
 export OMP_NUM_THREADS=1
@@ -156,7 +156,7 @@ qe_log() {  # qe_log <dir> — the application's OWN log, which is the oracle
 # ============================ RUNS 0a / 0b: BARE ============================
 # NOT OPTIONAL (apps/README.md): "a capture of a workload that did not work is
 # indistinguishable from a tracer that captured nothing, and that confusion has
-# cost this project several slots." Both arms run bare FIRST, before pcomm is
+# cost this project several slots." Both arms run bare FIRST, before comshu is
 # involved at all, so the two logs also establish the oracle:
 #
 #   `R & G space division: proc/nbgrp/npool/nimage` must read 8 then 4;
@@ -165,12 +165,12 @@ qe_log() {  # qe_log <dir> — the application's OWN log, which is the oracle
 #   trusting the ceil().
 #
 # pw.x ALWAYS EXITS 139 ON MN5. It reaches JOB DONE and then takes SIGSEGV in
-# teardown; round 1 attributed that with a control run carrying no pcomm and no
+# teardown; round 1 attributed that with a control run carrying no comshu and no
 # LD_PRELOAD. Do not read a nonzero exit as "the workload failed" — grep JOB DONE.
 for cfg in "bare-npool1 1" "bare-npool2 2"; do
   set -- $cfg; label="$1"; npool="$2"
   d="$WORK/$label"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF .
-  echo "=== [$label] BARE, no pcomm, npool=$npool — the oracle and the control ==="
+  echo "=== [$label] BARE, no comshu, npool=$npool — the oracle and the control ==="
   timeout 900 mpirun -np 8 "${MPIOPTS[@]}" \
       pw.x -npool "$npool" "${QE_FLAGS_COMMON[@]}" -in "$IN" > "$d/pw.out" 2> "$d/pw.err"
   echo "[$label] pw.x exit=$?   (139 = 128+SIGSEGV in teardown; JOB DONE below is the science)"
@@ -196,7 +196,7 @@ grep -A6 "sticks:" "$WORK"/bare-npool1/pw.out "$WORK"/bare-npool2/pw.out 2>/dev/
 # PROVIDERS: ucx,ucx_deep,ib. All three are hook-based and non-exclusive, so
 # they share one pass and one engine (the --dry-run above confirms it before a
 # rank starts). ucx_deep is the whole point — round 1 established that on the
-# default transport pcomm records NO wire traffic at all for this application,
+# default transport comshu records NO wire traffic at all for this application,
 # and the 800-range is the layer that is supposed to close exactly that gap.
 # `ib` is retained as the CONTROL: verbs_doors_stay_blind-r2.sql asserts that
 # ib_post_send stays empty while ib_device does not, so a change of transport
@@ -211,22 +211,22 @@ grep -A6 "sticks:" "$WORK"/bare-npool1/pw.out "$WORK"/bare-npool2/pw.out 2>/dev/
 # Recorded in QUESTIONS.md.
 for cfg in "qe-r2-npool1 1" "qe-r2-npool2 2"; do
   set -- $cfg; label="$1"; npool="$2"
-  OUT="$(pcomm_out "$label")"; rm -rf "$OUT"; mkdir -p "$OUT"
+  OUT="$(comshu_out "$label")"; rm -rf "$OUT"; mkdir -p "$OUT"
   d="$WORK/$label"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF .
-  echo "=== [$label] pcomm -p ucx,ucx_deep,ib  npool=$npool  UCX_TLS=<default> -> $OUT ==="
+  echo "=== [$label] comshu -p ucx,ucx_deep,ib  npool=$npool  UCX_TLS=<default> -> $OUT ==="
   timeout 900 mpirun -np 8 "${MPIOPTS[@]}" \
-      "$PCOMM" run -p ucx,ucx_deep,ib -o "$OUT" -- \
+      "$COMSHU" run -p ucx,ucx_deep,ib -o "$OUT" -- \
       pw.x -npool "$npool" "${QE_FLAGS_COMMON[@]}" -in "$IN" > "$d/pw.out" 2> "$d/pw.err"
   echo "[$label] exit=$?   JOB DONE count = $(grep -c 'JOB DONE' "$d/pw.out")"
   qe_log "$d"
   cd "$WORK"
 
   echo "--- [$label] captured streams ---"
-  "$PCOMM" read "$OUT"
-  "$PCOMM" export "$OUT" --csv "$OUT.csv"
-  pcomm_derive "$OUT"
+  "$COMSHU" read "$OUT"
+  "$COMSHU" export "$OUT" --csv "$OUT.csv"
+  comshu_derive "$OUT"
 
-  # READ THIS BEFORE ANYTHING ELSE. pcomm.fbs type 806: "accepted = 0 is why
+  # READ THIS BEFORE ANYTHING ELSE. comshu.fbs type 806: "accepted = 0 is why
   # uct_send is empty, and saying so is the whole reason this record exists."
   # If it is 0 on UCX 1.15, every claim about transport_mix in this job is
   # unanswerable rather than false, and the finding is claim type 4 — the
@@ -239,26 +239,26 @@ done
 # =============================== the diff ==================================
 echo "=== transport_mix, side by side — THE HEADLINE ==="
 for label in qe-r2-npool1 qe-r2-npool2; do
-  OUT="$(pcomm_out "$label")"
+  OUT="$(comshu_out "$label")"
   echo "--- $label"
   if [ -d "$OUT.pq" ]; then
     # Grouped by scope AND tl_name. `scope` is visibly the column meant for
     # "did this leave the node" and its value vocabulary is published nowhere a
     # black-box user may read, so it is PRINTED here and asserted on nowhere —
     # the assertion binds to tl_name, which carries UCX's own transport names.
-    "$PCOMM" sql "$OUT.pq" \
+    "$COMSHU" sql "$OUT.pq" \
       "SELECT scope, tl_name, op, sum(ops) AS ops, sum(out_bytes) AS out_bytes,
               sum(in_bytes) AS in_bytes, sum(advertised_bytes) AS advertised
        FROM transport_mix GROUP BY 1,2,3 ORDER BY 4 DESC" 2>&1 | sed 's/^/    /'
     echo "  -- tag_flow: the only join between the 600s and the 800s --"
-    "$PCOMM" sql "$OUT.pq" \
+    "$COMSHU" sql "$OUT.pq" \
       "SELECT status, count(*) AS flows, sum(ucp_sends) AS ucp_sends,
               sum(uct_ops) AS uct_ops, sum(doors) AS doors
        FROM tag_flow GROUP BY 1 ORDER BY 2 DESC" 2>&1 | sed 's/^/    /'
     echo "  -- rank_identity: does a ucx-only capture know which GPU a rank had? --"
-    "$PCOMM" sql "$OUT.pq" "SELECT * FROM rank_identity ORDER BY rank" 2>&1 | sed 's/^/    /'
+    "$COMSHU" sql "$OUT.pq" "SELECT * FROM rank_identity ORDER BY rank" 2>&1 | sed 's/^/    /'
     echo "  -- link_health --"
-    "$PCOMM" sql "$OUT.pq" "SELECT finding, severity, n, note FROM link_health WHERE n > 0 ORDER BY severity" 2>&1 | sed 's/^/    /'
+    "$COMSHU" sql "$OUT.pq" "SELECT finding, severity, n, note FROM link_health WHERE n > 0 ORDER BY severity" 2>&1 | sed 's/^/    /'
   else
     echo "    (no derived layer — raw uct_send op counts follow)"
     # rank,ticks,op,... — the CSV export prepends `rank` to the record's own
@@ -270,6 +270,6 @@ done
 
 # ------------------------------------------------------------- checks -------
 bash "$CASE_DIR/check-r2.sh" \
-     "$(pcomm_out qe-r2-npool1).csv" \
-     "$(pcomm_out qe-r2-npool2).csv" \
+     "$(comshu_out qe-r2-npool1).csv" \
+     "$(comshu_out qe-r2-npool2).csv" \
      "$CASE_DIR"

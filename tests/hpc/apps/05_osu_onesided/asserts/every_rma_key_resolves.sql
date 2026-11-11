@@ -4,7 +4,7 @@
 --
 -- THIS IS THE STUDY'S HEADLINE and the reason it exists: `ucx_rkey` (626) is
 -- new, and until now the only thing that ever drove it was a workload the
--- pcomm authors wrote themselves. OSU is third-party code that has never heard
+-- comshu authors wrote themselves. OSU is third-party code that has never heard
 -- of this project, run with arguments chosen for their arithmetic rather than
 -- for the doors they open, and it must produce the same join.
 --

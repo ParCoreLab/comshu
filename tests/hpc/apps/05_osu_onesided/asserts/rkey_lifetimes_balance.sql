@@ -19,7 +19,7 @@
 -- it would say so five times over.
 --
 -- 626 is UcxRkey's type id, published in the schema comment and discoverable
--- from `pcomm types`. Scoped to it rather than counting all closes, because
+-- from `comshu types`. Scoped to it rather than counting all closes, because
 -- entity_close is shared by every provider in the capture.
 SELECT 'an entity_close names an rkey that was never opened' AS problem,
        c.rank                                                AS rank,

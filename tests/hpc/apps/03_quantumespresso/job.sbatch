@@ -1,5 +1,5 @@
 #!/bin/bash
-# 03_quantumespresso — plane-wave DFT (pw.x) under pcomm, on MareNostrum 5.
+# 03_quantumespresso — plane-wave DFT (pw.x) under comshu, on MareNostrum 5.
 #
 # WHY THIS APPLICATION. Every workload in tests/hpc/cases is a halo exchange or
 # a collective on a contiguous buffer. Plane-wave DFT is neither: the FFT grid is
@@ -21,7 +21,7 @@
 #
 #   sbatch tests/hpc/apps/03_quantumespresso/job.sbatch
 #
-#SBATCH --job-name=pcomm-app-qe
+#SBATCH --job-name=comshu-app-qe
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 # FOUR NODES, ONE RANK EACH, ONE GPU EACH — and the shape is load-bearing.
@@ -38,15 +38,15 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-CASE_DIR="$PCOMM_ROOT/tests/hpc/apps/03_quantumespresso"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+CASE_DIR="$COMSHU_ROOT/tests/hpc/apps/03_quantumespresso"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
 
-# gcc-13.2 for the engine's libstdc++ (GLIBCXX_3.4.31 — without it `pcomm read`
-# and `pcomm export` die with a GLIBCXX version error and the capture looks
+# gcc-13.2 for the engine's libstdc++ (GLIBCXX_3.4.31 — without it `comshu read`
+# and `comshu export` die with a GLIBCXX version error and the capture looks
 # empty), then QE's own stack.
 #
-# NOT pcomm_load_runtime: that loads nvidia-hpc-sdk/25.7, whose HPC-X is 2.22.1,
+# NOT comshu_load_runtime: that loads nvidia-hpc-sdk/25.7, whose HPC-X is 2.22.1,
 # while pw.x was LINKED against 23.11's HPC-X 2.16 (ldd shows
 # .../hpcx-2.16/ompi/lib). The UCX provider is symbol interposition, so it must
 # sit in front of the libucp that is actually loaded — the one QE's own mpirun
@@ -79,7 +79,7 @@ IN="$WORK/ausurf.in"
 #                         entire all-to-all this case is about.
 #   btl ^openib         — no legacy verbs BTL racing UCX for the HCA.
 MPIOPTS=(--bind-to none --map-by ppr:1:node
-         -x PATH -x LD_LIBRARY_PATH -x PCOMM_PROVIDER_PATH
+         -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH
          -x ESPRESSO_PSEUDO -x OMP_NUM_THREADS
          -mca pml ucx -mca coll_hcoll_enable 0 -mca btl ^openib)
 export OMP_NUM_THREADS=1
@@ -104,7 +104,7 @@ export ESPRESSO_PSEUDO="$WORK"
 # is host-only, so the registration fails and the run dies. The finding is about
 # reach, not about a flag: for this application, on this stack, the payload never
 # traverses a path that a verbs-level tracer can register or observe. That is
-# recorded in NOTES.md and REPORT.md as a constraint on what pcomm can see, and
+# recorded in NOTES.md and REPORT.md as a constraint on what comshu can see, and
 # it is NOT worked around in the captures that carry the -npool claim.
 #
 # Run 4 still tries rc_verbs, last, with the CUDA memory domain added and
@@ -127,8 +127,8 @@ qe_log() {  # qe_log <dir> — the application's OWN log, which is an oracle
 # unanswerable FROM a capture — mem_object records no discriminator for which
 # door an allocation came through, so a managed and a device allocation are
 # byte-identical in a capture. The door is therefore counted from OUTSIDE, by an
-# LD_PRELOAD that is not pcomm and is loaded only here, where it cannot perturb
-# anything pcomm records.
+# LD_PRELOAD that is not comshu and is loaded only here, where it cannot perturb
+# anything comshu records.
 PROBE="$WORK/libmanaged_probe.so"
 rm -f "$PROBE"
 gcc -O1 -fPIC -shared -o "$PROBE" "$WORK/managed_probe.c" -ldl \
@@ -136,20 +136,20 @@ gcc -O1 -fPIC -shared -o "$PROBE" "$WORK/managed_probe.c" -ldl \
 
 # Run 0a — the SAME bare run with NOTHING preloaded, purely to attribute the
 # teardown SIGSEGV job 45081919 recorded. pw.x reached "JOB DONE" and then died
-# with signal 11 in both the probed bare run and the unprobed pcomm run, which
-# means the probe is not obviously the cause and pcomm is not obviously the
+# with signal 11 in both the probed bare run and the unprobed comshu run, which
+# means the probe is not obviously the cause and comshu is not obviously the
 # cause — but "not obviously" is not an attribution. This run has neither, so it
 # separates "pw.x segfaults at teardown on MN5" from "something we preloaded
 # does". Twelve seconds, and it decides whether a truncated stream is ours.
 d="$WORK/bare-clean"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF .
-echo "=== [bare-clean] npool=1, no pcomm, NO preload — teardown-segfault control ==="
+echo "=== [bare-clean] npool=1, no comshu, NO preload — teardown-segfault control ==="
 timeout 900 mpirun -np 4 "${MPIOPTS[@]}" \
     pw.x -npool 1 -nband 1 -ntg 1 -in "$IN" > "$d/pw.out" 2> "$d/pw.err"
 echo "[bare-clean] pw.x exit=$?   (139 = 128+SIGSEGV; JOB DONE below means the science finished)"
 grep -c "JOB DONE" "$d/pw.out"
 
 d="$WORK/bare"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF .
-echo "=== [bare] npool=1, no pcomm, managed-memory probe preloaded ==="
+echo "=== [bare] npool=1, no comshu, managed-memory probe preloaded ==="
 export MANAGED_PROBE_OUT="$d/managed"
 timeout 900 mpirun -np 4 "${MPIOPTS[@]}" -x LD_PRELOAD="$PROBE" -x MANAGED_PROBE_OUT \
     pw.x -npool 1 -nband 1 -ntg 1 -in "$IN" > "$d/pw.out" 2> "$d/pw.err"
@@ -165,12 +165,12 @@ cd "$WORK"
 # the only difference: same binary, same input, same 4 ranks on the same 4 nodes,
 # same MPI and UCX settings.
 #
-# run_qe is not factored out over these: `pcomm run` wraps the RANKED binary, not
+# run_qe is not factored out over these: `comshu run` wraps the RANKED binary, not
 # mpirun (apps/README.md), so the capture form is a different command line, and
 # spelling it out keeps the line the report cites identical to the line that ran.
 for cfg in "npool1 1" "npool2 2"; do
   set -- $cfg; label="$1"; npool="$2"
-  OUT="$(pcomm_out "qe-$label")"; rm -rf "$OUT"; mkdir -p "$OUT"
+  OUT="$(comshu_out "qe-$label")"; rm -rf "$OUT"; mkdir -p "$OUT"
   d="$WORK/$label"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF .
   # -m simple, not the default Full. Measured on job 45081919's capture:
   # ucx_worker_progress alone was 1,932,658 rows against 125,069 tagged sends —
@@ -186,16 +186,16 @@ for cfg in "npool1 1" "npool2 2"; do
   # for SEND. libuct_ib.so's undefined symbols name where it went instead —
   # mlx5dv_devx_qp_modify, mlx5dv_devx_obj_create — and link_sql.hpp's `_owner`
   # view already unions mlx5_devx_qp_connect with ib_modify_qp.
-  echo "=== [$label] pcomm -p ib,ucx,mlx5dv -m simple  npool=$npool  UCX_TLS=<default> -> $OUT ==="
+  echo "=== [$label] comshu -p ib,ucx,mlx5dv -m simple  npool=$npool  UCX_TLS=<default> -> $OUT ==="
   timeout 900 mpirun -np 4 "${MPIOPTS[@]}" \
-      "$PCOMM" run -p ib,ucx,mlx5dv -m simple -o "$OUT" -- \
+      "$COMSHU" run -p ib,ucx,mlx5dv -m simple -o "$OUT" -- \
       pw.x -npool "$npool" -nband 1 -ntg 1 -in "$IN" > "$d/pw.out" 2> "$d/pw.err"
   echo "[$label] exit=$?"
   qe_log "$d"
   cd "$WORK"
-  echo "--- [$label] captured streams ---"; "$PCOMM" read "$OUT"
-  "$PCOMM" export "$OUT" --csv "$OUT.csv"
-  pcomm_derive "$OUT"
+  echo "--- [$label] captured streams ---"; "$COMSHU" read "$OUT"
+  "$COMSHU" export "$OUT" --csv "$OUT.csv"
+  comshu_derive "$OUT"
 done
 
 # ---------------------------------------------------------------- run 3 ------
@@ -203,7 +203,7 @@ done
 # default, so UCX picks rc_mlx5. If ib_post_send is populated in run 1 and empty
 # here, the missing door is measured in this job — the same application, the same
 # traffic, one transport variable — rather than inferred from job 44635003.
-OUT="$(pcomm_out qe-npool1-mlx5)"; rm -rf "$OUT"; mkdir -p "$OUT"
+OUT="$(comshu_out qe-npool1-mlx5)"; rm -rf "$OUT"; mkdir -p "$OUT"
 d="$WORK/npool1-mlx5"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF .
 # ---------------------------------------------------------------- run 4 ------
 # BONUS, and it runs last for that reason. Can the wire be made observable at all
@@ -211,29 +211,29 @@ d="$WORK/npool1-mlx5"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF
 # buffers (see the UCX_TLS comment above); this adds the CUDA memory domain and
 # turns rendezvous off so large transfers go eager through host bounce buffers,
 # which ARE registrable. If ib_post_send fills here and is empty in runs 1-2,
-# then the blind spot is the transport's WQE path and not pcomm's hooks, and the
+# then the blind spot is the transport's WQE path and not comshu's hooks, and the
 # report can say so with two captures of one application instead of an argument.
 # If it aborts like job 45082487 did, that is recorded and nothing else is lost.
-OUT="$(pcomm_out qe-npool1-rcverbs)"; rm -rf "$OUT"; mkdir -p "$OUT"
+OUT="$(comshu_out qe-npool1-rcverbs)"; rm -rf "$OUT"; mkdir -p "$OUT"
 d="$WORK/npool1-rcverbs"; rm -rf "$d"; mkdir -p "$d"; cd "$d"; ln -sf "$WORK"/*.UPF .
 echo "=== [npool1-rcverbs] BONUS  UCX_TLS=$VERBS_TLS  UCX_RNDV_THRESH=inf -> $OUT ==="
 timeout 900 mpirun -np 4 "${MPIOPTS[@]}" \
     -x UCX_TLS="$VERBS_TLS" -x UCX_RNDV_THRESH=inf \
-    "$PCOMM" run -p ib,ucx -m simple -o "$OUT" -- \
+    "$COMSHU" run -p ib,ucx -m simple -o "$OUT" -- \
     pw.x -npool 1 -nband 1 -ntg 1 -in "$IN" > "$d/pw.out" 2> "$d/pw.err"
 echo "[npool1-rcverbs] exit=$?  (a failure here is expected-possible; see NOTES.md)"
 grep -cE "JOB DONE" "$d/pw.out" || true
 tail -4 "$d/pw.err" | sed 's/^/    /'
 cd "$WORK"
 if [ -d "$OUT/rank-0" ]; then
-  "$PCOMM" read "$OUT"; "$PCOMM" export "$OUT" --csv "$OUT.csv"; pcomm_derive "$OUT"
+  "$COMSHU" read "$OUT"; "$COMSHU" export "$OUT" --csv "$OUT.csv"; comshu_derive "$OUT"
 else
   echo "[npool1-rcverbs] no rank-* directory — the workload never started"
 fi
 
 # ---------------------------------------------------------------- checks -----
 bash "$CASE_DIR/check.sh" \
-     "$(pcomm_out qe-npool1).csv" \
-     "$(pcomm_out qe-npool2).csv" \
-     "$(pcomm_out qe-npool1-rcverbs).csv" \
+     "$(comshu_out qe-npool1).csv" \
+     "$(comshu_out qe-npool2).csv" \
+     "$(comshu_out qe-npool1-rcverbs).csv" \
      "$CASE_DIR"

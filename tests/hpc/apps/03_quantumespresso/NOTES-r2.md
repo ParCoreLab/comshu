@@ -1,7 +1,7 @@
 # NOTES — round 2, offline. Traps that cost time with no allocation involved.
 
 Round 1's `NOTES.md` still holds in full and is not repeated here: the module
-load order, `mpirun --bind-to none` instead of `srun`, `pcomm_load_runtime`
+load order, `mpirun --bind-to none` instead of `srun`, `comshu_load_runtime`
 being the wrong runtime for QE, `-mca coll_hcoll_enable 0`, and the teardown
 SIGSEGV. Read it first. This file is only what round 2 added.
 

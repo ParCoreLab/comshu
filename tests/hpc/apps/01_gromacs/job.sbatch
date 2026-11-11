@@ -1,20 +1,20 @@
 #!/bin/bash
-# 01_gromacs — GROMACS 2025.2 under pcomm, and the GMX_DISABLE_DIRECT_GPU_COMM
+# 01_gromacs — GROMACS 2025.2 under comshu, and the GMX_DISABLE_DIRECT_GPU_COMM
 # comparison, in ONE allocation.
 #
 # FOUR mdrun invocations, same binary, same tpr, same command line:
 #
 #   1. bare,  direct GPU comm ON     <- proves the workload works, and is the
 #   2. bare,  direct GPU comm OFF       only place ns/day means anything
-#   3. pcomm, direct GPU comm ON      <- the capture pair whose difference IS
-#   4. pcomm, direct GPU comm OFF        the finding
+#   3. comshu, direct GPU comm ON      <- the capture pair whose difference IS
+#   4. comshu, direct GPU comm OFF        the finding
 #
 # The bare pair is not optional (apps/README.md: "a capture of a workload that
 # did not work is indistinguishable from a tracer that captured nothing").
 #
 #   sbatch tests/hpc/apps/01_gromacs/job.sbatch
 #
-#SBATCH --job-name=pcomm-app-gromacs
+#SBATCH --job-name=comshu-app-gromacs
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -25,9 +25,9 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime                       # gcc 13.2 (GLIBCXX_3.4.32) + HPC SDK 25.7
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime                       # gcc 13.2 (GLIBCXX_3.4.32) + HPC SDK 25.7
 
 # ---------------------------------------------------------------- GROMACS ----
 # Load order matters: lmod evaluates gromacs's prereq() against what is loaded
@@ -39,7 +39,7 @@ module load gromacs/2025.2-gcc-nvhpcx
 
 # The MPI gmx_mpi is LINKED against is HPC-X 2.16 out of HPC SDK **23.11**
 # (readelf: libmpi.so.40 -> .../23.11/.../hpcx-2.16/ompi/lib), not the 25.7 that
-# pcomm_load_runtime puts on PATH. Launching it with 25.7's mpirun mixes two
+# comshu_load_runtime puts on PATH. Launching it with 25.7's mpirun mixes two
 # Open MPI releases in one job. Worse for us: libucx_trace.so carries a RUNPATH
 # to 25.7's hpcx-2.22.1 UCX, and because it is preloaded FIRST its libucp.so.0
 # wins the SONAME — Open MPI 4.1.5's pml_ucx would then be running against UCX
@@ -64,9 +64,9 @@ ldd "$(which gmx_mpi)" | grep -E 'libmpi|libcuda|libcufftMp|libnvshmem'
 # WHICH libucp the traced process will actually load. If this names hpcx-2.22.1
 # the pinning above did not take and the ucx capture is against a UCX that
 # Open MPI was not built for.
-ldd "$PCOMM_BUILD/providers/ucx/libucx_trace.so" | grep -E 'libucp|not found'
+ldd "$COMSHU_BUILD/providers/ucx/libucx_trace.so" | grep -E 'libucp|not found'
 
-WORK="$HOME/pcomm-apps/gromacs"
+WORK="$HOME/comshu-apps/gromacs"
 TPR="$WORK/benchRIB.tpr"                  # 2,136,412 atoms; md5 f16f0e02…
 RUN="$WORK/run-$SLURM_JOB_ID"; mkdir -p "$RUN"; cd "$RUN" || exit 1
 
@@ -98,7 +98,7 @@ NSTEPS=1000
 # EMPTY string would disable direct comm — getenv() returns non-NULL for "".
 # So the -x list is built per run instead of being a constant.
 mpi_run() {                               # $@ = the command to launch
-  local xs=(-x PATH -x LD_LIBRARY_PATH -x OPAL_PREFIX -x PCOMM_PROVIDER_PATH)
+  local xs=(-x PATH -x LD_LIBRARY_PATH -x OPAL_PREFIX -x COMSHU_PROVIDER_PATH)
   [ -n "${GMX_DISABLE_DIRECT_GPU_COMM:-}" ] && xs+=(-x GMX_DISABLE_DIRECT_GPU_COMM)
   [ -n "${GMX_FORCE_GPU_AWARE_MPI:-}"    ] && xs+=(-x GMX_FORCE_GPU_AWARE_MPI)
   mpirun -np 8 --map-by ppr:4:node --bind-to none "${xs[@]}" "$@"
@@ -133,14 +133,14 @@ run_bare() {                              # $1 = on|off
 run_traced() {                            # $1 = on|off
   local a="$1" out; arm "$a"
   out="$WORK/gromacs-$a-$SLURM_JOB_ID"; rm -rf "$out" "$out.csv" "$out.pq"; mkdir -p "$out"
-  echo "=== pcomm $a (GMX_DISABLE_DIRECT_GPU_COMM=${GMX_DISABLE_DIRECT_GPU_COMM:-<unset>}) ==="
-  mpi_run "$PCOMM" run -p ib,ucx -o "$out" -- \
+  echo "=== comshu $a (GMX_DISABLE_DIRECT_GPU_COMM=${GMX_DISABLE_DIRECT_GPU_COMM:-<unset>}) ==="
+  mpi_run "$COMSHU" run -p ib,ucx -o "$out" -- \
           gmx_mpi mdrun "${COMMON_ARGS[@]}" -nsteps "$NSTEPS" \
           -g "trace-$a.log" -e "trace-$a.edr" -o "trace-$a.trr"
-  echo "pcomm $a exit=$?"
-  echo "--- captured streams ($a) ---"; "$PCOMM" read "$out"
-  "$PCOMM" export "$out" --csv "$out.csv"
-  pcomm_derive "$out"
+  echo "comshu $a exit=$?"
+  echo "--- captured streams ($a) ---"; "$COMSHU" read "$out"
+  "$COMSHU" export "$out" --csv "$out.csv"
+  comshu_derive "$out"
   grep -E 'GPU-aware MPI|direct GPU communication|GPU halo exchange|Update task|Performance:' \
        "trace-$a.log" | head -20
 }
@@ -164,7 +164,7 @@ run_traced off
 # NOT suite/sql_check.sh — its `params` column list is hard-coded and rejects
 # npp/npme/nsteps/natoms, which is this case's entire oracle. See meta.json's
 # runner_note and NOTES.md.
-CASE="$PCOMM_ROOT/tests/hpc/apps/01_gromacs"
+CASE="$COMSHU_ROOT/tests/hpc/apps/01_gromacs"
 for a in on off; do
   echo "=== asserts: direct_$a ==="
   bash "$CASE/asserts.sh" "$WORK/gromacs-$a-$SLURM_JOB_ID.csv" "$CASE" "direct_$a"

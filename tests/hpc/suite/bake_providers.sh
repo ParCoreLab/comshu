@@ -23,16 +23,16 @@
 # run would quietly make that guard vacuous.
 set -uo pipefail
 BUILD="${1:-build}"
-PCOMM_BIN="${2:-$BUILD/pcomm/pcomm}"
+COMSHU_BIN="${2:-$BUILD/comshu/comshu}"
 
-[ -x "$PCOMM_BIN" ] || { echo "bake_providers: no launcher at $PCOMM_BIN" >&2; exit 2; }
+[ -x "$COMSHU_BIN" ] || { echo "bake_providers: no launcher at $COMSHU_BIN" >&2; exit 2; }
 
 # Everything the launcher can load: the engine, every provider, every backend.
 # Globbed rather than listed for the reason common.sh gives about the provider
 # path — a hand-maintained list of providers is a list kept in step by nobody,
 # and the one it missed (ucx_deep) took a job to notice.
 libs=()
-for f in "$BUILD"/libpcomm/libpcomm_engine.so "$BUILD"/providers/*/*.so "$BUILD"/gpu-backends/*/*.so; do
+for f in "$BUILD"/libcomshu/libcomshu_engine.so "$BUILD"/providers/*/*.so "$BUILD"/gpu-backends/*/*.so; do
   [ -e "$f" ] && libs+=("$f")
 done
 [ "${#libs[@]}" -gt 0 ] || { echo "bake_providers: nothing to bake under $BUILD" >&2; exit 2; }
@@ -46,7 +46,7 @@ rm -rf "$stage" && mkdir -p "$stage" || exit 2
 cp "${libs[@]}" "$stage"/ || exit 2
 strip --strip-debug "$stage"/*.so 2>/dev/null
 
-if "$PCOMM_BIN" bake --check "$PCOMM_BIN" "$stage"/*.so >/dev/null 2>&1; then
+if "$COMSHU_BIN" bake --check "$COMSHU_BIN" "$stage"/*.so >/dev/null 2>&1; then
   echo "  payload is already current ($(ls "$stage"/*.so | wc -l) file(s))"
   rm -rf "$stage"
   exit 0
@@ -55,7 +55,7 @@ fi
 # Never write over the binary being executed: bake to a new file, then move it
 # into place. `mv` within one directory is a rename, so the launcher is either
 # the old one or the new one and never a half-written mixture.
-"$PCOMM_BIN" bake -o "$stage/pcomm" "$PCOMM_BIN" "$stage"/*.so || exit 1
-mv "$stage/pcomm" "$PCOMM_BIN" || exit 1
-"$PCOMM_BIN" bake --list | tail -1
+"$COMSHU_BIN" bake -o "$stage/comshu" "$COMSHU_BIN" "$stage"/*.so || exit 1
+mv "$stage/comshu" "$COMSHU_BIN" || exit 1
+"$COMSHU_BIN" bake --list | tail -1
 rm -rf "$stage"

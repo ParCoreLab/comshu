@@ -9,9 +9,9 @@
 # See README.md in this directory for what the corpus is for.
 set -euo pipefail
 
-REMOTE="${PCOMM_REMOTE:-koc296797@alogin1.bsc.es}"
-OUT_ROOT="${PCOMM_REMOTE_OUT:-pcomm-suite}"     # relative to the remote $HOME
-CORPUS="${PCOMM_CORPUS:-$HOME/waste/pcomm/corpus}"
+REMOTE="${COMSHU_REMOTE:-koc296797@alogin1.bsc.es}"
+OUT_ROOT="${COMSHU_REMOTE_OUT:-comshu-suite}"     # relative to the remote $HOME
+CORPUS="${COMSHU_CORPUS:-$HOME/waste/comshu/corpus}"
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=20"
 
 # The fourteen cases that run on MN5. 09-12 are du04-only (IBGDA); see README.
@@ -40,7 +40,7 @@ say() { printf '\033[36m==\033[0m %s\n' "$*"; }
 
 $SSH "$REMOTE" true 2>/dev/null || {
   echo "cannot reach $REMOTE" >&2
-  echo "  if that is alogin1, try: PCOMM_REMOTE=${REMOTE%%@*}@alogin2.bsc.es $0" >&2
+  echo "  if that is alogin1, try: COMSHU_REMOTE=${REMOTE%%@*}@alogin2.bsc.es $0" >&2
   exit 1
 }
 
@@ -60,7 +60,7 @@ $SSH "$REMOTE" true 2>/dev/null || {
 #
 # Both reads are best-effort — a missing manifest or an unreachable tree costs an
 # `unknown`, never a failed harvest.
-REMOTE_DIR="${PCOMM_REMOTE_DIR:-proj/pcomm}"
+REMOTE_DIR="${COMSHU_REMOTE_DIR:-proj/comshu}"
 remote_head=$($SSH "$REMOTE" "git -C '$REMOTE_DIR' rev-parse --short=7 HEAD 2>/dev/null" \
               2>/dev/null | tr -d '\r') || remote_head=""
 manifest=$($SSH "$REMOTE" "cat '$OUT_ROOT/.last-run.manifest' 2>/dev/null" 2>/dev/null) || manifest=""

@@ -8,7 +8,7 @@
 # Question: with NVSHMEM running IBGDA (GPU rings the NIC doorbell directly),
 # does NVBit's existing instrumentation see the GPU stores that build WQEs?
 #
-#   YES -> option B is live: pcomm can capture device-initiated IB passively,
+#   YES -> option B is live: comshu can capture device-initiated IB passively,
 #          for nearly nothing on a capture already running NVBit.
 #   NO  -> option B is dead, and the answer is SigmaTrace's doorbell hijack.
 #
@@ -16,7 +16,7 @@
 # the ring crosses the node boundary twice — those two hops are the only IBGDA
 # traffic in the run, which is what makes the join below unambiguous.
 #
-#SBATCH --job-name=pcomm-probe-ibgda
+#SBATCH --job-name=comshu-probe-ibgda
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -27,20 +27,20 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib:$NCCL_HOME/lib:$LD_LIBRARY_PATH"
 
-PROBE_DIR="$PCOMM_ROOT/tests/hpc/probes/ibgda"
-OUT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/probe-ibgda-$SLURM_JOB_ID"
+PROBE_DIR="$COMSHU_ROOT/tests/hpc/probes/ibgda"
+OUT="${COMSHU_OUT_ROOT:-$HOME/comshu-suite}/probe-ibgda-$SLURM_JOB_ID"
 rm -rf "$OUT"; mkdir -p "$OUT/logs"
 
 # ---- build the probe shim -------------------------------------------------
 # common.sh exports NCCL_HOME/NVSHMEM_HOME but no CUDA_HOME; the SDK root it
 # derives them from is the one thing that is guaranteed set.
-CUDA_DIR="${CUDA_HOME:-$PCOMM_SDK/cuda}"
-pcomm_load_build
+CUDA_DIR="${CUDA_HOME:-$COMSHU_SDK/cuda}"
+comshu_load_build
 g++ -shared -fPIC -O2 -o "$OUT/devx_probe.so" "$PROBE_DIR/devx_probe.cpp" \
     -I"$CUDA_DIR/include" -L"$CUDA_DIR/lib64/stubs" -lcuda -ldl || {
   echo "PROBE ABORT: shim did not build (CUDA_DIR=$CUDA_DIR)"; exit 1; }
@@ -49,11 +49,11 @@ APP="$HOME/nvshmem_putget"
 if [ ! -x "$APP" ]; then
   OMPI_CXX=g++ nvcc -ccbin=mpic++ -O2 -rdc=true \
     -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
+    "$COMSHU_ROOT/tests/hpc/cases/04_nvshmem/putget.cu" -o "$APP" \
     -I"$NVSHMEM_HOME/include" -L"$NVSHMEM_HOME/lib" \
     -lnvshmem_host -lnvshmem_device -lcudart
 fi
-pcomm_load_runtime
+comshu_load_runtime
 
 # ---- force IBGDA ----------------------------------------------------------
 # This is the exact inverse of what case 07 sets. 07 pins IBGDA *off* because
@@ -80,7 +80,7 @@ export NVSHMEM_DEBUG=INFO
 # ---- can this node do IBGDA at all? ---------------------------------------
 # IBGDA needs one of two ways to let the NIC reach GPU memory. If neither is
 # present the run cannot answer anything, and that is a fact about MN5 rather
-# than about pcomm — worth printing before the workload rather than inferring
+# than about comshu — worth printing before the workload rather than inferring
 # from a stack trace afterwards.
 echo "=== IBGDA prerequisites on $(hostname) ==="
 lsmod 2>/dev/null | grep -E "nvidia_peermem|nv_peer_mem" || echo "  peermem module: NOT LOADED"
@@ -92,13 +92,13 @@ ls /sys/class/infiniband/*/device/  2>/dev/null | grep -c dmabuf ||
 # -p p2p only: this asks what NVBit sees, and the ib provider has nothing to
 # contribute on an IBGDA run (which is the entire finding being confirmed).
 timeout 400 mpirun -np 8 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
-  -x PCOMM_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
+  -x COMSHU_PROVIDER_PATH -x NVSHMEM_BOOTSTRAP=MPI \
   -x NVSHMEM_REMOTE_TRANSPORT -x NVSHMEM_IB_ENABLE_IBGDA \
   -x NVSHMEM_IBGDA_NIC_HANDLER -x NVSHMEM_IB_DISABLE_DMABUF -x NVSHMEM_DEBUG \
-  -x PCOMM_KERNEL_NAME=put_to_next \
+  -x COMSHU_KERNEL_NAME=put_to_next \
   -x LD_PRELOAD="$OUT/devx_probe.so" \
-  -x PCOMM_PROBE_LOG="$OUT/logs/probe.txt" \
-  "$PCOMM" run -p p2p -o "$OUT/capture" -- "$APP" 65536 3
+  -x COMSHU_PROBE_LOG="$OUT/logs/probe.txt" \
+  "$COMSHU" run -p p2p -o "$OUT/capture" -- "$APP" 65536 3
 rc=$?; echo "mpirun exit=$rc"
 
 # The shim writes one file per rank (probe.txt.<rank>) — mpirun does not expand
@@ -126,7 +126,7 @@ if [ $rc -ne 0 ]; then
   exit 1
 fi
 
-"$PCOMM" export "$OUT/capture" --csv "$OUT/capture.csv"
+"$COMSHU" export "$OUT/capture" --csv "$OUT/capture.csv"
 
 # ---- the join -------------------------------------------------------------
 echo "=== ANSWER ==="

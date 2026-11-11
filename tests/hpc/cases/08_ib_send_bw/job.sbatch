@@ -15,7 +15,7 @@
 #
 #   sbatch tests/hpc/cases/08_ib_send_bw/job.sbatch
 #
-#SBATCH --job-name=pcomm-08-ib-send-bw
+#SBATCH --job-name=comshu-08-ib-send-bw
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=2
@@ -24,9 +24,9 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 # The oracle: -n is the iteration count perftest posts, -s the message size.
 # Both are asserted directly by the goldens, so this case fails if the WR-API
@@ -34,7 +34,7 @@ pcomm_load_runtime
 ITERS=1000
 SIZE=8192
 
-OUT=$(pcomm_out ib_send_bw); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out ib_send_bw); rm -rf "$OUT"; mkdir -p "$OUT"
 nodes=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
 server=${nodes[0]}; client=${nodes[1]}
 echo "server=$server client=$client out=$OUT iters=$ITERS size=$SIZE"
@@ -75,7 +75,7 @@ devcmd='DEV=$(ibv_devinfo 2>/dev/null | awk "/hca_id/{d=\$2} /PORT_ACTIVE/{print
 run_pair() {
   rm -rf "$OUT"; mkdir -p "$OUT"
   srun --nodes=1 --ntasks=1 --nodelist="$server" --overlap bash -c \
-    "$devcmd; PCOMM_RANK=0 '$PCOMM' run -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE" &
+    "$devcmd; COMSHU_RANK=0 '$COMSHU' run -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE" &
   SRV=$!
   for _ in $(seq 1 60); do
     [ -d "$OUT/rank-0" ] && break
@@ -85,7 +85,7 @@ run_pair() {
   done
   sleep 3
   srun --nodes=1 --ntasks=1 --nodelist="$client" --overlap bash -c \
-    "$devcmd; PCOMM_RANK=1 '$PCOMM' run -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE $server"
+    "$devcmd; COMSHU_RANK=1 '$COMSHU' run -p ib,devx -o '$OUT' -- ib_send_bw -d \$DEV -n $ITERS -s $SIZE $server"
   CLI=$?
   if [ "$CLI" -ne 0 ]; then
     kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV_RC=-1
@@ -103,8 +103,8 @@ for attempt in 1 2 3; do
 done
 echo "client_rc=$CLI server_rc=$SRV_RC attempts=$attempt"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/08_ib_send_bw"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/08_ib_send_bw"

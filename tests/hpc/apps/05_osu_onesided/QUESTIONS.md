@@ -1,10 +1,10 @@
 # QUESTIONS — what the capture and its documentation could not tell me
 
 Written from the black-box position the round-2 brief defines: the CLI, the
-record schema (`libpcomm/schema/pcomm.fbs` and its README), the derived-table
+record schema (`libcomshu/schema/comshu.fbs` and its README), the derived-table
 contracts in `BRIEF-BLACKBOX.md`, other cases' `asserts/*.sql`, and the
-application's own source. No `providers/`, no `libpcomm/` beyond the schema, no
-`pcomm-read/`, no `plans/`.
+application's own source. No `providers/`, no `libcomshu/` beyond the schema, no
+`comshu-read/`, no `plans/`.
 
 Every item below cost me something concrete — an assertion I could not write,
 one I had to write around, or a claim I had to leave to a printed diagnostic.
@@ -41,8 +41,8 @@ which is the entire point of the `_nbi` doors having been hooked from a static
 survey and never observed — I could not write at all. `job.sbatch` prints the
 door histogram instead, and a human has to read it.
 
-*What would fix it.* Declare them as `enum`s in `pcomm.fbs` like the other four,
-or have `pcomm types` print each column's value vocabulary alongside the
+*What would fix it.* Declare them as `enum`s in `comshu.fbs` like the other four,
+or have `comshu types` print each column's value vocabulary alongside the
 type-id → table mapping it already prints.
 
 ## 2. Nothing says whether one-sided traffic can be attributed across ranks
@@ -161,7 +161,7 @@ The contract is `owner_rank, object, obj_offset, size, source, actor_rank,
 actor_device, exact` — an object heat-map keyed by owner. A Put carries exactly
 that information (`remote_addr`, `count`, and an owner if the rkey could be
 resolved across ranks). Case 21's own comment says `remote_addr` "is the
-object-heatmap key the whole HPC-X class has never had". Whether `pcomm link`
+object-heatmap key the whole HPC-X class has never had". Whether `comshu link`
 actually feeds one-sided operations into `object_access`, and what `source`
 would say if it did, is not stated anywhere in the contracts.
 
@@ -172,22 +172,22 @@ nothing documents the relationship between an MPI window and the number of
 `ucp_ep_rkey_unpack` calls. I believe OpenMPI unpacks two per window per peer
 (data + state) and does it lazily on first access, but that belief comes from
 knowing OpenMPI, not from anything in the capture. A reader with a capture in
-front of them cannot tell "MPI unpacked 10 keys for 5 windows" from "pcomm
+front of them cannot tell "MPI unpacked 10 keys for 5 windows" from "comshu
 recorded 10 of the 15 unpacks that happened".
 
 ## 10. Smaller things, each of which cost a few minutes
 
-- **`pcomm read` row counts vs `expect_tables`.** `expect_tables` fails a case
+- **`comshu read` row counts vs `expect_tables`.** `expect_tables` fails a case
   when a table is empty, but a table can also be *absent* because the provider
   was not selected. From the outside these look the same in a summary.
 - **`-- requires:` is documented for `params.<col>` and tables, but not for
   derived tables that exist-but-are-empty** — `transport_mix` with zero rows is
   a different situation from no `transport_mix`, and only one of them is a skip.
-- **The first-token comment wart** (`pcomm sql` and `POST /query` reject a
+- **The first-token comment wart** (`comshu sql` and `POST /query` reject a
   statement whose first token is a comment) is documented in the apps README,
   which is where a reader will find it only after hitting it. Every `.sql` in
   this study puts its prose after the `-- requires:` line and before the
   `SELECT`, which works, but the rule is a property of the reader rather than of
-  SQL and there is nothing in `pcomm sql`'s own usage text that says so.
+  SQL and there is nothing in `comshu sql`'s own usage text that says so.
 - **No documented way to ask a capture "which providers produced you"** other
   than inferring it from which streams exist.

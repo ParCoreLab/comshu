@@ -1,9 +1,9 @@
-# pcomm integration suite
+# comshu integration suite
 
 Regression + correctness tests that answer one question concretely: **does the
 tool still capture the *right* thing for a real workload?** Each case runs a
-genuine communication workload on MareNostrum 5 under `pcomm`, exports the
-capture with `pcomm export --csv`, and runs SQL over it.
+genuine communication workload on MareNostrum 5 under `comshu`, exports the
+capture with `comshu export --csv`, and runs SQL over it.
 
 ## Two kinds of check, and why
 
@@ -71,7 +71,7 @@ Supporting machinery, all in `meta.json`:
 And one table that is *not* from `meta.json`:
 
 - `provenance(expect_commit)` — what the RUNNER says this board is about,
-  materialised from `$PCOMM_EXPECT_COMMIT`. `params` is the workload's claim;
+  materialised from `$COMSHU_EXPECT_COMMIT`. `params` is the workload's claim;
   this is the run's. It has **zero rows when no runner named a commit**, so
   `-- requires: provenance` makes a hand-run report `[skip]` rather than a
   vacuous `[ok]` — see the vacuous-pass section below, which applies with
@@ -93,7 +93,7 @@ question three ways and none of them subsumes another:
 
 | | asks |
 |---|---|
-| `build_is_the_boards_commit` | is what ran the commit this board claims? (`invocation.build` vs `$PCOMM_EXPECT_COMMIT`) |
+| `build_is_the_boards_commit` | is what ran the commit this board claims? (`invocation.build` vs `$COMSHU_EXPECT_COMMIT`) |
 | `images_are_no_older_than_the_engine` | were the objects that actually loaded built together? (`invocation.images` mtimes, 60 s threshold measured off job 45426015) |
 | `suite/check_build_freshness.sh` | did you build at all since editing a compiled file? — preventive, run by both drivers before they submit |
 
@@ -105,7 +105,7 @@ queue wait rather than after it.
 
 ## How correctness is verified
 
-The chain is: **deterministic workload → capture → `pcomm export --csv` → SQL → assert / diff golden.**
+The chain is: **deterministic workload → capture → `comshu export --csv` → SQL → assert / diff golden.**
 
 - **Tests bind to the CSV column contract, not the on-disk format.** A check is
   a `.sql` file querying columns like `ib_post_send(rank, opcode, length)` or the
@@ -210,7 +210,7 @@ repeatable: NCCL's LL protocol spins on flag polling, so two identical runs
 recorded 295,044 and 550,064 loads on rank 0. See the case's meta.json.
 
 **Why case 04 filters kernels:** unfiltered, NVBit instruments all of nvshmem's
-internal device code (~400 MB/rank, not repeatable). `PCOMM_KERNEL_NAME=put_to_next`
+internal device code (~400 MB/rank, not repeatable). `COMSHU_KERNEL_NAME=put_to_next`
 restricts capture to the user kernel → a small deterministic golden.
 
 **Case 04 is also where the goldens were caught ratifying a bug.** NVSHMEM 3.7's
@@ -239,7 +239,7 @@ instead, and two of them are marked `expect_fail` against
 
 ```
 cases/<case>/
-  job.sbatch          runs the workload under pcomm, exports CSV, runs sql_check
+  job.sbatch          runs the workload under comshu, exports CSV, runs sql_check
   meta.json           providers, topology, and the `workload` oracle + expectations
   asserts/<name>.sql      derived check: offending rows, empty = pass
   checks/<name>.sql       one deterministic query each
@@ -328,8 +328,8 @@ tests/hpc/run_on_mn5.sh --check-only    # just re-aggregate existing results
 tests/hpc/run_on_mn5.sh --no-build      # skip the rebuild
 ```
 
-Config via env (defaults = the ParCore MN5 account): `PCOMM_REMOTE`,
-`PCOMM_REMOTE_DIR`. Exit code is the board's: 0 when all PASS/XFAIL, non-zero on
+Config via env (defaults = the ParCore MN5 account): `COMSHU_REMOTE`,
+`COMSHU_REMOTE_DIR`. Exit code is the board's: 0 when all PASS/XFAIL, non-zero on
 any real FAIL. It builds the gpumem provider with the gcc-11.4 host + CUDA C++20
 recipe automatically.
 
@@ -358,8 +358,8 @@ and `--quick` is ~3. Do not read the 440 s as something the suite is doing.
 
 The driver reports **queue wait and job time separately**. Queue wait is not
 ours to improve, and folding the two together makes any change to the suite
-itself unmeasurable. Per-case seconds land in `$PCOMM_OUT_ROOT/timings-<jid>.txt`
-and each case's stdout in `$PCOMM_OUT_ROOT/<case>-<jid>.log`.
+itself unmeasurable. Per-case seconds land in `$COMSHU_OUT_ROOT/timings-<jid>.txt`
+and each case's stdout in `$COMSHU_OUT_ROOT/<case>-<jid>.log`.
 
 ### Lower-level (on MN5 directly)
 
@@ -370,27 +370,27 @@ tests/hpc/suite/run_suite.sh status
 tests/hpc/suite/run_suite.sh check                   # aggregate PASS/FAIL
 
 # regenerate a golden from a run you've independently verified:
-pcomm export <out> --csv <out>.csv
+comshu export <out> --csv <out>.csv
 tests/hpc/suite/sql_check.sh <out>.csv cases/<case> --update
 ```
 
 ## Prerequisites / gaps (see ../../../things-to-circle-back-to.md)
 
-- `pcomm` and its providers built under `~/proj/pcomm/build`. Build the
+- `comshu` and its providers built under `~/proj/comshu/build`. Build the
   `p2p` (gpumem/NVBit) provider on MN5 with the gcc-11.4 host and CUDA C++20:
   ```
   module load gcc/11.4.0 nvidia-hpc-sdk/25.7 cmake
-  cmake -B build-gpumem -DPCOMM_BUILD_TESTS=OFF -DPCOMM_PROVIDER_IBVERBS=OFF \
-        -DPCOMM_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 \
+  cmake -B build-gpumem -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=OFF \
+        -DCOMSHU_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=90 \
         -DCMAKE_CUDA_HOST_COMPILER=g++
   cmake --build build-gpumem --target gpumem_trace
   cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/
   ```
   (NVBit 1.7.7 lives at `gpu-backends/nvbit/nvbit-1.7.7.1/`; 1.8 needs CUDA 13.)
 - Toolchain split (`common.sh`): compile CUDA with gcc-11.4, run with gcc-13.2
-  libstdc++ (`pcomm` needs `GLIBCXX_3.4.31` → `module load gcc/13.2.0`).
+  libstdc++ (`comshu` needs `GLIBCXX_3.4.31` → `module load gcc/13.2.0`).
 - **Replay under MPI** isn't per-rank fork (breaks PMI); every case uses a single
-  provider so `pcomm` exec's directly. A combined intra+inter case waits on
+  provider so `comshu` exec's directly. A combined intra+inter case waits on
   mpirun-level replay.
 - `comm_edges` maps QPs→ranks by qp_num, exact at 2 ranks / one HCA, approximate
   at multinode scale until the local LID is captured directly.

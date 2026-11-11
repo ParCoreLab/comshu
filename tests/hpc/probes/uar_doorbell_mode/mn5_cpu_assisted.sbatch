@@ -15,7 +15,7 @@
 #   sbatch --account=etur02 --qos=acc_debug \
 #     tests/hpc/probes/uar_doorbell_mode/mn5_cpu_assisted.sbatch
 #
-#SBATCH --job-name=pcomm-hd-cpuassist
+#SBATCH --job-name=comshu-hd-cpuassist
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=20
@@ -25,15 +25,15 @@
 #SBATCH --error=hd_cpuassist_%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
 
-PCOMM="$PCOMM_ROOT/build/pcomm/pcomm"
-export PCOMM_PROVIDER_PATH="$PCOMM_ROOT/build/providers/mlx5dv"
+COMSHU="$COMSHU_ROOT/build/comshu/comshu"
+export COMSHU_PROVIDER_PATH="$COMSHU_ROOT/build/providers/mlx5dv"
 # The SDK's perftest binaries link libcudart.so.12, which lives in the SDK's own
 # CUDA tree and is NOT on the default path here — the first run of this died at
 # exit 127 for that and nothing else.
-CUDART_DIR="$(dirname "$(ls "$PCOMM_SDK"/cuda/*/targets/x86_64-linux/lib/libcudart.so.12 2>/dev/null | head -1)")"
+CUDART_DIR="$(dirname "$(ls "$COMSHU_SDK"/cuda/*/targets/x86_64-linux/lib/libcudart.so.12 2>/dev/null | head -1)")"
 export LD_LIBRARY_PATH="$NVSHMEM_HOME/lib${CUDART_DIR:+:$CUDART_DIR}:${LD_LIBRARY_PATH:-}"
 APP="$NVSHMEM_HOME/bin/perftest/device/pt-to-pt/shmem_put_bw"
 
@@ -47,7 +47,7 @@ export NVSHMEM_DISABLE_P2P=1          # force the traffic onto the NIC
 export NVSHMEM_DEBUG=INFO             # so "NIC handler will be" is in the log
 export NVSHMEM_SYMMETRIC_SIZE=1g
 
-OUT="${PCOMM_OUT_ROOT:-$HOME/pcomm-suite}/hd_cpuassist.$SLURM_JOB_ID"
+OUT="${COMSHU_OUT_ROOT:-$HOME/comshu-suite}/hd_cpuassist.$SLURM_JOB_ID"
 mkdir -p "$(dirname "$OUT")"
 
 echo "== nodes: $SLURM_JOB_NODELIST =="
@@ -73,7 +73,7 @@ ls -l "$APP" || { echo "NO APP — perftest missing from this SDK"; exit 1; }
 export NVSHMEM_BOOTSTRAP=PMI
 export NVSHMEM_BOOTSTRAP_PMI=PMI-2
 srun --mpi=pmi2 -n 2 --gpus-per-task=1 --overlap --export=ALL \
-     "$PCOMM" run -p mlx5dv --enable-host-doorbell \
+     "$COMSHU" run -p mlx5dv --enable-host-doorbell \
      -o "$OUT" -- "$APP" 2>&1
 rc=$?
 echo "== run rc=$rc =="
@@ -83,4 +83,4 @@ grep -h "NIC handler will be" "$OUT"*.err 2>/dev/null | head -4 || \
   echo "  (no NVSHMEM log captured; it is on stdout above)"
 
 echo "== what landed in the capture? =="
-"$PCOMM" read "$OUT" 2>&1 | head -40
+"$COMSHU" read "$OUT" 2>&1 | head -40

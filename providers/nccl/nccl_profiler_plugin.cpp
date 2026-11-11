@@ -38,30 +38,30 @@
 #include <string_view>
 #include <vector>
 
-#include "pcomm/core/records.hpp"
-#include "pcomm/engine_abi.h"  // pcomm_engine_note_cuda_live — see prof_init
-#include "pcomm/helpers/timestamp.hpp"
-#include "pcomm/rec/intern_table.hpp"
-#include "pcomm/rec/recorder.hpp"
+#include "comshu/core/records.hpp"
+#include "comshu/engine_abi.h"  // comshu_engine_note_cuda_live — see prof_init
+#include "comshu/helpers/timestamp.hpp"
+#include "comshu/rec/intern_table.hpp"
+#include "comshu/rec/recorder.hpp"
 
 #include "nccl_profiler_v4.h"
 #include "nccl_records.hpp"
 
 namespace nccl_prof {
 
-namespace rr = pcomm::providers::nccl::records;
-using pcomm::rec::InternDomain;
+namespace rr = comshu::providers::nccl::records;
+using comshu::rec::InternDomain;
 
-static pcomm::rec::Recorder<>& rec() {
-    static pcomm::rec::Recorder<> proxy;
+static comshu::rec::Recorder<>& rec() {
+    static comshu::rec::Recorder<> proxy;
     return proxy;
 }
 
-static std::uint64_t now() { return pcomm::helpers::ts::RdtscTimestampSource::Now(); }
+static std::uint64_t now() { return comshu::helpers::ts::RdtscTimestampSource::Now(); }
 
-static pcomm::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
-    return pcomm::core::Temporal::interval({pcomm::core::kDomainHostTsc, begin},
-                                           {pcomm::core::kDomainHostTsc, end});
+static comshu::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
+    return comshu::core::Temporal::interval({comshu::core::kDomainHostTsc, begin},
+                                           {comshu::core::kDomainHostTsc, end});
 }
 
 // NCCL's strings are pointers into libnccl's own constant data
@@ -72,8 +72,8 @@ static pcomm::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
 // A null is interned as the empty string rather than skipped, because a Handle
 // of 0 and a Handle naming "" are different facts: the first says the field was
 // never populated, the second says NCCL gave us nothing for it.
-static pcomm::core::Handle str(const char* s) {
-    return s ? rec().intern(InternDomain::String, std::string_view{s}) : pcomm::core::kNullHandle;
+static comshu::core::Handle str(const char* s) {
+    return s ? rec().intern(InternDomain::String, std::string_view{s}) : comshu::core::kNullHandle;
 }
 
 // --- event identity ---------------------------------------------------------
@@ -120,7 +120,7 @@ struct Event {
     std::uint8_t  kind;  // EventKind
 
     // coll
-    pcomm::core::Handle func, algo, proto, datatype;
+    comshu::core::Handle func, algo, proto, datatype;
     std::uint64_t       seq_number;
     std::uint64_t       count;
     std::int32_t        root;
@@ -335,10 +335,10 @@ static std::uint64_t parent_id_of(void* parent_obj) {
 // and we return an ignored handle for it, which costs one allocation per plan
 // and gives the proxy ops a parent chain that terminates cleanly.
 static constexpr int kDefaultMask =
-    pcommNcclProfileColl | pcommNcclProfileP2p | pcommNcclProfileProxyOp;
+    comshuNcclProfileColl | comshuNcclProfileP2p | comshuNcclProfileProxyOp;
 
 static int activation_mask() {
-    const char* env = std::getenv("PCOMM_NCCL_PROF_MASK");
+    const char* env = std::getenv("COMSHU_NCCL_PROF_MASK");
     if (!env || !*env)
         return kDefaultMask;
     char*             end = nullptr;
@@ -358,7 +358,7 @@ static int activation_mask() {
 // uint64. See nccl_profiler_v4.h.
 static int prof_init(void** context, int* eActivationMask, const char* commName,
                      std::uint64_t commHash, int nNodes, int nranks, int rank,
-                     pcommNcclDebugLogger_t) {
+                     comshuNcclDebugLogger_t) {
     if (eActivationMask)
         *eActivationMask = activation_mask();
 
@@ -373,7 +373,7 @@ static int prof_init(void** context, int* eActivationMask, const char* commName,
     // is not interposed at all: measured on du04, that capture carried 912/914
     // rows and no 900. That is exactly 02_nccl_internode, which captures a CUDA
     // workload with -p ib and has never had a gpu_device row.
-    ::pcomm_engine_note_cuda_live("nccl_prof_init");
+    ::comshu_engine_note_cuda_live("nccl_prof_init");
 
     // An Artifact: the communicator exists and NCCL calls it this. The temporal
     // is an instant rather than an interval because init is a point in the
@@ -393,7 +393,7 @@ static int prof_init(void** context, int* eActivationMask, const char* commName,
 }
 
 static int prof_start_event(void* context, void** eHandle,
-                            pcommNcclProfilerEventDescr_v4_t* eDescr) {
+                            comshuNcclProfilerEventDescr_v4_t* eDescr) {
     if (eHandle)
         *eHandle = nullptr;
     if (!eHandle || !eDescr)
@@ -407,7 +407,7 @@ static int prof_start_event(void* context, void** eHandle,
     // value from the event that used to live in it would be a plausible number
     // in the wrong row, which is worse than a missing one.
     ev->id = next_event_id();
-    ev->func = ev->algo = ev->proto = ev->datatype = pcomm::core::kNullHandle;
+    ev->func = ev->algo = ev->proto = ev->datatype = comshu::core::kNullHandle;
     ev->seq_number = ev->count = 0;
     ev->root = ev->peer = ev->n_steps = ev->chunk_size = ev->pid = 0;
     ev->n_channels = ev->n_warps = 0;
@@ -418,7 +418,7 @@ static int prof_start_event(void* context, void** eHandle,
     ev->kind = kIgnored;
 
     switch (eDescr->type) {
-    case pcommNcclProfileColl:
+    case comshuNcclProfileColl:
         ev->kind = kColl;
         ev->func = str(eDescr->coll.func);
         ev->algo = str(eDescr->coll.algo);
@@ -437,7 +437,7 @@ static int prof_start_event(void* context, void** eHandle,
         // (reference/nccl-git/src/plugin/profiler/profiler_v4.cc:37), so a v4
         // plugin gets the group on both. There is no second field to consult.
         break;
-    case pcommNcclProfileProxyOp:
+    case comshuNcclProfileProxyOp:
         ev->kind = kProxyOp;
         ev->peer = eDescr->proxyOp.peer;
         ev->n_steps = eDescr->proxyOp.nSteps;
@@ -508,7 +508,7 @@ static int prof_stop_event(void* eHandle) {
 // State transitions carry timing detail (per-step transfer sizes, GPU timers)
 // for families we do not enable. Accepted and dropped: returning non-zero would
 // make NCCL unload the plugin mid-run, which would end the capture.
-static int prof_record_event_state(void*, int, pcommNcclProfilerEventStateArgs_v4_t*) { return 0; }
+static int prof_record_event_state(void*, int, comshuNcclProfilerEventStateArgs_v4_t*) { return 0; }
 
 static int prof_finalize(void* context) {
     delete static_cast<ProfComm*>(context);
@@ -523,8 +523,8 @@ static int prof_finalize(void* context) {
 // line, which gcc warns is "initialized and declared extern" — that form reads
 // as a declaration carrying a definition and the warning is fair.
 extern "C" {
-pcommNcclProfiler_v4_t ncclProfiler_v4 = {
-    "pcomm",
+comshuNcclProfiler_v4_t ncclProfiler_v4 = {
+    "comshu",
     nccl_prof::prof_init,
     nccl_prof::prof_start_event,
     nccl_prof::prof_stop_event,

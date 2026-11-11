@@ -1,4 +1,4 @@
-# Black-box brief — validating pcomm against applications nobody here wrote
+# Black-box brief — validating comshu against applications nobody here wrote
 
 Round 2, started 2026-08-29. Read `README.md` beside this file first: the four
 claim types, the hard rules and the machine table all still apply. This file
@@ -6,10 +6,10 @@ says what is **different** this round, and the difference is the point.
 
 ## The one rule that defines this round
 
-**You may not read pcomm's implementation.** Specifically, these are off limits:
+**You may not read comshu's implementation.** Specifically, these are off limits:
 
 ```
-providers/        libpcomm/          pcomm-read/       pcomm-ui/
+providers/        libcomshu/          comshu-read/       comshu-ui/
 gpu-backends/     tools/             plans/            BUGS-FOUND.md
 ```
 
@@ -34,19 +34,19 @@ application's behaviour. Do not go looking for the line of C++ that produced it.
 ## The interface, in full
 
 ```
-pcomm run     -p <list> [-o DIR] -- <app> [args]   run a workload under providers
-pcomm list                                          which providers exist, what each captures
-pcomm read    <capture>                             stream inventory: what is in a capture
-pcomm dump    <capture> <type-id>                   decode one raw stream to stdout
-pcomm export  <capture> --csv|--parquet|--perfetto|--pftrace <out>
-pcomm link    <export>                              derive the rank-space tables
-pcomm sql     <export> "<query>"                    query an export
-pcomm types                                         type-id -> table name for this build
-pcomm ui      <capture|export> [--port N]           serve the capture as a page
+comshu run     -p <list> [-o DIR] -- <app> [args]   run a workload under providers
+comshu list                                          which providers exist, what each captures
+comshu read    <capture>                             stream inventory: what is in a capture
+comshu dump    <capture> <type-id>                   decode one raw stream to stdout
+comshu export  <capture> --csv|--parquet|--perfetto|--pftrace <out>
+comshu link    <export>                              derive the rank-space tables
+comshu sql     <export> "<query>"                    query an export
+comshu types                                         type-id -> table name for this build
+comshu ui      <capture|export> [--port N]           serve the capture as a page
 ```
 
 Providers, selected by `-p` (comma-separated; the hook-based ones co-run in a
-single pass, and `pcomm list` says which are which):
+single pass, and `comshu list` says which are which):
 
 | name | scope | captures |
 |---|---|---|
@@ -58,7 +58,7 @@ single pass, and `pcomm list` says which are which):
 | `kernel` | device | GPU kernel execution windows |
 | `nccl` | collective | NCCL communicators, collectives, peers, groups |
 
-The derived tables `pcomm link` builds, with their column contracts:
+The derived tables `comshu link` builds, with their column contracts:
 
 ```
 comm_edges         src_rank,dst_rank,transport,unit,scope,sends,bytes
@@ -223,7 +223,7 @@ after the 04_llmc agent measured it. It emits one row per finding KIND with a
 count, so a healthy capture has every row present with `n = 0`. An earlier
 version of this brief said the table was expected to be empty; that would have
 made a clean capture look like it had a dozen defects, and it came from the
-table's own head comment in the pcomm source, which contradicted the SQL
+table's own head comment in the comshu source, which contradicted the SQL
 beneath it.
 
 **`severity` — ADDED 2026-09-02, and the second correction to this paragraph.**
@@ -294,7 +294,7 @@ captured" is not a finding — N rows of *what*, and how do you know N is right?
 | GPUs | 4x H100/node, multi-node NDR IB | 4x A100, single node |
 | queue | SLURM `acc_debug`, **ONE JOB AT A TIME, ACCOUNT-WIDE** | none, run directly |
 | apps | GROMACS/LAMMPS/QE as modules | nothing preinstalled |
-| repo | `~/proj/pcomm` | `/DATA/missa18/pcomm` (NOT `$HOME`, it is at 98%) |
+| repo | `~/proj/comshu` | `/DATA/missa18/comshu` (NOT `$HOME`, it is at 98%) |
 
 **Reach MN5 through `glogin1`, not `alogin`** — CORRECTED 2026-08-30. The ACC
 login nodes (`alogin1`, `alogin2`) have been refusing connections on 22/443/80
@@ -319,7 +319,7 @@ Confirmed module names from round 1: `gromacs/2025.2-gcc-nvhpcx`,
 study, and the single slot is handed out by the coordinator, not taken.
 
 The local machine you are running on is **FreeBSD and cannot build or run
-pcomm at all**. Do not try. Builds and runs happen on du04 or MN5.
+comshu at all**. Do not try. Builds and runs happen on du04 or MN5.
 
 ## Deliverable for this phase
 
@@ -330,7 +330,7 @@ before submission unless your app runs on du04. Produce, in your own directory
 1. `PREDICTION.md` — the oracle, derived from the application, committed first.
 2. `asserts/*.sql` — empty result means pass, as in `tests/hpc/cases/*/asserts/`.
    Each one must be falsifiable: say what defect it would catch.
-3. `job.sbatch` — bare run first, then the pcomm run, in ONE allocation. A
+3. `job.sbatch` — bare run first, then the comshu run, in ONE allocation. A
    capture of a workload that did not work is indistinguishable from a tracer
    that captured nothing, and that confusion has cost this project several slots.
 4. `QUESTIONS.md` — everything the capture and its documentation could not tell
@@ -341,10 +341,10 @@ Then report and stop. Do not submit to MN5 without being told the slot is yours.
 ## Allowed reading
 
 - this file and `README.md`
-- `libpcomm/schema/pcomm.fbs` — the record schema, and the comments in it
-- `libpcomm/schema/README.md`
+- `libcomshu/schema/comshu.fbs` — the record schema, and the comments in it
+- `libcomshu/schema/README.md`
 - `demos/entity-map.html` and `demos/figures/*.svg` — what the records mean
 - `tests/hpc/cases/*/asserts/*.sql` — the assertion style to copy
 - `tests/hpc/suite/README.md`
 - your own application's source, input decks and logs
-- `pcomm <command>` with no arguments, for that command's usage
+- `comshu <command>` with no arguments, for that command's usage

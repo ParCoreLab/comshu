@@ -18,7 +18,7 @@
 -- So the discriminator is NOT the message count and NOT the byte count — those
 -- are the same either way, which pme_coord_volume.sql asserts directly. It is
 -- whether any range the ibverbs provider saw registered is device memory.
--- mem_object.device is filled by pcomm::core::device_of() at ibv_reg_mr /
+-- mem_object.device is filled by comshu::core::device_of() at ibv_reg_mr /
 -- ibv_reg_mr_iova2 / ibv_reg_dmabuf_mr (providers/ibverbs/ibverbs_provider.cpp
 -- :580, :622, :914), and is 65535 (kUnknownDevice) for host memory.
 --
@@ -29,7 +29,7 @@
 -- READ A FAILURE CAREFULLY, because the two directions mean opposite things:
 --   expected 1, observed 0 -> either GROMACS did not take the direct path (read
 --       the mdrun log: "GPU-aware MPI detected, enabling direct GPU
---       communication"), or the traffic left through a door pcomm does not hook
+--       communication"), or the traffic left through a door comshu does not hook
 --       and the capture is BLIND, not the run cheaper. That is claim (4), not a
 --       performance result, and confusing the two is the worst outcome
 --       available here.

@@ -13,7 +13,7 @@
 --
 -- `device` is the only reason a consumer reaches for this table: a device
 -- ordinal is node-local, so "rank 5 was GPU 1 on node 2" is a fact no single
--- record carries and the derived layer exists to assemble. pcomm.fbs's
+-- record carries and the derived layer exists to assemble. comshu.fbs's
 -- NodeIdentity comment says so in as many words — "resolving a peer device to a
 -- rank needs (node, device), and this is the node half".
 --

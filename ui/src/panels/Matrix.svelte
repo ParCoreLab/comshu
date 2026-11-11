@@ -91,7 +91,7 @@
     <p class="text-[13px]" style="color: var(--critical)">{error}</p>
     <p class="text-xs" style="color: var(--text-2)">
       Export and link a capture first:
-      <code>pcomm-read &lt;trace&gt; --parquet &lt;dir&gt; &amp;&amp; pcomm-read --link &lt;dir&gt;</code>
+      <code>comshu-read &lt;trace&gt; --parquet &lt;dir&gt; &amp;&amp; comshu-read --link &lt;dir&gt;</code>
     </p>
   {:else if !edges.length}
     <p class="text-[13px]" style="color: var(--text-2)">loading…</p>

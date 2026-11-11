@@ -5,7 +5,7 @@
 
   // The GPU/rank view, from the same comm_edges the matrix reads — no second
   // endpoint, no server-side rollup. If this needed a table the matrix does not
-  // have, that table would belong in `pcomm-read --link`, not here.
+  // have, that table would belong in `comshu-read --link`, not here.
   //
   // **Grouped by transport, never summed across it.** This panel briefly did
   // sum, and the result was a rank "sending 790,372 bytes" that was really
@@ -51,7 +51,7 @@
     `${new Set(rows.map((r) => r.rank)).size} ranks · ` +
     `${[...new Set(rows.map((r) => r.transport))].join(', ')}`}
   sql={SQL}
-  needs="comm_edges — run pcomm-read --link"
+  needs="comm_edges — run comshu-read --link"
 >
   {#snippet body(rows)}
     {#each groups(rows) as [transport, rs]}

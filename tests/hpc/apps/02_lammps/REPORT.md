@@ -1,4 +1,4 @@
-# 02_lammps — LAMMPS/KOKKOS (CUDA) under pcomm on MareNostrum 5
+# 02_lammps — LAMMPS/KOKKOS (CUDA) under comshu on MareNostrum 5
 
 App: `lammps/10Sep2025` (upstream tag `patch_10Sep2025`), KOKKOS package, CUDA
 backend, Kokkos 4.6.2, OpenMPI 4.1.5 → UCX 1.20.0 → NDR InfiniBand.
@@ -14,7 +14,7 @@ captured (`ib,ucx` and `ib`, each × `gpu/aware on|off`).
 stays latent, and the reason it stays latent is stronger than "no workload of
 ours does it".** Four independent lines of evidence, none from the capture.
 
-**2. pcomm cannot name the peer rank of a single LAMMPS message, and the missing
+**2. comshu cannot name the peer rank of a single LAMMPS message, and the missing
 door is one symbol: `ucp_worker_query`.** 0 of 621 halo messages per rank
 resolve to a peer. This is new — it is not the `ibv_post_send` gap.
 
@@ -271,11 +271,11 @@ missing hook lands they become real checks with no edit to any of them.
 
 ---
 
-## D. What pcomm could not see — claim (4), named to symbols
+## D. What comshu could not see — claim (4), named to symbols
 
 ### D1. `ucp_worker_query` is not hooked, and it is the door MPI actually uses
 
-pcomm hooks `ucp_worker_get_address` — `providers/ucx/ucx_hooks.hpp:181`,
+comshu hooks `ucp_worker_get_address` — `providers/ucx/ucx_hooks.hpp:181`,
 exported at `providers/ucx/ucx.map:17` — and that is the only producer of
 `UcxWorkerAddress`. But OpenMPI 4.1.5's **two-sided** path does not call it:
 
@@ -354,7 +354,7 @@ the process, give the identical table.
 ### D3. Therefore `comm_edges` is empty for an MPI application
 
 `comm_edges` returned **0 rows** in all four captures. By construction, not by
-accident: `pcomm-read/link_sql.hpp:1112` builds it from `ib_post_send`,
+accident: `comshu-read/link_sql.hpp:1112` builds it from `ib_post_send`,
 `mlx5_device_send` and `gpu_access` only — there is no UCX lane. So for
 MPI-over-UCX all three routes to a rank→rank matrix are closed at once: the ib
 lane has no sends (D2), the ucx lane is not wired into the table at all, and the

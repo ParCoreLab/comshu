@@ -2,7 +2,7 @@
 -- The UCX records must be able to name WHICH PEER a tagged send went to.
 --
 -- THIS ASSERTION IS EXPECTED TO FAIL, and it is written to state the claim
--- rather than to describe what pcomm emits (suite/README.md: never edit an
+-- rather than to describe what comshu emits (suite/README.md: never edit an
 -- assertion to match what we emit — mark it, with evidence, and let the fix flip
 -- it). See meta.json's expect_fail_asserts and REPORT.md finding 2.
 --

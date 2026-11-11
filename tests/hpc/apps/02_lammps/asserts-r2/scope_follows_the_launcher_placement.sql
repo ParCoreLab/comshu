@@ -9,7 +9,7 @@
 -- documented mapping policy and the job script confirms it independently by
 -- printing `hostname` from every rank of the BARE run, before any capture
 -- exists. `placement` selects which rule applies; nothing here reads
--- rank_identity, node_identity or any other pcomm table.
+-- rank_identity, node_identity or any other comshu table.
 --
 -- WHY THE PAIR OF ARMS IS THE EXPERIMENT. The decomposition, the peer set, the
 -- message sizes and the byte totals are byte-identical between them

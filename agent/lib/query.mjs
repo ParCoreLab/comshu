@@ -1,6 +1,6 @@
 // The sidecar's half of the one data path.
 //
-// Every read the agent performs goes through `pcomm ui`'s POST /query, the same
+// Every read the agent performs goes through `comshu ui`'s POST /query, the same
 // endpoint the browser panels use. The sidecar has no DuckDB of its own and
 // must not grow one: two engines over one capture is how two answers to "how
 // many bytes" start existing, and the second one is always the wrong one.
@@ -21,9 +21,9 @@ export function stripComments(sql) {
 /**
  * Reject anything that is not a single read.
  *
- * `pcomm ui` does its own first-token check, so this is not the only guard —
+ * `comshu ui` does its own first-token check, so this is not the only guard —
  * but its error text is written for a human pasting into the Ask panel, and a
- * model that gets "use `pcomm export` to write anything" back from a stray
+ * model that gets "use `comshu export` to write anything" back from a stray
  * semicolon will not work out what to do. Refusing here says why.
  */
 export function checkReadOnly(sql) {
@@ -35,7 +35,7 @@ export function checkReadOnly(sql) {
 }
 
 export class Capture {
-  /** @param {string} url base URL of a running `pcomm ui` */
+  /** @param {string} url base URL of a running `comshu ui` */
   constructor(url) {
     this.url = url.replace(/\/+$/, '');
   }
@@ -51,7 +51,7 @@ export class Capture {
     try {
       payload = await res.json();
     } catch {
-      throw new Error(`pcomm ui returned ${res.status} with no JSON body`);
+      throw new Error(`comshu ui returned ${res.status} with no JSON body`);
     }
     if (payload.error) throw new Error(payload.error);
     return payload;

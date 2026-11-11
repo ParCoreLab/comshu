@@ -29,7 +29,7 @@ import { tableCounts } from './lib/preamble.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-const opts = { ui: process.env.PCOMM_UI_URL ?? 'http://127.0.0.1:8777', only: null, verbose: false };
+const opts = { ui: process.env.COMSHU_UI_URL ?? 'http://127.0.0.1:8777', only: null, verbose: false };
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];

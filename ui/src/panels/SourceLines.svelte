@@ -12,7 +12,7 @@
   // `file` is an interned handle, not a path — the strings live in
   // intern-blob.bin, which the Parquet export does not carry. Resolving them
   // means an `intern` table with the text dereferenced, which belongs in
-  // pcomm-read (step 2's remaining work), not in a browser.
+  // comshu-read (step 2's remaining work), not in a browser.
   const SQL = `
     SELECT file, line,
            count(*)::BIGINT              AS rows,
@@ -58,7 +58,7 @@
       <code>file</code> is an interned handle. The strings live in
       <code>intern-blob.bin</code>, which the Parquet export does not carry —
       resolving them needs an <code>intern</code> table from
-      <code>pcomm-read</code>, not a lookup in the browser.
+      <code>comshu-read</code>, not a lookup in the browser.
     </p>
   {/snippet}
 </Panel>

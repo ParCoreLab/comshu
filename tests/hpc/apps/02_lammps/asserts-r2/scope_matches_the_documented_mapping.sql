@@ -1,6 +1,6 @@
 -- requires: transport_mix
 -- `transport_mix.scope` must be the function of `tl_name` the contract says it
--- is. This is the only file in this directory that compares pcomm against pcomm's
+-- is. This is the only file in this directory that compares comshu against comshu's
 -- own published documentation rather than against LAMMPS.
 --
 -- THE CONTRACT, from BRIEF-BLACKBOX.md (published 2026-08-30, amended
@@ -12,7 +12,7 @@
 --   unknown    : anything else
 --
 -- WHY IT IS NOT CIRCULAR. network_share_of_wire_bytes.sql states LAMMPS's
--- decomposition in pcomm's vocabulary, which is right -- `scope` is the column
+-- decomposition in comshu's vocabulary, which is right -- `scope` is the column
 -- the contract provides for "did this leave the node", and expressing the claim
 -- that way keeps it true on a fabric that is not mlx5. But it does mean that
 -- assertion inherits the mapping's correctness. This file is where the mapping

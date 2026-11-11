@@ -5,10 +5,10 @@
 -- This asserts a NEGATIVE that round 1 measured, so that the day it stops being
 -- true somebody notices. Round 1, job 45088258: ib_post_send = 0 rows on the
 -- default transport and 18 700 773 rows once UCX was forced onto rc_verbs. The
--- mechanism is UCX's, not pcomm's -- rc_mlx5 builds its WQEs and rings the
--- doorbell inline, below every interposable verbs symbol -- and pcomm.fbs's
+-- mechanism is UCX's, not comshu's -- rc_mlx5 builds its WQEs and rings the
+-- doorbell inline, below every interposable verbs symbol -- and comshu.fbs's
 -- ucx_deep header says the same thing from the other side: "On the HPC-X/mlx5
--- stack this is the ONLY layer of pcomm that sees the data plane at all:
+-- stack this is the ONLY layer of comshu that sees the data plane at all:
 -- ib_post_send and mlx5_device_send are both empty there."
 --
 -- WHY BOTH CLAUSES. Either alone is satisfied by a broken capture.

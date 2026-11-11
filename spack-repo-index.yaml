@@ -1,8 +1,8 @@
 # This repository is also a Spack package repository, so that `spack repo add`
 # can point straight at it and no fork of spack/spack-packages is needed:
 #
-#   spack repo add https://github.com/ParCoreLab/pcomm.git
-#   spack install pcomm +ibverbs +ucx
+#   spack repo add https://github.com/ParCoreLab/comshu.git
+#   spack install comshu +ibverbs +ucx
 #
 # Spack clones this repo, reads this file, and registers every path below as a
 # package repository (each one carries its own repo.yaml naming its namespace).

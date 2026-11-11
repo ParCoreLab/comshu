@@ -8,7 +8,7 @@
 #
 #   sbatch tests/hpc/cases/03_p2p_kernel/job.sbatch
 #
-#SBATCH --job-name=pcomm-03-p2p-kernel
+#SBATCH --job-name=comshu-03-p2p-kernel
 #SBATCH --account=etur02
 #SBATCH --qos=acc_debug
 #SBATCH --nodes=1
@@ -19,28 +19,28 @@
 #SBATCH --output=%x.%j.out
 
 set -x
-PCOMM_ROOT="${PCOMM_ROOT:-$HOME/proj/pcomm}"
-source "$PCOMM_ROOT/tests/hpc/suite/common.sh"
-pcomm_load_runtime
+COMSHU_ROOT="${COMSHU_ROOT:-$HOME/proj/comshu}"
+source "$COMSHU_ROOT/tests/hpc/suite/common.sh"
+comshu_load_runtime
 
 APP="$HOME/p2p_kernel-li"
 if [ ! -x "$APP" ]; then
-  pcomm_load_build
+  comshu_load_build
   nvcc -O2 -lineinfo -gencode arch=compute_90,code=sm_90 -Wno-deprecated-gpu-targets \
-    "$PCOMM_ROOT/tests/hpc/cases/03_p2p_kernel/p2p_kernel.cu" -o "$APP" -lcudart
-  pcomm_load_runtime
+    "$COMSHU_ROOT/tests/hpc/cases/03_p2p_kernel/p2p_kernel.cu" -o "$APP" -lcudart
+  comshu_load_runtime
 fi
 
-OUT=$(pcomm_out p2p_kernel); rm -rf "$OUT"; mkdir -p "$OUT"
+OUT=$(comshu_out p2p_kernel); rm -rf "$OUT"; mkdir -p "$OUT"
 
 # Single process, all GPUs → `-p p2p` runs in one pass (gpumem is exclusive but
-# alone). 4096 elems × 4 iters of ring peer stores. PCOMM_RANK=0 pins the rank
+# alone). 4096 elems × 4 iters of ring peer stores. COMSHU_RANK=0 pins the rank
 # (no MPI here, so rank would otherwise fall back to pid → non-repeatable).
-PCOMM_RANK=0 "$PCOMM" run -p p2p -o "$OUT" -- "$APP" 4096 4
+COMSHU_RANK=0 "$COMSHU" run -p p2p -o "$OUT" -- "$APP" 4096 4
 echo "app exit=$?"
 
-echo "=== captured streams ==="; "$PCOMM" read "$OUT"
-"$PCOMM" export "$OUT" --csv "$OUT.csv"
-pcomm_derive "$OUT"
-bash "$PCOMM_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
-     "$PCOMM_ROOT/tests/hpc/cases/03_p2p_kernel"
+echo "=== captured streams ==="; "$COMSHU" read "$OUT"
+"$COMSHU" export "$OUT" --csv "$OUT.csv"
+comshu_derive "$OUT"
+bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" \
+     "$COMSHU_ROOT/tests/hpc/cases/03_p2p_kernel"

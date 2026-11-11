@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pcomm/hook/CompositeHookManager.hpp"
+#include "comshu/hook/CompositeHookManager.hpp"
 
 #include "ucx_deep_hooks.hpp"
 
@@ -8,9 +8,9 @@ namespace ucx_deep {
 
 template<typename Derived>
 class UctEventSource
-    : public pcomm::hook::CompositeHookManager<Derived, pcomm::hook::DefaultHookManagerConfig,
+    : public comshu::hook::CompositeHookManager<Derived, comshu::hook::DefaultHookManagerConfig,
                                                uctd::iface_open_tag> {
-    using Base = pcomm::hook::CompositeHookManager<Derived, pcomm::hook::DefaultHookManagerConfig,
+    using Base = comshu::hook::CompositeHookManager<Derived, comshu::hook::DefaultHookManagerConfig,
                                                    uctd::iface_open_tag>;
 
 public:

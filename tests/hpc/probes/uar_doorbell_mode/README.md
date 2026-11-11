@@ -9,8 +9,8 @@ platform can use**, without needing an NVSHMEM job or a reservation.
 gcc -O0 -o uar_probe probe.c -I/usr/local/cuda/include \
     -L/usr/local/cuda/lib64/stubs -libverbs -lmlx5 -lcuda
 
-PCOMM_PROVIDER_PATH=<build>/providers/mlx5dv \
-  pcomm run -p mlx5dv --enable-host-doorbell -o out -- ./uar_probe
+COMSHU_PROVIDER_PATH=<build>/providers/mlx5dv \
+  comshu run -p mlx5dv --enable-host-doorbell -o out -- ./uar_probe
 ```
 
 ## What the answers mean
@@ -56,7 +56,7 @@ descriptor left alone behind operand segments this decoder does not model. Zero
 unknown opcodes, zero truncated, zero lapped. ~20 WQEs per doorbell, consistent
 with NVSHMEM batching the doorbell above the register.
 
-This is the first GPU-initiated data plane pcomm has ever captured on MN5.
+This is the first GPU-initiated data plane comshu has ever captured on MN5.
 
 ### What it took, and the two mistakes worth keeping
 
@@ -179,7 +179,7 @@ ratios there are noise, not measurement.
 
 Each arm engaged as intended, which the doorbell counters confirm rather than
 the ratios: `forward` recorded 444 doorbells and **0 sends**
-(`PCOMM_HIJACK_NO_DECODE` doing its job), `full` recorded 391 doorbells and
+(`COMSHU_HIJACK_NO_DECODE` doing its job), `full` recorded 391 doorbells and
 7,232 sends, `passive` and `bare` neither.
 
 **The decomposition.** The ordinary control-plane interposers cost nothing
@@ -200,7 +200,7 @@ optimisation target is the copy-out, and the cheap fixes are not a persistent
 kernel — stop synchronising per doorbell, or read the send queue through a
 host mapping (GDRCopy is present on MN5) instead of a CUDA copy at all.
 
-This is also the first use of `PCOMM_HIJACK_NO_DECODE` for the question it was
+This is also the first use of `COMSHU_HIJACK_NO_DECODE` for the question it was
 added to answer. Its own comment says the published "+68% forward / +86%
 forward+decode" could not separate the two because they were wall-clock over a
 startup-dominated run. Scored on the application's steady-state numbers, they

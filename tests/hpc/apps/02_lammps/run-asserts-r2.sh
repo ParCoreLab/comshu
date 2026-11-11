@@ -12,16 +12,16 @@
 #     rejects the WHOLE meta.json for any other key. This case's oracle is a
 #     processor grid, a ghost-slab share and a placement policy, none of which
 #     are in that vocabulary (NOTES.md #5).
-#   * sql_check.sh loads a CSV export into sqlite3, and `pcomm export --csv`
+#   * sql_check.sh loads a CSV export into sqlite3, and `comshu export --csv`
 #     emits one CSV per RECORD TYPE. comm_edges, transport_mix, rank_identity
-#     and link_health are built by `pcomm link` and live only in the PARQUET
+#     and link_health are built by `comshu link` and live only in the PARQUET
 #     export, so the four tables this round exists to test are unreachable that
 #     way.
 #
-# WHY `pcomm sql` AND NOT A duckdb BINARY. 01_gromacs's round-2 runner shells
+# WHY `comshu sql` AND NOT A duckdb BINARY. 01_gromacs's round-2 runner shells
 # out to `duckdb`, which is not on PATH on MN5 — `which duckdb` finds nothing on
-# glogin1 — and hard-fails when it is missing. `pcomm sql` is the documented
-# query interface, it is DuckDB underneath on a PCOMM_DUCKDB=ON build, and round
+# glogin1 — and hard-fails when it is missing. `comshu sql` is the documented
+# query interface, it is DuckDB underneath on a COMSHU_DUCKDB=ON build, and round
 # 1 of this case already drove every assertion through it successfully on this
 # exact machine. Two documented warts are worked around here so that the .sql
 # files stay ordinary SQL:
@@ -36,7 +36,7 @@ PQ="${1:?usage: run-asserts-r2.sh <export.pq> <case-dir> [variant]}"
 CASE_DIR="${2:?usage: run-asserts-r2.sh <export.pq> <case-dir> [variant]}"
 VARIANT="${3:-}"
 META="$CASE_DIR/meta-r2.json"
-PCOMM="${PCOMM:?PCOMM must point at the pcomm binary (source tests/hpc/suite/common.sh)}"
+COMSHU="${COMSHU:?COMSHU must point at the comshu binary (source tests/hpc/suite/common.sh)}"
 
 [ -d "$PQ" ] || { echo "run-asserts-r2: no such export dir: $PQ" >&2; exit 2; }
 
@@ -72,8 +72,8 @@ have_param() { for c in $PARAM_COLS; do [ "$c" = "$1" ] && return 0; done; retur
 
 # ------------------------------------------------------------------ tables ---
 # An export is a directory of <name>.parquet files. Round 2 of 04_llmc recorded
-# that `pcomm export --parquet` writes a raw table only when it HAS rows, while
-# `pcomm link` writes its derived tables out even when empty — so presence is a
+# that `comshu export --parquet` writes a raw table only when it HAS rows, while
+# `comshu link` writes its derived tables out even when empty — so presence is a
 # filesystem question, not a query.
 TABLES=""
 for f in "$PQ"/*.parquet; do [ -e "$f" ] && TABLES="$TABLES $(basename "$f" .parquet)"; done
@@ -87,7 +87,7 @@ for t in $(python3 -c 'import json,sys;print(" ".join(json.load(open(sys.argv[1]
   if ! have_table "$t"; then
     echo "  [XX  ] $t — absent"; tfail=1
   else
-    n="$("$PCOMM" sql "$PQ" "SELECT count(*) AS n FROM \"$t\"" 2>/dev/null | tail -1)"
+    n="$("$COMSHU" sql "$PQ" "SELECT count(*) AS n FROM \"$t\"" 2>/dev/null | tail -1)"
     case "${n:-0}" in 0|"") echo "  [XX  ] $t — present but empty"; tfail=1 ;;
                       *)    echo "  [ok  ] $t ($n rows)" ;; esac
   fi
@@ -121,7 +121,7 @@ for q in "$CASE_DIR"/asserts-r2/*.sql; do
   case "$body" in
     WITH\ *|WITH$'\n'*|WITH$'\t'*) body=", ${body#WITH}" ;;
   esac
-  out="$("$PCOMM" sql "$PQ" "$PARAMS$body" 2>&1)"
+  out="$("$COMSHU" sql "$PQ" "$PARAMS$body" 2>&1)"
   rows="$(printf '%s\n' "$out" | tail -n +2 | grep -c . || true)"
   case " $XFAIL " in *" $name "*) mark="xfail" ;; *) mark="" ;; esac
 

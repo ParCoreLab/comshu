@@ -1,4 +1,4 @@
-# pcomm — internals and development
+# comshu — internals and development
 
 What the tool is, and how to install and run it, is in
 [`../README.md`](../README.md). This file is everything else.
@@ -9,21 +9,21 @@ and (later) ucTrace. Design docs live two levels up: [`UNIFICATION.md`](../../UN
 
 | Piece | Name |
 |---|---|
-| Core library (L0–L2) | `libpcomm` |
-| The command (launch, read, export, query, serve) | `pcomm` |
-| Namespace | `pcomm::` (`core`, `rec`, `hook`, `attr`, `gpu`, `provider`) |
-| Env prefix | `PCOMM_*` |
+| Core library (L0–L2) | `libcomshu` |
+| The command (launch, read, export, query, serve) | `comshu` |
+| Namespace | `comshu::` (`core`, `rec`, `hook`, `attr`, `gpu`, `provider`) |
+| Env prefix | `COMSHU_*` |
 
-[`BUGS-FOUND.md`](../BUGS-FOUND.md) — defects in other software that pcomm found,
+[`BUGS-FOUND.md`](../BUGS-FOUND.md) — defects in other software that comshu found,
 with the evidence that identified each and the explanations that were excluded.
 The claim a tool makes is what it found, not what it can in principle see.
 
 ## Layout
 
 ```
-libpcomm/        L0–L2 core — vendor-free (no cuda*/hip*/ibv_*/Sanitizer_* types allowed)
+libcomshu/        L0–L2 core — vendor-free (no cuda*/hip*/ibv_*/Sanitizer_* types allowed)
                  checked by tools/check_vendor_free.py (ctest `vendor_free`)
-  include/pcomm/
+  include/comshu/
     core/        record model (Event/Entity/Artifact/Edge), time, ids, neutral vocabulary
     rec/         Recorder, ThreadLocalBuffer, InternTable, sinks (the hot path)
     hook/        HookTrait / CompositeHookManager        [ported from SigmaTrace/Hook]
@@ -36,9 +36,9 @@ providers/       L3 — each builds one .so (vendor types live HERE, not in core
 gpu-backends/    vendor capture engines feeding the gpumem provider
   nvbit/         phase-1 default (confirmed working on du04: CUDA 13.0, driver 580)
   sanitizer/     Compute-Sanitizer (stub; phase 2)
-pcomm/           the binary: verb dispatch (main.cpp) + the launcher (run.cpp)
-pcomm-read/      the reading half — read/dump/export/link/sql/types, linked into pcomm
-pcomm-ui/        the serving half — `pcomm ui`, linked in when built with DuckDB
+comshu/           the binary: verb dispatch (main.cpp) + the launcher (run.cpp)
+comshu-read/      the reading half — read/dump/export/link/sql/types, linked into comshu
+comshu-ui/        the serving half — `comshu ui`, linked in when built with DuckDB
 ui/              the Svelte frontend, built to ui/dist and embedded in the binary
 tests/           core unit/smoke tests (no GPU required)
 ```
@@ -55,18 +55,18 @@ and carries the allowlist of symbols core interposes on purpose.
 
 ## Usage
 
-Pick what to capture by short name; `pcomm` assembles the run and reads it back.
+Pick what to capture by short name; `comshu` assembles the run and reads it back.
 
 ```bash
-pcomm                                  # the verbs
-pcomm list                             # what can I capture, and how?
-pcomm run -p ib      -- ./app args     # InfiniBand wire traffic (inter-node)
-pcomm run -p p2p     -- ./app args     # GPU-initiated NVLink peer r/w (intra-node, Snoopie)
-pcomm run -p ib,p2p  -- ./app args     # both — see "replay" below
-pcomm read pcomm-out                   # what is in the capture
-pcomm export pcomm-out --csv out.csv   # tables for anything that reads CSV
-pcomm ui pcomm-out                     # the panels, at 127.0.0.1:8777
-agent/run.sh pcomm-out                 # ... and the chat pane, if a model is up
+comshu                                  # the verbs
+comshu list                             # what can I capture, and how?
+comshu run -p ib      -- ./app args     # InfiniBand wire traffic (inter-node)
+comshu run -p p2p     -- ./app args     # GPU-initiated NVLink peer r/w (intra-node, Snoopie)
+comshu run -p ib,p2p  -- ./app args     # both — see "replay" below
+comshu read comshu-out                   # what is in the capture
+comshu export comshu-out --csv out.csv   # tables for anything that reads CSV
+comshu ui comshu-out                     # the panels, at 127.0.0.1:8777
+agent/run.sh comshu-out                 # ... and the chat pane, if a model is up
 ```
 
 `agent/` is an optional sidecar that lets you ask the capture questions in
@@ -75,7 +75,7 @@ rather than with data, so every number it gives you is one click from being
 re-run in the Ask panel — see [`../agent/README.md`](../agent/README.md). The panels
 work exactly the same without it.
 
-One binary with verbs, not three tools: `pcomm-read` and `pcomm-ui` are gone as
+One binary with verbs, not three tools: `comshu-read` and `comshu-ui` are gone as
 executables (they are still the directories the code lives in). It also removes
 an argv[1] that used to mean a *capture* in some invocations and an *export* in
 others — `read`/`dump`/`export` take a capture, `link`/`sql` take an export.
@@ -86,9 +86,9 @@ Providers are chosen with `-p name[,name...]` (each accepts short aliases, e.g.
 **Replay.** Some engines must own the whole runtime — NVBit (`p2p`) takes over
 the CUDA runtime and `dlsym`, so it can't share a process with anything else.
 When a selection mixes such an *exclusive* provider with others, one process
-can't host them, so `pcomm` **replays**: it runs the workload once per exclusive
+can't host them, so `comshu` **replays**: it runs the workload once per exclusive
 provider and drops each pass under one `-o` directory (`out/ib/`, `out/gpumem/`,
-…). The passes are wall-clock-aligned, and `pcomm read` stitches them back into
+…). The passes are wall-clock-aligned, and `comshu read` stitches them back into
 one per-rank picture (each provider owns a disjoint record-type range, so a
 rank's network and NVLink traffic merge cleanly). Hook-based providers (all the
 network ones) share a single pass — no replay needed among them.
@@ -116,46 +116,46 @@ ctest --test-dir build
 ```
 
 Core + tests build with no CUDA/verbs installed; providers are enabled
-individually (`-DPCOMM_PROVIDER_GPUMEM=ON`, `-DPCOMM_PROVIDER_IBVERBS=ON`) and
+individually (`-DCOMSHU_PROVIDER_GPUMEM=ON`, `-DCOMSHU_PROVIDER_IBVERBS=ON`) and
 require their vendor SDKs.
 
 **Build the engine with gcc or clang, never NVHPC's `nvc++`.** nvc++ leaves
 `__builtin_ia32_rdtsc` as an undefined symbol instead of inlining it, so every
 hook dies at load and the capture is empty (`nm -D --undefined-only
-libpcomm_engine.so` shows it). This is why a gpumem-only tree, which configures
-under `nvidia-hpc-sdk`, installs only the provider (`PCOMM_INSTALL_CORE`
+libcomshu_engine.so` shows it). This is why a gpumem-only tree, which configures
+under `nvidia-hpc-sdk`, installs only the provider (`COMSHU_INSTALL_CORE`
 defaults OFF there). The fix is `__rdtsc()` from `<x86intrin.h>` in the clock
 helpers, but that is on every hook's hot path, so it needs its own MN5 run.
 
 ## Install
 
 `cmake --install` lays down a self-locating tree — the launcher finds the
-engine through `$ORIGIN/../lib/pcomm` and its providers through the matching
-search root, so an installed `pcomm` needs **no** `PCOMM_PROVIDER_PATH`,
-`PCOMM_ENGINE_PATH` or `LD_LIBRARY_PATH`:
+engine through `$ORIGIN/../lib/comshu` and its providers through the matching
+search root, so an installed `comshu` needs **no** `COMSHU_PROVIDER_PATH`,
+`COMSHU_ENGINE_PATH` or `LD_LIBRARY_PATH`:
 
 ```
-<prefix>/bin/pcomm
-<prefix>/lib/pcomm/{libpcomm_engine,libibverbs_trace,libgpumem_trace}.so
-<prefix>/include/pcomm/...
+<prefix>/bin/comshu
+<prefix>/lib/comshu/{libcomshu_engine,libibverbs_trace,libgpumem_trace}.so
+<prefix>/include/comshu/...
 ```
 
-`PCOMM_INSTALL_RPATH_EXTRA` bakes absolute directories into the installed
+`COMSHU_INSTALL_RPATH_EXTRA` bakes absolute directories into the installed
 RUNPATH, which is what lets the result run in a bare login shell with no
 `module load`. On MareNostrum 5 (installed at `~/.local`, already on PATH):
 
 ```bash
 # core + ibverbs, from the gcc-13.2 tree
-cmake -B build -DPCOMM_PROVIDER_IBVERBS=ON \
+cmake -B build -DCOMSHU_PROVIDER_IBVERBS=ON \
       -DCMAKE_INSTALL_PREFIX=$HOME/.local \
-      -DPCOMM_INSTALL_RPATH_EXTRA=/apps/ACC/GCC/13.2.0/lib64
+      -DCOMSHU_INSTALL_RPATH_EXTRA=/apps/ACC/GCC/13.2.0/lib64
 cmake --build build -j && cmake --install build
 
 # the CUDA provider, from its own NVHPC tree (see run_on_mn5.sh for the flags)
 cmake --install build-gpumem              # installs gpumem only, by design
 ```
 
-That second command installs *only* the provider: `PCOMM_INSTALL_CORE` defaults
+That second command installs *only* the provider: `COMSHU_INSTALL_CORE` defaults
 OFF for a gpumem-only tree, because nvc++ miscompiles the engine (see
 `things-to-circle-back-to.md`). Don't override it.
 
@@ -179,7 +179,7 @@ tools/format.sh --all        # format every tracked first-party source
 tools/format.sh --check --all
 ```
 
-`third_party/`, the vendored NVBit, and `libpcomm/schema/generated/` each carry
+`third_party/`, the vendored NVBit, and `libcomshu/schema/generated/` each carry
 a `DisableFormat: true` marker, so neither the hook nor an editor-on-save will
 touch them.
 
@@ -209,13 +209,13 @@ so the gates are local and named:
 
 One entry per layer; the build refuses a missing one:
 
-1. `PCOMM_RECORD` in `core/records.hpp` (or the provider's `*_records.hpp`),
+1. `COMSHU_RECORD` in `core/records.hpp` (or the provider's `*_records.hpp`),
    type_id inside the provider's range from `core/ids.hpp`.
-2. A struct in `libpcomm/schema/pcomm.fbs` with the `// type N, kind` comment,
+2. A struct in `libcomshu/schema/comshu.fbs` with the `// type N, kind` comment,
    and `kSchemaHash` in `rec/stream_header.hpp` updated (`schema_check.py`
    prints the new value).
-3. A case in `libpcomm/tests/schema_conformance.cpp`.
-4. A `Table<>` specialization + `TableRecords` entry in `pcomm-read/main.cpp`
+3. A case in `libcomshu/tests/schema_conformance.cpp`.
+4. A `Table<>` specialization + `TableRecords` entry in `comshu-read/main.cpp`
    (the compiler demands both or neither).
 5. A row in `tools/gen_figures.py`'s `FAMILIES` **and** a box in the family
    figure it belongs to (ctest `figures_current`).
@@ -227,9 +227,9 @@ One entry per layer; the build refuses a missing one:
 loudly rather than silently — that is why they are listed rather than left to be
 discovered:
 
-- the enum in `pcomm.fbs` too, with **identical member names and values**
+- the enum in `comshu.fbs` too, with **identical member names and values**
   (`schema_check.py` compares the bodies);
-- a `PCOMM_SCHEMA_ENUM` line per enumerator in `schema_conformance.cpp`, plus
+- a `COMSHU_SCHEMA_ENUM` line per enumerator in `schema_conformance.cpp`, plus
   its `_MAX` in the count assertion — a reordered enumerator changes no size and
   no offset, so nothing else can see it;
 - rows in `link_sql.hpp`'s `vocabulary` table, and the enum's name in
@@ -247,9 +247,9 @@ leave the names to the `vocabulary` table.
 ## Adding a provider
 
 `providers/<name>/` building one `.so`: implement `provider::IProvider`,
-`PCOMM_EXPORT_PROVIDER`, claim a record-id range in `core/ids.hpp`, declare it
-at startup via `pcomm_engine_declare_provider` (the engine refuses overlapping
-ranges), and add a registry row in `pcomm/main.cpp`.
+`COMSHU_EXPORT_PROVIDER`, claim a record-id range in `core/ids.hpp`, declare it
+at startup via `comshu_engine_declare_provider` (the engine refuses overlapping
+ranges), and add a registry row in `comshu/main.cpp`.
 
 **If it emits `EntityClose` for anything, add that entity to the `opens` CTE in
 `tests/hpc/suite/asserts/entity_close_accounted.sql` in the same change**, and a
@@ -259,4 +259,4 @@ missing check: every close the new provider emits is reported as "names an
 entity no open record created", so the assertion becomes noise for every *other*
 provider in the same capture, on exactly the runs where it is most needed. Hook definitions follow
 `providers/ibverbs/ib_hooks.hpp`; the manager contract is documented in
-`pcomm/hook/CompositeHookManager.hpp`.
+`comshu/hook/CompositeHookManager.hpp`.

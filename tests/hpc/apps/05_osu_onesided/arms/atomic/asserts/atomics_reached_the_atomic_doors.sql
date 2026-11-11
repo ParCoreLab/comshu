@@ -30,7 +30,7 @@
 -- read and the two export engines do not decode it the same way.
 --
 -- IF THIS FAILS WITH ZERO 4-BYTE ATOMICS, read PREDICTION.md before reading it
--- as a pcomm defect: the alternative reading — osc/ucx taking its generic
+-- as a comshu defect: the alternative reading — osc/ucx taking its generic
 -- lock-get-put path — is pre-registered there, and the discriminator is whether
 -- a matching population of 4-byte gets and puts appears in ucx_rma instead.
 SELECT 'the workload issued atomics that the transport refused' AS problem,

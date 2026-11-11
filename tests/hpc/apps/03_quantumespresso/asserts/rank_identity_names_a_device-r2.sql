@@ -11,7 +11,7 @@
 -- here is the honest substitute. If it passes, the sibling's claim does not
 -- generalise to a ucx-only capture and that is worth knowing too.
 --
--- WHY QE IS THE RIGHT INSTRUMENT FOR IT. pcomm.fbs type 606 gives UcxTagSend a
+-- WHY QE IS THE RIGHT INSTRUMENT FOR IT. comshu.fbs type 606 gives UcxTagSend a
 -- `device:uint16` field, and pw.x is built with -D__GPU_MPI (install/m4/
 -- x_ac_qe_cuda.m4:92-93) so it hands MPI device pointers -- round 1 proved that
 -- the expensive way, with rc_verbs aborting on

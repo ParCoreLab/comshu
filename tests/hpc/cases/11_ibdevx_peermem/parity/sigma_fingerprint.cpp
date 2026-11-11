@@ -10,7 +10,7 @@
 //
 // One line per event, `class<TAB>key`. The key keeps only what survives a rerun
 // — sizes, flags, LIDs, port state, GUIDs — and drops what does not: addresses,
-// qp numbers, mem ids, page ids, timestamps. pcomm's side is projected onto the
+// qp numbers, mem ids, page ids, timestamps. comshu's side is projected onto the
 // same classes and keys by parity.py, so the comparison is between two bags of
 // identical shape and neither tool's own analysis code sits in the loop.
 //
@@ -70,7 +70,7 @@ public:
     template<typename... Args> void preprocess(Args&&...) {}
 
     // ---- devices and ports ---------------------------------------------------
-    // SigmaTrace stores node_guid as verbs returns it, a __be64; pcomm stores it
+    // SigmaTrace stores node_guid as verbs returns it, a __be64; comshu stores it
     // in host order, as ibv_devinfo prints it. Measured on du04: the raw value
     // 0x6a9fd80003f6ceb8 is 0xb8cef60300d89f6a byte-reversed — one NIC, two
     // spellings — so it is converted here rather than reported as a disagreement.

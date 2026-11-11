@@ -6,7 +6,7 @@
 # engine C ABI) and nobody found out for 39 commits. Not because anyone ignored
 # a failure — because the failure was never produced. The only local build tree
 # went stale on 2026-07-15, tests/hpc/run_on_mn5.sh configures *both* of its
-# build dirs with -DPCOMM_BUILD_TESTS=OFF, ctest appears nowhere in the HPC
+# build dirs with -DCOMSHU_BUILD_TESTS=OFF, ctest appears nowhere in the HPC
 # pipeline, and there is no CI. Every build that ran was a build that excluded
 # the broken files by construction.
 #
@@ -52,7 +52,7 @@ run_config() {   # <name> <cmake args...>
   local dir="$TREES/$name" log="$TREES/$name.log"
   bold "== $name"
   if ! cmake -S "$ROOT" -B "$dir" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-             -DPCOMM_BUILD_TESTS=ON "$@" > "$log" 2>&1; then
+             -DCOMSHU_BUILD_TESTS=ON "$@" > "$log" 2>&1; then
     echo "   configure FAILED — $log"; tail -15 "$log" | sed 's/^/   /'
     failures+=("$name (configure)"); return
   fi
@@ -128,26 +128,26 @@ else
 fi
 
 # --- the configurations -----------------------------------------------------
-# core is the one that must always work: header-only lib, engine, the pcomm binary,
+# core is the one that must always work: header-only lib, engine, the comshu binary,
 # the launcher, every test, and the schema checks.
 run_config core
 
 if [ "$quick" -eq 0 ]; then
-  [ "$have_ibverbs" -eq 1 ] && run_config ibverbs -DPCOMM_PROVIDER_IBVERBS=ON
-  [ "$have_cuda" -eq 1 ] && run_config gpumem -DPCOMM_PROVIDER_GPUMEM=ON
+  [ "$have_ibverbs" -eq 1 ] && run_config ibverbs -DCOMSHU_PROVIDER_IBVERBS=ON
+  [ "$have_cuda" -eq 1 ] && run_config gpumem -DCOMSHU_PROVIDER_GPUMEM=ON
   # Both providers in one process is the coexistence case the shared engine
   # exists for, so build it whenever both halves are available.
   if [ "$have_ibverbs" -eq 1 ] && [ "$have_cuda" -eq 1 ]; then
-    run_config both -DPCOMM_PROVIDER_IBVERBS=ON -DPCOMM_PROVIDER_GPUMEM=ON
+    run_config both -DCOMSHU_PROVIDER_IBVERBS=ON -DCOMSHU_PROVIDER_GPUMEM=ON
   fi
   # UCX, which until now was the configuration nobody built: tests/ucx_records.sh
-  # ran only for someone who typed -DPCOMM_PROVIDER_UCX=ON by hand, and
+  # ran only for someone who typed -DCOMSHU_PROVIDER_UCX=ON by hand, and
   # ucx_deep_records.sh would have inherited the same fate. This is the defect
   # PLAN-20260815-1540 Future work 5 names, and it is the same one that let the
   # DuckDB reader stop compiling for 39 commits. UCX needs no cluster — the self
   # transport runs the whole gate in one process — so there is no excuse for it.
   if [ "$have_ucx" -eq 1 ]; then
-    run_config ucx -DPCOMM_PROVIDER_UCX=ON \
+    run_config ucx -DCOMSHU_PROVIDER_UCX=ON \
         "-DUCX_INCLUDE_DIR=$_ucx_inc" "-DUCX_UCP_LIB=$_ucx_ucp" "-DUCX_UCS_LIB=$_ucx_ucs"
   fi
 else
