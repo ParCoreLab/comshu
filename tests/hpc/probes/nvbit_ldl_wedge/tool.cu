@@ -16,6 +16,7 @@
 //   WEDGE_OFF     hex offset of the one instruction; unset = every LOCAL load
 //                 in WEDGE_FN
 //   WEDGE_DUMP=1  print every LOCAL-space instruction considered, with offsets
+//   WEDGE_SPACES  local (default) | all — all adds GLOBAL/GENERIC accesses
 #include <pthread.h>
 
 #include <cstdint>
@@ -35,6 +36,7 @@ static constexpr int kChannelBytes = 1 << 20;
 static std::string g_mode, g_kernel, g_fn;
 static long        g_off = -1;
 static bool        g_dump = false;
+static bool        g_all_spaces = false;
 
 // Managed memory allocated at context init, not a `__managed__` global as in
 // NVBit's example: the vendored channel.hpp gives ChannelDev a member default
@@ -68,6 +70,7 @@ void nvbit_at_init() {
     if (const char* o = std::getenv("WEDGE_OFF"); o && *o)
         g_off = std::strtol(o, nullptr, 16);
     g_dump = std::getenv("WEDGE_DUMP") != nullptr;
+    g_all_spaces = env("WEDGE_SPACES", "local") == "all";
     std::fprintf(stderr, "[wedge] mode=%s kernel=%s fn=%s off=%s\n", g_mode.c_str(),
                  g_kernel.c_str(), g_fn.c_str(),
                  g_off < 0 ? "all-LOCAL" : std::to_string(g_off).c_str());
@@ -97,9 +100,20 @@ static void instrument(CUcontext ctx, CUfunction kernel) {
         if (!name || std::strstr(name, g_fn.c_str()) == nullptr)
             continue;
         for (Instr* i : nvbit_get_instrs(ctx, f)) {
-            if (i->getMemorySpace() != InstrType::MemorySpace::LOCAL)
+            // WEDGE_SPACES=all adds every GLOBAL/GENERIC access (each with a
+            // memory operand) to the LOCAL loads: the original bisect window
+            // [0,1007) instrumented all of them, and the LDL.64 last.
+            const auto sp = i->getMemorySpace();
+            const bool ldl = sp == InstrType::MemorySpace::LOCAL &&
+                             std::strncmp(i->getOpcode(), "LDL", 3) == 0;
+            const bool glob = g_all_spaces && (sp == InstrType::MemorySpace::GLOBAL ||
+                                               sp == InstrType::MemorySpace::GENERIC);
+            if (!ldl && !glob)
                 continue;
-            if (std::strncmp(i->getOpcode(), "LDL", 3) != 0)
+            bool has_mref = false;
+            for (int k = 0; k < i->getNumOperands(); k++)
+                has_mref |= i->getOperand(k)->type == InstrType::OperandType::MREF;
+            if (!has_mref)
                 continue;
             if (g_dump)
                 std::fprintf(stderr, "[wedge] %s +0x%x %s\n", name, i->getOffset(), i->getSass());

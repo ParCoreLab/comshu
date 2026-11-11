@@ -74,7 +74,7 @@ arm() {  # arm <label> <mode|bare> [extra env...]
     timeout 120 mpirun -np 4 --map-by ppr:4:node -x PATH -x LD_LIBRARY_PATH \
       -x NVSHMEM_BOOTSTRAP=MPI -x NVSHMEM_REMOTE_TRANSPORT -x NVSHMEM_IB_ENABLE_IBGDA \
       -x NVSHMEM_DISABLE_P2P -x WEDGE_MODE -x WEDGE_OFF -x WEDGE_DUMP -x WEDGE_KERNEL \
-      -x WEDGE_FN ${pre:+-x $pre} "$APP" 65536 3 > "$WORK/$label.log" 2>&1 )
+      -x WEDGE_FN -x WEDGE_SPACES ${pre:+-x $pre} "$APP" 65536 3 > "$WORK/$label.log" 2>&1 )
   local rc=$?
   local verdict=completed; [ $rc -eq 124 ] && verdict=HUNG; [ $rc -ne 0 ] && [ $rc -ne 124 ] && verdict="failed rc=$rc"
   printf '=== arm %-16s %-10s %s | %s\n' "$label" "$mode" "$verdict" \
@@ -99,4 +99,8 @@ arm channel_all    channel
 # race may not show on one run.
 arm shfl_all       shfl
 arm shfl_all_2     shfl
+# The original configuration in full: every global access AND every local load
+# in the function, comshu's body on each.
+arm shfl_global    shfl    WEDGE_SPACES=all
+arm shfl_global_2  shfl    WEDGE_SPACES=all
 echo "=== logs in $WORK"
