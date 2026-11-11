@@ -159,13 +159,13 @@ CSV
 #            is placed; a send at 30 lies in no ordinary region of the key, so
 #            it may be an offset and is dropped.
 cat > "$WORK/ib_mem_region.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,mr,pd,range_base,range_size,lkey,rkey,access,dmabuf_fd,origin
-1,0,0,0,0,0,0,50,1,30000,2048,77,77,15,9,2
-1,0,0,0,0,0,0,51,1,0,4096,88,88,15,10,2
-1,0,0,0,0,0,0,53,1,8192,2048,7,7,15,-1,1
-1,0,0,0,0,0,0,54,1,4096,1024,7,7,15,-1,1
-1,0,0,0,0,0,0,60,1,60000,1024,99,99,15,-1,1
-1,0,0,0,0,0,0,61,1,0,4096,99,99,15,11,2
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,mr,pd,range_base,range_size,lkey,rkey,access,dmabuf_fd,origin,dmabuf_offset
+1,0,0,0,0,0,0,50,1,30000,2048,77,77,15,9,2,0
+1,0,0,0,0,0,0,51,1,0,4096,88,88,15,10,2,0
+1,0,0,0,0,0,0,53,1,8192,2048,7,7,15,-1,1,0
+1,0,0,0,0,0,0,54,1,4096,1024,7,7,15,-1,1,0
+1,0,0,0,0,0,0,60,1,60000,1024,99,99,15,-1,1,0
+1,0,0,0,0,0,0,61,1,0,4096,99,99,15,11,2,0
 CSV
 
 cat > "$WORK/ib_mem_region_iova.csv" <<'CSV'

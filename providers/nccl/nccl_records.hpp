@@ -164,6 +164,11 @@ COMSHU_RECORD(NcclWindow, RecordKind::Entity, 908, "nccl_window") {
     std::uint64_t size;
     std::int32_t  win_flags;
     std::int32_t  pad;
+    // The registered pointer's VALUE. `buffer` is its interned handle, which
+    // joins to a MemObject's id but says nothing about where the window is —
+    // and where it is, is what places a GIN put whose registration names only
+    // a dma-buf (du04: every put "unplaced" until this existed).
+    std::uint64_t base;
 };
 
 // The device communicator handed to a kernel. Its presence in a capture is the

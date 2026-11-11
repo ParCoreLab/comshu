@@ -11,7 +11,7 @@ class NcclWindow(object):
 
     @classmethod
     def SizeOf(cls):
-        return 80
+        return 88
 
     # NcclWindow
     def Init(self, buf, pos):
@@ -34,9 +34,12 @@ class NcclWindow(object):
     def WinFlags(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
     # NcclWindow
     def Pad(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
+    # NcclWindow
+    def Base(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
 
-def CreateNcclWindow(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, window, comm, buffer, size, winFlags, pad):
-    builder.Prep(8, 80)
+def CreateNcclWindow(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, window, comm, buffer, size, winFlags, pad, base):
+    builder.Prep(8, 88)
+    builder.PrependUint64(base)
     builder.PrependInt32(pad)
     builder.PrependInt32(winFlags)
     builder.PrependUint64(size)

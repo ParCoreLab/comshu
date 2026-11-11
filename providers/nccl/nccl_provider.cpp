@@ -9,6 +9,7 @@
 #include <cuda_runtime_api.h>
 #include <nccl.h>
 
+#include "comshu/core/mem_attr.hpp"
 #include "comshu/core/records.hpp"
 #include "comshu/helpers/timestamp.hpp"
 #include "comshu/engine_abi.h"
@@ -262,8 +263,31 @@ Profiler::Profiler() {
         if (res == ncclSuccess && win && *win)
             rec().record(
                 span(begin, end),
-                rr::NcclWindow{
-                    {}, {}, h(*win), h(c), h(buff), static_cast<std::uint64_t>(size), flags, 0});
+                rr::NcclWindow{{},
+                               {},
+                               h(*win),
+                               h(c),
+                               h(buff),
+                               static_cast<std::uint64_t>(size),
+                               flags,
+                               0,
+                               reinterpret_cast<std::uint64_t>(buff)});
+        // ...and the buffer itself, in the shared vocabulary, so a put placed
+        // into this window lands in an OBJECT. Interned on the base address in
+        // the Pointer domain like every other emitter, so if gpumem or ibverbs
+        // saw the same buffer the rows merge rather than double.
+        if (res == ncclSuccess && win && *win && buff) {
+            const auto attr = comshu::core::attribute(buff);
+            rec().record(rec().now_instant(),
+                         comshu::core::records::MemObject{
+                             {},
+                             {},
+                             h(buff),
+                             comshu::core::kNullHandle,
+                             {reinterpret_cast<std::uint64_t>(buff), static_cast<std::uint64_t>(size)},
+                             attr.device,
+                             attr.status});
+        }
     });
     register_pre<window_deregister_tag>([](ncclComm_t, ncclWindow_t win, auto) {
         close(win, comshu::core::RecordTrait<rr::NcclWindow>::type_id);

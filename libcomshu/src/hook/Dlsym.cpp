@@ -65,7 +65,7 @@ static bool trace_dlsym_enabled() {
 static bool trace_dlsym_interesting(const char* s) {
     return std::strncmp(s, "ibv_", 4) == 0 || std::strncmp(s, "mlx5dv_", 7) == 0 ||
            std::strncmp(s, "rdma_", 5) == 0 || std::strncmp(s, "cuMem", 5) == 0 ||
-           std::strncmp(s, "cuGetProc", 9) == 0;
+           std::strncmp(s, "cuGetProc", 9) == 0 || std::strncmp(s, "cuGetExport", 11) == 0;
 }
 
 // ENTRY trace, distinct from the resolution trace below. Called as the FIRST

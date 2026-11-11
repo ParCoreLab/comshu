@@ -431,9 +431,10 @@ int main() {
         c.payload.size = 1048576;
         c.payload.win_flags = 4;
         c.payload.pad = 0;
+        c.payload.base = 0x7F00AA000000ull;
         fb::NcclWindow f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x9009),
                                       fb::TimePoint(2, 0x900A), 0),
-                         0x66, 0x11, 0x77, 1048576, 4, 0);
+                         0x66, 0x11, 0x77, 1048576, 4, 0, 0x7F00AA000000ull);
         expect_identical("NcclWindow", &c, &f, sizeof(c));
     }
     {
@@ -882,10 +883,11 @@ int main() {
         c.payload.access = 7;
         c.payload.dmabuf_fd = -1;
         c.payload.origin = static_cast<std::uint8_t>(ir::IbRegionOrigin::RegMr);
+        c.payload.dmabuf_offset = 0x200000;
         fb::IbMemRegion f(
             fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x10), fb::TimePoint(1, 0x20), 0),
             1, 2, fb::MemRange(0x3000, 0x4000), 5, 6, 7, -1,
-            static_cast<uint8_t>(ir::IbRegionOrigin::RegMr));
+            static_cast<uint8_t>(ir::IbRegionOrigin::RegMr), 0x200000);
         expect_identical("IbMemRegion", &c, &f, sizeof(c));
     }
     {

@@ -60,6 +60,14 @@ COMSHU_RECORD(IbMemRegion, RecordKind::Entity, 100, "ib_mem_region") {
     // scalars and shared vocabulary — a provider-local enum is neither. The
     // enum above is still what call sites use; comshu-read renders the name.
     std::uint8_t origin;
+    // The OFFSET into the dma-buf the caller registered (ibv_reg_dmabuf_mr's
+    // `offset`), 0 for every other door. NCCL's symmetric heap is ONE dma-buf
+    // carved into many registrations (du04, NCCL 2.28.9: 16 per rank, all fd
+    // 99, at 2 and 4 MiB): without the offset those slices are
+    // indistinguishable, and a zero-based slice cannot be tied to the window
+    // it backs. Kept even when the fd resolves — then range.base already
+    // includes it, and this says how.
+    std::uint64_t dmabuf_offset;
 };
 
 // ENTITY — a queue-pair endpoint (ibv_create_qp), lifetime [create, destroy).

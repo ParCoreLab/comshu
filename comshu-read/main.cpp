@@ -495,17 +495,19 @@ static const char* ib_region_origin_name(std::uint8_t raw) {
 
 template<> struct Table<ibr::IbMemRegion> {
     static constexpr const char* name = "ib_mem_region";
-    static constexpr const char* cols = "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd,origin";
+    static constexpr const char* cols =
+        "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd,origin,dmabuf_offset";
     static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s,
                                      const rec::InternDictionary&) {
         // origin as a NAME, not the raw enumerator: an assertion that has to
         // spell `origin = 3` encodes a number nobody can check against the
         // header, which is how umem_binding earned its own string column.
         std::fprintf(
-            f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d,%s", (unsigned long long)s.temporal.a.ticks,
+            f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d,%s,0x%llx", (unsigned long long)s.temporal.a.ticks,
             s.payload.mr, s.payload.pd, (unsigned long long)s.payload.range.base,
             (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
-            s.payload.access, s.payload.dmabuf_fd, ib_region_origin_name(s.payload.origin));
+            s.payload.access, s.payload.dmabuf_fd, ib_region_origin_name(s.payload.origin),
+            (unsigned long long)s.payload.dmabuf_offset);
     }
 };
 
@@ -1623,11 +1625,12 @@ template<> struct Table<ncr::NcclGroup> {
 
 template<> struct Table<ncr::NcclWindow> {
     static constexpr const char* name = "nccl_window";
-    static constexpr const char* cols = "ticks,window,comm,buffer,size,win_flags";
+    static constexpr const char* cols = "ticks,window,comm,buffer,size,win_flags,base";
     static void row(std::FILE* f, const Stamped<ncr::NcclWindow>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%llu,%d", (unsigned long long)s.temporal.a.ticks,
+        std::fprintf(f, "%llu,%u,%u,%u,%llu,%d,0x%llx", (unsigned long long)s.temporal.a.ticks,
                      s.payload.window, s.payload.comm, s.payload.buffer,
-                     (unsigned long long)s.payload.size, s.payload.win_flags);
+                     (unsigned long long)s.payload.size, s.payload.win_flags,
+                     (unsigned long long)s.payload.base);
     }
 };
 

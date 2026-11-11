@@ -455,6 +455,7 @@ struct IbMemRegion {
   access:uint32;
   dmabuf_fd:int32;     // -1 unless registered via ibv_reg_dmabuf_mr
   origin:uint8;        // IbRegionOrigin: which door registered it
+  dmabuf_offset:uint64; // ibv_reg_dmabuf_mr's offset into the dma-buf; 0 otherwise
 }
 
 // type 102, Entity. A queue-pair endpoint, lifetime [create, destroy).
@@ -1135,6 +1136,7 @@ struct NcclWindow {
   size:uint64;
   win_flags:int32;
   pad:int32;
+  base:uint64;         // the registered pointer's value: where the window IS
 }
 
 // type 910, Artifact. The existence fact "this workload initiates communication

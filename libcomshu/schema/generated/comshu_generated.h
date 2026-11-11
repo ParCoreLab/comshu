@@ -1603,6 +1603,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
   int32_t dmabuf_fd_;
   uint8_t origin_;
   int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+  uint64_t dmabuf_offset_;
 
  public:
   IbMemRegion()
@@ -1617,12 +1618,13 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
         origin_(0),
         padding0__(0),
         padding1__(0),
-        padding2__(0) {
+        padding2__(0),
+        dmabuf_offset_(0) {
     (void)padding0__;
     (void)padding1__;
     (void)padding2__;
   }
-  IbMemRegion(const comshu::fb::Temporal &_temporal, uint32_t _mr, uint32_t _pd, const comshu::fb::MemRange &_range, uint32_t _lkey, uint32_t _rkey, uint32_t _access, int32_t _dmabuf_fd, uint8_t _origin)
+  IbMemRegion(const comshu::fb::Temporal &_temporal, uint32_t _mr, uint32_t _pd, const comshu::fb::MemRange &_range, uint32_t _lkey, uint32_t _rkey, uint32_t _access, int32_t _dmabuf_fd, uint8_t _origin, uint64_t _dmabuf_offset)
       : temporal_(_temporal),
         mr_(::flatbuffers::EndianScalar(_mr)),
         pd_(::flatbuffers::EndianScalar(_pd)),
@@ -1634,7 +1636,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
         origin_(::flatbuffers::EndianScalar(_origin)),
         padding0__(0),
         padding1__(0),
-        padding2__(0) {
+        padding2__(0),
+        dmabuf_offset_(::flatbuffers::EndianScalar(_dmabuf_offset)) {
     (void)padding0__;
     (void)padding1__;
     (void)padding2__;
@@ -1666,8 +1669,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbMemRegion FLATBUFFERS_FINAL_CLASS {
   uint8_t origin() const {
     return ::flatbuffers::EndianScalar(origin_);
   }
+  uint64_t dmabuf_offset() const {
+    return ::flatbuffers::EndianScalar(dmabuf_offset_);
+  }
 };
-FLATBUFFERS_STRUCT_END(IbMemRegion, 96);
+FLATBUFFERS_STRUCT_END(IbMemRegion, 104);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) IbQueuePair FLATBUFFERS_FINAL_CLASS {
  private:
@@ -4693,6 +4699,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclWindow FLATBUFFERS_FINAL_CLASS {
   uint64_t size_;
   int32_t win_flags_;
   int32_t pad_;
+  uint64_t base_;
 
  public:
   NcclWindow()
@@ -4703,10 +4710,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclWindow FLATBUFFERS_FINAL_CLASS {
         padding0__(0),
         size_(0),
         win_flags_(0),
-        pad_(0) {
+        pad_(0),
+        base_(0) {
     (void)padding0__;
   }
-  NcclWindow(const comshu::fb::Temporal &_temporal, uint32_t _window, uint32_t _comm, uint32_t _buffer, uint64_t _size, int32_t _win_flags, int32_t _pad)
+  NcclWindow(const comshu::fb::Temporal &_temporal, uint32_t _window, uint32_t _comm, uint32_t _buffer, uint64_t _size, int32_t _win_flags, int32_t _pad, uint64_t _base)
       : temporal_(_temporal),
         window_(::flatbuffers::EndianScalar(_window)),
         comm_(::flatbuffers::EndianScalar(_comm)),
@@ -4714,7 +4722,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclWindow FLATBUFFERS_FINAL_CLASS {
         padding0__(0),
         size_(::flatbuffers::EndianScalar(_size)),
         win_flags_(::flatbuffers::EndianScalar(_win_flags)),
-        pad_(::flatbuffers::EndianScalar(_pad)) {
+        pad_(::flatbuffers::EndianScalar(_pad)),
+        base_(::flatbuffers::EndianScalar(_base)) {
     (void)padding0__;
   }
   const comshu::fb::Temporal &temporal() const {
@@ -4738,8 +4747,11 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclWindow FLATBUFFERS_FINAL_CLASS {
   int32_t pad() const {
     return ::flatbuffers::EndianScalar(pad_);
   }
+  uint64_t base() const {
+    return ::flatbuffers::EndianScalar(base_);
+  }
 };
-FLATBUFFERS_STRUCT_END(NcclWindow, 80);
+FLATBUFFERS_STRUCT_END(NcclWindow, 88);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclDevComm FLATBUFFERS_FINAL_CLASS {
  private:

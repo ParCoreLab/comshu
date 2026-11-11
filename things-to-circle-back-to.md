@@ -30,14 +30,34 @@ an engine thread and swap in an empty one).
 `/DATA/missa18/gin/du04_probe4.sh` (NCCL 2.28.9 from /usr; the SDK's 2.27.7
 has no device API, so case 26 itself still skips on du04).
 
-**Not placed:** all 81,920 puts are `unplaced_offset_sends`. The window is
-registered zero-based with dma-buf fd 98/99, and no door ever sees the
-conversion that made those fds. `COMSHU_TRACE_DMABUF=1` shows only DOCA's small
-4/8 KiB conversions arriving, all through `dlsym` (168). NO `cuGetProcAddress`
-door is ever asked for a `cuMem*` symbol, and the export-table door counts 0
-where MN5 counted 33. NCCL core's conversions take a route we don't patch on
-this host. **Next:** find that route (is the export-table patch installed
-before libnccl's static cudart reads the table on du04?).
+**Not placed:** all 81,920 puts are `unplaced_offset_sends`. ROOT CAUSE,
+measured with gdb on rank 0 (2026-11-11): NCCL 2.28.9 calls libcuda's exported
+`cuMemGetHandleForAddressRange` directly, through a pointer it gets at
+communicator init via cudaGetDriverEntryPoint, and from two call sites (core
+and its embedded DOCA). The process makes 15 `cuGetExportTable` calls: 7 from
+the app's libcudart.so.13, 7 from libnccl's static cudart, and **1 through our
+export-table door, LAST**, for a table neither cudart asked for. So the door's
+patch lands after every pointer that matters has already been handed out. On
+MN5 (CUDA 12.9) the order happened to favour us (export_table=33 there).
+
+What the capture does have, since 2026-11-11: `nccl_window.base`, a MemObject
+per window, and `ib_mem_region.dmabuf_offset` plus a registration time. Those
+showed that window-based placement CANNOT be exact here. GIN's registrations
+happen after both window calls, every slice has dma-buf offset 0, and "fd 99"
+is reused by successive exports. So only the conversion itself knows a slice's
+address.
+
+**Next, options (decision pending):**
+(a) patch earlier: trigger the export-table patch before NCCL initialises (from
+the NCCL provider's `ncclCommInitRank` pre-hook, or at libcuda load). The
+patcher's walk relies on overshooting a table's sentinel (159,612 entries on
+du04), which is fragile, so this needs a principled table walk first.
+(b) patch the CALLER's cell: after `ncclCommInitRank`, overwrite pointer cells
+in libnccl's writable segments that hold the real
+`cuMemGetHandleForAddressRange` with our wrapper. Targeted, but conversions
+made during init are missed.
+(c) inline-hook libcuda's exported function (a trampoline). Covers every route
+on every host; the most invasive option.
 
 **GPU arm (handler on the GPU):** NCCL `dlsym`s `cuMemHostRegister_v2` and
 `cuMemHostUnregister` from libcuda's handle (`COMSHU_TRACE_DLSYM=1`: both

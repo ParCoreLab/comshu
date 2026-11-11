@@ -240,7 +240,7 @@ static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
         : base   ? comshu::core::attribute(reinterpret_cast<const void*>(base))
                  : comshu::core::Attribution{};
 
-    rec().record(comshu::core::Temporal::none(),
+    rec().record(rec().now_instant(),
                  rr::IbMemRegion{{},
                                  {},
                                  h(mr),
@@ -250,7 +250,8 @@ static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
                                  mr->rkey,
                                  static_cast<std::uint32_t>(access),
                                  fd,
-                                 static_cast<std::uint8_t>(rr::IbRegionOrigin::Dmabuf)});
+                                 static_cast<std::uint8_t>(rr::IbRegionOrigin::Dmabuf),
+                                 offset});
     // NCCL GIN registers its window here with iova 0, so its puts carry
     // offsets. When the fd resolved, `base` is the VA and differs from the
     // iova, and only this row keeps the fact that the region is zero-based.
@@ -655,7 +656,7 @@ Profiler::Profiler() {
         // legacy ibv_reg_mr we are already recording. See kRegMrDepth.
         if (reg_mr_depth() > 0)
             return;
-        rec().record(comshu::core::Temporal::none(),
+        rec().record(rec().now_instant(),
                      rr::IbMemRegion{{},
                                      {},
                                      h(mr),
@@ -665,7 +666,8 @@ Profiler::Profiler() {
                                      mr->rkey,
                                      static_cast<std::uint32_t>(access),
                                      -1,
-                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
+                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr),
+                                     0});
         record_iova_if_rebased(mr, reinterpret_cast<std::uint64_t>(addr), iova);
 
         // ...and the buffer it registered, attributed to its owning device.
@@ -725,7 +727,7 @@ Profiler::Profiler() {
         [](ibv_mr* mr, ibv_pd* pd, void* addr, size_t length, int access, auto...) {
             if (!mr)
                 return;
-            rec().record(comshu::core::Temporal::none(),
+            rec().record(rec().now_instant(),
                          rr::IbMemRegion{{},
                                          {},
                                          h(mr),
@@ -735,7 +737,8 @@ Profiler::Profiler() {
                                          mr->rkey,
                                          static_cast<std::uint32_t>(access),
                                          -1,
-                                         static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr)});
+                                         static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr),
+                                     0});
             const auto attr = comshu::core::attribute(addr);
             rec().record(rec().now_instant(), comshu::core::records::MemObject{
                                                   {},
@@ -765,7 +768,7 @@ Profiler::Profiler() {
                                           std::size_t, unsigned int access, auto...) {
         if (!mr)
             return;
-        rec().record(comshu::core::Temporal::none(),
+        rec().record(rec().now_instant(),
                      rr::IbMemRegion{{},
                                      {},
                                      h(mr),
@@ -775,12 +778,13 @@ Profiler::Profiler() {
                                      mr->rkey,
                                      static_cast<std::uint32_t>(access),
                                      -1,
-                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::DeviceMemory)});
+                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::DeviceMemory),
+                                     0});
     });
     this->register_post<alloc_null_mr_tag>([](ibv_mr* mr, ibv_pd* pd, auto...) {
         if (!mr)
             return;
-        rec().record(comshu::core::Temporal::none(),
+        rec().record(rec().now_instant(),
                      rr::IbMemRegion{{},
                                      {},
                                      h(mr),
@@ -790,7 +794,8 @@ Profiler::Profiler() {
                                      mr->rkey,
                                      0,
                                      -1,
-                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::NullMr)});
+                                     static_cast<std::uint8_t>(rr::IbRegionOrigin::NullMr),
+                                     0});
     });
 
     // close_device -> the context is gone. Forget it, so the next context to be
