@@ -527,12 +527,19 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
                     decode = kDecodeTruncated;
                 } else if (av_ds == 3) {
                     // The full form's second half (struct mlx5_wqe_av):
-                    // be32 grh_gid_fl at 28, whose bit 30 says a GRH is
-                    // present, then rgid[16] at 32 — AV units 2 and 3, which
-                    // have(1, av_ds) has just proven readable.
+                    // be32 grh_gid_fl at 28, then rgid[16] at 32 — AV units 2
+                    // and 3, which have(1, av_ds) has just proven readable.
+                    //
+                    // "A GRH is present" has TWO spellings in grh_gid_fl. The
+                    // kernel's mlx5_ib sets bit 30; userspace rdma-core's
+                    // mlx5_create_ah — where NVSHMEM's AVs come from, through
+                    // mlx5dv_init_obj — sets MLX5_EXTENDED_UD_AV, bit 31.
+                    // Gating on bit 30 alone decoded dest_gid = 0 on every one
+                    // of 41,027 RoCE sends (MN5 job 48840501, case 25), while
+                    // the DCTs those sends targeted had recorded their GIDs.
                     const std::uint32_t grh_gid_fl =
                         be32toh(*reinterpret_cast<const std::uint32_t*>(seg_at(2) + 12));
-                    if (grh_gid_fl & (1u << 30)) {
+                    if (grh_gid_fl & (kExtendedAv | (1u << 30))) {
                         std::uint64_t v = 0;
                         std::memcpy(&v, seg_at(3), 8);
                         dest_gid_prefix = be64toh(v);
