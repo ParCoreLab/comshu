@@ -210,7 +210,10 @@ else
     # A packed rkey is at least UCX's own dummy key (md_map + mem_type). Zero
     # would mean the size out-parameter was read before it was set, and the hash
     # beside it would then cover nothing.
-    pack_len=$(csv ucx_rkey_pack | awk -F, '{print $5}')
+    # $6, not $5: the row is rank,ticks,memh,context,buffer_hash,buffer_len.
+    # Reading $5 compared the HASH against 9, `[` errored on the hex, and an
+    # erroring test is a false one — so this check never ran.
+    pack_len=$(csv ucx_rkey_pack | awk -F, '{print $6}')
     if [ -z "$pack_len" ] || [ "$pack_len" -lt 9 ]; then
         echo "FAIL: ucx_rkey_pack.buffer_len is $pack_len — smaller than UCX's own dummy key"
         fail=1
