@@ -49,21 +49,6 @@ comes. **Next:** a swap at REGISTER time. Move the UAR mapping aside
 instead. That needs its own plan; it moves a device mapping under a running
 transport.
 
-## Instrumenting one local-memory load wedges NVSHMEM's IBRC proxy
-
-Bisected on MN5 (jobs 43918460..43920181, `COMSHU_INSTR_LO/HI`) to a single
-instruction: instrumenting `[0,1006)` of `nvshmemi_transfer_rma_p<int>`
-completes, `[0,1007)` hangs. Index 1006 is `LDL.64` at `+0x19680`, a spilled-register
-reload. The surrounding global atomics and system-scope stores are innocent. It
-needs NVSHMEM's IBRC proxy (reproduces on one node with `NVSHMEM_DISABLE_P2P=1`)
-and needs the injected `push()` to run (`-DCOMSHU_INJECT_NO_PUSH` completes). The
-channel never fills, no host thread is blocked, and the kernel issues every
-access it should and then never exits. The case 07 hang is avoided on our side;
-the **mechanism is unknown**, which is why this is not a `BUGS-FOUND.md` entry:
-it could be NVBit's, NVSHMEM's or ours. **Next:** a minimal NVBit tool that
-injects a call before that one load, outside comshu. If it hangs, it goes to
-NVBit/NVSHMEM with the reproducer.
-
 ## `run_on_a100.sh` syncs from a syncthing-fed checkout
 
 A du04 board can run a mixed tree, because a provider and the assertion beside
