@@ -83,6 +83,18 @@ else
   skips+=("ibverbs provider — no libibverbs (headers or shared lib) on this host")
 fi
 
+# mlx5dv rides on the ibverbs configuration when its header is present. It was
+# never built by this gate at all: the WQE decoder, the doorbell paths and the
+# DEVX decoding were compiled only on MN5, a queue slot away.
+mlx5dv_flag=""
+if [ "$have_ibverbs" -eq 1 ]; then
+  if [ -f /usr/include/infiniband/mlx5dv.h ]; then
+    mlx5dv_flag="-DCOMSHU_PROVIDER_MLX5DV=ON"
+  else
+    skips+=("mlx5dv provider — no infiniband/mlx5dv.h (rdma-core-devel) on this host")
+  fi
+fi
+
 have_cuda=0
 NVBIT="$ROOT/gpu-backends/nvbit/nvbit-1.7.7.1"
 if ! command -v nvcc >/dev/null 2>&1; then
@@ -133,7 +145,7 @@ fi
 run_config core
 
 if [ "$quick" -eq 0 ]; then
-  [ "$have_ibverbs" -eq 1 ] && run_config ibverbs -DCOMSHU_PROVIDER_IBVERBS=ON
+  [ "$have_ibverbs" -eq 1 ] && run_config ibverbs -DCOMSHU_PROVIDER_IBVERBS=ON $mlx5dv_flag
   [ "$have_cuda" -eq 1 ] && run_config gpumem -DCOMSHU_PROVIDER_GPUMEM=ON
   # Both providers in one process is the coexistence case the shared engine
   # exists for, so build it whenever both halves are available.

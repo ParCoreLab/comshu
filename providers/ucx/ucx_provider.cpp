@@ -148,6 +148,18 @@ static constexpr unsigned kOldestVerifiedMinor = 18;
 // qword sits in that register and writes it to ucx_rkey as a handle. A table of
 // fabricated handles that join to nothing is strictly worse than an empty one,
 // because the empty one is visibly a hole and the fabricated one is not.
+// Nonzero on this thread while the PUBLIC ucp_ep_rkey_unpack runs. From UCX
+// 1.19 the public door calls ucp_ep_rkey_unpack_internal through the PLT, so
+// both hooks fired for one key and ucx_rkey held it twice (ucx_records on
+// university-base, UCX 1.19.0: two rows, same rkey and endpoint, 8 us apart).
+// MN5's 1.18 build does not nest, which is why no board saw it. The outer
+// door records; the inner one stays quiet inside it, so either routing gives
+// exactly one row — the shape reg_mr_depth() has in the verbs provider.
+static int& rkey_unpack_depth() noexcept {
+    static thread_local int depth = 0;
+    return depth;
+}
+
 static RkeyOutParam rkey_out_param() noexcept {
     static const RkeyOutParam kLayout = [] {
         unsigned major = 0, minor = 0, release = 0;
@@ -556,7 +568,7 @@ Profiler::Profiler() {
                                                   const void*, std::size_t, std::uint64_t,
                                                   std::uint64_t, std::uint64_t a6, std::uint64_t a7,
                                                   auto begin, auto end) {
-        if (status != UCS_OK)
+        if (status != UCS_OK || rkey_unpack_depth() > 0)
             return;
         const auto layout = rkey_out_param();
         if (layout == RkeyOutParam::Unverified)
@@ -799,6 +811,10 @@ extern "C" ucs_status_t ucp_worker_query(ucp_worker_h worker, ucp_worker_attr_t*
 }
 extern "C" ucs_status_t ucp_ep_rkey_unpack(ucp_ep_h endpoint, const void* rkey_buffer,
                                            ucp_rkey_h* rkey_p) {
+    struct Depth {
+        Depth() noexcept { ++ucx::rkey_unpack_depth(); }
+        ~Depth() noexcept { --ucx::rkey_unpack_depth(); }
+    } depth;
     return ucx::Profiler::invoke_preload<ucx::ep_rkey_unpack_tag>(endpoint, rkey_buffer, rkey_p);
 }
 extern "C" ucs_status_t ucp_rkey_pack(ucp_context_h context, ucp_mem_h memh, void** rkey_buffer_p,
