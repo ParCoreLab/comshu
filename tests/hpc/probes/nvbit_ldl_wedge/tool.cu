@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <string>
 #include <unordered_set>
 
@@ -35,7 +36,10 @@ static std::string g_mode, g_kernel, g_fn;
 static long        g_off = -1;
 static bool        g_dump = false;
 
-static __managed__ ChannelDev         g_channel_dev;
+// Managed memory allocated at context init, not a `__managed__` global as in
+// NVBit's example: the vendored channel.hpp gives ChannelDev a member default
+// initializer, and nvcc rejects dynamic initialization of a __managed__ variable.
+static ChannelDev*                    g_channel_dev = nullptr;
 static ChannelHost                    g_channel_host;
 static volatile bool                  g_recv_running = false;
 static unsigned long long*            g_counter = nullptr;  // managed
@@ -71,8 +75,11 @@ void nvbit_at_init() {
 
 void nvbit_at_ctx_init(CUcontext) {
     if (g_mode == "channel") {
+        void* mem = nullptr;
+        cudaMallocManaged(&mem, sizeof(ChannelDev));
+        g_channel_dev = new (mem) ChannelDev();
         g_recv_running = true;
-        g_channel_host.init(0, kChannelBytes, &g_channel_dev, recv_thread, nullptr);
+        g_channel_host.init(0, kChannelBytes, g_channel_dev, recv_thread, nullptr);
     }
     if (g_mode == "atomic") {
         cudaMallocManaged(&g_counter, sizeof(*g_counter));
@@ -108,7 +115,7 @@ static void instrument(CUcontext ctx, CUfunction kernel) {
             } else if (g_mode == "channel") {
                 nvbit_insert_call(i, "wedge_channel", IPOINT_BEFORE);
                 nvbit_add_call_arg_guard_pred_val(i);
-                nvbit_add_call_arg_const_val64(i, reinterpret_cast<uint64_t>(&g_channel_dev));
+                nvbit_add_call_arg_const_val64(i, reinterpret_cast<uint64_t>(g_channel_dev));
             } else {
                 continue;  // none: considered, not instrumented
             }
