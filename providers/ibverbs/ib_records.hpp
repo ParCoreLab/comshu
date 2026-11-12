@@ -238,7 +238,7 @@ COMSHU_RECORD(IbMemRegionIova, RecordKind::Artifact, 130, "ib_mem_region_iova") 
 COMSHU_RECORD(IbPostSend, RecordKind::Event, 110, "ib_post_send") {
     Handle        qp;
     std::uint64_t wr_id;
-    std::uint64_t remote_addr;  // RDMA ops only (0 otherwise)
+    std::uint64_t remote_addr;  // RDMA and atomic ops (0 otherwise)
     std::uint32_t rkey;         // RDMA ops only
     std::uint32_t length;       // total sg_list bytes
     std::uint32_t qp_num;

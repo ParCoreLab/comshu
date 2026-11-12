@@ -1128,6 +1128,15 @@ Profiler::Profiler() {
                 wr->opcode == IBV_WR_RDMA_READ) {
                 raddr = wr->wr.rdma.remote_addr;
                 rkey = wr->wr.rdma.rkey;
+            } else if (wr->opcode == IBV_WR_ATOMIC_CMP_AND_SWP ||
+                       wr->opcode == IBV_WR_ATOMIC_FETCH_AND_ADD) {
+                // An atomic names its target too, through the OTHER union
+                // member: wr.atomic's rkey is not at wr.rdma.rkey's offset.
+                // Unread until 2026-11-12, every CPU-posted atomic had a peer
+                // and no buffer — NCCL GIN's PROXY backend posts 20,480 per
+                // rank on du04's put-ring, all of them unplaced.
+                raddr = wr->wr.atomic.remote_addr;
+                rkey = wr->wr.atomic.rkey;
             }
             rec().record(tspan, rr::IbPostSend{{},
                                                {},
