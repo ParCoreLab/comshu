@@ -42,15 +42,21 @@ NCCL is linked, and needs no table walk. du04: `libcuda_cell=28`, registrations
 in the second NCCL window (128 B writes, offsets 0..131072) and GIN's 512 KiB
 signal buffer (8 B atomics).
 
-**GPU arm (handler on the GPU):** NCCL `dlsym`s `cuMemHostRegister_v2` and
-`cuMemHostUnregister` from libcuda's handle (`COMSHU_TRACE_DLSYM=1`: both
-UNHOOKED). It also never calls `cuMemHostGetDevicePointer`, because under UVA
-the registered UAR address IS the device address. So hooking the `dlsym` door
-is not enough: the hijack swaps the page at getdevptr time, a call that never
-comes. **Next:** a swap at REGISTER time. Move the UAR mapping aside
-(mremap), put a watched anonymous page at its address, and register that one
-instead. That needs its own plan; it moves a device mapping under a running
-transport.
+**GPU arm (handler on the GPU): captured** since bd895fc (2026-11-12), with
+the existing `--enable-doorbell-hijack` and no new mechanism. The earlier
+diagnosis was wrong. It said NCCL never calls `cuMemHostGetDevicePointer` and
+so needed a register-time swap. But NCCL's register and getdevptr calls go
+through pointers from cudaGetDriverEntryPoint, the same route the old
+export-table door missed, so the hijack never saw them. With libcuda's cells
+patched, du04 `NCCL_GIN_GDAKI_NIC_HANDLER=2` gives:
+`register_calls=28 getdevptr_calls=28 uars_hijacked=20 unwatched=0`,
+921/925 doorbells and 40,960 sends per rank. Every send is placed exactly
+(20,480 × 128 B into the window at offsets 0..131072, 20,480 × 8 B atomics
+into the signal buffer), and the app verifies every byte. The `dlsym`'d
+`cuMemHostRegister_v2` still shows UNHOOKED, but the UAR registrations do
+not use it. **Next:** a du04 board case for it (case 26 skips on du04
+because the SDK's NCCL 2.27.7 has no device API; the probe uses NCCL 2.28.9
+from /usr).
 
 ## `run_on_a100.sh` syncs from a syncthing-fed checkout
 
