@@ -250,10 +250,26 @@ done
 [ -n "$dup_cols" ] && echo "  ($case_name: workload_params re-declares shared name(s):$dup_cols — using the shared column)" >&2
 meta_py() { python3 - "$meta" "$PARAM_COLS" "$@"; }
 
-params_sql="$(meta_py 2>&1 <<'PY'
-import json, sys
+# THE TOPOLOGY A JOB ACTUALLY RAN, where it can differ by host. A case that runs
+# on more than one machine shape (case 26: two nodes on MN5, one on du04) writes
+# <csv-dir>/workload_override.json with the keys that differ, and those win over
+# meta.json's. A file beside the results rather than an environment variable, so
+# --check-only re-reads the same oracle the job ran against. Only keys meta.json
+# already declares may be overridden, so an override cannot invent a param.
+override="$CSV_DIR/workload_override.json"
+[ -r "$override" ] && echo "  (workload override: $(tr -d '\n ' < "$override"))" >&2
+
+params_sql="$(meta_py "$override" 2>&1 <<'PY'
+import json, os, sys
 meta, cols = sys.argv[1], sys.argv[2].split()
 w = json.load(open(meta)).get("workload", {})
+ov_path = sys.argv[3] if len(sys.argv) > 3 else ""
+if ov_path and os.path.exists(ov_path):
+    ov = json.load(open(ov_path))
+    bad = [k for k in ov if k not in w]
+    if bad:
+        sys.exit("workload_override key(s) %s not declared in meta.json's workload" % bad)
+    w.update(ov)
 unknown = [k for k in w if k not in cols]
 if unknown:
     sys.exit("unknown workload key(s) %s — allowed: %s" % (unknown, cols))

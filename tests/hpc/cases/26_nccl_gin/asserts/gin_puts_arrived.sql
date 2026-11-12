@@ -4,9 +4,11 @@
 -- The workload puts `puts_per_iter` chunks of `chunk_bytes` to its right
 -- neighbour once per iteration, from a device kernel through ncclGin, each put
 -- carrying a signal increment. Under GDAKI the GPU builds every WQE in a
--- GPU-resident send queue and a host thread rings the doorbell, so the door that
--- sees them is the host doorbell (providers/mlx5dv/host_doorbell.hpp) and the
--- rows carry submitter_name = 'host_doorbell'.
+-- GPU-resident send queue, and the doorbell is rung by a host thread (MN5:
+-- --enable-host-doorbell, submitter_name = 'host_doorbell') or by the GPU itself
+-- where the driver maps the doorbell page (du04: --enable-doorbell-hijack,
+-- submitter_name = 'gpu_doorbell'). Either door counts; the send-queue watcher
+-- ('sq_watch') does not, because it is not the arm this case asserts.
 --
 -- Two claims, because GIN's put is two WQEs and both have to be there:
 --   * the payload: chunk_bytes x puts_per_iter x iters of rdma_write per rank,
@@ -28,13 +30,13 @@
 WITH payload AS (
     SELECT CAST(rank AS INTEGER) AS rank, sum(CAST(length AS INTEGER)) AS bytes
     FROM mlx5_device_send
-    WHERE submitter_name = 'host_doorbell' AND opcode_name = 'rdma_write'
+    WHERE submitter_name IN ('host_doorbell', 'gpu_doorbell') AND opcode_name = 'rdma_write'
     GROUP BY CAST(rank AS INTEGER)
 ),
 signals AS (
     SELECT CAST(rank AS INTEGER) AS rank, count(*) AS n
     FROM mlx5_device_send
-    WHERE submitter_name = 'host_doorbell' AND opcode_name LIKE 'atomic%'
+    WHERE submitter_name IN ('host_doorbell', 'gpu_doorbell') AND opcode_name LIKE 'atomic%'
     GROUP BY CAST(rank AS INTEGER)
 )
 SELECT r.rank,

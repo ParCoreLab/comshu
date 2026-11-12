@@ -47,31 +47,49 @@ comshu_load_runtime
 MPIRUN="${COMSHU_MPIRUN:-mpirun}"
 command -v "$MPIRUN" >/dev/null || fail "no mpirun on PATH"
 
-# ---- does this host's NCCL have the device API at all? ----------------------
+# ---- which NCCL: the first one with the device API ------------------------
 #
 # GIN arrived in NCCL 2.28, together with nccl_device.h and ncclDevCommCreate.
-# Where NCCL_HOME resolves to something older the workload cannot be compiled,
-# let alone run — and that is a host fact like "no InfiniBand device", so it
-# belongs in skip() and not in a build failure. du04 is exactly that host: its
-# SDK resolves to 2.27.7 (the 2.28.9 in /usr is not what NCCL_HOME finds), and
-# without this the case would report FAIL for owning an older library than it
-# needs, on a host where it simply cannot run.
+# NCCL_HOME globs to the HPC SDK's NCCL, which on du04 is 2.27.7, too old, while
+# the distro's 2.28.9 sits in /usr. That one cannot simply be named as
+# NCCL_HOME: it is not laid out as include/ + lib/, and -I/usr/include cannot
+# beat nvcc's implicit include of the SDK's own nccl.h, because a system
+# directory keeps its system position. So a usable system NCCL is staged as a
+# private NCCL_HOME (symlinks only) and that directory goes first. The case
+# still skips only when no NCCL on the host has the device API.
+nccl_has_device_api() { [ -r "$1/include/nccl_device.h" ]; }
+if ! { [ -n "${NCCL_HOME:-}" ] && nccl_has_device_api "$NCCL_HOME"; }; then
+  sdk_nccl="${NCCL_HOME:-unresolved}"
+  for _lib in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib; do
+    if [ -r /usr/include/nccl_device.h ] && [ -e "$_lib/libnccl.so.2" ]; then
+      stage="$(dirname "$OUT")/.nccl-system"
+      rm -rf "$stage"; mkdir -p "$stage/include" "$stage/lib"
+      ln -s /usr/include/nccl*.h /usr/include/nccl_device "$stage/include/" 2>/dev/null
+      ln -s "$_lib"/libnccl.so* "$stage/lib/"
+      export NCCL_HOME="$stage"
+      echo "=== 26_nccl_gin : $sdk_nccl has no device API; using the system NCCL ($_lib) ==="
+      break
+    fi
+  done
+  unset _lib
+fi
 [ -n "${NCCL_HOME:-}" ] && [ -d "$NCCL_HOME" ] || skip "NCCL_HOME did not resolve"
-[ -r "$NCCL_HOME/include/nccl_device.h" ] || \
-  skip "NCCL at $NCCL_HOME has no device API (no nccl_device.h) — GIN needs 2.28+"
+nccl_has_device_api "$NCCL_HOME" || \
+  skip "no NCCL on this host has the device API (no nccl_device.h) — GIN needs 2.28+"
 nccl_ver=$(awk '/^#define NCCL_MAJOR /{maj=$3} /^#define NCCL_MINOR /{min=$3} END{print maj"."min}' \
            "$NCCL_HOME/include/nccl.h" 2>/dev/null)
 case "$nccl_ver" in
   2.2[89]|2.[3-9][0-9]|[3-9].*) : ;;
   *) skip "NCCL $nccl_ver has no GIN — needs 2.28+" ;;
 esac
-echo "=== 26_nccl_gin : NCCL $nccl_ver at $NCCL_HOME ==="
 
 # ---- workload ---------------------------------------------------------------
 # Named for its source, like the putget binaries, so an edit cannot be run as if
 # it were the old build — the failure that let case 12 pass for three weeks on a
 # kernel that never ran.
-APP="${COMSHU_GIN_APP:-$HOME/gin_putring-$(sha1sum "$CASE_DIR/gin_putring.cu" | cut -c1-10)}"
+# The NCCL version is in the name too: the binary is linked against one, and du04
+# and MN5 build against different ones.
+APP="${COMSHU_GIN_APP:-$HOME/gin_putring-$(sha1sum "$CASE_DIR/gin_putring.cu" | cut -c1-10)-nccl$nccl_ver}"
 if [ ! -x "$APP" ]; then
   comshu_load_build
   command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
@@ -101,8 +119,32 @@ export LD_LIBRARY_PATH="$NCCL_HOME/lib:${LD_LIBRARY_PATH:-}"
 # disabling it is the other half of why that first job captured nothing.
 export NCCL_NET_PLUGIN=none
 export NCCL_GIN_TYPE=3                    # GIN_IB_GDAKI — the GPU-initiated backend
-export NCCL_GIN_GDAKI_NIC_HANDLER=1       # CPU_PROXY: a host thread rings the doorbell
 export NCCL_DEBUG=WARN
+
+# ---- which doorbell writer, and so which arm --------------------------------
+#
+# Where the driver lets the GPU map the NIC's doorbell page (PeerMappingOverride=1,
+# du04), GDAKI's own default is the GPU writing it, and the arm is the doorbell
+# hijack: it swaps the page for a watched one at cuMemHostGetDevicePointer.
+# NCCL reaches that call only through cudaGetDriverEntryPoint pointers, so this
+# arm captured nothing until libcuda's cells were patched (bd895fc). Where the
+# driver refuses (MN5), the writer is a host thread and the arm is
+# --enable-host-doorbell. Both arms feed the same decoder and the same records,
+# so every assertion below holds for either.
+if grep -q "PeerMappingOverride=1" /proc/driver/nvidia/params 2>/dev/null; then
+  export NCCL_GIN_GDAKI_NIC_HANDLER=2     # GPU_SM_DB: the GPU rings the doorbell
+  ARM=--enable-doorbell-hijack
+else
+  export NCCL_GIN_GDAKI_NIC_HANDLER=1     # CPU_PROXY: a host thread rings the doorbell
+  ARM=--enable-host-doorbell
+fi
+echo "=== 26_nccl_gin : NCCL $nccl_ver at $NCCL_HOME, NIC handler $NCCL_GIN_GDAKI_NIC_HANDLER, arm $ARM ==="
+
+# One rank per node where there are two nodes (MN5, the network path); both on
+# the one node otherwise (du04, which has two A100s and one box).
+# The oracle follows: meta.json declares MN5's two nodes, and a one-node run
+# says so beside its results (sql_check.sh reads workload_override.json).
+if [ "${SLURM_JOB_NUM_NODES:-1}" -ge 2 ]; then MAPBY=ppr:1:node; NODES=2; else MAPBY=ppr:2:node; NODES=1; fi
 
 CHUNK=128 NPUT=1024 ITERS=20              # = meta.json's workload block
 # Overridable so a probe can run this exact case with more providers beside the
@@ -111,7 +153,7 @@ PROVIDERS="${COMSHU_GIN_PROVIDERS:-ib,mlx5dv}"
 mpi() {  # mpi <out-dir> <extra comshu args...>
   local out="$1"; shift
   rm -rf "$out" "$out.csv"; mkdir -p "$out"
-  timeout 420 "$MPIRUN" -np 2 --map-by ppr:1:node ${COMSHU_MPIRUN_EXTRA:-} \
+  timeout 420 "$MPIRUN" -np 2 --map-by "$MAPBY" ${COMSHU_MPIRUN_EXTRA:-} \
     -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH \
     -x NCCL_NET_PLUGIN -x NCCL_GIN_TYPE -x NCCL_GIN_GDAKI_NIC_HANDLER -x NCCL_DEBUG \
     "$COMSHU" run -p "$PROVIDERS" "$@" -o "$out" -- "$APP" "$CHUNK" "$NPUT" "$ITERS"
@@ -127,7 +169,7 @@ fi
 [ $rc_ctrl -eq 0 ] || fail "control run did not complete (rc=$rc_ctrl; 124 = timed out)"
 
 # ---- armed run --------------------------------------------------------------
-mpi "$OUT" --enable-host-doorbell > "$OUT.app" 2>"$OUT.err"; rc=$?
+mpi "$OUT" "$ARM" > "$OUT.app" 2>"$OUT.err"; rc=$?
 [ $rc -eq 0 ] || fail "instrumented run did not complete (rc=$rc; 124 = timed out)"
 
 # The host arm proves the platform before it swaps anything and declines where a
@@ -161,7 +203,8 @@ echo "=== captured streams (armed) ==="; "$COMSHU" read "$OUT"
 
 # What the door itself says it did. Not an assertion — gin_puts_arrived is the
 # assertion — but the first line to read when that one fails.
-grep -h "host doorbell: uars_armed" "$OUT.err" | sed 's/^/=== /' || true
+grep -hE "host doorbell: uars_armed|doorbell hijack: uars_hijacked" "$OUT.err" | sed 's/^/=== /' || true
 
+[ "$NODES" -eq 2 ] || printf '{"nodes": %d}\n' "$NODES" > "$OUT.csv/workload_override.json"
 comshu_derive "$OUT"
 bash "$COMSHU_ROOT/tests/hpc/suite/sql_check.sh" "$OUT.csv" "$CASE_DIR"
