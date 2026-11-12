@@ -59,3 +59,14 @@ it can arrive separately. `run_on_mn5.sh` can't do this (it pushes HEAD over
 git and refuses a dirty tree). The A100 runner prints the source commit, flags
 a dirty tree and honours `COMSHU_EXPECT_COMMIT`, but the hop is still
 asynchronous. **Next:** sync du04 over git the way MN5 is synced.
+
+## The extended verbs path (`ibv_wr_*`) wraps three of its operations
+
+`providers/ibverbs/ibverbs_provider.cpp` replaces `wr_send`, `wr_rdma_write`
+and `wr_rdma_read` on an `ibv_qp_ex`, plus `wr_set_sge[_list]`. These are not
+wrapped: `wr_atomic_cmp_swp`, `wr_atomic_fetch_add`, `wr_send_imm`,
+`wr_rdma_write_imm`, `wr_send_inv`, `wr_set_inline_data[_list]`, and the
+`mlx5dv_wr_*` extensions. Work requests posted through them either go
+unrecorded or are recorded without their opcode or length. Nothing in the
+corpus is known to use them yet (NCCL and GIN's PROXY backend post through
+classic `ibv_post_send`). **Next:** wrap them, then add a fixture for each.

@@ -1313,11 +1313,16 @@ LEFT JOIN _owner_gid dg
     // even though comm_edges no longer distinguishes them.
     {"_sends", R"sql(
 CREATE OR REPLACE VIEW _sends AS
-SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank,
+-- `inbound`: an RDMA READ (verbs opcode 4, mlx5 WQE opcode 0x10) is issued by
+-- this rank but its bytes travel from the peer to here, so comm_edges swaps its
+-- ends — the rule the UCX lane (_ucx_sends) already applies to a get. Atomics
+-- stay outbound: they modify the peer's memory. Until 2026-11-12 reads were
+-- drawn poster -> peer, i.e. backwards.
+SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank, (s.opcode = 4) AS inbound,
        count(*) AS sends, sum(s.length)::BIGINT AS bytes
 FROM ib_post_send s
 LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
-GROUP BY s.rank, s.qp_num, e.peer_rank
+GROUP BY s.rank, s.qp_num, e.peer_rank, inbound
 UNION ALL
 -- Not every mlx5_device_send row is traffic. The WQE decoder emits a row for
 -- every work request that is not padding, which since the opcode table was
@@ -1329,9 +1334,9 @@ UNION ALL
 -- (decode = 1) do name a peer and stay.
 -- The peer is resolved PER SEND (_devx_send_peer): a DC sender talks to many
 -- peers through one queue, so grouping by qp_num alone would merge them.
-SELECT rank, qp_num, 'devx' AS transport, peer_rank,
+SELECT rank, qp_num, 'devx' AS transport, peer_rank, (opcode = 16) AS inbound,
        count(*) AS sends, sum(length)::BIGINT AS bytes
-FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank
+FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank, inbound
 )sql"},
 
     // The same traffic, one more group-by deep: by SIZE CLASS.
@@ -1364,22 +1369,22 @@ FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, p
     // hazard into a checked invariant.
     {"_sends_sized", R"sql(
 CREATE OR REPLACE VIEW _sends_sized AS
-SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank,
+SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank, (s.opcode = 4) AS inbound,
        CASE WHEN s.length > 0 THEN (1::BIGINT << CAST(floor(log2(s.length)) AS INTEGER))
             ELSE 0 END AS size_class,
        count(*) AS sends, sum(s.length)::BIGINT AS bytes
 FROM ib_post_send s
 LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
-GROUP BY s.rank, s.qp_num, e.peer_rank, size_class
+GROUP BY s.rank, s.qp_num, e.peer_rank, inbound, size_class
 UNION ALL
-SELECT rank, qp_num, 'devx' AS transport, peer_rank,
+SELECT rank, qp_num, 'devx' AS transport, peer_rank, (opcode = 16) AS inbound,
        CASE WHEN length > 0 THEN (1::BIGINT << CAST(floor(log2(length)) AS INTEGER))
             ELSE 0 END AS size_class,
        count(*) AS sends, sum(length)::BIGINT AS bytes
 -- Same exclusion as _sends, and it has to be the same one: the suite asserts
 -- that edge_sizes rolls up EXACTLY to comm_edges, so a row counted in one lane
 -- and not the other is a failed invariant rather than a quiet discrepancy.
-FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank, size_class
+FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank, inbound, size_class
 )sql"},
 
     // (rank, rkey) -> how to turn a remote address naming that region into a
@@ -2526,8 +2531,9 @@ SELECT e.src_rank, e.dst_rank, e.transport, e.unit,
        END AS scope,
        e.sends, e.bytes
 FROM (
-    SELECT s.rank                    AS src_rank,
-           coalesce(s.peer_rank, -1) AS dst_rank,
+    -- A read's ends are swapped (see `inbound` on _sends).
+    SELECT CASE WHEN s.inbound THEN coalesce(s.peer_rank, -1) ELSE s.rank END AS src_rank,
+           CASE WHEN s.inbound THEN s.rank ELSE coalesce(s.peer_rank, -1) END AS dst_rank,
            s.transport               AS transport,
            'messages'                AS unit,
            sum(s.sends)::BIGINT AS sends,
@@ -2643,8 +2649,8 @@ SELECT e.src_rank, e.dst_rank, e.transport, e.unit,
        END AS scope,
        e.size_class, e.sends, e.bytes
 FROM (
-    SELECT s.rank                    AS src_rank,
-           coalesce(s.peer_rank, -1) AS dst_rank,
+    SELECT CASE WHEN s.inbound THEN coalesce(s.peer_rank, -1) ELSE s.rank END AS src_rank,
+           CASE WHEN s.inbound THEN s.rank ELSE coalesce(s.peer_rank, -1) END AS dst_rank,
            s.transport               AS transport,
            'messages'                AS unit,
            s.size_class              AS size_class,

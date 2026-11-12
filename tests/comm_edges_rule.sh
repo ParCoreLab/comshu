@@ -125,7 +125,14 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 3,2,0,1900,0,1910,0,9,10,4096,7,256,9,2,0,1
 3,2,0,2000,0,2010,0,9,11,4096,7,256,9,2,0,1
 2,2,0,2050,0,2060,0,10,13,4096,7,11,50,2,0,1
+3,2,0,2070,0,2080,0,11,14,4096,7,21,51,2,4,1
 CSV
+
+# The last row is an RDMA READ (opcode 4) rank 3 posts on qp 51, whose peer is
+# rank 2: the bytes move 2 -> 3, so it joins 2>3 verbs (now 2 sends, 32 B). A
+# lane that ignores the opcode draws it 3>2 — backwards — which is how every
+# verbs and devx read was drawn until 2026-11-12. The same claim for the devx
+# plane is the 0x10 row in mlx5_device_send below.
 
 # The DEVX plane, carrying its own connect record and its own sends. Both are
 # unioned into _sends and _owner beside the verbs half, which is what lets a
@@ -151,6 +158,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,1,0,2800,0,0,0,8192,4096,40,3,3,7,60,901,8,0,3,2,60060,0,0,281470849220611
 1,1,0,2900,0,0,0,8192,4096,40,4,3,7,5,901,8,0,3,2,60060,0,0,281470849220617
 1,2,0,2950,0,2960,0,8192,4096,60,0,3,7,13,0,8,0,0,1,0,0,0,0
+0,2,0,2970,0,2980,0,8192,4096,61,0,3,7,17,0,16,0,0,1,0,0,0,0
 CSV
 
 # The RoCE rows above, from the send side:
@@ -159,6 +167,8 @@ CSV
 #                                                      1>3  devx  +1 / +60
 #   rank 1 DCI 40 -> (G9, DCT 901)  -> nobody owns G9  1>-1 devx  +1 / +5
 #   rank 2 qp 50 (verbs, RoCE)      -> rank 3          2>3  verbs +1 / +11
+#   rank 0 qp 61 RDMA READ (0x10)   <- rank 1          1>0  devx  +1 / +17  (INBOUND)
+#   rank 3 qp 51 RDMA READ (verbs)  <- rank 2          2>3  verbs +1 / +21  (INBOUND)
 
 # --- the UCX lane -----------------------------------------------------------
 #
@@ -426,7 +436,7 @@ expect() {  # <label> <sql> <expected>
 # filter adds 999 bytes to some edge.
 expect "the matrix" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||transport||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges" \
-    "-1>-1:cudamemcpy:2:14 0>1:cudamemcpy:2:300 1>0:cudamemcpy:1:50 2>3:cudamemcpy:1:64 3>2:cudamemcpy:1:32 5>6:cudamemcpy:1:16 6>5:cudamemcpy:1:24 1>-1:devx:2:55 1>0:devx:2:53 1>2:devx:1:30 1>3:devx:3:460 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 2>3:verbs:1:11 3>-1:verbs:5:536"
+    "-1>-1:cudamemcpy:2:14 0>1:cudamemcpy:2:300 1>0:cudamemcpy:1:50 2>3:cudamemcpy:1:64 3>2:cudamemcpy:1:32 5>6:cudamemcpy:1:16 6>5:cudamemcpy:1:24 1>-1:devx:2:55 1>0:devx:3:70 1>2:devx:1:30 1>3:devx:3:460 0>1:nvlink:3:48 1>0:nvlink:4:28 2>3:nvlink:1:64 4>-1:nvlink:2:14 0>-1:ucx:1:7 0>1:ucx:3:325 0>2:ucx:1:80 1>0:ucx:2:80 0>2:verbs:3:300 1>3:verbs:2:100 2>0:verbs:2:64 2>3:verbs:2:32 3>-1:verbs:5:536"
 
 # Stated again as the invariant rather than as a value, because it is the clause
 # no capture in the corpus can exercise: a Load moves bytes FROM the peer, so the
@@ -434,6 +444,14 @@ expect "the matrix" \
 expect "a Load makes the peer the source, not the actor" \
     "SELECT sends FROM comm_edges WHERE src_rank = 1 AND dst_rank = 0 AND transport = 'nvlink'" \
     "4"
+
+# The same rule for verbs and devx reads, which real captures do carry
+# (NVSHMEM gets, UCX rendezvous over verbs) but which no fixture row did.
+expect "an RDMA READ makes the peer the source, verbs and devx alike" \
+    "SELECT string_agg(src_rank||'>'||dst_rank||':'||transport, ' ' ORDER BY transport, src_rank)
+     FROM comm_edges WHERE (transport = 'verbs' AND 3 IN (src_rank, dst_rank) AND 2 IN (src_rank, dst_rank))
+                        OR (transport = 'devx' AND 0 IN (src_rank, dst_rank) AND 1 IN (src_rank, dst_rank))" \
+    "1>0:devx 2>3:verbs"
 
 # qp_num 5 is two queue pairs on two HCAs. One claimant each, or the pair key
 # has been dropped somewhere.
@@ -462,13 +480,14 @@ expect "failed attributions are a defect, counted; host memory is not" \
 # (That expect sits below.)
 #
 # RoCE verbs RC: neither end has a LID, so only (GID, qp_num) can name the
-# peer. Before _owner_gid it went to -1 like every RoCE send.
+# peer. Before _owner_gid it went to -1 like every RoCE send. (2 sends: rank
+# 2's 11-byte write, and rank 3's 21-byte READ from rank 2.)
 expect "a RoCE RC peer resolves by (GID, qp_num)" \
     "SELECT dst_rank||':'||sends||':'||bytes FROM comm_edges WHERE src_rank = 2 AND transport = 'verbs' AND dst_rank = 3" \
-    "3:1:11"
+    "3:2:32"
 
 expect "a RoCE DC send never resolves through its rlid" \
-    "SELECT count(*) FROM comm_edges WHERE src_rank = 1 AND dst_rank = 0 AND transport = 'devx' AND bytes <> 53" \
+    "SELECT count(*) FROM comm_edges WHERE src_rank = 1 AND dst_rank = 0 AND transport = 'devx' AND bytes <> 70" \
     "0"
 
 # DC. Rank 1's DCI (qp 40) has no connection at all; each send names its own
@@ -478,10 +497,11 @@ expect "a RoCE DC send never resolves through its rlid" \
 # neither a LID nor a GID and must stay unresolved. Then the RoCE rows: by
 # (GID, DCT) to rank 3 — never by their rlid 60060 to the decoy on rank 0 — and
 # one to an unowned GID, unresolved (unresolved_sends above: 7 = 5 + 1 + 1).
-# The RoCE RC send on qp 60 adds 13 bytes to 1>0.
+# The RoCE RC send on qp 60 adds 13 bytes to 1>0, and rank 0's 17-byte READ on
+# qp 61 (inbound: its bytes come from rank 1) adds 17 more.
 expect "a DC send's peer is the owner of its (LID or GID, DCT), per send" \
     "SELECT string_agg(dst_rank||':'||bytes, ' ' ORDER BY dst_rank) FROM comm_edges WHERE src_rank = 1 AND transport = 'devx'" \
-    "-1:55 0:53 2:30 3:460"
+    "-1:55 0:70 2:30 3:460"
 
 expect "NVLink with no node identity is counted" \
     "SELECT n FROM link_health WHERE finding = 'unresolved_nvlink'" "2"
@@ -617,7 +637,7 @@ expect "am payload joins the edge and its header does not" \
 # executable is to restate it here whenever a lane is added.
 expect "the verbs/devx subset is untouched by the new lane" \
     "SELECT string_agg(src_rank||'>'||dst_rank||':'||sends||':'||bytes, ' ' ORDER BY transport, src_rank, dst_rank) FROM comm_edges WHERE transport IN ('verbs','devx')" \
-    "1>-1:2:55 1>0:2:53 1>2:1:30 1>3:3:460 0>2:3:300 1>3:2:100 2>0:2:64 2>3:1:11 3>-1:5:536"
+    "1>-1:2:55 1>0:3:70 1>2:1:30 1>3:3:460 0>2:3:300 1>3:2:100 2>0:2:64 2>3:2:32 3>-1:5:536"
 
 # --- edge_sizes: the same edges, one group-by deeper -------------------------
 #

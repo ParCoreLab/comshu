@@ -1818,16 +1818,17 @@ struct CsvAgg {
         Gid           gid{0, 0};
     };
     std::map<std::pair<int, std::uint32_t>, RtrDest> rtr_dest;
-    std::map<std::pair<int, std::uint32_t>, std::pair<long, long>>
-                send_by_qp;  // (rank,qp_num)->(sends,bytes), verbs and RC devx
+    // (rank, qp_num, inbound) -> (sends, bytes), verbs and RC devx. `inbound`
+    // is an RDMA READ, whose bytes travel peer -> rank: link_sql.hpp's _sends.
+    std::map<std::tuple<int, std::uint32_t, bool>, std::pair<long, long>> send_by_qp;
     // DC device sends, whose peer is per SEND, not per queue: (rank, dest_lid,
     // dest_gid, dest_dct) -> (sends, bytes). Resolved through gid_owner when
     // the send carried a GID (dest_lid is then forced to 0: on RoCE v2 it is
     // the UDP source port), else through qp_owner like an RC peer, since a DCT
     // is a queue pair its owner moved to RTR on a port.
-    std::map<std::tuple<int, std::uint32_t, std::uint64_t, std::uint64_t, std::uint32_t>,
+    std::map<std::tuple<int, std::uint32_t, std::uint64_t, std::uint64_t, std::uint32_t, bool>,
              std::pair<long, long>>
-        send_by_dct;
+        send_by_dct;  // ... , inbound
     std::size_t n_access = 0, n_send = 0;
 
     // --- memory attribution -------------------------------------------------
@@ -2024,18 +2025,19 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DeviceSend>& 
     if (s.payload.decode > 1 || s.payload.opcode == 35)
         return;
     const bool has_gid = s.payload.dest_gid_prefix || s.payload.dest_gid_iface;
+    const bool inbound = s.payload.opcode == 0x10;  // mlx5 RDMA_READ
     auto&      agg = s.payload.dest_dct
                          ? a.send_by_dct[{r.rank, has_gid ? 0u : s.payload.dest_lid,
                                           s.payload.dest_gid_prefix, s.payload.dest_gid_iface,
-                                          s.payload.dest_dct}]
-                         : a.send_by_qp[{r.rank, s.payload.qp_num}];
+                                          s.payload.dest_dct, inbound}]
+                         : a.send_by_qp[{r.rank, s.payload.qp_num, inbound}];
     agg.first += 1;
     agg.second += s.payload.length;
     a.n_send++;
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
-    auto& agg = a.send_by_qp[{r.rank, s.payload.qp_num}];
+    auto& agg = a.send_by_qp[{r.rank, s.payload.qp_num, s.payload.opcode == 4 /*RDMA_READ*/}];
     agg.first += 1;
     agg.second += s.payload.length;
     a.n_send++;
@@ -2350,7 +2352,7 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     std::fputs("src_rank,dst_rank,sends,bytes\n", edges);
     std::map<std::pair<int, int>, std::pair<long, long>> edge_agg;
     for (const auto& [key, sb] : agg.send_by_qp) {
-        auto [src_rank, qp_num] = key;
+        auto [src_rank, qp_num, inbound] = key;
         int dst_rank = -1;
         if (auto it = agg.rtr_dest.find({src_rank, qp_num}); it != agg.rtr_dest.end()) {
             const auto& d = it->second;
@@ -2363,7 +2365,7 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
                 if (auto o = agg.qp_owner.find({d.lid, d.qp_num}); o != agg.qp_owner.end())
                     dst_rank = o->second;
         }
-        auto& e = edge_agg[{src_rank, dst_rank}];
+        auto& e = inbound ? edge_agg[{dst_rank, src_rank}] : edge_agg[{src_rank, dst_rank}];
         e.first += sb.first;
         e.second += sb.second;
     }
@@ -2371,7 +2373,7 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     // else of its (LID, DCT) — link_sql.hpp's _devx_send_peer. A send with
     // neither stays -1.
     for (const auto& [key, sb] : agg.send_by_dct) {
-        auto [src_rank, lid, gp, gi, dct] = key;
+        auto [src_rank, lid, gp, gi, dct, inbound] = key;
         int dst_rank = -1;
         if (gp || gi) {
             if (auto o = agg.gid_owner.find({gp, gi, dct}); o != agg.gid_owner.end())
@@ -2380,7 +2382,7 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
             if (auto o = agg.qp_owner.find({lid, dct}); o != agg.qp_owner.end())
                 dst_rank = o->second;
         }
-        auto& e = edge_agg[{src_rank, dst_rank}];
+        auto& e = inbound ? edge_agg[{dst_rank, src_rank}] : edge_agg[{src_rank, dst_rank}];
         e.first += sb.first;
         e.second += sb.second;
     }
