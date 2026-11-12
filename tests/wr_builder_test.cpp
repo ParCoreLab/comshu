@@ -172,6 +172,56 @@ int main() {
                "attributing its sends to this batch's timestamps");
     }
 
+    // --- the rest of ibv_qp_ex: atomics, inline payloads, atomic write ------
+    // The provider wraps every opcode function, and each lands here as begin()
+    // plus whatever its call carries. Values are the ibv_wr_opcode encoding the
+    // old path records, so a reader cannot tell the two APIs apart.
+    {
+        WrBuilder b;
+        b.start();
+        b.begin(WrOpcode::AtomicFetchAdd, 1, 0);
+        b.set_rdma(0x77, 0x2000);  // wr_atomic_fetch_add's rkey and remote_addr
+        b.set_sge(8);              // the local result buffer
+        b.begin(WrOpcode::Send, 2, 0);
+        b.set_inline(1, 40);  // wr_set_inline_data
+        b.begin(WrOpcode::RdmaWrite, 3, 0);
+        b.set_rdma(0x78, 0x3000);
+        b.set_inline(3, 96);  // wr_set_inline_data_list, three buffers
+        b.begin(WrOpcode::AtomicWrite, 4, 0);
+        b.set_rdma(0x79, 0x4000);
+        b.set_length(8);  // the operand rides on the opcode call
+        auto out = b.complete(true);
+        expect(out.size() == 4, "four work requests through four kinds of call");
+        expect(out[0].opcode == 6 && out[0].rkey == 0x77 && out[0].remote_addr == 0x2000 &&
+                   out[0].length == 8,
+               "an atomic records its target and its 8-byte operand width");
+        expect(out[1].length == 40 && out[1].num_sge == 1,
+               "inline data is the work request's payload: 40 B in one buffer");
+        expect(out[2].length == 96 && out[2].num_sge == 3 && out[2].rkey == 0x78,
+               "an inline list sums its buffers and counts them");
+        expect(out[3].opcode == 15 && out[3].length == 8 && out[3].remote_addr == 0x4000,
+               "an atomic write carries its target and 8 bytes with no sge");
+    }
+
+    // --- why every opcode function is wrapped, payload or not ---------------
+    // A wr_local_inv (or bind_mw, flush, ...) that the provider did NOT see
+    // would leave the previous work request open, and the sge meant for the
+    // next one would overwrite its length. Seeing the opcode is what closes it.
+    {
+        WrBuilder b;
+        b.start();
+        b.begin(WrOpcode::RdmaWrite, 1, 0);
+        b.set_sge(4096);
+        b.begin(WrOpcode::LocalInv, 2, 0);  // no payload
+        b.begin(WrOpcode::Send, 3, 0);
+        b.set_sge(16);
+        auto out = b.complete(true);
+        expect(out.size() == 3 && out[0].length == 4096 && out[1].length == 0 &&
+                   out[2].length == 16,
+               "a payload-less opcode closes the previous work request, so the next "
+               "sge cannot rewrite its length");
+    }
+
     std::printf("%s\n", g_fail ? "FAIL" : "PASS — the WR batch state machine holds");
     return g_fail;
 }

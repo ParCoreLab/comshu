@@ -159,6 +159,18 @@ std::string wr_opcode_name(unsigned op) {  // ibv_wr_opcode
             return "atomic_cmp_swp";
         case 6:
             return "atomic_fetch_add";
+        case 7:
+            return "local_inv";
+        case 8:
+            return "bind_mw";
+        case 9:
+            return "send_inv";
+        case 10:
+            return "tso";
+        case 14:
+            return "flush";
+        case 15:
+            return "atomic_write";
     }
     return "op" + std::to_string(op);
 }

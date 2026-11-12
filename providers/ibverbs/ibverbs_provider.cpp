@@ -347,6 +347,23 @@ struct Ops {
     void (*wr_rdma_read)(ibv_qp_ex*, std::uint32_t, std::uint64_t){};
     void (*wr_set_sge)(ibv_qp_ex*, std::uint32_t, std::uint64_t, std::uint32_t){};
     void (*wr_set_sge_list)(ibv_qp_ex*, std::size_t, const ibv_sge*){};
+    // Every remaining opcode function, wrapped even where it carries no payload:
+    // an opcode call we do not see leaves the PREVIOUS work request open in the
+    // builder, and the sge that follows it would overwrite that one's length.
+    void (*wr_send_imm)(ibv_qp_ex*, __be32){};
+    void (*wr_send_inv)(ibv_qp_ex*, std::uint32_t){};
+    void (*wr_send_tso)(ibv_qp_ex*, void*, std::uint16_t, std::uint16_t){};
+    void (*wr_rdma_write_imm)(ibv_qp_ex*, std::uint32_t, std::uint64_t, __be32){};
+    void (*wr_atomic_cmp_swp)(ibv_qp_ex*, std::uint32_t, std::uint64_t, std::uint64_t,
+                              std::uint64_t){};
+    void (*wr_atomic_fetch_add)(ibv_qp_ex*, std::uint32_t, std::uint64_t, std::uint64_t){};
+    void (*wr_atomic_write)(ibv_qp_ex*, std::uint32_t, std::uint64_t, const void*){};
+    void (*wr_flush)(ibv_qp_ex*, std::uint32_t, std::uint64_t, std::size_t, std::uint8_t,
+                     std::uint8_t){};
+    void (*wr_local_inv)(ibv_qp_ex*, std::uint32_t){};
+    void (*wr_bind_mw)(ibv_qp_ex*, ibv_mw*, std::uint32_t, const ibv_mw_bind_info*){};
+    void (*wr_set_inline_data)(ibv_qp_ex*, void*, std::size_t){};
+    void (*wr_set_inline_data_list)(ibv_qp_ex*, std::size_t, const ibv_data_buf*){};
     comshu::core::Handle qp_handle{};
     std::uint32_t       qp_num{};
 };
@@ -487,6 +504,99 @@ static void w_rdma_read(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr) 
         ops.wr_rdma_read(qpx, rkey, addr);
 }
 
+// The rest of the opcode functions, one shape: open the work request in the
+// builder (with the remote target where the call names one), then forward. The
+// fallback through global_ops is the same invariant every trampoline keeps —
+// the application's call reaches the provider exactly once.
+#define COMSHU_WR_FORWARD(member, ...)                                                    \
+    do {                                                                                  \
+        if (auto* s = slot_for(qpx)) {                                                    \
+            s->ops.member(qpx, __VA_ARGS__);                                              \
+            return;                                                                       \
+        }                                                                                 \
+        Ops ops;                                                                          \
+        if (global_ops(qpx, ops))                                                         \
+            ops.member(qpx, __VA_ARGS__);                                                 \
+    } while (0)
+
+static void w_send_imm(ibv_qp_ex* qpx, __be32 imm) {
+    begin(qpx, WrOpcode::SendWithImm);
+    COMSHU_WR_FORWARD(wr_send_imm, imm);
+}
+static void w_send_inv(ibv_qp_ex* qpx, std::uint32_t inv_rkey) {
+    begin(qpx, WrOpcode::SendWithInv);
+    COMSHU_WR_FORWARD(wr_send_inv, inv_rkey);
+}
+static void w_send_tso(ibv_qp_ex* qpx, void* hdr, std::uint16_t hdr_sz, std::uint16_t mss) {
+    begin(qpx, WrOpcode::Tso);
+    COMSHU_WR_FORWARD(wr_send_tso, hdr, hdr_sz, mss);
+}
+static void w_rdma_write_imm(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr, __be32 imm) {
+    begin(qpx, WrOpcode::RdmaWriteWithImm);
+    if (auto* s = slot_for(qpx))
+        s->builder.set_rdma(rkey, addr);
+    COMSHU_WR_FORWARD(wr_rdma_write_imm, rkey, addr, imm);
+}
+// The atomics name their target the way the old path's wr.atomic does; the
+// local 8-byte result buffer arrives by wr_set_sge, as with ibv_post_send.
+static void w_atomic_cmp_swp(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr,
+                             std::uint64_t compare, std::uint64_t swap) {
+    begin(qpx, WrOpcode::AtomicCmpSwp);
+    if (auto* s = slot_for(qpx))
+        s->builder.set_rdma(rkey, addr);
+    COMSHU_WR_FORWARD(wr_atomic_cmp_swp, rkey, addr, compare, swap);
+}
+static void w_atomic_fetch_add(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr,
+                               std::uint64_t add) {
+    begin(qpx, WrOpcode::AtomicFetchAdd);
+    if (auto* s = slot_for(qpx))
+        s->builder.set_rdma(rkey, addr);
+    COMSHU_WR_FORWARD(wr_atomic_fetch_add, rkey, addr, add);
+}
+// ATOMIC_WRITE carries its 8-byte operand on this call and takes no sge.
+static void w_atomic_write(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr,
+                           const void* operand) {
+    begin(qpx, WrOpcode::AtomicWrite);
+    if (auto* s = slot_for(qpx)) {
+        s->builder.set_rdma(rkey, addr);
+        s->builder.set_length(8);
+    }
+    COMSHU_WR_FORWARD(wr_atomic_write, rkey, addr, operand);
+}
+// FLUSH names a remote range but moves no payload: length stays 0, as an
+// sge-less work request's does on the old path.
+static void w_flush(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr, std::size_t len,
+                    std::uint8_t type, std::uint8_t level) {
+    begin(qpx, WrOpcode::Flush);
+    if (auto* s = slot_for(qpx))
+        s->builder.set_rdma(rkey, addr);
+    COMSHU_WR_FORWARD(wr_flush, rkey, addr, len, type, level);
+}
+static void w_local_inv(ibv_qp_ex* qpx, std::uint32_t inv_rkey) {
+    begin(qpx, WrOpcode::LocalInv);
+    COMSHU_WR_FORWARD(wr_local_inv, inv_rkey);
+}
+static void w_bind_mw(ibv_qp_ex* qpx, ibv_mw* mw, std::uint32_t rkey,
+                      const ibv_mw_bind_info* info) {
+    begin(qpx, WrOpcode::BindMw);
+    COMSHU_WR_FORWARD(wr_bind_mw, mw, rkey, info);
+}
+static void w_set_inline_data(ibv_qp_ex* qpx, void* addr, std::size_t length) {
+    if (auto* s = slot_for(qpx))
+        s->builder.set_inline(1, length);
+    COMSHU_WR_FORWARD(wr_set_inline_data, addr, length);
+}
+static void w_set_inline_data_list(ibv_qp_ex* qpx, std::size_t num, const ibv_data_buf* bufs) {
+    if (auto* s = slot_for(qpx)) {
+        std::uint64_t total = 0;
+        for (std::size_t i = 0; i < num; ++i)
+            total += bufs[i].length;
+        s->builder.set_inline(num, total);
+    }
+    COMSHU_WR_FORWARD(wr_set_inline_data_list, num, bufs);
+}
+#undef COMSHU_WR_FORWARD
+
 static void w_set_sge(ibv_qp_ex* qpx, std::uint32_t lkey, std::uint64_t addr,
                       std::uint32_t length) {
     if (auto* s = slot_for(qpx)) {
@@ -572,6 +682,18 @@ static void install(ibv_qp* qp, ibv_qp_ex* qpx) {
     ops.wr_rdma_read = qpx->wr_rdma_read;
     ops.wr_set_sge = qpx->wr_set_sge;
     ops.wr_set_sge_list = qpx->wr_set_sge_list;
+    ops.wr_send_imm = qpx->wr_send_imm;
+    ops.wr_send_inv = qpx->wr_send_inv;
+    ops.wr_send_tso = qpx->wr_send_tso;
+    ops.wr_rdma_write_imm = qpx->wr_rdma_write_imm;
+    ops.wr_atomic_cmp_swp = qpx->wr_atomic_cmp_swp;
+    ops.wr_atomic_fetch_add = qpx->wr_atomic_fetch_add;
+    ops.wr_atomic_write = qpx->wr_atomic_write;
+    ops.wr_flush = qpx->wr_flush;
+    ops.wr_local_inv = qpx->wr_local_inv;
+    ops.wr_bind_mw = qpx->wr_bind_mw;
+    ops.wr_set_inline_data = qpx->wr_set_inline_data;
+    ops.wr_set_inline_data_list = qpx->wr_set_inline_data_list;
     ops.qp_handle = h(qp);
     ops.qp_num = qp->qp_num;
     if (!ops.wr_start || !ops.wr_complete)
@@ -597,6 +719,33 @@ static void install(ibv_qp* qp, ibv_qp_ex* qpx) {
         qpx->wr_set_sge = &w_set_sge;
     if (ops.wr_set_sge_list)
         qpx->wr_set_sge_list = &w_set_sge_list;
+    // Only where the provider filled the slot: a NULL means "not supported on
+    // this QP", and replacing it with a trampoline would turn the application's
+    // feature probe into a call through a null pointer.
+    if (ops.wr_send_imm)
+        qpx->wr_send_imm = &w_send_imm;
+    if (ops.wr_send_inv)
+        qpx->wr_send_inv = &w_send_inv;
+    if (ops.wr_send_tso)
+        qpx->wr_send_tso = &w_send_tso;
+    if (ops.wr_rdma_write_imm)
+        qpx->wr_rdma_write_imm = &w_rdma_write_imm;
+    if (ops.wr_atomic_cmp_swp)
+        qpx->wr_atomic_cmp_swp = &w_atomic_cmp_swp;
+    if (ops.wr_atomic_fetch_add)
+        qpx->wr_atomic_fetch_add = &w_atomic_fetch_add;
+    if (ops.wr_atomic_write)
+        qpx->wr_atomic_write = &w_atomic_write;
+    if (ops.wr_flush)
+        qpx->wr_flush = &w_flush;
+    if (ops.wr_local_inv)
+        qpx->wr_local_inv = &w_local_inv;
+    if (ops.wr_bind_mw)
+        qpx->wr_bind_mw = &w_bind_mw;
+    if (ops.wr_set_inline_data)
+        qpx->wr_set_inline_data = &w_set_inline_data;
+    if (ops.wr_set_inline_data_list)
+        qpx->wr_set_inline_data_list = &w_set_inline_data_list;
 }
 
 }  // namespace wr

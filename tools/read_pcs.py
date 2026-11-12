@@ -60,7 +60,9 @@ STREAMS = {100: IbMemRegion, 102: IbQueuePair, 110: IbPostSend, 112: IbPollCq,
 # they drifted once ("cmp_swp" where the CSV says "atomic_cmp_swp"), invisibly,
 # because case 01 never posts an atomic.
 WR_OPCODE = {0: "rdma_write", 1: "rdma_write_imm", 2: "send", 3: "send_imm",
-             4: "rdma_read", 5: "atomic_cmp_swp", 6: "atomic_fetch_add"}
+             4: "rdma_read", 5: "atomic_cmp_swp", 6: "atomic_fetch_add",
+             7: "local_inv", 8: "bind_mw", 9: "send_inv", 10: "tso",
+             14: "flush", 15: "atomic_write"}
 WC_OPCODE = {0: "send", 1: "rdma_write", 2: "rdma_read", 3: "comp_swap",
              4: "fetch_add", 128: "recv", 129: "recv_rdma_imm"}
 

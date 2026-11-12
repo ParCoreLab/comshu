@@ -42,13 +42,19 @@ enum class WrOpcode : std::uint8_t {
     RdmaRead = 4,
     AtomicCmpSwp = 5,
     AtomicFetchAdd = 6,
+    LocalInv = 7,
+    BindMw = 8,
+    SendWithInv = 9,
+    Tso = 10,
+    Flush = 14,
+    AtomicWrite = 15,
 };
 
 // One completed work request, in the shape IbPostSend wants.
 struct PendingWr {
     std::uint64_t wr_id{0};
-    std::uint64_t remote_addr{0};  // RDMA opcodes only
-    std::uint32_t rkey{0};         // RDMA opcodes only
+    std::uint64_t remote_addr{0};  // RDMA, atomic and flush opcodes only
+    std::uint32_t rkey{0};         // RDMA, atomic and flush opcodes only
     std::uint32_t length{0};       // total sg_list bytes
     // ibv_qp_ex::wr_flags at the moment the opcode call was made. The caller
     // assigns it there before calling ibv_wr_send/rdma_write/etc, exactly as it
@@ -80,8 +86,9 @@ public:
         m_open = true;
     }
 
-    // wr_rdma_write / wr_rdma_read carry the remote address on the same call
-    // that sets the opcode, so the provider passes it straight through.
+    // wr_rdma_write / wr_rdma_read / the atomics / wr_flush carry the remote
+    // address on the same call that sets the opcode, so the provider passes it
+    // straight through.
     void set_rdma(std::uint32_t rkey, std::uint64_t remote_addr) {
         if (!m_open)
             return;
@@ -106,6 +113,25 @@ public:
             total += lengths[i];
         m_pending.back().length = total;
         m_pending.back().num_sge = static_cast<std::uint8_t>(num_sge > 255 ? 255 : num_sge);
+    }
+
+    // ibv_wr_set_inline_data[_list]: the payload is copied into the WQE rather
+    // than named by an sge, but it is still the work request's payload, so it is
+    // recorded the way the old path records an IBV_SEND_INLINE chain: total
+    // bytes, and one entry per buffer.
+    void set_inline(std::size_t num_buf, std::uint64_t total) {
+        if (!m_open)
+            return;
+        m_pending.back().length = static_cast<std::uint32_t>(total);
+        m_pending.back().num_sge = static_cast<std::uint8_t>(num_buf > 255 ? 255 : num_buf);
+    }
+
+    // wr_atomic_write carries its 8-byte operand on the opcode call itself; no
+    // sge follows, so its length is set here.
+    void set_length(std::uint32_t length) {
+        if (!m_open)
+            return;
+        m_pending.back().length = length;
     }
 
     // ibv_wr_complete: the batch is posted. Returns what to record, and resets.
