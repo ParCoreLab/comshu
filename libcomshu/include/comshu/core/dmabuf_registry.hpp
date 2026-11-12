@@ -85,7 +85,7 @@ struct Range {
     DeviceId      device{kUnknownDevice};
 };
 
-enum Door : std::uint8_t { kDoorDlsym = 0, kDoorGetProc = 1, kDoorGetProcV2 = 2, kDoorExportTable = 3 };
+enum Door : std::uint8_t { kDoorDlsym = 0, kDoorGetProc = 1, kDoorGetProcV2 = 2, kDoorLibcudaCell = 3 };
 
 inline void remember(int fd, const Range& r, Door door) {
     comshu_engine_dmabuf_note(fd, r.base, r.size, r.device, door);
@@ -140,8 +140,8 @@ inline CuResult get_handle_for_address_range(void* handle, CuDevicePtr dptr, std
 //
 // MEASURED, not anticipated: MN5 job 48812008, case 12's control run died with
 // SIGSEGV on a stack of one frame repeated thirty deep inside
-// libmlx5dv_trace.so. The export-table door patches the conversion's table
-// entry with its own wrapper; a later cuGetProcAddress then handed that wrapper
+// libmlx5dv_trace.so. The export-table door (now the libcuda-cell door) patches
+// the conversion's entry with its own wrapper; a later cuGetProcAddress then handed that wrapper
 // back as "the" cuMemGetHandleForAddressRange, it was adopted as real, and the
 // wrapper called itself. Excluding our four registry instantiations by address
 // (the first guard) could not see it, because the door's wrapper is a fifth,

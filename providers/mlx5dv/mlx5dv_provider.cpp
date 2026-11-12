@@ -547,7 +547,7 @@ Profiler::Profiler() {
     // unknown device it reported before.
     comshu::core::dmabuf::install();
     // ...and the route the dynamic doors cannot see: cudart_static's, through
-    // the driver export table. NCCL GIN's window conversion arrives only here.
+    // libcuda's own pointer cells. NCCL GIN's window conversion arrives only here.
     dmabuf_door::install();
 
     // The doorbell hijack (cudaHost* interposers below) is opt-in and OFF by
@@ -629,7 +629,7 @@ Profiler::Profiler() {
             comshu::Config::from_env().rank);
     }
 
-    // ...but the CUDA export-table patcher is the GPU path's alone. The host
+    // ...but the GPU hijack's libcuda-cell replacements are the GPU path's alone. The host
     // path must not install it: patching the driver is how the GPU hijack sees
     // the UAR mapping, and there is no such mapping in the mode the host path
     // exists for.
@@ -856,9 +856,9 @@ extern "C" ibv_qp* mlx5dv_create_qp(ibv_context* ctx, ibv_qp_init_attr_ex* attr,
 }
 
 // The doorbell hijack's CUDA driver interceptions are NOT exported symbols: they
-// are patched directly into libcuda's private export table (cuda_export_table.hpp),
+// are patched directly into libcuda's pointer cells (cuda_export_table.hpp),
 // because on du04 NVSHMEM links libcudart statically and reaches the driver only
-// that way. Nothing to interpose here.
+// through cudart's export-table / cuGetProcAddress lookups, which read those cells. Nothing to interpose here.
 
 // --- provider registration ---------------------------------------------------
 

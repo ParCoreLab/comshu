@@ -1,5 +1,5 @@
 #pragma once
-// The dmabuf conversion, reached through the CUDA driver export table.
+// The dmabuf conversion, reached through libcuda's own pointer cell.
 //
 // core/dmabuf_registry.hpp watches cuMemGetHandleForAddressRange through every
 // DYNAMIC route: dlsym of the symbol, and cuGetProcAddress[_v2] by dlsym. NCCL
@@ -15,9 +15,15 @@
 // unresolved the window has no VA and none of its puts can be placed. MN5 job
 // 45925495, case 26: 81,920 puts, all unplaced.
 //
-// So this registers three replacements with the export-table patcher —
-// cuGetProcAddress_v2, cuGetProcAddress, and the conversion itself — whichever
-// of them cudart's table actually carries. Each one calls the real driver
+// The first fix patched cuGetExportTable's table when OUR interposer was asked
+// for it; on du04 (NCCL 2.28.9) that was the last of 15 fetches, after NCCL had
+// already copied the real pointer: dlsym=168 export_table=0, 24 registrations
+// unresolved. cuda_export_table.hpp now overwrites libcuda's one cell per entry
+// point before any pointer-getter is handed out, which reaches every asker —
+// shared cudart, a cudart static inside libnccl, or a statically linked NCCL.
+//
+// So this registers three replacements with that patcher —
+// cuGetProcAddress_v2, cuGetProcAddress, and the conversion itself. Each one calls the real driver
 // function and returns its result untouched; the only thing it changes is that
 // a lookup of the conversion hands back the observing wrapper, which in turn
 // returns exactly what the driver returned. Which door delivered is tallied in
@@ -25,8 +31,8 @@
 //
 // ARMED BY DEFAULT, unlike the doorbell hijack, because it is not in any data
 // path: it sits on a once-per-registration conversion, observes it, and passes
-// through. It IS a rewrite of libcuda's export table in memory, so
-// COMSHU_DMABUF_EXPORT_TABLE=0 turns it off if a driver ever disagrees.
+// through. It IS a rewrite of libcuda's memory, so
+// COMSHU_DMABUF_LIBCUDA_CELL=0 turns it off if a driver ever disagrees.
 
 #include <cstdlib>
 
@@ -39,7 +45,7 @@ namespace dmb = comshu::core::dmabuf;
 
 inline bool enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("COMSHU_DMABUF_EXPORT_TABLE");
+        const char* v = std::getenv("COMSHU_DMABUF_LIBCUDA_CELL");
         return !(v && *v == '0');
     }();
     return on;
@@ -52,7 +58,7 @@ inline dmb::CuResult get_proc_address_v2(const char* symbol, void** pfn, int dri
         return 1 /* CUDA_ERROR_INVALID_VALUE */;
     const dmb::CuResult rc = real(symbol, pfn, driver_version, flags, status);
     if (rc == 0)
-        dmb::substitute_if_conversion<dmb::kDoorExportTable>(symbol, pfn);
+        dmb::substitute_if_conversion<dmb::kDoorLibcudaCell>(symbol, pfn);
     return rc;
 }
 
@@ -63,7 +69,7 @@ inline dmb::CuResult get_proc_address(const char* symbol, void** pfn, int driver
         return 1 /* CUDA_ERROR_INVALID_VALUE */;
     const dmb::CuResult rc = real(symbol, pfn, driver_version, flags);
     if (rc == 0)
-        dmb::substitute_if_conversion<dmb::kDoorExportTable>(symbol, pfn);
+        dmb::substitute_if_conversion<dmb::kDoorLibcudaCell>(symbol, pfn);
     return rc;
 }
 
@@ -83,7 +89,7 @@ inline dmb::CuResult get_handle(void* handle, dmb::CuDevicePtr dptr, std::size_t
         dmb::remember(fd,
                       dmb::Range{static_cast<std::uint64_t>(dptr), static_cast<std::uint64_t>(size),
                                  comshu::core::device_of(reinterpret_cast<const void*>(dptr))},
-                      dmb::kDoorExportTable);
+                      dmb::kDoorLibcudaCell);
     }
     return rc;
 }
@@ -110,11 +116,11 @@ inline void report(int rank) {
         return;
     std::fprintf(stderr,
                  "[comshu rank %d] dmabuf: conversions dlsym=%llu getproc=%llu getproc_v2=%llu "
-                 "export_table=%llu | registrations resolved=%llu unresolved=%llu%s\n",
+                 "libcuda_cell=%llu | registrations resolved=%llu unresolved=%llu%s\n",
                  rank, (unsigned long long)door[0], (unsigned long long)door[1],
                  (unsigned long long)door[2], (unsigned long long)door[3],
                  (unsigned long long)hits, (unsigned long long)misses,
-                 enabled() ? "" : " (export-table door off: COMSHU_DMABUF_EXPORT_TABLE=0)");
+                 enabled() ? "" : " (libcuda-cell door off: COMSHU_DMABUF_LIBCUDA_CELL=0)");
 }
 
 }  // namespace mlx5::dmabuf_door

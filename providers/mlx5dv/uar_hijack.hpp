@@ -3,7 +3,7 @@
 //
 // Ported from SigmaTrace/Profiler/Handlers/CUDAHijack.cpp. Hooks the CUDA DRIVER
 // API (cuMemHostRegister_v2 / cuMemHostGetDevicePointer_v2 / cuMemHostUnregister),
-// reached through the export-table patcher in cuda_export_table.hpp — because on
+// reached through the libcuda-cell patcher in cuda_export_table.hpp — because on
 // du04 NVSHMEM links libcudart statically and cudart_static calls libcuda's
 // cuMemHostGetDevicePointer through the driver export table, not through any
 // dynamic symbol or cuGetProcAddress. See cuda_export_table.hpp for the evidence.
