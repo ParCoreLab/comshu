@@ -1,7 +1,7 @@
 # Copyright ParCore Lab. See the LICENSE file at the root of the comshu
 # repository for details.
 #
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 
 from spack_repo.builtin.build_systems.cmake import CMakePackage
 
@@ -16,7 +16,7 @@ class Comshu(CMakePackage):
     homepage = "https://github.com/ParCoreLab/comshu"
     git = "https://github.com/ParCoreLab/comshu.git"
 
-    license("AGPL-3.0-or-later")
+    license("Apache-2.0")
 
     version("main", branch="main")
 
