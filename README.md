@@ -8,13 +8,6 @@ GPU-initiated InfiniBand, UCX, NCCL collectives, CUDA kernels and NVLink peer
 load/store from a running workload, then reads the capture back as tables you
 can export, query, or open in a browser.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/comshu-logo-dark.png">
-    <img src="assets/comshu-logo.png" alt="Comshu" width="420">
-  </picture>
-</p>
-
 ## Install
 
 comshu carries its own spack package repository, so spack needs no fork:
