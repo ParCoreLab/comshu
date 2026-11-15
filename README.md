@@ -1,6 +1,6 @@
-# Comshu
+# comshu
 
-Comshu in Turkish means neighbor. With communication tools, under one roof, 
+comshu in Turkish means neighbor. With communication tools, under one roof, 
 we can observe what GPU neighbors are saying to each other. 
 
 comshu records how a GPU program communicates. It captures InfiniBand traffic,
