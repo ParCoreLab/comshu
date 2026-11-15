@@ -89,3 +89,23 @@ home, open it here.
 
 For the layout, the gates, and how to add a record type or a provider, see
 [`docs/development.md`](docs/development.md).
+
+Related Papers:
+
+Comshu brings together our communication profiling tools published in the following papers:
+
+- **Snoopie** — instrumentation-based multi-GPU communication profiler built on NVBit,
+  tracking P2P transfers and GPU-centric communication library calls (NCCL, NVSHMEM)
+  with source-line and data-object attribution.
+  📄 [Snoopie: A Multi-GPU Communication Profiler and Visualizer (ICS '24)](https://dl.acm.org/doi/10.1145/3650200.3656597)
+  💻 [github.com/ParCoreLab/snoopie](https://github.com/ParCoreLab/snoopie)
+
+- **ucTrace** — multi-layer profiler for UCX-driven communication, linking MPI calls to
+  transport-level events across host, GPU, and NIC; works with GPU-aware MPI.
+  📄 [ucTrace: A Multi-Layer Profiling Tool for UCX-driven Communication (IPDPS '26)](https://arxiv.org/abs/2602.19084)
+  💻 [github.com/ParCoreLab/ucTrace](https://github.com/ParCoreLab/ucTrace)
+
+- **SigmaTrace** — library-agnostic RDMA profiling framework with fine-grained,
+  per-operation visibility for CPU- and GPU-initiated networking
+  📄 [SigmaTrace: Library-Agnostic Observability for CPU/GPU-Initiated RDMA Communication (SC '26)](https://arxiv.org/abs/2610.24328)
+  💻 [github.com/ParCoreLab/SigmaTrace](https://github.com/ParCoreLab/SigmaTrace)
