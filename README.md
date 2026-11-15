@@ -90,7 +90,7 @@ home, open it here.
 For the layout, the gates, and how to add a record type or a provider, see
 [`docs/development.md`](docs/development.md).
 
-Related Papers:
+## Related Papers
 
 Comshu brings together our communication profiling tools published in the following papers:
 
