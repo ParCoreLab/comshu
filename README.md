@@ -1,5 +1,8 @@
 # comshu
 
+Comshu in Turkish means neighbor. With communication tools, under one roof, 
+we can observe what GPU neighbors are saying to each other. 
+
 comshu records how a GPU program communicates. It captures InfiniBand traffic,
 GPU-initiated InfiniBand, UCX, NCCL collectives, CUDA kernels and NVLink peer
 load/store from a running workload, then reads the capture back as tables you
