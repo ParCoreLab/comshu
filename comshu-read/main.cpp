@@ -1917,9 +1917,24 @@ struct CsvAgg {
         std::uint64_t  base{0}, size{0};
         core::DeviceId device{0xFFFF};
         long           refs{0};
+        long           emitters{1};  // rows that recorded THIS incarnation
     };
     // rank -> object handle -> its lifetimes, in the order they were opened.
+    // Built by settle_lives() from life_events, never appended to directly.
     std::map<int, std::unordered_map<core::Handle, std::vector<Life>>> lives;
+    // The raw opens (MemObject) and closes (EntityClose of a MemObject) per
+    // handle, as read. Records arrive TABLE by table — every MemObject of a
+    // rank before any EntityClose — so pairing them as they are read cannot
+    // tell time order; they are swept once, sorted, before the rank's first
+    // access is resolved.
+    struct LifeEvent {
+        std::uint64_t  ticks{0};
+        bool           open{false};
+        std::uint64_t  base{0}, size{0};
+        core::DeviceId device{0xFFFF};
+    };
+    std::map<int, std::unordered_map<core::Handle, std::vector<LifeEvent>>> life_events;
+    std::set<int>                                                           lives_settled;
     // Accesses whose handle matched no lifetime at all, per rank.
     std::map<int, long> unmatched_object_refs;
     // Accesses naming a handle with SEVERAL lifetimes, which only a trustworthy
@@ -1938,8 +1953,65 @@ template<core::Record R> void aggregate(CsvAgg&, const RankDir&, const Stamped<R
 // Resolvable in one pass because MemObject and EntityClose lead TableRecords,
 // so every lifetime of this rank is already known by the time its accesses
 // arrive.
+// Turn a rank's open/close events into lifetimes, once, in TIME order.
+//
+// Two rules, and both are why this is a sweep rather than pairing on arrival:
+//
+//   A second open of an extent that is ALREADY OPEN is the same incarnation
+//   observed by another emitter, not a new one. Any provider may record a
+//   buffer it sees, and since PLAN-20261118-1930 the engine records every
+//   cudaMalloc that gpumem's NVBit callback records too: one handle, one range,
+//   two rows. Taking them as two lifetimes made every access to that buffer
+//   "reused-handle" — case 03, MN5 job 49207744, 65,536 accesses — where there
+//   was no reuse at all.
+//
+//   A close ends the most recently opened live incarnation; a close with
+//   nothing open is the second emitter's close of an incarnation that already
+//   ended. Pairing closes as they were read paired them newest-open-first
+//   across the WHOLE stream, which under real reuse (an allocate/free loop at
+//   one address) gave the first incarnation the last close.
+//
+// Ticks tie-break opens before closes: an emitter's open and another's close
+// can only share a tick by coincidence, and treating the open as later would
+// close an incarnation before it began.
+void settle_lives(CsvAgg& a, int rank) {
+    if (!a.lives_settled.insert(rank).second)
+        return;
+    auto  ev_it = a.life_events.find(rank);
+    auto& out = a.lives[rank];
+    if (ev_it == a.life_events.end())
+        return;
+    for (auto& [id, events] : ev_it->second) {
+        std::stable_sort(events.begin(), events.end(),
+                         [](const CsvAgg::LifeEvent& x, const CsvAgg::LifeEvent& y) {
+                             return x.ticks != y.ticks ? x.ticks < y.ticks : x.open && !y.open;
+                         });
+        auto&                    lives = out[id];
+        std::vector<std::size_t> open;  // indices into `lives`, oldest first
+        for (const auto& e : events) {
+            if (e.open) {
+                bool seen = false;
+                for (const auto i : open)
+                    if (lives[i].base == e.base && lives[i].size == e.size) {
+                        seen = true;  // another emitter, same incarnation
+                        ++lives[i].emitters;
+                        break;
+                    }
+                if (!seen) {
+                    lives.push_back({e.ticks, ~0ull, e.base, e.size, e.device, 0, 1});
+                    open.push_back(lives.size() - 1);
+                }
+            } else if (!open.empty()) {
+                lives[open.back()].close_ticks = e.ticks;
+                open.pop_back();
+            }
+        }
+    }
+}
+
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<GpuAccess>& s) {
     a.n_access++;
+    settle_lives(a, r.rank);
     if (s.payload.object == core::kNullHandle) {
         a.access_addrs[r.rank][s.payload.address]++;
         return;
@@ -1981,8 +2053,8 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<GpuAccess>& s) {
 // feeds the containment path for unattributed addresses; this list is what the
 // handle path resolves against.
 void aggregate_life(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
-    a.lives[r.rank][s.payload.id].push_back({s.temporal.a.ticks, ~0ull, s.payload.range.base,
-                                             s.payload.range.size, s.payload.device, 0});
+    a.life_events[r.rank][s.payload.id].push_back(
+        {s.temporal.a.ticks, true, s.payload.range.base, s.payload.range.size, s.payload.device});
 }
 
 // Close the most recent still-open lifetime of this subject. Most recent
@@ -1991,14 +2063,9 @@ void aggregate_life(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<EntityClose>& s) {
     if (s.payload.opener != core::records::MemObject::comshu_type_id)
         return;  // ib/mlx5 entities have their own accounting
-    const auto it = a.lives[r.rank].find(s.payload.subject);
-    if (it == a.lives[r.rank].end())
-        return;
-    for (auto life = it->second.rbegin(); life != it->second.rend(); ++life)
-        if (life->close_ticks == ~0ull) {
-            life->close_ticks = s.temporal.a.ticks;
-            return;
-        }
+    // Recorded, not paired: settle_lives() pairs it in time order. A close for
+    // a handle nothing opened is dropped there, as it always was here.
+    a.life_events[r.rank][s.payload.subject].push_back({s.temporal.a.ticks, false, 0, 0, 0xFFFF});
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<MemObject>& s) {
@@ -2121,6 +2188,11 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
 //   GPU owns it is a finding. `device` prints the lowest, and `devices > 1` is
 //   the flag that says the value is not to be trusted.
 void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
+    // A rank that recorded objects but no access never reached settle_lives()
+    // through aggregate(GpuAccess); settle it here so it is not read as having
+    // no lifetimes at all.
+    for (const auto& [rank, _events] : agg.life_events)
+        settle_lives(agg, rank);
     // Say it out loud, for every merged object and not only the referenced
     // ones: a silent pick here is the failure this whole plan exists to stop.
     for (const auto& [rank, objs] : agg.objects)
@@ -2303,10 +2375,10 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
                         for (const auto& life : lifetimes) {
                             if (life.refs == 0)
                                 continue;
-                            std::fprintf(f, "%d,%s,0x%llx,%llu,%u,1,1,%ld,%ld,0,0\n", rank, source,
-                                         (unsigned long long)life.base,
-                                         (unsigned long long)life.size, life.device, life.refs,
-                                         life.refs);
+                            std::fprintf(f, "%d,%s,0x%llx,%llu,%u,1,%ld,%ld,%ld,0,0\n", rank,
+                                         source, (unsigned long long)life.base,
+                                         (unsigned long long)life.size, life.device, life.emitters,
+                                         life.refs, life.refs);
                         }
             }
 
