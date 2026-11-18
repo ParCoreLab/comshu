@@ -293,6 +293,37 @@
 
   const UC_SIZE_ORDER = ['empty', '<1 K', '1–64 K', '64 K–1 M', '≥1 M'];
 
+  // Which BUFFER each send left from — object_access's ucx_send rows, which
+  // resolve a send's own buffer address against the sender's objects. Empty
+  // unless the capture recorded the sender's allocations (the engine's CUDA
+  // allocation doors, PLAN-20261118-1930): before those, a ucx capture named
+  // the GPU a message left from and never the buffer.
+  let ucObjects = $state([]);
+  $effect(() => {
+    query(`
+      SELECT a.owner_rank, a.object, a.actor_rank AS peer,
+             count(*)::BIGINT AS n, sum(a.size)::BIGINT AS units,
+             max(m.range_size)::BIGINT AS size, max(m.origins) AS origins
+      FROM object_access a
+      LEFT JOIN (SELECT rank, id, max(range_size) AS range_size,
+                        array_to_string(array_agg(DISTINCT origin ORDER BY origin), ',') AS origins
+                 FROM mem_object GROUP BY rank, id) m
+        ON m.rank = a.owner_rank AND m.id = a.object
+      WHERE a.source = 'ucx_send'
+      GROUP BY 1, 2, 3
+      ORDER BY units DESC`)
+      .then((r) => (ucObjects = r))
+      .catch(() => (ucObjects = []));
+  });
+  const ORIGIN_WORD = {
+    1: 'nvshmem_malloc', 2: 'cudaMalloc', 3: 'cudaMallocManaged', 4: 'cudaMallocAsync',
+    5: 'pinned host', 6: 'cuMemMap', 7: 'seen by NVBit', 8: 'mapped region',
+    9: 'ibv_reg_mr', 10: 'DEVX umem', 11: 'NCCL window',
+  };
+  const madeBy = (origins) =>
+    (origins ?? '').split(',').filter((x) => x && x !== '0')
+      .map((x) => ORIGIN_WORD[+x] ?? `origin ${x}`).join(' + ') || '—';
+
   const have = $derived({
     nvlink: (nvRows?.length ?? 0) > 0,
     verbs: (vbRows?.length ?? 0) > 0,
@@ -410,6 +441,10 @@
     REACH.filter((k) => ucReach.get(k).n > 0)
       .map((k) => ({ k, n: ucReach.get(k).n, phrase: REACH_PHRASE[k] })),
   );
+  // The selected tab's ranks, and the buffers their sends left from.
+  const ucRanks = $derived(new Set(ucShown.map((r) => num(r.actor_rank))));
+  const ucShownObjects = $derived(ucObjects.filter((o) => ucRanks.has(num(o.owner_rank))));
+
   const ucActorLabel = $derived.by(() => {
     const a = ucActors.find((x) => x.k === ucActor);
     return actorLabel(a?.node, a?.device, a?.devices);
@@ -771,6 +806,35 @@
           </tbody>
         </table>
       </div>
+
+      {#if ucShownObjects.length}
+        <h3 class="text-[13px] font-medium mt-0 mb-2">Buffers the messages left from</h3>
+        <div class="overflow-x-auto max-h-[30vh] mb-5">
+          <table class="w-full text-xs border-collapse">
+            <thead>
+              <tr>
+                {#each ['object', 'made by', 'size', 'from rank', 'to rank', 'messages', 'units'] as h}
+                  <th class="px-2.5 py-1 font-medium border-b {['messages', 'units', 'size'].includes(h) ? 'text-right' : 'text-left'}"
+                      style="color: var(--text-2); border-color: var(--border)">{h}</th>
+                {/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each ucShownObjects as o}
+                <tr>
+                  <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">#{o.object}</td>
+                  <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border); color: var(--text-2)">{madeBy(o.origins)}</td>
+                  <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{o.size === null ? '—' : bytes(num(o.size))}</td>
+                  <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{o.owner_rank}</td>
+                  <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{o.peer}</td>
+                  <td class="px-2.5 py-1 text-right border-b" style="border-color: var(--border)">{count(num(o.n))}</td>
+                  <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{count(num(o.units))}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
 
       <h3 class="text-[13px] font-medium mt-0 mb-2">Message sizes</h3>
       <table class="w-full text-xs border-collapse">
