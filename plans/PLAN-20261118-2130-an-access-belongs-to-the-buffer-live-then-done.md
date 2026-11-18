@@ -1,8 +1,11 @@
 # PLAN — an access belongs to the buffer that was live when it happened
 
 - **Created:** 2026-11-18 21:30 +03
-- **Status:** IN PROGRESS — implemented and locally tested; the MN5 board is the
-  remaining check.
+- **Status:** SHIPPED (4996bc6). MN5 board 49210863: every runnable case green
+  but 12_ibgda_doorbell, whose failure is NOT this change — the reader at
+  6f27184, before it, gives the identical 672 unresolved sends on that capture.
+  It is a sender-side qp_num collision (see below), latent until this run's QP
+  numbering happened to collide.
 - **Closes:** the item PLAN-20260805-0053 (entity lifetimes) ended on — "the
   reader does not use the window, and address reuse is real" — for the DuckDB
   layer and the UI. The CSV reader's mem_owner was settled in 3bbed23.
@@ -57,3 +60,21 @@ sends — the setup exchange) and life 2 (326,192 B, 532 ms, 622 sends); all
   the column and the Objects subtitle.
 - p2p incarnations, which need an access-time stamp gpumem does not record
   (PLAN-20260803-1021).
+
+## Found on the way: a device send names a qp_num, and qp_num is per HCA
+
+MN5 job 49210863, case 12 (host-doorbell arm). Rank 1 holds QPs on four HCAs
+(LIDs 7821, 7830, 7837, 7848), and qp_num is HCA-local, so (rank, qp_num) is not
+a QP: 61301 is both a CPU proxy QP (devx obj 467, gpu_driven 0, loopback on
+7837) and the GPU-driven QP the device sends came from (obj 1340, gpu_driven 1,
+connected on 7821 to rank 0's 69664); 61302 likewise, three times over.
+Mlx5DeviceSend and Mlx5DevxQpConnect carry only qp_num. The derived layer refuses
+to choose (all 672 of rank 1's sends -> dst -1, so gpu_puts_land_in_the_app_buffer
+places none of its 81,920 puts); the CSV reader chooses, and chose wrong for
+61301 (49 sends reported as rank 1 -> rank 1). Previous boards passed because the
+numbers did not collide.
+
+The fix is at capture: the decoder knows which devx QP object a doorbell's WQE
+belongs to, and the connect is decoded from a modify on a known object, so both
+records can carry the QP's devx `obj`, and the readers can join on (rank, obj)
+instead of (rank, qp_num). Its own plan; not done here.
