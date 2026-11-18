@@ -1,7 +1,17 @@
 # PLAN — a cudaMalloc is an object whichever provider ran
 
 - **Created:** 2026-11-18 19:30 +03
-- **Status:** IN PROGRESS.
+- **Status:** SHIPPED (75bb872, 6b2a8ea, 3bbed23). Verified on MN5:
+  - case 27 (job 49206826, again 49208619): every route exactly its object, static
+    and shared cudart alike (cell=113 dlsym=2 link=5), 59 closes for 59 frees with
+    the double free closed once and one cuMemUnmap closing both maps, 0 objects
+    with COMSHU_ALLOC_DOORS=0, comshu's own allocations excluded (20 of NVBit's on
+    case 03);
+  - LAMMPS r2 rerun (job 49207164): 2,411 cudaMalloc rows / 1,140 buffers, all
+    with a device; all 10,080 device-buffer halo sends resolve to one 319 KB
+    (241 KB on n0) Kokkos buffer per rank, four readers each — the 2x2x4 halo;
+  - full board (job 49207744): every runnable case green but 03, which the
+    two-emitters lifetime fix (3bbed23) closed — 03 and 27 green on 49208619.
 - **Follows:** `PLAN-20260810-0505-object-tracking-is-not-a-provider-concern-done.md`,
   which moved object identity into the engine and put plain device allocations
   explicitly out of scope "until a non-gpumem capture needs plain device
@@ -118,8 +128,13 @@ of what "real" is. That is the shape that produced the self-recursion of MN5 job
 
 - **Lifetime-window resolution in the reader.** Every `object_access` branch
   takes the smallest containing range ever recorded. With device allocations
-  tracked, a freed-and-reused address can resolve to a stale object. The fix
-  belongs to all branches at once (PLAN-20260805-0053), not to UCX alone.
+  tracked, a freed-and-reused address can resolve to a stale object — and the
+  LAMMPS rerun SHOWS it: Kokkos frees a 140,384-byte halo buffer and allocates a
+  326,192-byte one at the same base, both carry one interned id, and Objects
+  lists two rows each credited with all 630 sends. The CSV reader's mem_owner
+  now settles lifetimes in time order (3bbed23); the DuckDB layer and the UI
+  still key objects on (rank, id). The fix belongs to all branches at once
+  (PLAN-20260805-0053), not to UCX alone.
 - **The receive side of UCX.** `ucx_tag_recv.buffer` resolves locally, but which
   rank a wildcard receive matched needs tag matching this view does not do.
 - **`uct_send` get addresses.** A UCT endpoint names no peer rank.
