@@ -33,42 +33,41 @@
 
   let objects = $state(null);
   let error = $state(null);
-  let sel = $state(null);        // {rank, id, base, size, device, accesses}
+  let sel = $state(null);        // {rank, id, life, base, size, device, accesses}
+  let unplacedLife = $state(0);  // accesses naming an object but no incarnation
   let bins = $state([]);
   let tip = $state(null);
   let tipRef = $state(null);
 
-  // DISTINCT because a handle can open more than once — a freed address gets
-  // reused — and the list is of objects, not of lifetimes.
+  // ONE ROW PER INCARNATION (object_life), not per handle. A handle is the
+  // buffer's base address, so a freed-and-reallocated address is one id for
+  // two buffers; listing by id credited every access to both (LAMMPS r2: a
+  // 140 KB halo buffer and the 319 KB one that replaced it at the same base,
+  // each shown with all 630 sends). object_access names the incarnation each
+  // access fell in, and the join is on it.
   //
-  // The sort ends in device and base so it is total. On the ring capture all
-  // four objects tie on every leading key, and without a tiebreak the rows come
-  // back in a different order each run — which for a table read by comparing
-  // rows is the difference between a view and a shuffle.
+  // The sort ends in device, base and life so it is total. On the ring capture
+  // all four objects tie on every leading key, and without a tiebreak the rows
+  // come back in a different order each run — which for a table read by
+  // comparing rows is the difference between a view and a shuffle.
   $effect(() => {
     query(`
-      SELECT m.rank, m.id, m.range_base AS base, m.range_size AS size, m.device,
-             m.attr_status, m.origins, ri.node_ix,
+      SELECT m.rank, m.object AS id, m.life, m.base, m.size, m.device,
+             m.attr_status, m.origins, m.emitters, m.open_ns, m.close_ns,
+             count(*) OVER (PARTITION BY m.rank, m.object) AS lives,
+             ri.node_ix,
              coalesce(a.n, 0) AS accesses, coalesce(a.touched_by, '') AS touched_by,
              coalesce(a.sources, '') AS sources
-      -- min(attr_status): where two emitters saw one object, the most definite
-      -- answer wins — Device (0) over a host answer over never-asked.
-      --
-      -- origins: every call that made this extent known, because two emitters
-      -- seeing one buffer is normal (a cudaMalloc that ibverbs later registered)
-      -- and each says something different about it.
-      FROM (SELECT rank, id, range_base, range_size, device, min(attr_status) AS attr_status,
-                   array_to_string(array_agg(DISTINCT origin ORDER BY origin), ',') AS origins
-            FROM mem_object GROUP BY rank, id, range_base, range_size, device) m
+      FROM object_life m
       LEFT JOIN rank_identity ri ON ri.rank = m.rank
       LEFT JOIN (
-        SELECT owner_rank, object, count(*) AS n,
+        SELECT owner_rank, object, life, count(*) AS n,
                array_to_string(array_agg(DISTINCT 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '')), ', ')
                  AS touched_by,
                array_to_string(array_agg(DISTINCT source ORDER BY source), ' + ') AS sources
-        FROM object_access GROUP BY 1, 2
-      ) a ON a.owner_rank = m.rank AND a.object = m.id
-      ORDER BY accesses DESC, size DESC, rank, m.device, base
+        FROM object_access WHERE life IS NOT NULL GROUP BY 1, 2, 3
+      ) a ON a.owner_rank = m.rank AND a.object = m.object AND a.life = m.life
+      ORDER BY accesses DESC, size DESC, rank, m.device, base, life
       LIMIT 500`)
       .then((r) => {
         objects = r;
@@ -76,6 +75,23 @@
       })
       .catch((e) => (error = e.message));
   });
+
+  // Accesses that name an object but not which of its incarnations: a p2p
+  // access to an extent allocated more than once, whose tick is a drain time
+  // and cannot pick one. Said, not dropped.
+  $effect(() => {
+    query(`SELECT count(*) AS n FROM object_access WHERE life IS NULL`)
+      .then((r) => (unplacedLife = num(r[0]?.n) ?? 0))
+      .catch(() => (unplacedLife = 0));
+  });
+
+  // "1 of 2 · 205 ms" — which incarnation, and how long it lived.
+  const lifeLabel = (o) => {
+    if (num(o.lives) <= 1) return '';
+    const ms = o.close_ns == null ? null : (num(o.close_ns) - num(o.open_ns)) / 1e6;
+    const span = ms == null ? 'live at exit' : ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
+    return `${o.life} of ${o.lives} · ${span}`;
+  };
 
   // Distinct owning devices, for the subtitle only — the table shows them all.
   const gpus = $derived(
@@ -92,7 +108,7 @@
   // one rather than being silently rescaled.
   $effect(() => {
     if (!sel) { bins = []; return; }
-    const r = num(sel.rank), o = num(sel.id);
+    const r = num(sel.rank), o = num(sel.id), l = num(sel.life);
     query(`
       -- The window ends at the furthest byte touched. A UCX row's size is a
       -- datatype COUNT, not an extent (object_access.unit), so it contributes
@@ -100,7 +116,7 @@
       -- number of elements.
       WITH w AS (
         SELECT max(obj_offset + CASE WHEN unit = 'bytes' THEN size ELSE 1 END) AS hi
-        FROM object_access WHERE owner_rank = ${r} AND object = ${o}
+        FROM object_access WHERE owner_rank = ${r} AND object = ${o} AND life = ${l}
       )
       SELECT floor(a.obj_offset * ${BINS} / greatest(w.hi, 1))::INT AS bin,
              count(*)::BIGINT                         AS n,
@@ -115,7 +131,7 @@
              bool_and(a.exact)                        AS all_exact,
              (SELECT hi FROM w)::BIGINT               AS covered
       FROM object_access a, w
-      WHERE a.owner_rank = ${r} AND a.object = ${o}
+      WHERE a.owner_rank = ${r} AND a.object = ${o} AND a.life = ${l}
       GROUP BY bin ORDER BY bin`)
       .then((b) => (bins = b))
       .catch(() => (bins = []));
@@ -132,7 +148,7 @@
              count(*)::BIGINT AS n, sum(size)::BIGINT AS amount,
              array_to_string(array_agg(DISTINCT 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '') ORDER BY 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '')), ', ') AS actors
       FROM object_access
-      WHERE owner_rank = ${num(sel.rank)} AND object = ${num(sel.id)}
+      WHERE owner_rank = ${num(sel.rank)} AND object = ${num(sel.id)} AND life = ${num(sel.life)}
       GROUP BY 1 ORDER BY n DESC`)
       .then((r) => (split = r))
       .catch(() => (split = []));
@@ -224,7 +240,8 @@
   title="Objects"
   subtitle={objects
     ? `${objects.length} objects on ${gpus.length} ${gpus.length === 1 ? 'device' : 'devices'} · ` +
-      `${objects.filter((o) => num(o.accesses) > 0).length} with recorded accesses`
+      `${objects.filter((o) => num(o.accesses) > 0).length} with recorded accesses` +
+      (unplacedLife ? ` · ${count(unplacedLife)} accesses name an object but not which incarnation` : '')
     : ''}
 >
   {#if error}
@@ -241,6 +258,7 @@
       <div class="mb-4">
         <div class="text-[13px] mb-1">
           <b>{bytes(num(sel.size))}</b> {madeBy(sel)} object on {where(sel)}, {dev(sel.device, sel.attr_status)}
+          {#if lifeLabel(sel)}<span style="color: var(--text-2)"> — incarnation {lifeLabel(sel)}</span>{/if}
           <span style="color: var(--text-3)">— {count(num(sel.accesses))} accesses</span>
         </div>
         <div class="overflow-x-auto" onmousemove={onMove} onmouseleave={() => (tip = null)}>
@@ -316,7 +334,7 @@
       <table class="w-full text-xs border-collapse">
         <thead>
           <tr>
-            {#each ['', 'rank', 'device', 'made by', 'base', 'size', 'touched by', 'via', 'accesses'] as h}
+            {#each ['', 'rank', 'device', 'made by', 'base', 'size', 'lifetime', 'touched by', 'via', 'accesses'] as h}
               <th class="px-2.5 py-1 font-medium border-b {h === 'accesses' || h === 'size' ? 'text-right' : 'text-left'}"
                   style="color: var(--text-2); border-color: var(--border)">{h}</th>
             {/each}
@@ -324,7 +342,7 @@
         </thead>
         <tbody>
           {#each objects as o}
-            {@const active = sel && sel.rank === o.rank && sel.id === o.id}
+            {@const active = sel && sel.rank === o.rank && sel.id === o.id && sel.life === o.life}
             <tr>
               <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">
                 <button
@@ -343,6 +361,7 @@
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border); color: var(--text-2)">{madeBy(o)}</td>
               <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">0x{num(o.base).toString(16)}</td>
               <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{bytes(num(o.size))}</td>
+              <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border); color: var(--text-2)">{lifeLabel(o) || '—'}</td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
                 <span style="color: {o.touched_by ? 'var(--text-1)' : 'var(--text-3)'}">{o.touched_by || '—'}</span>
               </td>
@@ -370,7 +389,10 @@
       an application allocation (<code>cudaMalloc</code>,
       <code>nvshmem_malloc</code>, <code>cuMemMap</code>…) or a transport
       registration (<code>ibv_reg_mr</code>, <code>DEVX umem</code>), which
-      usually covers memory some allocation already named. Objects with no
+      usually covers memory some allocation already named. A row is one
+      <b>lifetime</b> of a buffer: an address freed and allocated again is a
+      new row, and each access is credited to the one live when it happened.
+      Objects with no
       recorded accesses are listed but not viewable: the transport registers
       buffers the instrumented kernels never touch.
     </p>

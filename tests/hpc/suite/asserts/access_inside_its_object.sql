@@ -1,4 +1,4 @@
--- requires: object_access mem_object
+-- requires: object_access object_life
 -- An access attributed to an object must FIT IN that object.
 --
 -- An invariant, naming no rank, device or object: obj_offset is an offset into
@@ -13,19 +13,25 @@
 -- 2048-byte object reported offsets up to 549755815936 — 512 GiB into 2 KiB —
 -- and every real access collapsed into the first bin.
 --
--- DISTINCT because mem_object carries a row per rank for the same symmetric
--- object, and joining without it multiplies each access by the rank count.
---
+
 -- A UCX row's size is a DATATYPE COUNT (object_access.unit), not an extent, so
 -- it contributes only the byte its offset names: the offset itself must still be
 -- inside the object, which is the anchor this check exists to test, while
 -- "offset + count" would compare elements to bytes.
+-- AGAINST THE INCARNATION IT WAS CREDITED TO (object_life), not against any
+-- extent the handle ever had: a handle is a base address, and since the engine
+-- records cudaFree an address can carry a 140 KB buffer and then a 319 KB one
+-- (LAMMPS r2). Checking against the larger would pass an offset that ran off
+-- the end of the smaller. A row whose incarnation is unnamed (life NULL, a p2p
+-- access to an extent allocated more than once) is checked against that
+-- extent's smallest size, which is the strict reading.
 SELECT 'access runs past the end of its object' AS problem,
-       a.owner_rank, a.object,
+       a.owner_rank, a.object, a.life,
        max(a.obj_offset + CASE WHEN a.unit = 'bytes' THEN a.size ELSE 1 END) AS max_end,
-       m.range_size
+       min(l.size) AS range_size
 FROM object_access a
-JOIN (SELECT DISTINCT rank, id, range_size FROM mem_object) m
-  ON m.rank = a.owner_rank AND m.id = a.object
-GROUP BY a.owner_rank, a.object, m.range_size
-HAVING max(a.obj_offset + CASE WHEN a.unit = 'bytes' THEN a.size ELSE 1 END) > m.range_size;
+JOIN object_life l
+  ON l.rank = a.owner_rank AND l.object = a.object
+ AND (a.life = l.life OR a.life IS NULL)
+GROUP BY a.owner_rank, a.object, a.life
+HAVING max(a.obj_offset + CASE WHEN a.unit = 'bytes' THEN a.size ELSE 1 END) > min(l.size);

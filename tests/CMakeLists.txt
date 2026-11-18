@@ -169,6 +169,11 @@ add_test(NAME comm_edges_rule
 
 add_test(NAME object_access_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_access_rule.sh $<TARGET_FILE:comshu_launcher>)
+# Which INCARNATION of a reused address an access is credited to — wall-clock
+# windows per rank, two emitters of one extent, the gap between lifetimes.
+# PLAN-20261118-2130.
+add_test(NAME object_life_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_life_rule.sh $<TARGET_FILE:comshu_launcher>)
 
 # Which kernel issued a GPU-initiated send: the window join, per GPU, with the
 # overlap and after-the-kernel cases MN5 job 48813620 could not produce.

@@ -318,7 +318,7 @@ every arithmetic you do here. For a duration, subtract. For an axis, subtract
 the capture's `min(t0_ns)` first and plot the offset.
 
 ### `object_access` — every recorded touch of an application buffer
-`owner_rank INT, object UINT, obj_offset UBIGINT, size UINT, source VARCHAR, actor_rank BIGINT, actor_device BIGINT, exact BOOLEAN, unit VARCHAR`
+`owner_rank INT, object UINT, obj_offset UBIGINT, size UINT, source VARCHAR, actor_rank BIGINT, actor_device BIGINT, exact BOOLEAN, life BIGINT, in_window BOOLEAN, unit VARCHAR`
 
 One row per access, normalised to a byte offset inside the object that owns it.
 `owner_rank`/`object` name the buffer, `actor_rank`/`actor_device` name who
@@ -336,6 +336,24 @@ in the receiver's buffer).
 the two UCX ones, where it is a UCP datatype count (`unit = 'datatype-units'`):
 bytes only when the application passed a byte datatype. Never `sum(size)` across
 units; group by `unit` or filter to one.
+
+**`life` matters.** An object id is its base address, so a freed-and-reallocated
+address is one id for two buffers. `life` names the incarnation (a row of
+`object_life`) that was live when the access happened, and `in_window` says
+whether one was: FALSE means none was live and the nearest in time was taken;
+NULL means the source has no usable time (`p2p`), and `life` is then set only
+when the extent had a single incarnation. Join to `object_life` on
+`(owner_rank, object, life)` — joining on `(owner_rank, object)` alone credits
+every access to every incarnation.
+
+### `object_life` — every incarnation of every memory object
+`rank INT, object UINT, life BIGINT, base UBIGINT, size UBIGINT, device USMALLINT, devices BIGINT, attr_status UTINYINT, origins VARCHAR, emitters BIGINT, open_ns BIGINT, close_ns BIGINT`
+
+One row per `[open, close)` window a buffer existed in, on the wall clock
+(`close_ns` NULL = still live at exit). `emitters` is how many providers recorded
+that one incarnation (the engine and gpumem both record a `cudaMalloc`); `origins`
+is their `ObjectOrigin` values, comma-separated (2 = cudaMalloc, see `mem_object`).
+Count buffers here, not in `mem_object`, which has a row per emitter per open.
 
 **`exact` matters.** A `verbs` offset is anchored to the object's true base and
 is exact. A `p2p` offset is anchored to the lowest address observed, because the

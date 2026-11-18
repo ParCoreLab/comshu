@@ -1546,6 +1546,78 @@ HAVING count(base) < count(*) OR bool_or(base <> iova)
     // posted buffer, or to no known object, stays in this view with NULLs so it
     // can be COUNTED. An inner join would make the capture look clean by
     // deleting the evidence that it is not.
+    // ONE ROW PER INCARNATION of a memory object — the [open, close) window a
+    // buffer actually existed in. PLAN-20261118-2130.
+    //
+    // A MemObject's id is interned from its BASE, so an address that is freed
+    // and allocated again names the same id for a different buffer. Every
+    // object_access branch used to resolve an address against the smallest
+    // extent EVER recorded there, which was harmless while nothing tracked
+    // frees — and wrong the moment the engine's CUDA doors did. Measured on the
+    // LAMMPS r2 rerun (MN5 job 49207164): Kokkos frees a 140,384-byte halo
+    // buffer and allocates a 326,192-byte one at the same base, and both rows
+    // were credited with all 630 of that rank's sends.
+    //
+    // THE PAIRING. An open's close is the first MemObject close (opener 520) of
+    // its handle at or after it — ASOF, per (rank, id). Opens of the SAME
+    // extent that share a close are one incarnation seen by several emitters
+    // (the engine's cuMemAlloc door and gpumem's NVBit callback both record a
+    // cudaMalloc: one handle, one range, two rows); `emitters` counts them, and
+    // the CSV reader's settle_lives() applies the same rule, so the two readers
+    // agree. A second emitter's close lands after the first and is the next
+    // close of no open — it simply goes unused. A registration (ibverbs,
+    // DEVX, NCCL window) emits no 520 close, so it inherits the close of the
+    // allocation sharing its handle: an MR cannot outlive the buffer it names.
+    //
+    // THE CLOCK. open_ns / close_ns are wall-clock ns through _clock, so a
+    // window can be compared with an event on ANOTHER rank — a put names the
+    // peer's buffer, and the peer's TSC is not ours. Same-rank comparisons in
+    // object_access use the window as is; cross-rank ones allow 1 ms of slack
+    // for NTP skew between nodes, which is far below any allocation's lifetime
+    // in the corpus and far above MN5's measured skew. NULL when the rank has
+    // no anchor, and object_access then falls back to the old rule (innermost
+    // extent) rather than placing nothing.
+    //
+    // Materialised: every placement branch probes it per row.
+    {"_obj_life", R"sql(
+CREATE OR REPLACE TABLE _obj_life AS
+WITH o AS (
+    SELECT rank, id, temporal_a_domain AS domain, temporal_a_ticks AS t,
+           range_base AS base, range_size AS size, device, attr_status, origin
+    FROM mem_object
+),
+c AS (
+    SELECT rank, subject AS id, temporal_a_ticks AS t
+    FROM entity_close WHERE opener = 520
+),
+oc AS (
+    SELECT o.*, c.t AS ct
+    FROM o ASOF LEFT JOIN c ON c.rank = o.rank AND c.id = o.id AND c.t >= o.t
+),
+g AS (
+    SELECT rank, id, base, size, ct,
+           min(domain)                                         AS domain,
+           min(t)                                              AS ot,
+           coalesce(min(device) FILTER (WHERE device <> 65535), 65535) AS device,
+           count(DISTINCT device) FILTER (WHERE device <> 65535)       AS devices,
+           min(attr_status)                                    AS attr_status,
+           array_to_string(array_agg(DISTINCT origin ORDER BY origin), ',') AS origins,
+           count(*)                                            AS emitters
+    FROM oc
+    GROUP BY rank, id, base, size, ct
+)
+SELECT g.rank,
+       g.id                                                    AS object,
+       row_number() OVER (PARTITION BY g.rank, g.id ORDER BY g.ot, g.size)::BIGINT AS life,
+       g.base, g.size, g.device, g.devices::BIGINT AS devices, g.attr_status, g.origins,
+       g.emitters::BIGINT AS emitters,
+       g.ot AS open_ticks, g.ct AS close_ticks,
+       (k.w0::HUGEINT + ((g.ot::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS open_ns,
+       CASE WHEN g.ct IS NOT NULL THEN (k.w0::HUGEINT + ((g.ct::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT END AS close_ns
+FROM g
+LEFT JOIN _clock k ON k.rank = g.rank AND k.domain = g.domain
+)sql"},
+
     {"_recv_attr", R"sql(
 CREATE OR REPLACE VIEW _recv_attr AS
 SELECT c.rank                AS recv_rank,
@@ -1561,7 +1633,9 @@ SELECT c.rank                AS recv_rank,
        -- can never spill: its single entry holds the whole posted length.
        (r.num_sge > 1 AND c.byte_len > r.first_len) AS spilled,
        m.id                  AS object,
-       m.range_base          AS range_base
+       m.range_base          AS range_base,
+       m.life                AS life,
+       m.in_window           AS in_window
 FROM ib_poll_cq c
 LEFT JOIN LATERAL (
     -- THE HARDWARE'S ANSWER FIRST, when the capture has one.
@@ -1625,13 +1699,26 @@ LEFT JOIN LATERAL (
     ) a ORDER BY a.pref LIMIT 1
 ) r ON TRUE
 LEFT JOIN _peer_of_qp e ON e.rank = c.rank AND e.qp_num = c.qp_num
+LEFT JOIN _clock kc ON kc.rank = c.rank AND kc.domain = c.temporal_a_domain
+-- The receive buffer's incarnation at the COMPLETION, on the receiver's own
+-- clock — same rank, so no cross-node slack (see _obj_life).
 LEFT JOIN LATERAL (
-    SELECT o.id, o.range_base
-    FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
-    WHERE o.rank = c.rank
-      AND r.addr >= o.range_base
-      AND r.addr <  o.range_base + o.range_size
-    ORDER BY o.range_size
+    SELECT id, range_base, life, in_window
+    FROM (
+        SELECT l.object AS id, l.base AS range_base, l.size, l.life,
+               coalesce((kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT IS NOT NULL AND l.open_ns IS NOT NULL
+                        AND (kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT >= l.open_ns
+                        AND (l.close_ns IS NULL OR (kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT < l.close_ns), FALSE) AS in_window,
+               CASE WHEN (kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT IS NULL OR l.open_ns IS NULL THEN NULL
+                    WHEN (kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT < l.open_ns THEN l.open_ns - (kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT
+                    WHEN l.close_ns IS NOT NULL AND (kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT >= l.close_ns THEN (kc.w0::HUGEINT + ((c.temporal_a_ticks::HUGEINT - kc.t0::HUGEINT)::DOUBLE * kc.ns_per_tick)::HUGEINT)::BIGINT - l.close_ns
+                    ELSE 0 END AS gap
+        FROM _obj_life l
+        WHERE l.rank = c.rank
+          AND r.addr >= l.base
+          AND r.addr <  l.base + l.size
+    ) x
+    ORDER BY in_window DESC, CASE WHEN in_window THEN size END, gap, size
     LIMIT 1
 ) m ON TRUE
 WHERE c.opcode = 128 AND c.status = 0
@@ -1736,7 +1823,13 @@ inline constexpr Table kTables[] = {
     // into a byte total — so without this column the UCX rows would be added to
     // verbs bytes in one number, silently. comm_edges carries `unit` for the same
     // reason; this is that rule arriving one view later.
-    {"object_access", "owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact,unit",
+    //
+    // `life` and `in_window` name WHICH incarnation of the object (see
+    // _obj_life): the one live when the access happened, and whether it was
+    // live — FALSE means none was and the nearest in time was taken, NULL means
+    // the source has no trustworthy time (p2p) and `life` is named only when
+    // the extent had one incarnation.
+    {"object_access", "owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact,life,in_window,unit",
      R"sql(
 WITH p2p AS (
     -- OWNER IS THE RANK THAT OWNS THE MEMORY, NEVER THE RANK THAT WROTE IT.
@@ -1815,7 +1908,9 @@ WITH p2p AS (
            'p2p'                                    AS source,
            po.rank::BIGINT                          AS actor_rank,
            po.run_device::BIGINT                    AS actor_device,
-           FALSE                                    AS exact
+           FALSE                                    AS exact,
+           om.life                                  AS life,
+           NULL::BOOLEAN                            AS in_window
     FROM (
         SELECT g.*,
                CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
@@ -1830,7 +1925,15 @@ LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
            ON am.rank = po.rank AND am.id = po.object
     -- The same extent as the OWNER recorded it. For a local access this matches
     -- the actor's own row, so the translation is an identity and costs nothing.
-    LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
+    -- One row per extent, whatever its incarnation count: a gpu_access tick is
+    -- the instant the record was DRAINED, not the instant of the access
+    -- (measured later than the buffer's own close — see the CSV reader's
+    -- aggregate(GpuAccess)), so time cannot pick an incarnation here. `life` is
+    -- named when the extent had exactly one and is NULL when it had several,
+    -- which is the honest answer and keeps the row.
+    LEFT JOIN (SELECT rank, object AS id, base AS range_base, size AS range_size,
+                      CASE WHEN count(*) = 1 THEN min(life) END AS life
+               FROM _obj_life GROUP BY rank, object, base, size) om
            ON om.rank = po.owner_rank
           AND om.range_base = am.range_base
           AND om.range_size = am.range_size
@@ -1848,10 +1951,11 @@ LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
 -- region registered at another iova (see _mr_rebase). HUGEINT because the
 -- subtraction can go negative for a malformed send, and UBIGINT would raise.
 verbs_target AS (
-    SELECT q.rank, q.length, q.peer_rank,
+    SELECT q.rank, q.length, q.peer_rank, q.t_ns,
            CASE WHEN q.mode = 'rebase' THEN q.base + (q.addr - q.iova) ELSE q.addr END AS target
     FROM (
         SELECT s.rank, s.length, e.peer_rank, s.remote_addr::HUGEINT AS addr, rb.base, rb.iova,
+               (k.w0::HUGEINT + ((s.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t_ns,
                -- an address inside an ordinary region of this key is a VA:
                -- plain, whatever else the key was reused for
                CASE WHEN rb.mode IS NULL THEN NULL
@@ -1865,6 +1969,7 @@ verbs_target AS (
           ON e.rank = s.rank AND e.qp_num = s.qp_num
         LEFT JOIN _mr_rebase rb
           ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
+        LEFT JOIN _clock k ON k.rank = s.rank AND k.domain = s.temporal_a_domain
         WHERE e.peer_rank IS NOT NULL
     ) q
     -- remote_addr = 0 is a control send with no target buffer (41 of them on
@@ -1882,7 +1987,9 @@ verbs AS (
            'verbs'                                  AS source,
            t.rank::BIGINT                           AS actor_rank,
            rd.device::BIGINT                        AS actor_device,
-           TRUE                                     AS exact
+           TRUE                                     AS exact,
+           m.life                                   AS life,
+           m.in_window                              AS in_window
     FROM verbs_target t
     -- INNERMOST containing object, via LATERAL so the pick is made per send.
     -- Ranges nest: an nvshmem_malloc'd buffer sits inside the symmetric-heap
@@ -1896,12 +2003,25 @@ verbs AS (
     -- became 131078.
     LEFT JOIN _rank_device rd ON rd.rank = t.rank
     JOIN LATERAL (
-        SELECT o.id, o.range_base
-        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
-        WHERE o.rank = t.peer_rank
-          AND t.target >= o.range_base
-          AND t.target <  o.range_base + o.range_size
-        ORDER BY o.range_size
+        -- The incarnation LIVE when this happened (see _obj_life), innermost
+        -- among the live; the nearest in time when none is, flagged.
+        SELECT id, range_base, life, in_window
+        FROM (
+            SELECT l.object AS id, l.base AS range_base, l.size, l.life,
+                   coalesce(t.t_ns IS NOT NULL AND l.open_ns IS NOT NULL
+                            AND t.t_ns >= l.open_ns - 1000000
+                            AND (l.close_ns IS NULL OR t.t_ns < l.close_ns + 1000000), FALSE)
+                                                    AS in_window,
+                   CASE WHEN t.t_ns IS NULL OR l.open_ns IS NULL THEN NULL
+                        WHEN t.t_ns < l.open_ns THEN l.open_ns - t.t_ns
+                        WHEN l.close_ns IS NOT NULL AND t.t_ns >= l.close_ns THEN t.t_ns - l.close_ns
+                        ELSE 0 END                  AS gap
+            FROM _obj_life l
+            WHERE l.rank = t.peer_rank
+              AND t.target >= l.base
+              AND t.target <  l.base + l.size
+        ) c
+        ORDER BY in_window DESC, CASE WHEN in_window THEN size END, gap, size
         LIMIT 1
     ) m ON TRUE
 ),
@@ -1938,11 +2058,12 @@ devx_qp_device AS (
 -- Same translation as verbs_target: NCCL GIN's puts name offsets into a
 -- zero-based window, NVSHMEM's name VAs, and only the rkey says which.
 devx_target AS (
-    SELECT q.rank, q.qp_num, q.length, q.peer_rank,
+    SELECT q.rank, q.qp_num, q.length, q.peer_rank, q.t_ns,
            CASE WHEN q.mode = 'rebase' THEN q.base + (q.addr - q.iova) ELSE q.addr END AS target
     FROM (
         SELECT s.rank, s.qp_num, s.length, s.peer_rank, s.raddr::HUGEINT AS addr,
                rb.base, rb.iova,
+               (k.w0::HUGEINT + ((s.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t_ns,
                CASE WHEN rb.mode IS NULL THEN NULL
                     WHEN EXISTS (SELECT 1 FROM _mr_plain p
                                  WHERE p.rank = s.peer_rank AND p.rkey = s.rkey
@@ -1952,6 +2073,7 @@ devx_target AS (
         FROM _devx_send_peer s
         LEFT JOIN _mr_rebase rb
           ON rb.rank = s.peer_rank AND rb.rkey = s.rkey
+        LEFT JOIN _clock k ON k.rank = s.rank AND k.domain = s.temporal_a_domain
         WHERE s.decode <= 1
           AND s.opcode != 35
           AND s.peer_rank IS NOT NULL
@@ -1967,18 +2089,33 @@ devx AS (
            'devx'                                   AS source,
            t.rank::BIGINT                           AS actor_rank,
            coalesce(qd.device, rd.device)::BIGINT   AS actor_device,
-           TRUE                                     AS exact
+           TRUE                                     AS exact,
+           m.life                                   AS life,
+           m.in_window                              AS in_window
     FROM devx_target t
     LEFT JOIN devx_qp_device qd
       ON qd.rank = t.rank AND qd.qp_num = t.qp_num
     LEFT JOIN _rank_device rd ON rd.rank = t.rank AND qd.device IS NULL
     JOIN LATERAL (
-        SELECT o.id, o.range_base
-        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
-        WHERE o.rank = t.peer_rank
-          AND t.target >= o.range_base
-          AND t.target <  o.range_base + o.range_size
-        ORDER BY o.range_size
+        -- The incarnation LIVE when this happened (see _obj_life), innermost
+        -- among the live; the nearest in time when none is, flagged.
+        SELECT id, range_base, life, in_window
+        FROM (
+            SELECT l.object AS id, l.base AS range_base, l.size, l.life,
+                   coalesce(t.t_ns IS NOT NULL AND l.open_ns IS NOT NULL
+                            AND t.t_ns >= l.open_ns - 1000000
+                            AND (l.close_ns IS NULL OR t.t_ns < l.close_ns + 1000000), FALSE)
+                                                    AS in_window,
+                   CASE WHEN t.t_ns IS NULL OR l.open_ns IS NULL THEN NULL
+                        WHEN t.t_ns < l.open_ns THEN l.open_ns - t.t_ns
+                        WHEN l.close_ns IS NOT NULL AND t.t_ns >= l.close_ns THEN t.t_ns - l.close_ns
+                        ELSE 0 END                  AS gap
+            FROM _obj_life l
+            WHERE l.rank = t.peer_rank
+              AND t.target >= l.base
+              AND t.target <  l.base + l.size
+        ) c
+        ORDER BY in_window DESC, CASE WHEN in_window THEN size END, gap, size
         LIMIT 1
     ) m ON TRUE
 ),
@@ -2030,7 +2167,9 @@ verbs_recv AS (
            'verbs_recv'                             AS source,
            a.sender_rank::BIGINT                    AS actor_rank,
            rd.device::BIGINT                        AS actor_device,
-           (a.addrs = 1 AND NOT a.spilled)          AS exact
+           (a.addrs = 1 AND NOT a.spilled)          AS exact,
+           a.life                                   AS life,
+           a.in_window                              AS in_window
     FROM _recv_attr a
     LEFT JOIN _rank_device rd ON rd.rank = a.sender_rank
     WHERE a.object IS NOT NULL
@@ -2057,17 +2196,33 @@ ucx_rma AS (
            r.rank::BIGINT                           AS actor_rank,
            coalesce(CASE WHEN r.device <> 65535 THEN r.device END, rd.device)::BIGINT
                                                     AS actor_device,
-           TRUE                                     AS exact
+           TRUE                                     AS exact,
+           m.life                                   AS life,
+           m.in_window                              AS in_window
     FROM ucx_rma r
     JOIN _ucx_peer_of_ep p ON p.rank = r.rank AND p.endpoint = r.endpoint
     LEFT JOIN _rank_device rd ON rd.rank = r.rank
+    LEFT JOIN _clock k ON k.rank = r.rank AND k.domain = r.temporal_a_domain
     JOIN LATERAL (
-        SELECT o.id, o.range_base
-        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
-        WHERE o.rank = p.peer_rank
-          AND r.remote_addr >= o.range_base
-          AND r.remote_addr <  o.range_base + o.range_size
-        ORDER BY o.range_size
+        -- The incarnation LIVE when this happened (see _obj_life), innermost
+        -- among the live; the nearest in time when none is, flagged.
+        SELECT id, range_base, life, in_window
+        FROM (
+            SELECT l.object AS id, l.base AS range_base, l.size, l.life,
+                   coalesce((k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT IS NOT NULL AND l.open_ns IS NOT NULL
+                            AND (k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT >= l.open_ns - 1000000
+                            AND (l.close_ns IS NULL OR (k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT < l.close_ns + 1000000), FALSE)
+                                                    AS in_window,
+                   CASE WHEN (k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT IS NULL OR l.open_ns IS NULL THEN NULL
+                        WHEN (k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT < l.open_ns THEN l.open_ns - (k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT
+                        WHEN l.close_ns IS NOT NULL AND (k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT >= l.close_ns THEN (k.w0::HUGEINT + ((r.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT - l.close_ns
+                        ELSE 0 END                  AS gap
+            FROM _obj_life l
+            WHERE l.rank = p.peer_rank
+              AND r.remote_addr >= l.base
+              AND r.remote_addr <  l.base + l.size
+        ) c
+        ORDER BY in_window DESC, CASE WHEN in_window THEN size END, gap, size
         LIMIT 1
     ) m ON TRUE
     WHERE r.status_class <> 1 AND r.remote_addr > 0
@@ -2093,15 +2248,18 @@ ucx_rma AS (
 -- turns it back, and an ambiguous handle (keys > 1, a replayed capture) is not
 -- placed rather than placed at one of its candidates.
 ucx_send_ops AS (
-    SELECT o.rank, o.endpoint, ip.addr AS buffer, o.units
+    SELECT o.rank, o.endpoint, ip.addr AS buffer, o.units,
+           (k.w0::HUGEINT + ((o.ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t_ns
     FROM (
-        SELECT rank, endpoint, buffer, "count" AS units
+        SELECT rank, endpoint, buffer, "count" AS units,
+               temporal_a_domain AS domain, temporal_a_ticks AS ticks
         FROM ucx_tag_send WHERE status_class <> 1 AND buffer <> 0
         UNION ALL
-        SELECT rank, endpoint, buffer, "count"
+        SELECT rank, endpoint, buffer, "count", temporal_a_domain, temporal_a_ticks
         FROM ucx_am_send  WHERE status_class <> 1 AND buffer <> 0
     ) o
     JOIN _intern_ptr ip ON ip.rank = o.rank AND ip.handle = o.buffer AND ip.keys = 1
+    LEFT JOIN _clock k ON k.rank = o.rank AND k.domain = o.domain
     WHERE ip.addr > 0
 ),
 ucx_send AS (
@@ -2112,17 +2270,32 @@ ucx_send AS (
            'ucx_send'                               AS source,
            p.peer_rank::BIGINT                      AS actor_rank,
            rd.device::BIGINT                        AS actor_device,
-           TRUE                                     AS exact
+           TRUE                                     AS exact,
+           m.life                                   AS life,
+           m.in_window                              AS in_window
     FROM ucx_send_ops u
     JOIN _ucx_peer_of_ep p ON p.rank = u.rank AND p.endpoint = u.endpoint
     LEFT JOIN _rank_device rd ON rd.rank = p.peer_rank
     JOIN LATERAL (
-        SELECT o.id, o.range_base
-        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
-        WHERE o.rank = u.rank
-          AND u.buffer >= o.range_base
-          AND u.buffer <  o.range_base + o.range_size
-        ORDER BY o.range_size
+        -- The incarnation LIVE when this happened (see _obj_life), innermost
+        -- among the live; the nearest in time when none is, flagged.
+        SELECT id, range_base, life, in_window
+        FROM (
+            SELECT l.object AS id, l.base AS range_base, l.size, l.life,
+                   coalesce(u.t_ns IS NOT NULL AND l.open_ns IS NOT NULL
+                            AND u.t_ns >= l.open_ns - 0
+                            AND (l.close_ns IS NULL OR u.t_ns < l.close_ns + 0), FALSE)
+                                                    AS in_window,
+                   CASE WHEN u.t_ns IS NULL OR l.open_ns IS NULL THEN NULL
+                        WHEN u.t_ns < l.open_ns THEN l.open_ns - u.t_ns
+                        WHEN l.close_ns IS NOT NULL AND u.t_ns >= l.close_ns THEN u.t_ns - l.close_ns
+                        ELSE 0 END                  AS gap
+            FROM _obj_life l
+            WHERE l.rank = u.rank
+              AND u.buffer >= l.base
+              AND u.buffer <  l.base + l.size
+        ) c
+        ORDER BY in_window DESC, CASE WHEN in_window THEN size END, gap, size
         LIMIT 1
     ) m ON TRUE
 )
@@ -2137,6 +2310,19 @@ UNION ALL
 SELECT *, 'datatype-units' FROM ucx_rma
 UNION ALL
 SELECT *, 'datatype-units' FROM ucx_send
+)sql"},
+
+    // Every incarnation of every memory object — the table a consumer joins
+    // object_access to on (owner_rank, object, life). `mem_object` stays the raw
+    // record of who reported what; this is what existed, and when. origins is
+    // the ObjectOrigin values (vocabulary) of every emitter that saw it.
+    {"object_life",
+     "rank,object,life,base,size,device,devices,attr_status,origins,emitters,open_ns,close_ns",
+     R"sql(
+SELECT rank, object, life, base, size, device, devices, attr_status, origins, emitters,
+       open_ns, close_ns
+FROM _obj_life
+ORDER BY rank, object, life
 )sql"},
 
     // Which KERNEL issued each GPU-initiated send: one row per kernel execution,

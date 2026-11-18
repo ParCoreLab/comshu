@@ -149,15 +149,17 @@
                   THEN a.actor_device ELSE an.device END AS actor_device,
              an.devices  AS actor_devices,
              ow.node_ix AS owner_node, ow.device AS owner_device,
-             a.actor_rank, a.owner_rank, a.object, a.source,
+             a.actor_rank, a.owner_rank, a.object, a.source, a.life,
              count(*)::BIGINT    AS n,
              sum(a.size)::BIGINT AS bytes,
-             max(m.range_size)::BIGINT AS size
+             max(m.size)::BIGINT AS size
       FROM object_access a
       LEFT JOIN nd an ON an.rank = a.actor_rank
       LEFT JOIN nd ow ON ow.rank = a.owner_rank
-      LEFT JOIN (SELECT DISTINCT rank, id, range_size FROM mem_object) m
-        ON m.rank = a.owner_rank AND m.id = a.object
+      -- The incarnation the access fell in (object_life), so a reused address
+      -- reports the size of the buffer that was there, not the largest ever.
+      LEFT JOIN object_life m
+        ON m.rank = a.owner_rank AND m.object = a.object AND m.life = a.life
       -- NO LIMIT, deliberately. This query spans every actor and the panel then
       -- filters to one tab, so a global ORDER BY n DESC with a LIMIT does not
       -- shorten each tab a little — it drops the QUIETEST actors' rows outright
@@ -182,7 +184,7 @@
       -- ibv_post_send. Disjoint from verbs by construction (a send takes one
       -- door), so still addable.
       WHERE a.source IN ('verbs', 'verbs_recv', 'devx')
-      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
       ORDER BY n DESC`)
       .then((r) => {
         vbRows = r;
@@ -301,16 +303,18 @@
   let ucObjects = $state([]);
   $effect(() => {
     query(`
-      SELECT a.owner_rank, a.object, a.actor_rank AS peer,
+      SELECT a.owner_rank, a.object, a.life, a.actor_rank AS peer,
              count(*)::BIGINT AS n, sum(a.size)::BIGINT AS units,
-             max(m.range_size)::BIGINT AS size, max(m.origins) AS origins
+             max(m.size)::BIGINT AS size, max(m.origins) AS origins,
+             max(m.lives) AS lives
       FROM object_access a
-      LEFT JOIN (SELECT rank, id, max(range_size) AS range_size,
-                        array_to_string(array_agg(DISTINCT origin ORDER BY origin), ',') AS origins
-                 FROM mem_object GROUP BY rank, id) m
-        ON m.rank = a.owner_rank AND m.id = a.object
+      -- Per INCARNATION: Kokkos frees and reallocates its halo buffer at the
+      -- same address, and the two are different buffers of different sizes.
+      LEFT JOIN (SELECT *, count(*) OVER (PARTITION BY rank, object) AS lives
+                 FROM object_life) m
+        ON m.rank = a.owner_rank AND m.object = a.object AND m.life = a.life
       WHERE a.source = 'ucx_send'
-      GROUP BY 1, 2, 3
+      GROUP BY 1, 2, 3, 4
       ORDER BY units DESC`)
       .then((r) => (ucObjects = r))
       .catch(() => (ucObjects = []));
@@ -822,7 +826,7 @@
             <tbody>
               {#each ucShownObjects as o}
                 <tr>
-                  <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">#{o.object}</td>
+                  <td class="px-2.5 py-1 border-b font-mono whitespace-nowrap" style="border-color: var(--border)">#{o.object}{#if num(o.lives) > 1}<span style="color: var(--text-3)"> · life {o.life} of {o.lives}</span>{/if}</td>
                   <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border); color: var(--text-2)">{madeBy(o.origins)}</td>
                   <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{o.size === null ? '—' : bytes(num(o.size))}</td>
                   <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{o.owner_rank}</td>
