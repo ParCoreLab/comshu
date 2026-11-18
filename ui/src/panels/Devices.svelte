@@ -38,6 +38,23 @@
   //   devx    actor = the GPU that owns the sending queue (mlx5_devx_qp.device),
   //           per send: the GPU built the WQE, a doorbell decoded it. Same
   //           exact addresses and lengths as verbs, and addable to it.
+  //   ucx     actor = the sending rank's GPU, ATTRIBUTED via rank_identity, and
+  //           the peer is the rank at the far end of the UCP endpoint
+  //           (_ucx_peer_of_ep), its GPU attributed the same way. What IS
+  //           observed is where each send's buffer lived (ucx_tag_send.device
+  //           and its siblings): a GPU-aware MPI hands device memory straight
+  //           to UCX, and 65535 there means host memory, not "unknown GPU".
+  //           No object resolution and no bytes — UCP counts DATATYPE UNITS,
+  //           which are bytes only when the caller hands UCP an 8-bit
+  //           datatype and nothing in the record says whether it did. (On
+  //           LAMMPS r2 it did: 569,125,025 units sent against 568,519,070
+  //           bytes UCT read back — so the check is transport_mix, per
+  //           capture, not an assumption either way.) This source therefore
+  //           never shares a column with verbs: a third tab, not an addend.
+  //
+  //           Without it, every `-p ucx` capture — LAMMPS, QE, GROMACS, i.e.
+  //           every MPI science app in the corpus — opened this panel blank
+  //           while the capture plainly knew which GPU sent what to whom.
   //
   // The distinction is stated in the caption too, because "GPU 2 moved 40 MB"
   // reads identically in both modes and is a weaker claim in one of them.
@@ -58,9 +75,14 @@
   // what _rank_device reports when one rank drives more than one GPU, and that
   // is a real state the capture can be in.
   const actorKey = (nodeIx, device) => `${nodeIx ?? '-'}:${device ?? '?'}`;
-  const actorLabel = (nodeIx, device) =>
+  // `devices === 0` is a rank with no GPU evidence at all — a host-only MPI
+  // rank on a ucx capture. That is not the multi-GPU 'GPU ?' and must not
+  // read like it.
+  const actorLabel = (nodeIx, device, devices) =>
     (nodeIx === null || nodeIx === undefined ? '' : `n${nodeIx} · `) +
-    (device === null || device === undefined ? 'GPU ?' : dev(device));
+    (device === null || device === undefined
+      ? (devices === 0 ? 'host' : 'GPU ?')
+      : dev(device));
 
   let view = $state(null);        // 'nvlink' | 'verbs'
   let error = $state(null);
@@ -200,13 +222,85 @@
 
   const SIZE_ORDER = ['empty', '<1 KB', '1–64 KB', '64 KB–1 MB', '≥1 MB'];
 
+  // --- ucx (UCP sends, peer by endpoint) ---------------------------------------
+  //
+  // One row per (actor, peer, buffer residency, door). The three UCP doors are
+  // the ones _ucx_sends feeds comm_edges from, with the same status filter, so
+  // this panel's totals and the matrix's ucx lane are the same sum cut another
+  // way. A get is kept and labelled rather than swapped: the tab is the GPU
+  // whose rank ISSUED the operation, and `via` says the bytes came back.
+  let ucRows = $state(null);
+  let ucSizes = $state([]);
+  let ucActor = $state(null);
+
+  const UCX_OPS = `
+    ops AS (
+      SELECT rank, endpoint, device, 'send' AS via, "count" AS units
+      FROM ucx_tag_send WHERE status_class <> 1
+      UNION ALL
+      SELECT rank, endpoint, device, 'am', "count"
+      FROM ucx_am_send  WHERE status_class <> 1
+      UNION ALL
+      SELECT rank, endpoint, device, CASE op WHEN 0 THEN 'put' ELSE 'get' END, "count"
+      FROM ucx_rma      WHERE status_class <> 1
+    )`;
+
+  $effect(() => {
+    query(`${ND}, ${UCX_OPS}
+      SELECT an.node_ix AS actor_node, an.device AS actor_device,
+             an.devices AS actor_devices,
+             o.rank AS actor_rank, p.peer_rank AS owner_rank,
+             ow.node_ix AS owner_node, ow.device AS owner_device,
+             ow.devices AS owner_devices,
+             o.device AS buf_device, o.via,
+             count(*)::BIGINT       AS n,
+             sum(o.units)::BIGINT   AS units
+      FROM ops o
+      LEFT JOIN _ucx_peer_of_ep p ON p.rank = o.rank AND p.endpoint = o.endpoint
+      LEFT JOIN nd an ON an.rank = o.rank
+      LEFT JOIN nd ow ON ow.rank = p.peer_rank
+      GROUP BY ALL
+      ORDER BY units DESC, n DESC`)
+      .then((r) => {
+        ucRows = r;
+        if (ucActor === null && r.length) {
+          const keys = r.map((x) => [num(x.actor_node) ?? 0, num(x.actor_device) ?? 0, x]);
+          keys.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+          ucActor = actorKey(num(keys[0][2].actor_node), num(keys[0][2].actor_device));
+        }
+      })
+      // A capture without the ucx provider has no ucx_* tables at all; that is
+      // "this source is absent", not an error worth surfacing.
+      .catch(() => (ucRows = []));
+  });
+
+  $effect(() => {
+    query(`${ND}, ${UCX_OPS}
+      SELECT an.node_ix AS actor_node, an.device AS actor_device,
+             CASE WHEN o.units = 0         THEN 'empty'
+                  WHEN o.units < 1024      THEN '<1 K'
+                  WHEN o.units < 65536     THEN '1–64 K'
+                  WHEN o.units < 1048576   THEN '64 K–1 M'
+                  ELSE '≥1 M' END          AS size_class,
+             count(*)::BIGINT     AS n,
+             sum(o.units)::BIGINT AS units
+      FROM ops o
+      LEFT JOIN nd an ON an.rank = o.rank
+      GROUP BY 1, 2, 3`)
+      .then((r) => (ucSizes = r))
+      .catch(() => (ucSizes = []));
+  });
+
+  const UC_SIZE_ORDER = ['empty', '<1 K', '1–64 K', '64 K–1 M', '≥1 M'];
+
   const have = $derived({
     nvlink: (nvRows?.length ?? 0) > 0,
     verbs: (vbRows?.length ?? 0) > 0,
+    ucx: (ucRows?.length ?? 0) > 0,
   });
-  const loading = $derived(nvRows === null || vbRows === null);
+  const loading = $derived(nvRows === null || vbRows === null || ucRows === null);
   const sources = $derived(
-    [have.nvlink ? 'nvlink' : null, have.verbs ? 'verbs' : null].filter(Boolean),
+    ['nvlink', 'verbs', 'ucx'].filter((s) => have[s]),
   );
 
   // --- nvlink derivations (unchanged behaviour) -----------------------------
@@ -251,25 +345,79 @@
    * the class the run exists to produce, and folding it into "remote" hides it.
    */
   function reach(r) {
+    // A UCX endpoint whose peer prefix did not resolve to exactly one rank.
+    // Counted under its own class rather than guessed into one of the three —
+    // the same refusal comm_edges makes with dst_rank = -1.
+    if (r.owner_rank === null || r.owner_rank === undefined) return 'unresolved';
     const an = num(r.actor_node), ad = num(r.actor_device);
     const on = num(r.owner_node), od = num(r.owner_device);
+    // Two ranks whose GPUs are both unknown are NOT "same GPU" — null === null
+    // is an absence matching an absence. With no device on either end the only
+    // claims available are the rank and the host.
+    if (ad === null || od === null) {
+      if (num(r.actor_rank) === num(r.owner_rank)) return 'same rank';
+      return an === on ? 'same host' : 'other host';
+    }
     if (an === on && ad === od) return 'same GPU';
     if (an === on) return 'same host';
     return 'other host';
   }
-  const REACH = ['same GPU', 'same host', 'other host'];
-  const vbReach = $derived.by(() => {
+  const REACH = ['same rank', 'same GPU', 'same host', 'other host', 'unresolved'];
+  const reachTally = (rows) => {
     const t = new Map(REACH.map((k) => [k, { n: 0, bytes: 0 }]));
-    for (const r of vbShown) {
+    for (const r of rows) {
       const c = t.get(reach(r));
       c.n += num(r.n);
-      c.bytes += num(r.bytes);
+      c.bytes += num(r.bytes ?? r.units);
     }
     return t;
-  });
+  };
+  const vbReach = $derived(reachTally(vbShown));
   const vbTotalN = $derived(vbShown.reduce((a, r) => a + num(r.n), 0));
   const vbTotalB = $derived(vbShown.reduce((a, r) => a + num(r.bytes), 0));
-  const multiDevice = $derived(actors.some((a) => (a.devices ?? 1) > 1));
+
+  // --- ucx derivations --------------------------------------------------------
+  const ucActors = $derived.by(() => {
+    const m = new Map();
+    for (const r of ucRows ?? []) {
+      const k = actorKey(num(r.actor_node), num(r.actor_device));
+      if (!m.has(k))
+        m.set(k, { k, node: num(r.actor_node), device: num(r.actor_device),
+                   devices: num(r.actor_devices) });
+    }
+    return [...m.values()].sort((a, b) => (a.node ?? 0) - (b.node ?? 0) ||
+                                          (a.device ?? 0) - (b.device ?? 0));
+  });
+  const ucShown = $derived(
+    (ucRows ?? []).filter((r) => actorKey(num(r.actor_node), num(r.actor_device)) === ucActor),
+  );
+  const ucShownSizes = $derived(
+    ucSizes
+      .filter((s) => actorKey(num(s.actor_node), num(s.actor_device)) === ucActor)
+      .sort((a, b) => UC_SIZE_ORDER.indexOf(a.size_class) - UC_SIZE_ORDER.indexOf(b.size_class)),
+  );
+  const ucSizeTotal = $derived(ucShownSizes.reduce((a, s) => a + num(s.n), 0));
+  const ucReach = $derived(reachTally(ucShown));
+  const ucTotalN = $derived(ucShown.reduce((a, r) => a + num(r.n), 0));
+  const ucTotalU = $derived(ucShown.reduce((a, r) => a + num(r.units), 0));
+  // Sends whose buffer lived in host memory. On a GPU-aware MPI these are the
+  // small control messages; on a non-GPU-aware one they are everything, and
+  // the tab's GPU then says only which device the rank drives.
+  const ucHostN = $derived(
+    ucShown.filter((r) => num(r.buf_device) === 65535).reduce((a, r) => a + num(r.n), 0),
+  );
+  const ucReachParts = $derived(
+    REACH.filter((k) => ucReach.get(k).n > 0)
+      .map((k) => ({ k, n: ucReach.get(k).n, phrase: REACH_PHRASE[k] })),
+  );
+  const ucActorLabel = $derived.by(() => {
+    const a = ucActors.find((x) => x.k === ucActor);
+    return actorLabel(a?.node, a?.device, a?.devices);
+  });
+
+  const multiDevice = $derived(
+    (view === 'ucx' ? ucActors : actors).some((a) => (a.devices ?? 1) > 1),
+  );
 
   // The opening source is decided ONCE, after both queries have settled, and it
   // prefers nvlink. Letting whichever query returned first set it made a
@@ -279,16 +427,18 @@
   // observed instruction beats an attributed one.
   $effect(() => {
     if (view === null && !loading)
-      view = have.nvlink ? 'nvlink' : have.verbs ? 'verbs' : null;
+      view = sources[0] ?? null;
   });
 
   const barColor = $derived(ramp().at(-1));
 
   /** Reach, said as a sentence rather than as a bare class name. */
   const REACH_PHRASE = {
+    'same rank': 'to itself',
     'same GPU': 'to its own memory',
-    'same host': 'to another GPU on the same host',
+    'same host': 'elsewhere on the same host',
     'other host': 'to another host',
+    'unresolved': 'to a peer the capture could not name',
   };
   const reachParts = $derived(
     REACH.filter((k) => vbReach.get(k).n > 0)
@@ -306,7 +456,11 @@
           // devices in the job.
           ? `what each GPU's rank moved over the NIC · ${actors.length} devices on ${
               new Set(actors.map((a) => a.node)).size} hosts moved anything`
-          : '',
+          : view === 'ucx'
+            ? `what each GPU's rank sent through UCX · ${ucActors.length} ${
+                ucActors.every((a) => a.devices === 0) ? 'host-only ranks' : 'devices'} on ${
+                new Set(ucActors.map((a) => a.node)).size} hosts sent anything`
+            : '',
   );
 </script>
 
@@ -315,9 +469,9 @@
     <p class="text-[13px] m-0" style="color: var(--text-2)">loading…</p>
   {:else if !sources.length}
     <p class="text-[13px] m-0" style="color: var(--text-2)">
-      This capture records neither GPU accesses nor object-resolved sends. The
-      device view needs the gpumem provider, or an ibverbs capture whose sends
-      resolve to registered objects.
+      This capture records no GPU accesses, no object-resolved sends and no UCX
+      sends. The device view needs the gpumem provider, an ibverbs capture
+      whose sends resolve to registered objects, or the ucx provider.
     </p>
     {#if error}
       <p class="text-xs mt-1 m-0" style="color: var(--text-3)">{error}</p>
@@ -335,7 +489,7 @@
           >{s}</button>
         {/each}
         <span class="text-xs self-center ml-2" style="color: var(--text-3)">
-          different measurements — one is observed execution, the other attributed
+          different measurements — never add one tab to another
         </span>
       </div>
     {/if}
@@ -442,7 +596,7 @@
             style="border-color: {vbActor === a.k ? 'var(--text-3)' : 'var(--border)'};
                    background: {vbActor === a.k ? 'var(--surface-1)' : 'transparent'};
                    color: {vbActor === a.k ? 'var(--text-1)' : 'var(--text-2)'}"
-          >{actorLabel(a.node, a.device)}</button>
+          >{actorLabel(a.node, a.device, a.devices)}</button>
         {/each}
       </div>
 
@@ -550,6 +704,127 @@
         transfer is attributed from the far end. When that recovery is
         uncertain, <code>link_health</code> reports it in the banner above
         rather than here.
+      </p>
+
+    {:else if view === 'ucx'}
+      <div class="flex flex-wrap gap-1 mb-3">
+        {#each ucActors as a}
+          <button
+            onclick={() => (ucActor = a.k)}
+            class="text-xs rounded px-2.5 py-1 border cursor-pointer whitespace-nowrap"
+            style="border-color: {ucActor === a.k ? 'var(--text-3)' : 'var(--border)'};
+                   background: {ucActor === a.k ? 'var(--surface-1)' : 'transparent'};
+                   color: {ucActor === a.k ? 'var(--text-1)' : 'var(--text-2)'}"
+          >{actorLabel(a.node, a.device, a.devices)}</button>
+        {/each}
+      </div>
+
+      <p class="text-[13px] mt-0 mb-3">
+        <b>{ucActorLabel}</b> sent {count(ucTotalN)} messages
+        ({count(ucTotalU)} units) —
+        {#each ucReachParts as p, i}<b>{count(p.n)}</b> {p.phrase}{i <
+          ucReachParts.length - 1 ? ', ' : ''}{/each}
+        {#if ucHostN}
+          <span style="color: var(--text-3)">
+            · {count(ucHostN)} from host memory
+          </span>
+        {/if}
+      </p>
+
+      <div class="overflow-x-auto max-h-[42vh] mb-5">
+        <table class="w-full text-xs border-collapse">
+          <thead>
+            <tr>
+              {#each ['peer', 'peer rank', 'from rank', 'buffer on', 'reach', 'via', 'messages', 'units'] as h}
+                <th class="px-2.5 py-1 font-medium border-b {['messages', 'units'].includes(h) ? 'text-right' : 'text-left'}"
+                    style="color: var(--text-2); border-color: var(--border)">{h}</th>
+              {/each}
+            </tr>
+          </thead>
+          <tbody>
+            {#each ucShown as r}
+              {@const c = reach(r)}
+              {@const hostBuf = num(r.buf_device) === 65535}
+              <tr>
+                <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
+                  {c === 'unresolved' ? '—' : actorLabel(num(r.owner_node), num(r.owner_device), num(r.owner_devices))}
+                </td>
+                <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{r.owner_rank ?? '?'}</td>
+                <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{r.actor_rank}</td>
+                <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border);
+                    color: {hostBuf ? 'var(--text-3)' : 'var(--text-1)'}">
+                  {hostBuf ? 'host memory' : dev(r.buf_device)}
+                </td>
+                <td class="px-2.5 py-1 border-b whitespace-nowrap text-[10px] uppercase tracking-wide"
+                    style="border-color: var(--border); color: {c === 'other host' ? 'var(--text-1)' : 'var(--text-3)'}">{c}</td>
+                <td class="px-2.5 py-1 border-b whitespace-nowrap text-[10px] uppercase tracking-wide"
+                    style="border-color: var(--border); color: var(--text-3)"
+                    title={r.via === 'send' ? 'ucp_tag_send — two-sided, matched by tag'
+                      : r.via === 'am' ? 'ucp_am_send — active message, payload only'
+                      : r.via === 'put' ? 'ucp_put — one-sided write into the peer'
+                      : 'ucp_get — one-sided read; the units travelled from the peer to this rank'}
+                >{r.via}</td>
+                <td class="px-2.5 py-1 text-right border-b" style="border-color: var(--border)">{count(num(r.n))}</td>
+                <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{count(num(r.units))}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="text-[13px] font-medium mt-0 mb-2">Message sizes</h3>
+      <table class="w-full text-xs border-collapse">
+        <thead>
+          <tr>
+            {#each ['units per message', 'share', 'messages', 'units'] as h}
+              <th class="px-2.5 py-1 font-medium border-b {['messages', 'units'].includes(h) ? 'text-right' : 'text-left'}"
+                  style="color: var(--text-2); border-color: var(--border)">{h}</th>
+            {/each}
+          </tr>
+        </thead>
+        <tbody>
+          {#each ucShownSizes as s}
+            <tr>
+              <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{s.size_class}</td>
+              <td class="px-2.5 py-1 border-b w-1/2" style="border-color: var(--border)">
+                <div class="flex items-center gap-2">
+                  <div class="h-2 rounded-sm"
+                       style="width: {ucSizeTotal ? (num(s.n) / ucSizeTotal) * 100 : 0}%;
+                              min-width: 2px; background: {barColor}"></div>
+                  <span style="color: var(--text-3)">
+                    {ucSizeTotal ? Math.round((num(s.n) / ucSizeTotal) * 100) : 0}%
+                  </span>
+                </div>
+              </td>
+              <td class="px-2.5 py-1 text-right border-b" style="border-color: var(--border)">{count(num(s.n))}</td>
+              <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{count(num(s.units))}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+
+      {#if multiDevice}
+        <p class="text-xs mt-3 m-0" style="color: var(--critical)">
+          At least one rank's sends came from buffers on more than one GPU, so
+          its device cannot be named — those rows are tabbed as <b>GPU ?</b>
+          rather than assigned to a guess.
+        </p>
+      {/if}
+
+      <p class="text-xs mt-3 m-0" style="color: var(--text-3)">
+        Tabs are <b>(host, GPU)</b>, the GPU each sending rank drives; the
+        <b>peer</b> is the rank at the far end of the UCP endpoint, named the
+        same way. Both are <i>attributed</i>, not observed — nothing here saw a
+        kernel run. What is observed is <b>buffer on</b>: where each message's
+        memory lived when UCX was handed it, which is how a GPU-aware MPI shows
+        itself (device buffers) and how its control traffic does (host memory).
+        <b>units</b> are UCP datatype units: bytes when the caller handed UCX a
+        byte datatype, which the record cannot say — <code>transport_mix</code>'s
+        received bytes are the check on a given capture. Compare them within
+        this tab, never with the verbs tab's bytes. Which
+        transport UCX actually used (shared memory, CUDA IPC, the NIC) is in
+        <code>transport_mix</code>; <b>reach</b> here is where the peer is, not
+        how the bytes got there.
       </p>
     {/if}
   {/if}
