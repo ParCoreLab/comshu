@@ -15,10 +15,17 @@
 --
 -- DISTINCT because mem_object carries a row per rank for the same symmetric
 -- object, and joining without it multiplies each access by the rank count.
+--
+-- A UCX row's size is a DATATYPE COUNT (object_access.unit), not an extent, so
+-- it contributes only the byte its offset names: the offset itself must still be
+-- inside the object, which is the anchor this check exists to test, while
+-- "offset + count" would compare elements to bytes.
 SELECT 'access runs past the end of its object' AS problem,
-       a.owner_rank, a.object, max(a.obj_offset + a.size) AS max_end, m.range_size
+       a.owner_rank, a.object,
+       max(a.obj_offset + CASE WHEN a.unit = 'bytes' THEN a.size ELSE 1 END) AS max_end,
+       m.range_size
 FROM object_access a
 JOIN (SELECT DISTINCT rank, id, range_size FROM mem_object) m
   ON m.rank = a.owner_rank AND m.id = a.object
 GROUP BY a.owner_rank, a.object, m.range_size
-HAVING max(a.obj_offset + a.size) > m.range_size;
+HAVING max(a.obj_offset + CASE WHEN a.unit = 'bytes' THEN a.size ELSE 1 END) > m.range_size;

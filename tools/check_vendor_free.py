@@ -139,6 +139,29 @@ ALLOWED_SYMBOLS = {
         "ibv_destroy_qp",
         "ibv_destroy_qp_hook",
     },
+    # The CUDA driver's allocation family — the LINK door (PLAN-20261118-1930).
+    # Same act as nvshmem_malloc above, one layer down: object identity is
+    # core's, and a cudaMalloc has to be an object whichever providers are
+    # loaded, so the engine defines these for code linked -lcuda. Declared with
+    # hand-copied ABI types (CuResult = int, CuDevicePtr = unsigned long long),
+    # no cuda.h; the cell and dlsym doors reach the same wrappers by pointer.
+    "libcomshu/src/cuda_alloc_doors.cpp": {
+        "cuMemAlloc_v2",
+        "cuMemAllocPitch_v2",
+        "cuMemAllocManaged",
+        "cuMemAllocAsync",
+        "cuMemAllocAsync_ptsz",
+        "cuMemAllocFromPoolAsync",
+        "cuMemAllocFromPoolAsync_ptsz",
+        "cuMemAllocHost_v2",
+        "cuMemHostAlloc",
+        "cuMemMap",
+        "cuMemFree_v2",
+        "cuMemFreeAsync",
+        "cuMemFreeAsync_ptsz",
+        "cuMemFreeHost",
+        "cuMemUnmap",
+    },
 }
 
 # An id-range bound is vocabulary, not a symbol: `mlx5dv_lo = 200` names the

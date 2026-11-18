@@ -60,16 +60,16 @@ CSV
 # way wr_flow_rule.sh found that its own fixture could not see a dropped
 # clause.
 cat > "$WORK/mem_object.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device,attr_status
-0,2,0,100,0,900,0,5,0,20480,4096,0,0
-1,2,0,100,0,900,0,9,0,20480,4096,1,0
-2,2,0,100,0,900,0,7,0,20480,4096,2,0
-1,2,0,100,0,900,0,1,0,8192,2048,1,0
-1,2,0,100,0,900,0,2,0,8192,512,1,0
-1,2,0,100,0,900,0,4,0,0,256,1,0
-1,2,0,100,0,900,0,6,0,30000,2048,1,0
-1,2,0,100,0,900,0,8,0,60000,1024,1,0
-0,2,0,100,0,900,0,3,0,4096,1024,0,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device,attr_status,origin
+0,2,0,100,0,900,0,5,0,20480,4096,0,0,2
+1,2,0,100,0,900,0,9,0,20480,4096,1,0,2
+2,2,0,100,0,900,0,7,0,20480,4096,2,0,2
+1,2,0,100,0,900,0,1,0,8192,2048,1,0,2
+1,2,0,100,0,900,0,2,0,8192,512,1,0,2
+1,2,0,100,0,900,0,4,0,0,256,1,0,2
+1,2,0,100,0,900,0,6,0,30000,2048,1,0,2
+1,2,0,100,0,900,0,8,0,60000,1024,1,0,2
+0,2,0,100,0,900,0,3,0,4096,1024,0,0,2
 CSV
 
 cat > "$WORK/ib_modify_qp.csv" <<'CSV'
@@ -198,6 +198,71 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 2,3,0,3000,0,3100,0,1,7,5000,0,8,1,0,2,5,0
 CSV
 
+# THE UCX HALF (PLAN-20261118-1930). Workers: rank 0 owns prefix 0xA0, rank 1
+# 0xB0, rank 2 0xC0 — and prefix 0xD0 is claimed by BOTH rank 1 and rank 2, so an
+# endpoint dialling it has no nameable peer and must place nothing.
+cat > "$WORK/ucx_worker_address.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,worker,addr_hash,prefix_hash,addr_len
+0,1,0,100,0,0,0,1,161,160,64
+1,1,0,100,0,0,0,1,177,176,64
+2,1,0,100,0,0,0,1,193,192,64
+1,1,0,100,0,0,0,2,209,208,64
+2,1,0,100,0,0,0,2,210,208,64
+CSV
+
+# rank 0 ep 50 -> rank 1; rank 0 ep 51 -> the ambiguous prefix; rank 2 ep 52 -> rank 1.
+cat > "$WORK/ucx_ep_connection.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,remote_prefix_hash
+0,1,0,100,0,0,0,50,176
+0,1,0,100,0,0,0,51,208
+2,1,0,100,0,0,0,52,176
+CSV
+
+# A send's buffer is an intern HANDLE; these are the addresses behind them.
+#   rank 0 h70 -> 4112   inside rank 0's object 3 [4096, 5120), offset 16
+#   rank 0 h71 -> 999999 inside nothing: a host bounce buffer, not an object
+#   rank 0 h72 -> 20480  the start of rank 0's object 5
+#   rank 0 h74 -> TWO addresses (a replayed capture's two dictionaries): refused
+#   rank 2 h73 -> 20580  inside rank 2's object 7, offset 100
+cat > "$WORK/intern_key.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,key,handle,domain
+0,0,0,0,0,0,0,4112,70,1
+0,0,0,0,0,0,0,999999,71,1
+0,0,0,0,0,0,0,20480,72,1
+0,0,0,0,0,0,0,4100,74,1
+0,0,0,0,0,0,0,20500,74,1
+2,0,0,0,0,0,0,20580,73,1
+CSV
+
+# One send is placed (h70 to rank 1). The rest each fail one rule: a host
+# buffer, an unnameable peer, an ERROR send (status_class 1, no bytes moved),
+# and the ambiguous handle.
+cat > "$WORK/ucx_tag_send.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,count,tag,status,status_class,door,device
+0,0,0,4000,0,0,0,50,70,0,64,1,0,0,0,0
+0,0,0,4001,0,0,0,50,71,0,8,1,0,0,0,65535
+0,0,0,4002,0,0,0,51,72,0,32,1,0,0,0,0
+0,0,0,4003,0,0,0,50,72,0,32,1,-1,1,0,0
+0,0,0,4004,0,0,0,50,74,0,16,1,0,0,0,0
+CSV
+
+cat > "$WORK/ucx_am_send.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,am_id,count,header_length,status,status_class,device
+2,0,0,4010,0,0,0,52,73,0,7,32,16,0,0,2
+CSV
+
+# A put names the PEER's address: 8200 is inside both of rank 1's objects at
+# base 8192, so the smaller (object 2) wins, offset 8. A get from rank 2 into
+# rank 1's object 8 at offset 10, whose LOCAL buffer had no GPU (65535), so the
+# actor's device falls back to rank 2's. And a put to address 0, which names no
+# buffer.
+cat > "$WORK/ucx_rma.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,endpoint,buffer,request,rkey,count,remote_addr,status,status_class,op,door,device
+0,0,0,4020,0,0,0,50,0,0,0,16,8200,0,0,0,0,0
+2,0,0,4021,0,0,0,52,0,0,0,4,60010,0,0,1,0,65535
+0,0,0,4022,0,0,0,50,0,0,0,8,0,0,0,0,0,0
+CSV
+
 "$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
@@ -226,7 +291,7 @@ expect() {  # <label> <sql> <expected>
 # Every placement in one value. Each defect in the header changes it.
 expect "the placements" \
     "SELECT string_agg(source||':'||owner_rank||':'||object||':'||obj_offset||':'||size||':'||exact, ' ' ORDER BY source, owner_rank, object, obj_offset, size) FROM object_access" \
-    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:0:4:false p2p:1:9:0:8:false p2p:1:9:256:8:false p2p:2:7:0:8:false p2p:2:7:256:8:false verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
+    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:0:4:false p2p:1:9:0:8:false p2p:1:9:256:8:false p2p:2:7:0:8:false p2p:2:7:256:8:false ucx_rma:1:2:8:16:true ucx_rma:1:8:10:4:true ucx_send:0:3:16:64:true ucx_send:2:7:100:32:true verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
 
 # The column that meant two things. A peer write is owned by the rank whose
 # memory it landed in, never by the rank that issued it.
@@ -262,7 +327,7 @@ expect "a send with no remote address is not placed" \
 # panel renders "(approx.)" off this column.
 expect "verbs is exact and p2p is not" \
     "SELECT string_agg(DISTINCT source||'='||exact, ',' ORDER BY source||'='||exact) FROM object_access" \
-    "devx=true,p2p=false,verbs=true"
+    "devx=true,p2p=false,ucx_rma=true,ucx_send=true,verbs=true"
 
 # Two accesses could not be placed, for two different reasons. An empty Objects
 # panel must read as a count here, not as "this workload touched nothing".
@@ -300,6 +365,27 @@ expect "an offset into an unresolved region is never read as an address" \
 
 expect "the dropped offsets are counted, not silent" \
     "SELECT n FROM link_health WHERE finding = 'unplaced_offset_sends'" "3"
+
+# UCX. A send is placed in the SENDER's object, and the actor is the rank it
+# went to — the reverse of a verbs write, which is placed in the peer's.
+expect "a ucx send is the sender's object, reached by the receiver" \
+    "SELECT string_agg(owner_rank||'>'||actor_rank, ',' ORDER BY owner_rank) FROM object_access WHERE source = 'ucx_send'" \
+    "0>1,2>1"
+
+# Host buffer, unnameable peer, error send, ambiguous handle, address 0: five
+# rows that must not be placed, so exactly two sends and two RMAs survive.
+expect "only a ucx operation with a nameable peer and a known object is placed" \
+    "SELECT count(*) FROM object_access WHERE source LIKE 'ucx%'" "4"
+
+# The buffer's GPU where UCX observed one, else the rank's.
+expect "a ucx rma names the buffer's GPU, else the rank's" \
+    "SELECT string_agg(actor_rank||':'||actor_device, ',' ORDER BY actor_rank) FROM object_access WHERE source = 'ucx_rma'" \
+    "0:0,2:2"
+
+# The unit, because the Objects panel sums `size` and a UCP count is not bytes.
+expect "ucx sizes say they are datatype units, and nothing else does" \
+    "SELECT string_agg(DISTINCT CASE WHEN source LIKE 'ucx%' THEN 'ucx' ELSE 'other' END||'='||unit, ',' ORDER BY CASE WHEN source LIKE 'ucx%' THEN 'ucx' ELSE 'other' END||'='||unit) FROM object_access" \
+    "other=bytes,ucx=datatype-units"
 
 # rkey 7, reused across two ordinary regions, needs no check of its own: both
 # verbs rows in "the placements" name it, and either one dropped as ambiguous

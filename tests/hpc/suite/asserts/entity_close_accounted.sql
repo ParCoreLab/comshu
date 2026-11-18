@@ -206,17 +206,20 @@ WHERE NOT EXISTS (SELECT 1 FROM closes c WHERE c.rank = o.rank AND c.subject = o
   -- context nothing opened, or a context closed twice, is still caught. Only
   -- "never closed" is dropped, because for this entity it is not a defect.
   AND o.opener != 120
-  -- mem_object (520) is exempt from THIS clause for a different reason than
-  -- ib_device, and it is a gap rather than a property: gpumem hooks
-  -- nvshmem_free but NOT cudaFree, and the NVSHMEM symmetric heap region is
-  -- mapped for the life of the process and never freed at all. So an
-  -- unclosed mem_object today means "we do not hook that destruction door
-  -- yet", which is exactly what this clause is for — and firing it on every
-  -- cudaMalloc in every capture would drown the signal rather than deliver it.
+  -- mem_object (520) is exempt from THIS clause, and since PLAN-20261118-1930
+  -- for ib_device's reason rather than for want of a door. This comment used
+  -- to call the exemption a temporary gap — "delete it the moment cudaFree is
+  -- hooked" — and the engine now hooks the whole free family (cuMemFree_v2,
+  -- cuMemFreeAsync, cuMemFreeHost, cuMemUnmap) alongside nvshmem_free. What is
+  -- left unclosed is what a program legitimately keeps until exit: Kokkos and
+  -- PyTorch caching allocators, the NVSHMEM symmetric heap, buffers an MPI
+  -- application never frees because the process is about to end anyway. Firing
+  -- on those would report correct programs.
   --
-  -- The exemption is therefore temporary and should be deleted the moment
-  -- gpumem hooks cudaFree. The other two clauses still cover 520 in full: a
-  -- close naming an object nothing recorded, or one closed twice, is caught.
+  -- The other two clauses now cover 520 in FULL, and that is the part the new
+  -- doors made meaningful: a close naming an object nothing recorded, or one
+  -- closed twice, is a defect in the doors themselves — the engine closes only
+  -- an object its registry holds LIVE, so neither should ever appear.
   AND o.opener != 520
 GROUP BY o.rank, o.subject, o.opener
 

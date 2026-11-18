@@ -62,6 +62,7 @@ extern "C" char** environ;
 #include "comshu/rec/recorder.hpp"
 #include "comshu/rec/thread_buffer_registry.hpp"
 #include "comshu/tracer.hpp"
+#include "engine_objects.hpp"
 
 namespace comshu {
 
@@ -100,7 +101,7 @@ namespace {
 // plain POD — which is the point: gpumem is built by nvcc/gcc-11.4 and this
 // object by gcc-13.2, so nothing with a C++ ABI may cross between them.
 struct Arena final : rec::IDrainable {
-    comshu_arena            pub{};
+    comshu_arena           pub{};
     std::vector<std::byte> storage;
     core::RecordTypeId     type_id{};
     core::RecordKind       kind{};
@@ -244,7 +245,7 @@ int comshu_engine_acquire(const char* output_dir, int rank, int verbose) {
     // special-casing the check keeps one rule: every id in a capture belongs to
     // exactly one declared range.
     comshu_engine_declare_provider("comshu-engine", comshu::core::id_range::internal_lo,
-                                  comshu::core::id_range::internal_hi, COMSHU_ENGINE_ABI_VERSION);
+                                   comshu::core::id_range::internal_hi, COMSHU_ENGINE_ABI_VERSION);
 
     comshu::Tracer::instance().start(cfg);
     comshu_install_ibv_destroy_qp_hook();
@@ -279,9 +280,9 @@ void comshu_engine_release(void) {
 // there are two of them and why neither can be the only one.
 
 void comshu_engine_record_kernel(std::uint64_t t0, std::uint64_t t1, std::uint16_t domain,
-                                const char* name, std::uint64_t correlation, std::uint64_t stream,
-                                std::uint16_t device, std::uint8_t source,
-                                const std::uint32_t* grid, const std::uint16_t* block) {
+                                 const char* name, std::uint64_t correlation, std::uint64_t stream,
+                                 std::uint16_t device, std::uint8_t source,
+                                 const std::uint32_t* grid, const std::uint16_t* block) {
     auto& tracer = comshu::Tracer::instance();
     if (!tracer.has_recorder())
         return;  // nothing has started a capture
@@ -332,11 +333,11 @@ void comshu_engine_record_kernel(std::uint64_t t0, std::uint64_t t1, std::uint16
 // be written from any thread at any point in the run without the teardown
 // ordering Invocation has to worry about.
 void comshu_engine_record_memcpy(std::uint64_t t0, std::uint64_t t1, std::uint16_t domain,
-                                std::uint64_t bytes, std::uint64_t correlation,
-                                std::uint64_t stream, std::uint16_t src_device,
-                                std::uint16_t dst_device, std::uint16_t ctx_device,
-                                std::uint8_t kind, std::uint8_t src_space, std::uint8_t dst_space,
-                                std::uint8_t source, std::uint8_t async) {
+                                 std::uint64_t bytes, std::uint64_t correlation,
+                                 std::uint64_t stream, std::uint16_t src_device,
+                                 std::uint16_t dst_device, std::uint16_t ctx_device,
+                                 std::uint8_t kind, std::uint8_t src_space, std::uint8_t dst_space,
+                                 std::uint8_t source, std::uint8_t async) {
     auto& tracer = comshu::Tracer::instance();
     if (!tracer.has_recorder())
         return;
@@ -362,7 +363,7 @@ void comshu_engine_record_memcpy(std::uint64_t t0, std::uint64_t t1, std::uint16
 }
 
 void comshu_engine_clock_anchor(std::uint16_t domain, std::uint64_t local_ticks,
-                               std::uint64_t wall_ns) {
+                                std::uint64_t wall_ns) {
     auto& tracer = comshu::Tracer::instance();
     if (!tracer.has_recorder())
         return;
@@ -433,13 +434,13 @@ int comshu_engine_trace_mode(void) {
 }
 
 comshu_arena* comshu_engine_arena(std::uint16_t type_id, std::uint8_t kind, std::uint32_t stride,
-                                std::uint32_t capacity) {
+                                  std::uint32_t capacity) {
     auto& map = comshu::arenas_for_this_thread();
     auto  it = map.find(type_id);
     if (it == map.end()) {
         warn_if_undeclared(type_id);
-        auto a = std::make_unique<comshu::Arena>(type_id, static_cast<comshu::core::RecordKind>(kind),
-                                                stride, capacity);
+        auto a = std::make_unique<comshu::Arena>(
+            type_id, static_cast<comshu::core::RecordKind>(kind), stride, capacity);
         // Registered so Tracer::finalize() can flush arenas belonging to threads
         // that never call drain_thread() (NCCL's proxy threads, NVBit's).
         comshu::rec::ThreadBufferRegistry::instance().register_buffer(a.get());
@@ -690,8 +691,10 @@ std::string traced_argv() {
 // nothing recorded whether it was set.
 std::string captured_env() {
     static const char* const kDefault[] = {
-        "COMSHU_", "SLURM_", "OMPI_MCA_rmaps_", "OMPI_COMM_WORLD_", "PMIX_RANK",
-        "CUDA_VISIBLE_DEVICES", "LD_PRELOAD", "UCX_TLS", "NCCL_ALGO", "NCCL_PROTO",
+        "COMSHU_",          "SLURM_",    "OMPI_MCA_rmaps_",
+        "OMPI_COMM_WORLD_", "PMIX_RANK", "CUDA_VISIBLE_DEVICES",
+        "LD_PRELOAD",       "UCX_TLS",   "NCCL_ALGO",
+        "NCCL_PROTO",
     };
     std::vector<std::string> prefixes(std::begin(kDefault), std::end(kDefault));
     // Comma-separated additions, so a study can capture the variables ITS
@@ -731,13 +734,14 @@ std::string captured_env() {
 // path whose basename starts with "libcomshu" or contains "_trace" — the two
 // naming conventions this project's shared objects use.
 std::string mapped_images() {
-    const std::string      maps = read_proc_file("/proc/self/maps");
+    const std::string        maps = read_proc_file("/proc/self/maps");
     std::vector<std::string> seen;
-    std::string            out;
-    std::size_t            pos = 0;
+    std::string              out;
+    std::size_t              pos = 0;
     while (pos < maps.size()) {
-        const auto eol = maps.find('\n', pos);
-        std::string_view line{maps.data() + pos, (eol == std::string::npos ? maps.size() : eol) - pos};
+        const auto       eol = maps.find('\n', pos);
+        std::string_view line{maps.data() + pos,
+                              (eol == std::string::npos ? maps.size() : eol) - pos};
         pos = (eol == std::string::npos) ? maps.size() : eol + 1;
 
         // The path is the last field and starts at the first '/'; anonymous and
@@ -758,7 +762,7 @@ std::string mapped_images() {
             path.compare(path.size() - kDeleted.size(), kDeleted.size(), kDeleted) == 0;
         if (deleted)
             path.resize(path.size() - kDeleted.size());
-        const auto  base = path.rfind('/');
+        const auto       base = path.rfind('/');
         std::string_view name{path};
         if (base != std::string::npos)
             name = std::string_view{path}.substr(base + 1);
@@ -774,7 +778,7 @@ std::string mapped_images() {
             continue;
         seen.push_back(path);
 
-        struct stat st {};
+        struct stat st{};
         if (!deleted && ::stat(path.c_str(), &st) == 0) {
             char buf[64];
             std::snprintf(buf, sizeof buf, " %lld %lld", static_cast<long long>(st.st_size),
@@ -843,8 +847,59 @@ void maybe_emit_invocation() {
 
 }  // namespace comshu
 
+/* Which loaded objects are comshu's own code: the engine, and every provider
+ * that declared itself. A provider calls comshu_engine_declare_provider from its
+ * own code, so the caller's address names the provider's .so — and with it
+ * everything linked statically into that .so: cudart, NVBit, libnvbit's own
+ * allocations. The CUDA allocation doors use this to tell the application's
+ * memory from comshu's (nvbit_backend.cu's channel and anchor buffers would
+ * otherwise be recorded as application objects on every gpumem run).
+ *
+ * Plain atomics, append-only, because the reader is an allocation hook that
+ * may run on any thread at any time. */
+namespace {
+constexpr int            kMaxComshuObjects = 32;
+std::atomic<const void*> g_comshu_base[kMaxComshuObjects];
+std::atomic<int>         g_comshu_bases{0};
+
+const void* object_base_of(const void* pc) {
+    Dl_info info{};
+    return pc && dladdr(pc, &info) ? info.dli_fbase : nullptr;
+}
+
+void note_comshu_object(const void* pc) {
+    const void* base = object_base_of(pc);
+    if (!base)
+        return;
+    const int n = g_comshu_bases.load(std::memory_order_acquire);
+    for (int i = 0; i < n; ++i)
+        if (g_comshu_base[i].load(std::memory_order_relaxed) == base)
+            return;
+    if (n < kMaxComshuObjects) {
+        g_comshu_base[n].store(base, std::memory_order_relaxed);
+        g_comshu_bases.store(n + 1, std::memory_order_release);
+    }
+}
+}  // namespace
+
+namespace comshu::engine {
+bool is_comshu_code(const void* pc) {
+    const void* base = object_base_of(pc);
+    if (!base)
+        return false;
+    static const void* engine = object_base_of(reinterpret_cast<const void*>(&is_comshu_code));
+    if (base == engine)
+        return true;
+    const int n = g_comshu_bases.load(std::memory_order_acquire);
+    for (int i = 0; i < n; ++i)
+        if (g_comshu_base[i].load(std::memory_order_relaxed) == base)
+            return true;
+    return false;
+}
+}  // namespace comshu::engine
+
 extern "C" int comshu_engine_declare_provider(const char* name, std::uint16_t id_lo,
-                                             std::uint16_t id_hi, std::uint32_t abi_version) {
+                                              std::uint16_t id_hi, std::uint32_t abi_version) {
     const char* who = name ? name : "?";
     if (abi_version != COMSHU_ENGINE_ABI_VERSION) {
         std::fprintf(stderr,
@@ -876,6 +931,7 @@ extern "C" int comshu_engine_declare_provider(const char* name, std::uint16_t id
         }
     }
     declared().push_back({who, id_lo, id_hi});
+    note_comshu_object(__builtin_return_address(0));
     return 0;
 }
 
@@ -953,42 +1009,72 @@ template<typename Fn> Fn comshu_next_sym(const char* name) {
     return reinterpret_cast<Fn>(dlsym(RTLD_NEXT, name));
 }
 
-void comshu_note_object(void* p, std::size_t size) {
-    if (!p || !size)
+}  // namespace
+
+/* The engine's own object emitters, declared in engine_objects.hpp so the CUDA
+ * allocation doors (cuda_alloc_doors.cpp) and the NVSHMEM interposers below
+ * emit through one path: one intern rule, one registry, one liveness rule. */
+namespace comshu::engine {
+
+void note_object(std::uint64_t base, std::uint64_t size, core::ObjectOrigin origin,
+                 int known_device) {
+    if (!base || !size)
         return;
     auto& tracer = comshu::Tracer::instance();
     if (!tracer.has_recorder())
         return; /* nothing has started a capture; the app is running untraced */
-    const auto base = reinterpret_cast<std::uint64_t>(p);
-    auto&      rec = tracer.recorder();
+    auto& rec = tracer.recorder();
     /* Interned in the Pointer domain — the same identity scheme ibverbs,
      * mlx5dv and gpumem use, so the same buffer mints the same id everywhere
      * and the rows merge instead of doubling. */
     const auto object = rec.intern(comshu::rec::InternDomain::Pointer, base);
-    const auto attr = comshu::core::attribute(p);
-    const auto device = attr.device;
-    rec.record(rec.now_instant(),
-               comshu::core::records::MemObject{
-                   {}, {}, object, comshu::core::kNullHandle, {base, size}, device, attr.status});
-    comshu::core::ObjectRegistry::instance().add(base, size, object, device);
+    const auto attr = known_device >= 0
+                          ? comshu::core::Attribution{static_cast<core::DeviceId>(known_device),
+                                                      core::AttrStatus::Device}
+                          : comshu::core::attribute(reinterpret_cast<const void*>(base));
+    rec.record(rec.now_instant(), comshu::core::records::MemObject{{},
+                                                                   {},
+                                                                   object,
+                                                                   comshu::core::kNullHandle,
+                                                                   {base, size},
+                                                                   attr.device,
+                                                                   attr.status,
+                                                                   origin});
+    comshu::core::ObjectRegistry::instance().add(base, size, object, attr.device);
 }
 
-void comshu_close_object(void* p) {
-    if (!p)
-        return;
-    auto& tracer = comshu::Tracer::instance();
-    if (!tracer.has_recorder())
-        return;
-    const auto base = reinterpret_cast<std::uint64_t>(p);
-    const auto object = comshu::core::ObjectRegistry::instance().object_at(base);
-    if (object == comshu::core::kNullHandle)
-        return; /* allocated before we attached: closing it would manufacture
-                 * the unmatched row entity_close_accounted exists to detect */
-    auto& rec = tracer.recorder();
+namespace {
+void emit_close(core::Handle object) {
+    auto& rec = comshu::Tracer::instance().recorder();
     rec.record(rec.now_instant(),
                comshu::core::records::EntityClose{
                    {}, {}, object, comshu::core::records::MemObject::comshu_type_id});
 }
+}  // namespace
+
+/* Only a LIVE registered object is closed. Not registered means allocated
+ * before we attached, and already closed means a second free of one pointer:
+ * either way a close here would manufacture the unmatched row
+ * entity_close_accounted exists to detect, and the second would be our own
+ * double count rather than a missing door. */
+void close_object(std::uint64_t base) {
+    if (!base || !comshu::Tracer::instance().has_recorder())
+        return;
+    const auto object = comshu::core::ObjectRegistry::instance().close_at(base);
+    if (object != comshu::core::kNullHandle)
+        emit_close(object);
+}
+
+void close_objects_in(std::uint64_t lo, std::uint64_t hi) {
+    if (lo >= hi || !comshu::Tracer::instance().has_recorder())
+        return;
+    for (const auto object : comshu::core::ObjectRegistry::instance().close_range(lo, hi))
+        emit_close(object);
+}
+
+}  // namespace comshu::engine
+
+namespace {
 
 /* Queue pairs whose OPEN a provider recorded, keyed by the ibv_qp* the creation
  * door returned — the per-QP counterpart of ObjectRegistry, and what lets the
@@ -1063,8 +1149,8 @@ void comshu_close_qp(void* p) {
     if (!tracer.has_recorder())
         return;
     constexpr comshu::core::RecordTypeId kIbQueuePairTypeId = 102;
-    const auto                          addr = reinterpret_cast<std::uint64_t>(p);
-    const std::uint16_t                 registered = QpRegistry::instance().take(addr);
+    const auto                           addr = reinterpret_cast<std::uint64_t>(p);
+    const std::uint16_t                  registered = QpRegistry::instance().take(addr);
     if (!registered && !type_is_declared(102) && !type_is_declared(210))
         return;
     auto& rec = tracer.recorder();
@@ -1314,21 +1400,24 @@ extern "C" sighandler_t signal(int sig, sighandler_t handler) {
 extern "C" void* nvshmem_malloc(size_t size) {
     static auto real = comshu_next_sym<void* (*)(size_t)>("nvshmem_malloc");
     void*       p = real ? real(size) : nullptr;
-    comshu_note_object(p, size);
+    comshu::engine::note_object(reinterpret_cast<std::uint64_t>(p), size,
+                                comshu::core::ObjectOrigin::NvshmemMalloc);
     return p;
 }
 
 extern "C" void* nvshmem_calloc(size_t count, size_t size) {
     static auto real = comshu_next_sym<void* (*)(size_t, size_t)>("nvshmem_calloc");
     void*       p = real ? real(count, size) : nullptr;
-    comshu_note_object(p, count * size);
+    comshu::engine::note_object(reinterpret_cast<std::uint64_t>(p), count * size,
+                                comshu::core::ObjectOrigin::NvshmemMalloc);
     return p;
 }
 
 extern "C" void* nvshmem_align(size_t alignment, size_t size) {
     static auto real = comshu_next_sym<void* (*)(size_t, size_t)>("nvshmem_align");
     void*       p = real ? real(alignment, size) : nullptr;
-    comshu_note_object(p, size);
+    comshu::engine::note_object(reinterpret_cast<std::uint64_t>(p), size,
+                                comshu::core::ObjectOrigin::NvshmemMalloc);
     return p;
 }
 
@@ -1337,7 +1426,7 @@ extern "C" void* nvshmem_align(size_t alignment, size_t size) {
  * the other order would let that new object be registered and then closed. */
 extern "C" void nvshmem_free(void* p) {
     static auto real = comshu_next_sym<void (*)(void*)>("nvshmem_free");
-    comshu_close_object(p);
+    comshu::engine::close_object(reinterpret_cast<std::uint64_t>(p));
     if (real)
         real(p);
 }
@@ -1390,8 +1479,8 @@ int ibv_destroy_qp_hook(void* qp) {
         // versioned symbol without going through the engine's interposition.
         if (comshu::smart_dlsym::real_dlopen && comshu::smart_dlsym::real_dlsym) {
             void* h = comshu::smart_dlsym::real_dlopen("libibverbs.so.1",
-                                                      comshu::smart_dlsym::DL_RTLD_NOW |
-                                                          comshu::smart_dlsym::DL_RTLD_NOLOAD);
+                                                       comshu::smart_dlsym::DL_RTLD_NOW |
+                                                           comshu::smart_dlsym::DL_RTLD_NOLOAD);
             if (h)
                 real = reinterpret_cast<PfnDestroyQp>(
                     comshu::smart_dlsym::real_dlsym(h, "ibv_destroy_qp"));
@@ -1434,7 +1523,7 @@ static void comshu_install_ibv_destroy_qp_hook() {
  * PLAN-20260806-1329 forbids — that rule is about one provider waiting on
  * another; this is the same shape as core/mem_attr.hpp's device_of. */
 extern "C" int comshu_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size,
-                                      uint32_t* object, uint16_t* device) {
+                                       uint32_t* object, uint16_t* device) {
     const auto found = comshu::core::ObjectRegistry::instance().find(addr);
     if (!found)
         return 0;
@@ -1483,7 +1572,7 @@ static bool trace_dmabuf() {
 }
 
 extern "C" void comshu_engine_dmabuf_note(int fd, uint64_t base, uint64_t size, uint16_t device,
-                                         uint8_t door) {
+                                          uint8_t door) {
     if (fd < 0)
         return;
     if (trace_dmabuf())

@@ -44,7 +44,8 @@ int main() {
                                   core::kNullHandle,
                                   {static_cast<std::uint64_t>(i), 64},
                                   core::kUnknownDevice,
-                                  core::AttrStatus::HostNotCuda});
+                                  core::AttrStatus::HostNotCuda,
+                                  core::ObjectOrigin::Unstated});
         us[i] = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0)
                     .count();
     }
@@ -60,8 +61,9 @@ int main() {
 
     Tracer::instance().finalize();
 
-    const auto inv = dir / "rank-0" /
-                     (std::to_string(core::RecordTrait<core::records::Invocation>::type_id) + ".pcs");
+    const auto inv =
+        dir / "rank-0" /
+        (std::to_string(core::RecordTrait<core::records::Invocation>::type_id) + ".pcs");
     if (!fs::exists(inv) || fs::file_size(inv) <= sizeof(rec::StreamHeader)) {
         std::printf("FAIL: no Invocation row — moving the one-time emissions lost it\n");
         return 1;

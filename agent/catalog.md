@@ -318,7 +318,7 @@ every arithmetic you do here. For a duration, subtract. For an axis, subtract
 the capture's `min(t0_ns)` first and plot the offset.
 
 ### `object_access` — every recorded touch of an application buffer
-`owner_rank INT, object UINT, obj_offset UBIGINT, size UINT, source VARCHAR, actor_rank BIGINT, actor_device BIGINT, exact BOOLEAN`
+`owner_rank INT, object UINT, obj_offset UBIGINT, size UINT, source VARCHAR, actor_rank BIGINT, actor_device BIGINT, exact BOOLEAN, unit VARCHAR`
 
 One row per access, normalised to a byte offset inside the object that owns it.
 `owner_rank`/`object` name the buffer, `actor_rank`/`actor_device` name who
@@ -326,7 +326,16 @@ touched it (so an object with several distinct `actor_rank` values is
 multi-writer), `source` is which provider saw it: `verbs` (ibv_post_send),
 `verbs_recv` (a two-sided send, placed from the receiver's posted buffer),
 `devx` (a send the GPU built itself — IBGDA, NCCL GIN — decoded at a doorbell;
-`actor_device` is then the sending queue's GPU, per send) or `p2p` (NVLink).
+`actor_device` is then the sending queue's GPU, per send), `p2p` (NVLink),
+`ucx_rma` (a `ucp_put`/`ucp_get` naming the peer's address) or `ucx_send` (a UCX
+tag send / active message, placed in the **sender's** buffer it left from, with
+the **receiving** rank as `actor_rank` — the reverse of `verbs`, which is placed
+in the receiver's buffer).
+
+**`unit` matters.** `size` is bytes (`unit = 'bytes'`) for every source except
+the two UCX ones, where it is a UCP datatype count (`unit = 'datatype-units'`):
+bytes only when the application passed a byte datatype. Never `sum(size)` across
+units; group by `unit` or filter to one.
 
 **`exact` matters.** A `verbs` offset is anchored to the object's true base and
 is exact. A `p2p` offset is anchored to the lowest address observed, because the
@@ -484,7 +493,7 @@ The ones worth knowing, by what they record:
 | `ib_mem_region` | a registered MR: `range_base`, `range_size`, `lkey`, `rkey`, `access`, `dmabuf_fd` |
 | `ib_mem_region_iova` | the `iova` an MR was registered at, by `mr`/`rkey`, **only** when it differs from `range_base`. A zero-based MR (NCCL GIN) is addressed by offset: VA = `range_base + (remote_addr - iova)`. `object_access` already applies it |
 | `ib_device`, `ib_port` | the HCA and its ports; `lid` lives here |
-| `mem_object` | an application allocation: `id`, `range_base`, `range_size`, `device`, and `attr_status` — WHY the device is what it is (0 Device, 1 HostNotCuda, 2 HostCudaKnown, 3 DriverAbsent, 4 NullAddr, 5 OrdinalFailed, 6 NotQueried; names in `vocabulary`). `device = 65535` with status 1 or 2 is host memory, not a failure |
+| `mem_object` | a memory object — an allocation or a registration: `id`, `range_base`, `range_size`, `device`, and `attr_status` — WHY the device is what it is (0 Device, 1 HostNotCuda, 2 HostCudaKnown, 3 DriverAbsent, 4 NullAddr, 5 OrdinalFailed, 6 NotQueried; names in `vocabulary`). `device = 65535` with status 1 or 2 is host memory, not a failure. `origin` is the call that made it known — an application allocation (1 NvshmemMalloc, 2 CuMemAlloc = cudaMalloc, 3 CuMemAllocManaged, 4 CuMemAllocAsync, 5 CuMemHost = pinned host, 6 CuMemMap, 7 NvbitAlloc, 8 NvbitRegion) or a transport registration (9 IbRegMr, 10 DevxUmem, 11 NcclWindow); 0 Unstated. One buffer seen by two emitters has two rows with one range and two origins — count buffers by `(rank, range_base, range_size)`, not by rows |
 | `gpu_access` | one GPU memory access (p2p provider): `address`, `size`, `op`, `space`, `run_device`, `mem_device`, `thread`, `pc` |
 | `gpu_kernel` | a kernel launch: grid/block dims, `stream`, `device`, `correlation` |
 | `mlx5_device_send`, `mlx5_devx_*`, `mlx5_doorbell`, `mlx5_uar`, `mlx5_umem`, `mlx5_send_coverage` | the DEVX path (IBGDA, ibdevx) — decoded send WQEs, whose `submitter` says which door saw them (`gpu_doorbell`, `host_doorbell`, `sq_watch`), the objects behind them, and the send-queue watcher's per-rank coverage (`published = decoded + lapped + dropped`) |

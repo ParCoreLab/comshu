@@ -47,6 +47,54 @@ enum class AttrStatus : std::uint8_t {
     NotQueried = 6,
 };
 
+// WHICH CALL made a MemObject known. One record type carries two different
+// kinds of thing, and until this field only a buffer's size told them apart
+// (PLAN-20260810-0505's measurement: NVSHMEM's 8/40/327680-byte rows were the
+// transport's work queues, the application's two 4 KiB buffers were absent):
+//
+//   an APPLICATION ALLOCATION — memory the program asked for and names:
+//     NvshmemMalloc      nvshmem_malloc/calloc/align (engine, or gpumem)
+//     CuMemAlloc         cuMemAlloc_v2 / cuMemAllocPitch_v2 — cudaMalloc[Pitch]
+//     CuMemAllocManaged  cuMemAllocManaged — cudaMallocManaged
+//     CuMemAllocAsync    cuMemAlloc[FromPool]Async — cudaMallocAsync; stream-
+//                        ordered, so its [open, close) is in CALL order, not in
+//                        the order the GPU reached the alloc and the free
+//     CuMemHost          cuMemAllocHost_v2 / cuMemHostAlloc — page-locked host
+//                        memory, cudaMallocHost / cudaHostAlloc
+//     CuMemMap           one cuMemMap of a VMM allocation (cuMemCreate is a
+//                        handle with no address; the mapping is the object)
+//     NvbitAlloc         a device allocation gpumem saw through NVBit, which
+//                        does not say which API made it
+//     NvbitRegion        a mapped region gpumem's region pass found (the
+//                        NVSHMEM symmetric heap): seen, not observed being made
+//
+//   a TRANSPORT REGISTRATION — memory some library handed a NIC; usually it
+//   overlaps an allocation above, and is not one:
+//     IbRegMr            ibv_reg_mr / reg_mr_iova2 / reg_dmabuf_mr
+//     DevxUmem           mlx5dv_devx_umem_reg[_ex]
+//     NcclWindow         ncclCommWindowRegister
+//
+//   Unstated (0) is a row from an emitter that did not say — every row in a
+//   capture predating this field reads as 0 by construction, which is why 0 is
+//   not a real origin.
+//
+// A buffer two emitters saw has two rows with two origins and one range; the
+// reader merges by range (records.hpp) and keeps both answers.
+enum class ObjectOrigin : std::uint8_t {
+    Unstated = 0,
+    NvshmemMalloc = 1,
+    CuMemAlloc = 2,
+    CuMemAllocManaged = 3,
+    CuMemAllocAsync = 4,
+    CuMemHost = 5,
+    CuMemMap = 6,
+    NvbitAlloc = 7,
+    NvbitRegion = 8,
+    IbRegMr = 9,
+    DevxUmem = 10,
+    NcclWindow = 11,
+};
+
 // Where a GpuKernel's [start, end] came from. Carried as a field rather than
 // split into two record types, because it is one measurement with two possible
 // instruments — the "independent emitters, dedup by identity" rule.

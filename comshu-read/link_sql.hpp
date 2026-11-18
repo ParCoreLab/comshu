@@ -622,6 +622,25 @@ FROM intern_text
 GROUP BY rank, domain, handle
 )sql"},
 
+    // (rank, handle) -> the ADDRESS an interned pointer stands for. domain = 1 is
+    // InternDomain::Pointer. Records carry a Handle where the hot path saw a
+    // pointer (UcxTagSend.buffer, UcxRma.buffer) — interned once, so a 64-bit
+    // address costs a 32-bit id per record — and this is where the id turns
+    // back into the address.
+    //
+    // `keys` for the reason _intern_name has `texts`: a replayed capture loads
+    // two passes as one rank with two dictionaries, and handle 3 can then be two
+    // addresses. Callers require keys = 1.
+    {"_intern_ptr", R"sql(
+CREATE OR REPLACE VIEW _intern_ptr AS
+SELECT rank, handle,
+       min(key)            AS addr,
+       count(DISTINCT key) AS keys
+FROM intern_key
+WHERE domain = 1
+GROUP BY rank, handle
+)sql"},
+
     // --- the UCT layer: which transport actually carried it ------------------
     //
     // (rank, iface) -> the transport and device it was opened on. `domain = 2`
@@ -1710,7 +1729,14 @@ inline constexpr Table kTables[] = {
     // providers loaded has two independent views of the same object, and being
     // able to see them apart is how you tell a provider that is missing traffic
     // from a workload that did not send any.
-    {"object_access", "owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact",
+    //
+    // `unit` says what `size` counts, because two branches do not count bytes.
+    // A UCP operation's length is a DATATYPE COUNT (UcxTagSend.count, "raw UCP
+    // datatype count, not universally bytes"), and the Objects panel sums `size`
+    // into a byte total — so without this column the UCX rows would be added to
+    // verbs bytes in one number, silently. comm_edges carries `unit` for the same
+    // reason; this is that rule arriving one view later.
+    {"object_access", "owner_rank,object,obj_offset,size,source,actor_rank,actor_device,exact,unit",
      R"sql(
 WITH p2p AS (
     -- OWNER IS THE RANK THAT OWNS THE MEMORY, NEVER THE RANK THAT WROTE IT.
@@ -2008,14 +2034,109 @@ verbs_recv AS (
     FROM _recv_attr a
     LEFT JOIN _rank_device rd ON rd.rank = a.sender_rank
     WHERE a.object IS NOT NULL
+),
+-- THE UCX HALF (PLAN-20261118-1930). Two branches, and they answer different
+-- questions about the same kind of traffic, so they are named apart.
+--
+-- ucx_rma: a ucp_put / ucp_get names the PEER's address, exactly like an RDMA
+-- write names its target. The peer is the rank behind the endpoint
+-- (_ucx_peer_of_ep, which refuses an ambiguous prefix rather than guess), and
+-- the address resolves against THAT rank's objects, innermost wins. A get is
+-- kept as a touch of the peer's object by the rank that issued it: the bytes
+-- moved the other way, and the object touched is the same one.
+--
+-- actor_device is the BUFFER's GPU where UCX recorded one (ucx_rma.device is
+-- device_of(buffer), an observation per call) and the rank's GPU otherwise —
+-- the same per-send-over-per-rank preference the devx branch makes.
+ucx_rma AS (
+    SELECT p.peer_rank                              AS owner_rank,
+           m.id                                     AS object,
+           (r.remote_addr - m.range_base)::UBIGINT  AS obj_offset,
+           r."count"                                AS size,
+           'ucx_rma'                                AS source,
+           r.rank::BIGINT                           AS actor_rank,
+           coalesce(CASE WHEN r.device <> 65535 THEN r.device END, rd.device)::BIGINT
+                                                    AS actor_device,
+           TRUE                                     AS exact
+    FROM ucx_rma r
+    JOIN _ucx_peer_of_ep p ON p.rank = r.rank AND p.endpoint = r.endpoint
+    LEFT JOIN _rank_device rd ON rd.rank = r.rank
+    JOIN LATERAL (
+        SELECT o.id, o.range_base
+        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
+        WHERE o.rank = p.peer_rank
+          AND r.remote_addr >= o.range_base
+          AND r.remote_addr <  o.range_base + o.range_size
+        ORDER BY o.range_size
+        LIMIT 1
+    ) m ON TRUE
+    WHERE r.status_class <> 1 AND r.remote_addr > 0
+),
+-- ucx_send: a tag send or active message names no remote address — the
+-- receiver picks the buffer — but it names its OWN buffer, in its own address
+-- space, so it resolves exactly against the sender's objects. The row is the
+-- object the payload LEFT FROM, owned by the sender, with the receiving rank as
+-- the actor: under the rendezvous protocol that is literally who read it (the
+-- receiver's get_zcopy, CUDA IPC or RDMA, measured on LAMMPS r2), and under
+-- eager it is who the bytes were for.
+--
+-- This is the mirror of verbs_recv, which recovers the DESTINATION object of a
+-- two-sided send from the receiver's posted buffer. UCX's receive side would
+-- need the sender of each receive, which for a wildcard receive is a tag match
+-- this view does not do — so the source object is the half that is exact today.
+--
+-- Host buffers (an MPI library's own bounce and control messages, malloc'd) are
+-- in no mem_object row and fall out at the LATERAL join, which is right: they
+-- are not the application's objects.
+--
+-- `buffer` is an intern HANDLE (Pointer domain), not an address; _intern_ptr
+-- turns it back, and an ambiguous handle (keys > 1, a replayed capture) is not
+-- placed rather than placed at one of its candidates.
+ucx_send_ops AS (
+    SELECT o.rank, o.endpoint, ip.addr AS buffer, o.units
+    FROM (
+        SELECT rank, endpoint, buffer, "count" AS units
+        FROM ucx_tag_send WHERE status_class <> 1 AND buffer <> 0
+        UNION ALL
+        SELECT rank, endpoint, buffer, "count"
+        FROM ucx_am_send  WHERE status_class <> 1 AND buffer <> 0
+    ) o
+    JOIN _intern_ptr ip ON ip.rank = o.rank AND ip.handle = o.buffer AND ip.keys = 1
+    WHERE ip.addr > 0
+),
+ucx_send AS (
+    SELECT u.rank                                   AS owner_rank,
+           m.id                                     AS object,
+           (u.buffer - m.range_base)::UBIGINT       AS obj_offset,
+           u.units                                  AS size,
+           'ucx_send'                               AS source,
+           p.peer_rank::BIGINT                      AS actor_rank,
+           rd.device::BIGINT                        AS actor_device,
+           TRUE                                     AS exact
+    FROM ucx_send_ops u
+    JOIN _ucx_peer_of_ep p ON p.rank = u.rank AND p.endpoint = u.endpoint
+    LEFT JOIN _rank_device rd ON rd.rank = p.peer_rank
+    JOIN LATERAL (
+        SELECT o.id, o.range_base
+        FROM (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) o
+        WHERE o.rank = u.rank
+          AND u.buffer >= o.range_base
+          AND u.buffer <  o.range_base + o.range_size
+        ORDER BY o.range_size
+        LIMIT 1
+    ) m ON TRUE
 )
-SELECT * FROM p2p
+SELECT *, 'bytes' AS unit FROM p2p
 UNION ALL
-SELECT * FROM verbs
+SELECT *, 'bytes' FROM verbs
 UNION ALL
-SELECT * FROM devx
+SELECT *, 'bytes' FROM devx
 UNION ALL
-SELECT * FROM verbs_recv
+SELECT *, 'bytes' FROM verbs_recv
+UNION ALL
+SELECT *, 'datatype-units' FROM ucx_rma
+UNION ALL
+SELECT *, 'datatype-units' FROM ucx_send
 )sql"},
 
     // Which KERNEL issued each GPU-initiated send: one row per kernel execution,
@@ -2223,7 +2344,19 @@ SELECT * FROM (VALUES
     ('AttrStatus', 3, 'DriverAbsent'),
     ('AttrStatus', 4, 'NullAddr'),
     ('AttrStatus', 5, 'OrdinalFailed'),
-    ('AttrStatus', 6, 'NotQueried')
+    ('AttrStatus', 6, 'NotQueried'),
+    ('ObjectOrigin', 0, 'Unstated'),
+    ('ObjectOrigin', 1, 'NvshmemMalloc'),
+    ('ObjectOrigin', 2, 'CuMemAlloc'),
+    ('ObjectOrigin', 3, 'CuMemAllocManaged'),
+    ('ObjectOrigin', 4, 'CuMemAllocAsync'),
+    ('ObjectOrigin', 5, 'CuMemHost'),
+    ('ObjectOrigin', 6, 'CuMemMap'),
+    ('ObjectOrigin', 7, 'NvbitAlloc'),
+    ('ObjectOrigin', 8, 'NvbitRegion'),
+    ('ObjectOrigin', 9, 'IbRegMr'),
+    ('ObjectOrigin', 10, 'DevxUmem'),
+    ('ObjectOrigin', 11, 'NcclWindow')
 ) AS v(vocab, value, name)
 )sql"},
 
@@ -2294,17 +2427,17 @@ ORDER BY i.rank
     // Note `algo`/`proto` arrive UPPERCASED from NCCL ("RING", "SIMPLE") while
     // NCCL_ALGO/NCCL_PROTO are spelled mixed-case; anything comparing this to
     // run_provenance.env has to fold case.
-// This layer mounts the RAW streams, so `func`/`algo`/`proto`/`datatype` arrive
-// as intern HANDLES and the temporal arrives as `temporal_a_ticks` /
-// `temporal_b_ticks` — the on-disk shape, not the shape `comshu export --csv`
-// prints. Resolving the handles is this layer's job (see the header on
-// _intern_name), and the `texts = 1` guard is load-bearing for the reason
-// run_provenance gives: a REPLAYED capture nests several passes under one rank
-// with independent dictionaries, so one handle can name two strings and a bare
-// join would multiply the table.
-//
-// `domain = 2` is InternDomain::String, spelled as a number because an enum here
-// is a number.
+    // This layer mounts the RAW streams, so `func`/`algo`/`proto`/`datatype` arrive
+    // as intern HANDLES and the temporal arrives as `temporal_a_ticks` /
+    // `temporal_b_ticks` — the on-disk shape, not the shape `comshu export --csv`
+    // prints. Resolving the handles is this layer's job (see the header on
+    // _intern_name), and the `texts = 1` guard is load-bearing for the reason
+    // run_provenance gives: a REPLAYED capture nests several passes under one rank
+    // with independent dictionaries, so one handle can name two strings and a bare
+    // join would multiply the table.
+    //
+    // `domain = 2` is InternDomain::String, spelled as a number because an enum here
+    // is a number.
     {"nccl_execution",
      "rank,nccl_comm_hash,nccl_rank,nranks,nnodes,func,algo,proto,datatype,count,n_channels,"
      "n_warps,seq_number,event_id,parent_event_id,t0_ns,t1_ns",
@@ -3602,8 +3735,7 @@ inline bool columns_match(duckdb_connection con, const Table& t) {
         // fell into, and it cost a debugging cycle on nccl_execution, whose
         // query named `ticks` when the raw mount calls it `temporal_a_ticks`.
         const char* err = duckdb_result_error(&res);
-        std::fprintf(stderr, "comshu: %s failed to plan: %s\n", t.name,
-                     err ? err : "(no message)");
+        std::fprintf(stderr, "comshu: %s failed to plan: %s\n", t.name, err ? err : "(no message)");
         duckdb_destroy_result(&res);
         return false;
     }

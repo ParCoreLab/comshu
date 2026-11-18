@@ -203,7 +203,8 @@ public:
         const Config cfg = Config::from_env();
         // See ibverbs: declare the 700-799 range and our ABI before acquiring.
         if (comshu_engine_declare_provider("gpumem", core::id_range::gpumem_lo,
-                                          core::id_range::gpumem_hi, COMSHU_ENGINE_ABI_VERSION) != 0)
+                                           core::id_range::gpumem_hi,
+                                           COMSHU_ENGINE_ABI_VERSION) != 0)
             return;
         comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
         auto& rec = recorder();
@@ -244,11 +245,16 @@ public:
     core::Handle on_symmetric_region(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
         auto&      rec = recorder();
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
-        rec.record(rec.now_instant(),
-                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev,
-                                            dev == core::kUnknownDevice
-                                                ? core::AttrStatus::NotQueried
-                                                : core::AttrStatus::Device});
+        rec.record(rec.now_instant(), core::records::MemObject{{},
+                                                               {},
+                                                               object,
+                                                               core::kNullHandle,
+                                                               {base, size},
+                                                               dev,
+                                                               dev == core::kUnknownDevice
+                                                                   ? core::AttrStatus::NotQueried
+                                                                   : core::AttrStatus::Device,
+                                                               core::ObjectOrigin::NvbitRegion});
         return object;
     }
 
@@ -287,11 +293,16 @@ public:
             return;
         auto&      rec = recorder();
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
-        rec.record(rec.now_instant(),
-                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev,
-                                            dev == core::kUnknownDevice
-                                                ? core::AttrStatus::NotQueried
-                                                : core::AttrStatus::Device});
+        rec.record(rec.now_instant(), core::records::MemObject{{},
+                                                               {},
+                                                               object,
+                                                               core::kNullHandle,
+                                                               {base, size},
+                                                               dev,
+                                                               dev == core::kUnknownDevice
+                                                                   ? core::AttrStatus::NotQueried
+                                                                   : core::AttrStatus::Device,
+                                                               core::ObjectOrigin::NvshmemMalloc});
         m_allocs.add(base, size, dev, object);
     }
 
@@ -323,8 +334,9 @@ public:
         if (object == core::kNullHandle)
             return;
         auto& rec = recorder();
-        rec.record(rec.now_instant(), core::records::EntityClose{
-                                          {}, {}, object, core::records::MemObject::comshu_type_id});
+        rec.record(
+            rec.now_instant(),
+            core::records::EntityClose{{}, {}, object, core::records::MemObject::comshu_type_id});
     }
 
     void on_alloc(std::uint64_t base, std::uint64_t size, core::DeviceId dev) {
@@ -336,10 +348,16 @@ public:
         const auto object = rec.intern(rec::InternDomain::Pointer, base);
         m_allocs.add(base, size, dev, object);
         rec.record(rec.now_instant(),  // lifetime open until free-tracking lands
-                   core::records::MemObject{{}, {}, object, core::kNullHandle, {base, size}, dev,
+                   core::records::MemObject{{},
+                                            {},
+                                            object,
+                                            core::kNullHandle,
+                                            {base, size},
+                                            dev,
                                             dev == core::kUnknownDevice
                                                 ? core::AttrStatus::NotQueried
-                                                : core::AttrStatus::Device});
+                                                : core::AttrStatus::Device,
+                                            core::ObjectOrigin::NvbitAlloc});
     }
 
     // One process's mapping of a fabric-shared allocation.

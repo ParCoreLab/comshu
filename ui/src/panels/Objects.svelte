@@ -48,13 +48,18 @@
   $effect(() => {
     query(`
       SELECT m.rank, m.id, m.range_base AS base, m.range_size AS size, m.device,
-             m.attr_status, ri.node_ix,
+             m.attr_status, m.origins, ri.node_ix,
              coalesce(a.n, 0) AS accesses, coalesce(a.touched_by, '') AS touched_by,
              coalesce(a.sources, '') AS sources
       -- min(attr_status): where two emitters saw one object, the most definite
       -- answer wins — Device (0) over a host answer over never-asked.
-      FROM (SELECT rank, id, range_base, range_size, device, min(attr_status) AS attr_status
-            FROM mem_object GROUP BY ALL) m
+      --
+      -- origins: every call that made this extent known, because two emitters
+      -- seeing one buffer is normal (a cudaMalloc that ibverbs later registered)
+      -- and each says something different about it.
+      FROM (SELECT rank, id, range_base, range_size, device, min(attr_status) AS attr_status,
+                   array_to_string(array_agg(DISTINCT origin ORDER BY origin), ',') AS origins
+            FROM mem_object GROUP BY rank, id, range_base, range_size, device) m
       LEFT JOIN rank_identity ri ON ri.rank = m.rank
       LEFT JOIN (
         SELECT owner_rank, object, count(*) AS n,
@@ -89,13 +94,18 @@
     if (!sel) { bins = []; return; }
     const r = num(sel.rank), o = num(sel.id);
     query(`
+      -- The window ends at the furthest byte touched. A UCX row's size is a
+      -- datatype COUNT, not an extent (object_access.unit), so it contributes
+      -- the one byte its offset names rather than stretching the window by a
+      -- number of elements.
       WITH w AS (
-        SELECT max(obj_offset) + max(size) AS hi
+        SELECT max(obj_offset + CASE WHEN unit = 'bytes' THEN size ELSE 1 END) AS hi
         FROM object_access WHERE owner_rank = ${r} AND object = ${o}
       )
       SELECT floor(a.obj_offset * ${BINS} / greatest(w.hi, 1))::INT AS bin,
              count(*)::BIGINT                         AS n,
-             sum(a.size)::BIGINT                      AS bytes,
+             coalesce(sum(a.size) FILTER (WHERE a.unit = 'bytes'), 0)::BIGINT AS bytes,
+             coalesce(sum(a.size) FILTER (WHERE a.unit <> 'bytes'), 0)::BIGINT AS units,
              min(a.obj_offset)::BIGINT                AS off_lo,
              max(a.obj_offset)::BIGINT                AS off_hi,
              array_to_string(array_agg(DISTINCT a.source ORDER BY a.source), ' + ')
@@ -118,8 +128,8 @@
   $effect(() => {
     if (!sel) { split = []; return; }
     query(`
-      SELECT source, bool_and(exact) AS exact,
-             count(*)::BIGINT AS n, sum(size)::BIGINT AS bytes,
+      SELECT source, bool_and(exact) AS exact, min(unit) AS unit,
+             count(*)::BIGINT AS n, sum(size)::BIGINT AS amount,
              array_to_string(array_agg(DISTINCT 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '') ORDER BY 'rank ' || actor_rank || coalesce(' (GPU ' || actor_device || ')', '')), ', ') AS actors
       FROM object_access
       WHERE owner_rank = ${num(sel.rank)} AND object = ${num(sel.id)}
@@ -153,6 +163,34 @@
     5: 'failed',
     6: 'not named',
   };
+  // What made the object known (mem_object.origin, ObjectOrigin in vocab.hpp),
+  // in the words a user would type. An application allocation and a transport
+  // registration share a record type; this is the column that tells them apart.
+  const ORIGIN = {
+    1: 'nvshmem_malloc',
+    2: 'cudaMalloc',
+    3: 'cudaMallocManaged',
+    4: 'cudaMallocAsync',
+    5: 'pinned host',
+    6: 'cuMemMap',
+    7: 'seen by NVBit',
+    8: 'mapped region',
+    9: 'ibv_reg_mr',
+    10: 'DEVX umem',
+    11: 'NCCL window',
+  };
+  const madeBy = (o) =>
+    (o.origins ?? '')
+      .split(',')
+      .filter((x) => x !== '' && x !== '0')
+      .map((x) => ORIGIN[+x] ?? `origin ${x}`)
+      .join(' + ') || '—';
+  // A total in the unit it was counted in. Bytes when the rows are bytes, a
+  // plain count when they are UCP datatype units — the two are never added.
+  const amount = (b, u) =>
+    [num(b) ? bytes(num(b)) : null, num(u) ? `${count(num(u))} units` : null]
+      .filter(Boolean)
+      .join(' + ') || bytes(0);
   const dev = (d, st) =>
     num(d) === 65535 ? (NO_DEVICE[num(st)] ?? 'unknown') : `GPU ${d}`;
   // rank 9 · n2: the node is where host memory lives, and one fact with the rank.
@@ -176,7 +214,7 @@
     // the one thing you can paste into a debugger.
     tip = {
       title: `+${bytes(num(b.off_lo))} – ${bytes(num(b.off_hi))}${b.all_exact ? '' : ' (approx.)'}`,
-      body: `${count(num(b.n))} touches · ${bytes(num(b.bytes))} · via ${b.sources} · by ${b.actors}`,
+      body: `${count(num(b.n))} touches · ${amount(b.bytes, b.units)} · via ${b.sources} · by ${b.actors}`,
     };
     tipRef?.move(ev);
   }
@@ -202,7 +240,7 @@
     {#if sel && bins.length}
       <div class="mb-4">
         <div class="text-[13px] mb-1">
-          <b>{bytes(num(sel.size))}</b> object on {where(sel)}, {dev(sel.device, sel.attr_status)}
+          <b>{bytes(num(sel.size))}</b> {madeBy(sel)} object on {where(sel)}, {dev(sel.device, sel.attr_status)}
           <span style="color: var(--text-3)">— {count(num(sel.accesses))} accesses</span>
         </div>
         <div class="overflow-x-auto" onmousemove={onMove} onmouseleave={() => (tip = null)}>
@@ -244,7 +282,9 @@
               <span>
                 <b>{sp.source}</b>
                 <span style="color: var(--text-2)">
-                  {count(num(sp.n))} touches · {bytes(num(sp.bytes))} · by {sp.actors}
+                  {count(num(sp.n))} touches ·
+                  {sp.unit === 'bytes' ? bytes(num(sp.amount)) : `${count(num(sp.amount))} units`}
+                  · by {sp.actors}
                 </span>
                 {#if !sp.exact}
                   <span style="color: var(--text-3)"> · offsets approximate</span>
@@ -263,6 +303,11 @@
           the peer's buffer, whose distance from the base is not in the record
           (measured 128 GiB on one capture), so its offsets run from the first
           byte observed. Any bin mixing the two is marked approximate on hover.
+          A <code>ucx_send</code> touch is a message that LEFT this object, by
+          the rank it went to; a <code>ucx_rma</code> touch is a put or get that
+          named this object's address. Both count UCP datatype
+          <i>units</i>, which are bytes only for a byte datatype, so they are
+          totalled apart from bytes and never added to them.
         </p>
       </div>
     {/if}
@@ -271,7 +316,7 @@
       <table class="w-full text-xs border-collapse">
         <thead>
           <tr>
-            {#each ['', 'rank', 'device', 'base', 'size', 'touched by', 'via', 'accesses'] as h}
+            {#each ['', 'rank', 'device', 'made by', 'base', 'size', 'touched by', 'via', 'accesses'] as h}
               <th class="px-2.5 py-1 font-medium border-b {h === 'accesses' || h === 'size' ? 'text-right' : 'text-left'}"
                   style="color: var(--text-2); border-color: var(--border)">{h}</th>
             {/each}
@@ -295,6 +340,7 @@
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
                 <span style="color: {num(o.device) === 65535 ? 'var(--text-3)' : 'var(--text-1)'}">{dev(o.device, o.attr_status)}</span>
               </td>
+              <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border); color: var(--text-2)">{madeBy(o)}</td>
               <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">0x{num(o.base).toString(16)}</td>
               <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{bytes(num(o.size))}</td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
@@ -320,8 +366,13 @@
       With no GPU, the device says why: <code>host</code> (CUDA says it is not
       GPU memory), <code>not asked</code> (registered before CUDA was loaded),
       or <code>failed</code> — the only one that is a problem. None of them is
-      merged with GPU 0. Objects with no recorded accesses are listed but not viewable: the
-      transport registers buffers the instrumented kernels never touch.
+      merged with GPU 0. <b>made by</b> is the call that made the object known:
+      an application allocation (<code>cudaMalloc</code>,
+      <code>nvshmem_malloc</code>, <code>cuMemMap</code>…) or a transport
+      registration (<code>ibv_reg_mr</code>, <code>DEVX umem</code>), which
+      usually covers memory some allocation already named. Objects with no
+      recorded accesses are listed but not viewable: the transport registers
+      buffers the instrumented kernels never touch.
     </p>
   {/if}
 </Card>

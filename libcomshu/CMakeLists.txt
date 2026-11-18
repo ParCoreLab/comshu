@@ -46,6 +46,8 @@ add_custom_target(comshu_build_id ALL
 
 add_library(comshu_engine SHARED
   src/engine.cpp
+  src/libcuda_cells.cpp
+  src/cuda_alloc_doors.cpp
   src/hook/Dlsym.cpp
   src/hook/SymbolResolver.cpp
 )

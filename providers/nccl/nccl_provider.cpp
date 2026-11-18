@@ -37,7 +37,7 @@ static comshu::core::Handle h(const void* p) {
 
 static comshu::core::Temporal span(std::uint64_t begin, std::uint64_t end) {
     return comshu::core::Temporal::interval({comshu::core::kDomainHostTsc, begin},
-                                           {comshu::core::kDomainHostTsc, end});
+                                            {comshu::core::kDomainHostTsc, end});
 }
 
 static void close(const void* p, comshu::core::RecordTypeId opener) {
@@ -147,8 +147,8 @@ static void record_coll(rr::CollOp op, const void* sendbuff, void* recvbuff, std
 Profiler::Profiler() {
     const comshu::Config cfg = comshu::Config::from_env();
     if (comshu_engine_declare_provider("nccl", comshu::core::id_range::nccl_lo,
-                                      comshu::core::id_range::nccl_hi,
-                                      COMSHU_ENGINE_ABI_VERSION) != 0)
+                                       comshu::core::id_range::nccl_hi,
+                                       COMSHU_ENGINE_ABI_VERSION) != 0)
         return;
     comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
@@ -261,17 +261,15 @@ Profiler::Profiler() {
     register_post<window_register_tag>([](ncclResult_t res, ncclComm_t c, void* buff, size_t size,
                                           ncclWindow_t* win, int flags, auto begin, auto end) {
         if (res == ncclSuccess && win && *win)
-            rec().record(
-                span(begin, end),
-                rr::NcclWindow{{},
-                               {},
-                               h(*win),
-                               h(c),
-                               h(buff),
-                               static_cast<std::uint64_t>(size),
-                               flags,
-                               0,
-                               reinterpret_cast<std::uint64_t>(buff)});
+            rec().record(span(begin, end), rr::NcclWindow{{},
+                                                          {},
+                                                          h(*win),
+                                                          h(c),
+                                                          h(buff),
+                                                          static_cast<std::uint64_t>(size),
+                                                          flags,
+                                                          0,
+                                                          reinterpret_cast<std::uint64_t>(buff)});
         // ...and the buffer itself, in the shared vocabulary, so a put placed
         // into this window lands in an OBJECT. Interned on the base address in
         // the Pointer domain like every other emitter, so if gpumem or ibverbs
@@ -279,14 +277,15 @@ Profiler::Profiler() {
         if (res == ncclSuccess && win && *win && buff) {
             const auto attr = comshu::core::attribute(buff);
             rec().record(rec().now_instant(),
-                         comshu::core::records::MemObject{
-                             {},
-                             {},
-                             h(buff),
-                             comshu::core::kNullHandle,
-                             {reinterpret_cast<std::uint64_t>(buff), static_cast<std::uint64_t>(size)},
-                             attr.device,
-                             attr.status});
+                         comshu::core::records::MemObject{{},
+                                                          {},
+                                                          h(buff),
+                                                          comshu::core::kNullHandle,
+                                                          {reinterpret_cast<std::uint64_t>(buff),
+                                                           static_cast<std::uint64_t>(size)},
+                                                          attr.device,
+                                                          attr.status,
+                                                          comshu::core::ObjectOrigin::NcclWindow});
         }
     });
     register_pre<window_deregister_tag>([](ncclComm_t, ncclWindow_t win, auto) {

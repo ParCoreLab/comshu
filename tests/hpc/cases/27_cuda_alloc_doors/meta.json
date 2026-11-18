@@ -1,0 +1,29 @@
+{
+  "case": "27_cuda_alloc_doors",
+  "providers": ["cupti"],
+  "platform": "mn5",
+  "topology": "1 node x 1 H100 used (of 4), ONE process, no MPI",
+  "golden": "none, by design — see why_no_goldens",
+  "why": "a cudaMalloc has to be an object whichever provider ran (PLAN-20261118-1930). Until the engine observed the driver's allocation family, only gpumem (NVBit) recorded plain device allocations, so every MPI science-app capture (LAMMPS, QE, GROMACS over UCX) had an empty mem_object while its sends named GPU buffers by address. This case drives every route by which a program gets CUDA memory — the runtime (built static AND shared), the driver linked -lcuda, the driver by dlsym, VMM maps — and asserts each produced exactly its object, from a provider (-p cupti) that records no objects of its own.",
+  "why_no_goldens": "every route allocates at a size no other route uses, all fixed by params, so each claim is an assertion that finds its object by (origin, size) — no address, no id.",
+  "found_note": "the case's three behaviours are the three ways the doors could be wrong while every route still 'works': a double free emitting two closes, one cuMemUnmap closing the wrong mappings (or none), and an allocate/free loop recording one open per call but never its close.",
+  "workload": {
+    "ranks": 1, "nodes": 1, "gpus": 1,
+    "size_malloc": 3149824,
+    "size_managed": 3153920,
+    "size_async": 3158016,
+    "size_host": 3162112,
+    "size_hostalloc": 3166208,
+    "size_driver": 3170304,
+    "size_dlsym": 3174400,
+    "loop_iters": 50,
+    "loop_size": 3178496,
+    "pitch_width": 3000,
+    "pitch_height": 7
+  },
+  "workload_params": ["size_malloc", "size_managed", "size_async", "size_host", "size_hostalloc",
+                      "size_driver", "size_dlsym", "loop_iters", "loop_size",
+                      "pitch_width", "pitch_height"],
+  "workload_note": "sizes are 3 MiB + k * 4 KiB, distinct per route and far from anything a runtime allocates for itself. The workload allocates every route's buffer and keeps them all live, runs the loop, then frees everything but the managed buffer — so no two routes can ever share an address, and therefore an interned id.",
+  "expect_tables": ["mem_object", "entity_close"]
+}

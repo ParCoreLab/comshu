@@ -488,6 +488,66 @@ inline const char *EnumNameAttrStatus(AttrStatus e) {
   return EnumNamesAttrStatus()[index];
 }
 
+enum ObjectOrigin : uint8_t {
+  ObjectOrigin_Unstated = 0,
+  ObjectOrigin_NvshmemMalloc = 1,
+  ObjectOrigin_CuMemAlloc = 2,
+  ObjectOrigin_CuMemAllocManaged = 3,
+  ObjectOrigin_CuMemAllocAsync = 4,
+  ObjectOrigin_CuMemHost = 5,
+  ObjectOrigin_CuMemMap = 6,
+  ObjectOrigin_NvbitAlloc = 7,
+  ObjectOrigin_NvbitRegion = 8,
+  ObjectOrigin_IbRegMr = 9,
+  ObjectOrigin_DevxUmem = 10,
+  ObjectOrigin_NcclWindow = 11,
+  ObjectOrigin_MIN = ObjectOrigin_Unstated,
+  ObjectOrigin_MAX = ObjectOrigin_NcclWindow
+};
+
+inline const ObjectOrigin (&EnumValuesObjectOrigin())[12] {
+  static const ObjectOrigin values[] = {
+    ObjectOrigin_Unstated,
+    ObjectOrigin_NvshmemMalloc,
+    ObjectOrigin_CuMemAlloc,
+    ObjectOrigin_CuMemAllocManaged,
+    ObjectOrigin_CuMemAllocAsync,
+    ObjectOrigin_CuMemHost,
+    ObjectOrigin_CuMemMap,
+    ObjectOrigin_NvbitAlloc,
+    ObjectOrigin_NvbitRegion,
+    ObjectOrigin_IbRegMr,
+    ObjectOrigin_DevxUmem,
+    ObjectOrigin_NcclWindow
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesObjectOrigin() {
+  static const char * const names[13] = {
+    "Unstated",
+    "NvshmemMalloc",
+    "CuMemAlloc",
+    "CuMemAllocManaged",
+    "CuMemAllocAsync",
+    "CuMemHost",
+    "CuMemMap",
+    "NvbitAlloc",
+    "NvbitRegion",
+    "IbRegMr",
+    "DevxUmem",
+    "NcclWindow",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameObjectOrigin(ObjectOrigin e) {
+  if (::flatbuffers::IsOutRange(e, ObjectOrigin_Unstated, ObjectOrigin_NcclWindow)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesObjectOrigin()[index];
+}
+
 enum EdgePredicate : uint8_t {
   EdgePredicate_TouchedObject = 0,
   EdgePredicate_MapsToSourceLine = 1,
@@ -1007,7 +1067,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
   comshu::fb::MemRange range_;
   uint16_t device_;
   uint8_t attr_status_;
-  int8_t padding0__;  int32_t padding1__;
+  uint8_t origin_;
+  int32_t padding0__;
 
  public:
   MemObject()
@@ -1017,22 +1078,20 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
         range_(),
         device_(0),
         attr_status_(0),
-        padding0__(0),
-        padding1__(0) {
+        origin_(0),
+        padding0__(0) {
     (void)padding0__;
-    (void)padding1__;
   }
-  MemObject(const comshu::fb::Temporal &_temporal, uint32_t _id, uint32_t _name, const comshu::fb::MemRange &_range, uint16_t _device, comshu::fb::AttrStatus _attr_status)
+  MemObject(const comshu::fb::Temporal &_temporal, uint32_t _id, uint32_t _name, const comshu::fb::MemRange &_range, uint16_t _device, comshu::fb::AttrStatus _attr_status, comshu::fb::ObjectOrigin _origin)
       : temporal_(_temporal),
         id_(::flatbuffers::EndianScalar(_id)),
         name_(::flatbuffers::EndianScalar(_name)),
         range_(_range),
         device_(::flatbuffers::EndianScalar(_device)),
         attr_status_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_attr_status))),
-        padding0__(0),
-        padding1__(0) {
+        origin_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_origin))),
+        padding0__(0) {
     (void)padding0__;
-    (void)padding1__;
   }
   const comshu::fb::Temporal &temporal() const {
     return temporal_;
@@ -1051,6 +1110,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) MemObject FLATBUFFERS_FINAL_CLASS {
   }
   comshu::fb::AttrStatus attr_status() const {
     return static_cast<comshu::fb::AttrStatus>(::flatbuffers::EndianScalar(attr_status_));
+  }
+  comshu::fb::ObjectOrigin origin() const {
+    return static_cast<comshu::fb::ObjectOrigin>(::flatbuffers::EndianScalar(origin_));
   }
 };
 FLATBUFFERS_STRUCT_END(MemObject, 80);

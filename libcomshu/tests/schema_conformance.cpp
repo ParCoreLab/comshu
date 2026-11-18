@@ -34,9 +34,9 @@ namespace udr = comshu::providers::ucx_deep::records;
 namespace nr = comshu::providers::nccl::records;
 namespace fb = comshu::fb;
 
-#define COMSHU_SCHEMA_MATCH(CppRecord, FbStruct)                                                    \
+#define COMSHU_SCHEMA_MATCH(CppRecord, FbStruct)                                                   \
     static_assert(sizeof(Stamped<CppRecord>) == sizeof(FbStruct),                                  \
-                  #CppRecord " and comshu.fbs " #FbStruct " disagree on size — "                    \
+                  #CppRecord " and comshu.fbs " #FbStruct " disagree on size — "                   \
                              "update libcomshu/schema/comshu.fbs")
 
 COMSHU_SCHEMA_MATCH(cr::GpuAccess, fb::GpuAccess);
@@ -131,10 +131,10 @@ static_assert(sizeof(comshu::core::MemRange) == sizeof(fb::MemRange));
 // test vector) most of its bytes, while every reader that decodes the field by
 // name now decodes it wrong. These are the only checks that see it, which is
 // why the schema declares real enums instead of describing them in a comment.
-#define COMSHU_SCHEMA_ENUM(CppEnumerator, FbEnumerator)                                             \
+#define COMSHU_SCHEMA_ENUM(CppEnumerator, FbEnumerator)                                            \
     static_assert(static_cast<std::uint8_t>(CppEnumerator) ==                                      \
                       static_cast<std::uint8_t>(FbEnumerator),                                     \
-                  #CppEnumerator " and comshu.fbs " #FbEnumerator " disagree — "                    \
+                  #CppEnumerator " and comshu.fbs " #FbEnumerator " disagree — "                   \
                                  "the value is on disk; do not renumber either side")
 
 COMSHU_SCHEMA_ENUM(comshu::core::TimeKind::None, fb::TimeKind_None);
@@ -187,9 +187,23 @@ COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::DriverAbsent, fb::AttrStatus_Driver
 COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::NullAddr, fb::AttrStatus_NullAddr);
 COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::OrdinalFailed, fb::AttrStatus_OrdinalFailed);
 COMSHU_SCHEMA_ENUM(comshu::core::AttrStatus::NotQueried, fb::AttrStatus_NotQueried);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::Unstated, fb::ObjectOrigin_Unstated);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::NvshmemMalloc, fb::ObjectOrigin_NvshmemMalloc);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::CuMemAlloc, fb::ObjectOrigin_CuMemAlloc);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::CuMemAllocManaged,
+                   fb::ObjectOrigin_CuMemAllocManaged);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::CuMemAllocAsync, fb::ObjectOrigin_CuMemAllocAsync);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::CuMemHost, fb::ObjectOrigin_CuMemHost);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::CuMemMap, fb::ObjectOrigin_CuMemMap);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::NvbitAlloc, fb::ObjectOrigin_NvbitAlloc);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::NvbitRegion, fb::ObjectOrigin_NvbitRegion);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::IbRegMr, fb::ObjectOrigin_IbRegMr);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::DevxUmem, fb::ObjectOrigin_DevxUmem);
+COMSHU_SCHEMA_ENUM(comshu::core::ObjectOrigin::NcclWindow, fb::ObjectOrigin_NcclWindow);
 
 COMSHU_SCHEMA_ENUM(comshu::core::EdgePredicate::TouchedObject, fb::EdgePredicate_TouchedObject);
-COMSHU_SCHEMA_ENUM(comshu::core::EdgePredicate::MapsToSourceLine, fb::EdgePredicate_MapsToSourceLine);
+COMSHU_SCHEMA_ENUM(comshu::core::EdgePredicate::MapsToSourceLine,
+                   fb::EdgePredicate_MapsToSourceLine);
 COMSHU_SCHEMA_ENUM(comshu::core::EdgePredicate::ResidesOn, fb::EdgePredicate_ResidesOn);
 COMSHU_SCHEMA_ENUM(comshu::core::EdgePredicate::MapsToQp, fb::EdgePredicate_MapsToQp);
 
@@ -691,10 +705,11 @@ int main() {
         c.payload.range = {0x1000, 0x2000};
         c.payload.device = 0x33;
         c.payload.attr_status = comshu::core::AttrStatus::OrdinalFailed;
+        c.payload.origin = comshu::core::ObjectOrigin::CuMemAllocManaged;
         fb::MemObject f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(1, 0x111),
                                      fb::TimePoint(2, 0x222), 0),
                         0xAABB, 0xCCDD, fb::MemRange(0x1000, 0x2000), 0x33,
-                        fb::AttrStatus_OrdinalFailed);
+                        fb::AttrStatus_OrdinalFailed, fb::ObjectOrigin_CuMemAllocManaged);
         expect_identical("MemObject", &c, &f, sizeof(c));
     }
     {
@@ -837,9 +852,8 @@ int main() {
         fb::CudaMemcpy f(fb::Temporal(fb::TimeKind_Interval, fb::TimePoint(0, 0x3000),
                                       fb::TimePoint(0, 0x4000), 0),
                          0x1122334455667788ull, 0x99AABBCCDDEEFF00ull, 0x0102030405060708ull,
-                         0x1234, 0x5678, 0x9ABC, fb::MemcpyKind_PeerToPeer,
-                         fb::MemResidency_Device, fb::MemResidency_Managed,
-                         fb::CopySource_HostApi, 1);
+                         0x1234, 0x5678, 0x9ABC, fb::MemcpyKind_PeerToPeer, fb::MemResidency_Device,
+                         fb::MemResidency_Managed, fb::CopySource_HostApi, 1);
         expect_identical("CudaMemcpy", &c, &f, sizeof(c));
     }
     {
@@ -1230,8 +1244,8 @@ int main() {
         c.payload.gpu_resident = 1;
         c.payload.cqe_size = 0;
         fb::Mlx5DevxCq f(
-            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
-            7, 0x7F0044330000ull, 0x0004D2, 0x0011, 10, 0x0012, 1, 1, 0);
+            fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0), 7,
+            0x7F0044330000ull, 0x0004D2, 0x0011, 10, 0x0012, 1, 1, 0);
         expect_identical("Mlx5DevxCq", &c, &f, sizeof(c));
     }
     {

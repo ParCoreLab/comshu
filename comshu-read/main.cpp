@@ -127,6 +127,37 @@ const char* attr_status_name(core::AttrStatus st) {
     return "?";
 }
 
+// ObjectOrigin, by the schema's own names for the same reason as AttrStatus.
+const char* object_origin_name(core::ObjectOrigin o) {
+    switch (o) {
+        case core::ObjectOrigin::Unstated:
+            return "Unstated";
+        case core::ObjectOrigin::NvshmemMalloc:
+            return "NvshmemMalloc";
+        case core::ObjectOrigin::CuMemAlloc:
+            return "CuMemAlloc";
+        case core::ObjectOrigin::CuMemAllocManaged:
+            return "CuMemAllocManaged";
+        case core::ObjectOrigin::CuMemAllocAsync:
+            return "CuMemAllocAsync";
+        case core::ObjectOrigin::CuMemHost:
+            return "CuMemHost";
+        case core::ObjectOrigin::CuMemMap:
+            return "CuMemMap";
+        case core::ObjectOrigin::NvbitAlloc:
+            return "NvbitAlloc";
+        case core::ObjectOrigin::NvbitRegion:
+            return "NvbitRegion";
+        case core::ObjectOrigin::IbRegMr:
+            return "IbRegMr";
+        case core::ObjectOrigin::DevxUmem:
+            return "DevxUmem";
+        case core::ObjectOrigin::NcclWindow:
+            return "NcclWindow";
+    }
+    return "?";
+}
+
 const char* memspace_name(core::MemSpace sp) {
     switch (sp) {
         case core::MemSpace::Global:
@@ -253,24 +284,23 @@ template<> struct Table<GpuAccess> {
     static constexpr const char* cols =
         "ticks_lo,ticks_hi,launch,pc,object,addr,size,op,space,run_dev,mem_dev,thread";
     static void row(std::FILE* f, const Stamped<GpuAccess>& s, const rec::InternDictionary&) {
-        std::fprintf(
-            f, "%llu,%llu,%llu,%u,%u,0x%llx,%u,%s,%s,%u,%u,%u",
-            (unsigned long long)s.temporal.a.ticks,
-            (unsigned long long)s.temporal.b.ticks, (unsigned long long)s.payload.launch,
-            s.payload.pc, s.payload.object, (unsigned long long)s.payload.address, s.payload.size,
-            memop_name(s.payload.op), memspace_name(s.payload.space), s.payload.run_device,
-            s.payload.mem_device, s.payload.thread);
+        std::fprintf(f, "%llu,%llu,%llu,%u,%u,0x%llx,%u,%s,%s,%u,%u,%u",
+                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
+                     (unsigned long long)s.payload.launch, s.payload.pc, s.payload.object,
+                     (unsigned long long)s.payload.address, s.payload.size,
+                     memop_name(s.payload.op), memspace_name(s.payload.space), s.payload.run_device,
+                     s.payload.mem_device, s.payload.thread);
     }
 };
 
 template<> struct Table<MemObject> {
     static constexpr const char* name = "mem_object";
-    static constexpr const char* cols = "ticks,id,name,base,size,device,attr_status";
+    static constexpr const char* cols = "ticks,id,name,base,size,device,attr_status,origin";
     static void row(std::FILE* f, const Stamped<MemObject>& s, const rec::InternDictionary& in) {
-        std::fprintf(f, "%llu,%u,%s,0x%llx,%llu,%u,%s", (unsigned long long)s.temporal.a.ticks,
+        std::fprintf(f, "%llu,%u,%s,0x%llx,%llu,%u,%s,%s", (unsigned long long)s.temporal.a.ticks,
                      s.payload.id, in.str(s.payload.name), (unsigned long long)s.payload.range.base,
                      (unsigned long long)s.payload.range.size, s.payload.device,
-                     attr_status_name(s.payload.attr_status));
+                     attr_status_name(s.payload.attr_status), object_origin_name(s.payload.origin));
     }
 };
 
@@ -509,17 +539,17 @@ template<> struct Table<ibr::IbMemRegion> {
     static constexpr const char* name = "ib_mem_region";
     static constexpr const char* cols =
         "ticks,mr,pd,base,size,lkey,rkey,access,dmabuf_fd,origin,dmabuf_offset";
-    static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s,
-                                     const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<ibr::IbMemRegion>& s,
+                    const rec::InternDictionary&) {
         // origin as a NAME, not the raw enumerator: an assertion that has to
         // spell `origin = 3` encodes a number nobody can check against the
         // header, which is how umem_binding earned its own string column.
-        std::fprintf(
-            f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d,%s,0x%llx", (unsigned long long)s.temporal.a.ticks,
-            s.payload.mr, s.payload.pd, (unsigned long long)s.payload.range.base,
-            (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
-            s.payload.access, s.payload.dmabuf_fd, ib_region_origin_name(s.payload.origin),
-            (unsigned long long)s.payload.dmabuf_offset);
+        std::fprintf(f, "%llu,%u,%u,0x%llx,%llu,%u,%u,%u,%d,%s,0x%llx",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.mr, s.payload.pd,
+                     (unsigned long long)s.payload.range.base,
+                     (unsigned long long)s.payload.range.size, s.payload.lkey, s.payload.rkey,
+                     s.payload.access, s.payload.dmabuf_fd, ib_region_origin_name(s.payload.origin),
+                     (unsigned long long)s.payload.dmabuf_offset);
     }
 };
 
@@ -631,7 +661,7 @@ template<> struct Table<ibr::IbMemRegionIova> {
     static void                  row(std::FILE* f, const Stamped<ibr::IbMemRegionIova>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%u,%u,%llu", s.payload.mr, s.payload.rkey,
-                     (unsigned long long)s.payload.iova);
+                                      (unsigned long long)s.payload.iova);
     }
 };
 
@@ -1011,8 +1041,7 @@ template<> struct Table<mxr::Mlx5DevxCq> {
     static constexpr const char* name = "mlx5_devx_cq";
     static constexpr const char* cols =
         "ticks,obj,cqn,cq_base,umem_id,log_cq_size,dbr_umem_id,device,gpu_resident,cqe_bytes";
-    static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxCq>& s,
-                    const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxCq>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,0x%llx,%u,%u,%u,%u,%u,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.obj, s.payload.cqn,
                      (unsigned long long)s.payload.cq_base, s.payload.umem_id,
@@ -1028,18 +1057,19 @@ template<> struct Table<mxr::Mlx5DeviceSend> {
         "decode,decode_name,av_ds,submitter,submitter_name,ticks_hi,dest_gid_prefix,dest_gid_iface";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DeviceSend>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(
-            f,
-            "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%u,%s,%u,%u,%s,%llu,0x%llx,0x%llx",
-            (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
-            s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
-            (unsigned long long)s.payload.laddr, s.payload.lkey,
-            (unsigned long long)s.payload.raddr, s.payload.rkey, s.payload.length,
-            s.payload.dest_dct, s.payload.dest_lid, s.payload.decode,
-            mlx5_send_decode_name(s.payload.decode),
-            s.payload.av_ds, s.payload.submitter, mlx5_send_submitter_name(s.payload.submitter),
-            (unsigned long long)s.temporal.b.ticks, (unsigned long long)s.payload.dest_gid_prefix,
-            (unsigned long long)s.payload.dest_gid_iface);
+        std::fprintf(f,
+                     "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%u,%s,%u,%u,%s,%"
+                     "llu,0x%llx,0x%llx",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
+                     s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
+                     (unsigned long long)s.payload.laddr, s.payload.lkey,
+                     (unsigned long long)s.payload.raddr, s.payload.rkey, s.payload.length,
+                     s.payload.dest_dct, s.payload.dest_lid, s.payload.decode,
+                     mlx5_send_decode_name(s.payload.decode), s.payload.av_ds, s.payload.submitter,
+                     mlx5_send_submitter_name(s.payload.submitter),
+                     (unsigned long long)s.temporal.b.ticks,
+                     (unsigned long long)s.payload.dest_gid_prefix,
+                     (unsigned long long)s.payload.dest_gid_iface);
     }
 };
 
@@ -1311,8 +1341,7 @@ template<> struct Table<ucr::UcxEpConnection> {
 template<> struct Table<ucr::UcxRkey> {
     static constexpr const char* name = "ucx_rkey";
     static constexpr const char* cols = "ticks,rkey,endpoint";
-    static void                  row(std::FILE* f, const Stamped<ucr::UcxRkey>& s,
-                                     const rec::InternDictionary&) {
+    static void row(std::FILE* f, const Stamped<ucr::UcxRkey>& s, const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u", (unsigned long long)s.temporal.a.ticks, s.payload.rkey,
                      s.payload.endpoint);
     }
@@ -1330,8 +1359,8 @@ template<> struct Table<ucr::UcxRkeyPack> {
     static void                  row(std::FILE* f, const Stamped<ucr::UcxRkeyPack>& s,
                                      const rec::InternDictionary&) {
         std::fprintf(f, "%llu,%u,%u,0x%016llx,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.memh, s.payload.context,
-                     (unsigned long long)s.payload.buffer_hash, s.payload.buffer_len);
+                                      s.payload.memh, s.payload.context, (unsigned long long)s.payload.buffer_hash,
+                                      s.payload.buffer_len);
     }
 };
 
@@ -1668,9 +1697,9 @@ template<> struct Table<ncr::NcclProfComm> {
     static void                  row(std::FILE* f, const Stamped<ncr::NcclProfComm>& s,
                                      const rec::InternDictionary& in) {
         std::fprintf(f, "%llu,%llu,%s,%d,%d,%d", (unsigned long long)s.temporal.a.ticks,
-                     (unsigned long long)s.payload.nccl_comm_hash,
-                     csv_quoted(s.payload.comm_name ? in.str(s.payload.comm_name) : "").c_str(),
-                     s.payload.nnodes, s.payload.nranks, s.payload.rank);
+                                      (unsigned long long)s.payload.nccl_comm_hash,
+                                      csv_quoted(s.payload.comm_name ? in.str(s.payload.comm_name) : "").c_str(),
+                                      s.payload.nnodes, s.payload.nranks, s.payload.rank);
     }
 };
 
@@ -1692,18 +1721,17 @@ template<> struct Table<ncr::NcclCollExec> {
     static constexpr const char* cols = "ticks,end_ticks,nccl_comm_hash,event_id,parent_event_id,"
                                         "func,algo,proto,datatype,count,root,n_channels,n_warps,"
                                         "seq_number";
-    static void row(std::FILE* f, const Stamped<ncr::NcclCollExec>& s,
-                    const rec::InternDictionary& in) {
+    static void                  row(std::FILE* f, const Stamped<ncr::NcclCollExec>& s,
+                                     const rec::InternDictionary& in) {
         auto t = [&in](core::Handle h) { return csv_quoted(h ? in.str(h) : ""); };
-        std::fprintf(f, "%llu,%llu,%llu,%llu,%llu,%s,%s,%s,%s,%llu,%d,%u,%u,%llu",
-                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
-                     (unsigned long long)s.payload.nccl_comm_hash,
-                     (unsigned long long)s.payload.event_id,
-                     (unsigned long long)s.payload.parent_event_id, t(s.payload.func).c_str(),
-                     t(s.payload.algo).c_str(), t(s.payload.proto).c_str(),
-                     t(s.payload.datatype).c_str(), (unsigned long long)s.payload.count,
-                     s.payload.root, s.payload.n_channels, s.payload.n_warps,
-                     (unsigned long long)s.payload.seq_number);
+        std::fprintf(
+            f, "%llu,%llu,%llu,%llu,%llu,%s,%s,%s,%s,%llu,%d,%u,%u,%llu",
+            (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
+            (unsigned long long)s.payload.nccl_comm_hash, (unsigned long long)s.payload.event_id,
+            (unsigned long long)s.payload.parent_event_id, t(s.payload.func).c_str(),
+            t(s.payload.algo).c_str(), t(s.payload.proto).c_str(), t(s.payload.datatype).c_str(),
+            (unsigned long long)s.payload.count, s.payload.root, s.payload.n_channels,
+            s.payload.n_warps, (unsigned long long)s.payload.seq_number);
     }
 };
 
@@ -1716,35 +1744,36 @@ template<> struct Table<ncr::NcclProxyOp> {
     static constexpr const char* name = "nccl_proxy_op";
     static constexpr const char* cols = "ticks,end_ticks,event_id,parent_event_id,dir,peer,"
                                         "channel_id,n_steps,chunk_size,planned_bytes,pid";
-    static void row(std::FILE* f, const Stamped<ncr::NcclProxyOp>& s,
-                    const rec::InternDictionary&) {
-        const auto planned =
-            static_cast<long long>(s.payload.n_steps) * static_cast<long long>(s.payload.chunk_size);
-        std::fprintf(f, "%llu,%llu,%llu,%llu,%s,%d,%u,%d,%d,%lld,%d",
-                     (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
-                     (unsigned long long)s.payload.event_id,
-                     (unsigned long long)s.payload.parent_event_id,
-                     s.payload.is_send ? "send" : "recv", s.payload.peer,
-                     (unsigned)s.payload.channel_id, s.payload.n_steps, s.payload.chunk_size,
-                     planned, s.payload.pid);
+    static void                  row(std::FILE* f, const Stamped<ncr::NcclProxyOp>& s,
+                                     const rec::InternDictionary&) {
+        const auto planned = static_cast<long long>(s.payload.n_steps) *
+                             static_cast<long long>(s.payload.chunk_size);
+        std::fprintf(
+            f, "%llu,%llu,%llu,%llu,%s,%d,%u,%d,%d,%lld,%d", (unsigned long long)s.temporal.a.ticks,
+            (unsigned long long)s.temporal.b.ticks, (unsigned long long)s.payload.event_id,
+            (unsigned long long)s.payload.parent_event_id, s.payload.is_send ? "send" : "recv",
+            s.payload.peer, (unsigned)s.payload.channel_id, s.payload.n_steps, s.payload.chunk_size,
+            planned, s.payload.pid);
     }
 };
 
 // known_types() is a set, and --types sorts by id.
-using TableRecords = std::tuple<
-    MemObject, EntityClose, GpuAccess, GpuKernel, CudaMemcpy, SourceLine, NodeIdentity, GpuDevice,
-    Invocation, PeerMapping, ClockAnchor, CaptureStatus, Attribution, ibr::IbQueuePair,
-    ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend, ibr::IbSharedRecvQueue,
-    ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice, ibr::IbReqNotifyCq, ibr::IbPollCq,
-    ibr::IbMemRegion, ibr::IbMemRegionIova, ibr::IbRecvCqe, ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort,
-    mxr::Mlx5Umem, mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
-    mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, mxr::Mlx5DevxCq,
-    mxr::Mlx5SendCoverage, ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint, ucr::UcxTagSend,
-    ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend, ucr::UcxMemMap, ucr::UcxWorkerProgress,
-    ucr::UcxTagProbe, ucr::UcxAtomic, ucr::UcxWorkerAddress, ucr::UcxEpConnection, ucr::UcxRkey,
-    ucr::UcxRkeyPack, udr::UctBinding, udr::UctIface, udr::UctEndpoint, udr::UctSend, ncr::NcclComm,
-    ncr::NcclCollective, ncr::NcclP2p, ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm,
-    ncr::NcclProfComm, ncr::NcclCollExec, ncr::NcclProxyOp>;
+using TableRecords =
+    std::tuple<MemObject, EntityClose, GpuAccess, GpuKernel, CudaMemcpy, SourceLine, NodeIdentity,
+               GpuDevice, Invocation, PeerMapping, ClockAnchor, CaptureStatus, Attribution,
+               ibr::IbQueuePair, ibr::IbCompletionQueue, ibr::IbModifyQp, ibr::IbPostSend,
+               ibr::IbSharedRecvQueue, ibr::IbPostRecv, ibr::IbAddressHandle, ibr::IbDevice,
+               ibr::IbReqNotifyCq, ibr::IbPollCq, ibr::IbMemRegion, ibr::IbMemRegionIova,
+               ibr::IbRecvCqe, ibr::IbQpSignalling, ibr::IbPostSendSg, ibr::IbPort, mxr::Mlx5Umem,
+               mxr::Mlx5Uar, mxr::Mlx5DevxCmd, mxr::Mlx5DevxQp, mxr::Mlx5DevxQpConnect,
+               mxr::Mlx5QueuePair, mxr::Mlx5Doorbell, mxr::Mlx5DeviceSend, mxr::Mlx5DevxCq,
+               mxr::Mlx5SendCoverage, ucr::UcxContext, ucr::UcxWorker, ucr::UcxEndpoint,
+               ucr::UcxTagSend, ucr::UcxTagRecv, ucr::UcxRma, ucr::UcxAmSend, ucr::UcxMemMap,
+               ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic, ucr::UcxWorkerAddress,
+               ucr::UcxEpConnection, ucr::UcxRkey, ucr::UcxRkeyPack, udr::UctBinding, udr::UctIface,
+               udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective, ncr::NcclP2p,
+               ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm, ncr::NcclProfComm,
+               ncr::NcclCollExec, ncr::NcclProxyOp>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so comshu-ui can load a
 // capture directly instead of only reading a Parquet export of one.
@@ -1840,7 +1869,7 @@ struct CsvAgg {
     // is a queue pair its owner moved to RTR on a port.
     std::map<std::tuple<int, std::uint32_t, std::uint64_t, std::uint64_t, std::uint32_t, bool>,
              std::pair<long, long>>
-        send_by_dct;  // ... , inbound
+                send_by_dct;  // ... , inbound
     std::size_t n_access = 0, n_send = 0;
 
     // --- memory attribution -------------------------------------------------
@@ -2009,7 +2038,8 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbModifyQp>& s) {
         a.gid_owner[{s.payload.src_gid_prefix, s.payload.src_gid_iface, s.payload.qp_num}] = r.rank;
     if (s.payload.state == 2 /*RTR*/ && s.payload.dest_qp_num)
         a.rtr_dest[{r.rank, s.payload.qp_num}] = {
-            s.payload.dest_lid, s.payload.dest_qp_num,
+            s.payload.dest_lid,
+            s.payload.dest_qp_num,
             {s.payload.dest_gid_prefix, s.payload.dest_gid_iface}};
 }
 
@@ -2026,7 +2056,8 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DevxQpConnect
         a.gid_owner[{s.payload.src_gid_prefix, s.payload.src_gid_iface, s.payload.qp_num}] = r.rank;
     if (s.payload.dest_qp_num)
         a.rtr_dest[{r.rank, s.payload.qp_num}] = {
-            s.payload.dest_lid, s.payload.dest_qp_num,
+            s.payload.dest_lid,
+            s.payload.dest_qp_num,
             {s.payload.dest_gid_prefix, s.payload.dest_gid_iface}};
 }
 
@@ -2038,11 +2069,11 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DeviceSend>& 
         return;
     const bool has_gid = s.payload.dest_gid_prefix || s.payload.dest_gid_iface;
     const bool inbound = s.payload.opcode == 0x10;  // mlx5 RDMA_READ
-    auto&      agg = s.payload.dest_dct
-                         ? a.send_by_dct[{r.rank, has_gid ? 0u : s.payload.dest_lid,
-                                          s.payload.dest_gid_prefix, s.payload.dest_gid_iface,
-                                          s.payload.dest_dct, inbound}]
-                         : a.send_by_qp[{r.rank, s.payload.qp_num, inbound}];
+    auto&      agg =
+        s.payload.dest_dct
+                 ? a.send_by_dct[{r.rank, has_gid ? 0u : s.payload.dest_lid, s.payload.dest_gid_prefix,
+                                  s.payload.dest_gid_iface, s.payload.dest_dct, inbound}]
+                 : a.send_by_qp[{r.rank, s.payload.qp_num, inbound}];
     agg.first += 1;
     agg.second += s.payload.length;
     a.n_send++;
@@ -2629,12 +2660,12 @@ int run_link(const fs::path& dir) {
     // only defects would reproduce, on this surface, the same missing-context
     // failure the severity column was added to fix.
     duckdb_result res;
-    if (health_sql && duckdb_query(con,
-                                   ("SELECT finding::VARCHAR, n::VARCHAR, severity::VARCHAR FROM (" +
-                                    std::string(health_sql) +
-                                    ") WHERE n > 0 ORDER BY severity, finding")
-                                       .c_str(),
-                                   &res) == DuckDBSuccess) {
+    if (health_sql &&
+        duckdb_query(con,
+                     ("SELECT finding::VARCHAR, n::VARCHAR, severity::VARCHAR FROM (" +
+                      std::string(health_sql) + ") WHERE n > 0 ORDER BY severity, finding")
+                         .c_str(),
+                     &res) == DuckDBSuccess) {
         auto text = [](duckdb_string_t s) {
             return duckdb_string_is_inlined(s)
                        ? std::string(s.value.inlined.inlined, s.value.inlined.length)
@@ -2781,12 +2812,11 @@ int run_sql(const fs::path& dir, const std::string& query) {
     // seeks to offset 0, silently overwriting whatever the process already
     // wrote. Two `sql` runs into one redirect lost the first, and so would any
     // `comshu sql ... > out.csv` that printed anything beforehand.
-    const bool ok =
-        duck_exec(con, bind, "query") &&
-        duck_exec(con,
-                  "COPY (SELECT * FROM " + std::string(kQueryView) + ") TO '" + tmp.string() +
-                      "' (FORMAT CSV, HEADER)",
-                  "query");
+    const bool ok = duck_exec(con, bind, "query") &&
+                    duck_exec(con,
+                              "COPY (SELECT * FROM " + std::string(kQueryView) + ") TO '" +
+                                  tmp.string() + "' (FORMAT CSV, HEADER)",
+                              "query");
     if (ok) {
         if (std::FILE* f = std::fopen(tmp.c_str(), "rb")) {
             char        buf[64 * 1024];
@@ -3763,8 +3793,9 @@ int comshu::cli::read_main(int argc, char** argv) {
 
     if (verb == "export") {
         if (argc < 4) {
-            std::fputs("usage: comshu export <capture> --csv|--parquet|--perfetto|--pftrace <out>\n",
-                       stderr);
+            std::fputs(
+                "usage: comshu export <capture> --csv|--parquet|--perfetto|--pftrace <out>\n",
+                stderr);
             return 1;
         }
         const std::string_view fmt = argv[2];

@@ -63,7 +63,7 @@ SCALARS = {
 # a required step and not a courtesy.
 ENUMS = {"TimeKind", "MemOp", "MemSpace", "EdgePredicate", "RecordKind",
          "MemcpyKind", "MemResidency", "CopySource",
-         "AttrStatus"}
+         "AttrStatus", "ObjectOrigin"}
 
 
 def flatten(fields, structs, prefix, expr):

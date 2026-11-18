@@ -86,11 +86,11 @@ static comshu::core::Handle h(const void* p) {
 // than reconstructed by the reader because the reader would have to join across
 // streams and would still not know the owning device.
 struct UmemInfo {
-    std::uint64_t         addr{0};
-    std::uint64_t         size{0};
+    std::uint64_t          addr{0};
+    std::uint64_t          size{0};
     comshu::core::DeviceId device{kUnknownDevice};
-    UmemBinding           binding{UmemBinding::ByAddress};
-    std::int32_t          dmabuf_fd{-1};
+    UmemBinding            binding{UmemBinding::ByAddress};
+    std::int32_t           dmabuf_fd{-1};
     // The buffer's real GPU virtual address base: the umem addr for a by_addr
     // binding, the dmabuf-exported range base for by_dmabuf. This is what the
     // doorbell hijack copies WQEs from — the recorded sq_base stays an offset
@@ -172,11 +172,12 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
     const std::uint64_t gpu_base =
         by_dmabuf ? (resolved ? dmabuf_range.base : 0) : reinterpret_cast<std::uint64_t>(addr);
     const comshu::core::Attribution attr =
-        by_dmabuf ? comshu::core::Attribution{resolved ? dmabuf_range.device : kUnknownDevice,
-                                              resolved ? comshu::core::status_of_named(
-                                                             dmabuf_range.device)
-                                                       : comshu::core::AttrStatus::NotQueried}
-                  : comshu::core::attribute(addr);
+        by_dmabuf
+            ? comshu::core::Attribution{resolved ? dmabuf_range.device : kUnknownDevice,
+                                        resolved
+                                            ? comshu::core::status_of_named(dmabuf_range.device)
+                                            : comshu::core::AttrStatus::NotQueried}
+            : comshu::core::attribute(addr);
     UmemInfo info{reinterpret_cast<std::uint64_t>(addr),
                   size,
                   attr.device,
@@ -216,21 +217,26 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
     // so a buffer seen by two providers mints one id rather than two rows nobody
     // can tell apart.
     if (!by_dmabuf) {
-        rec().record(
-            rec().now_instant(),
-            comshu::core::records::MemObject{
-                {}, {}, h(addr), comshu::core::kNullHandle, {info.addr, info.size}, info.device,
-                attr.status});
+        rec().record(rec().now_instant(),
+                     comshu::core::records::MemObject{{},
+                                                      {},
+                                                      h(addr),
+                                                      comshu::core::kNullHandle,
+                                                      {info.addr, info.size},
+                                                      info.device,
+                                                      attr.status,
+                                                      comshu::core::ObjectOrigin::DevxUmem});
     } else if (resolved) {
         const std::uint64_t base = dmabuf_range.base + reinterpret_cast<std::uint64_t>(addr);
         rec().record(rec().now_instant(),
                      comshu::core::records::MemObject{{},
-                                                     {},
-                                                     h(reinterpret_cast<const void*>(base)),
-                                                     comshu::core::kNullHandle,
-                                                     {base, info.size},
-                                                     info.device,
-                                                     attr.status});
+                                                      {},
+                                                      h(reinterpret_cast<const void*>(base)),
+                                                      comshu::core::kNullHandle,
+                                                      {base, info.size},
+                                                      info.device,
+                                                      attr.status,
+                                                      comshu::core::ObjectOrigin::DevxUmem});
     }
 }
 
@@ -260,7 +266,7 @@ struct SrcPort {
     std::uint32_t lid = 0;
     std::uint8_t  port = 0;
 };
-static std::mutex                                g_lid_mutex;
+static std::mutex                                 g_lid_mutex;
 static std::unordered_map<std::uint32_t, SrcPort> g_qp_src_lid;
 
 static void remember_src_port(std::uint32_t qp_num, SrcPort p) {
@@ -470,19 +476,19 @@ static void decode_create_cq(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
     UmemInfo   cq{};
     const bool known = lookup_umem(ctx, umem_id, &cq);
 
-    rec().record(comshu::core::Temporal::none(),
-                 rr::Mlx5DevxCq{{},
-                                {},
-                                h(obj),
-                                known ? cq.gpu_base + umem_offset : 0,
-                                cqn,
-                                umem_id,
-                                log_cq_size,
-                                dbr_umem_id,
-                                known ? cq.device : kUnknownDevice,
-                                static_cast<std::uint8_t>(
-                                    (known && cq.device != kUnknownDevice) ? 1 : 0),
-                                static_cast<std::uint8_t>(cqe_sz)});
+    rec().record(
+        comshu::core::Temporal::none(),
+        rr::Mlx5DevxCq{{},
+                       {},
+                       h(obj),
+                       known ? cq.gpu_base + umem_offset : 0,
+                       cqn,
+                       umem_id,
+                       log_cq_size,
+                       dbr_umem_id,
+                       known ? cq.device : kUnknownDevice,
+                       static_cast<std::uint8_t>((known && cq.device != kUnknownDevice) ? 1 : 0),
+                       static_cast<std::uint8_t>(cqe_sz)});
 }
 
 static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
@@ -575,14 +581,13 @@ Profiler::Profiler() {
             [](std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr, std::uint32_t rkey,
                std::uint32_t length, std::uint32_t dest_dct, std::uint16_t dest_lid,
-               std::uint64_t dest_gid_prefix, std::uint64_t dest_gid_iface,
-               std::uint8_t decode,
+               std::uint64_t dest_gid_prefix, std::uint64_t dest_gid_iface, std::uint8_t decode,
                std::uint8_t av_ds, std::uint8_t submitter, std::uint64_t ticks_lo,
                std::uint64_t ticks_hi) {
-                const rr::Mlx5DeviceSend r{{},       {},     laddr, raddr,    qp_num,
-                                           wqe_idx,  lkey,   rkey,  length,   dest_dct,
-                                           opcode,   decode, av_ds, submitter,
-                                           dest_lid, 0,      dest_gid_prefix, dest_gid_iface};
+                const rr::Mlx5DeviceSend r{
+                    {},    {},        laddr,    raddr,    qp_num,          wqe_idx,
+                    lkey,  rkey,      length,   dest_dct, opcode,          decode,
+                    av_ds, submitter, dest_lid, 0,        dest_gid_prefix, dest_gid_iface};
                 // A doorbell path calls this at the doorbell: the time is now.
                 if (ticks_hi == 0) {
                     rec().record(r);
@@ -653,8 +658,8 @@ Profiler::Profiler() {
     // because this provider is designed to co-run with it and comshu-read merges
     // provider streams assuming the ranges are disjoint.
     if (comshu_engine_declare_provider("mlx5dv", comshu::core::id_range::mlx5dv_lo,
-                                      comshu::core::id_range::mlx5dv_hi,
-                                      COMSHU_ENGINE_ABI_VERSION) != 0)
+                                       comshu::core::id_range::mlx5dv_hi,
+                                       COMSHU_ENGINE_ABI_VERSION) != 0)
         return;  // the engine has already explained why on stderr
     comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
@@ -743,8 +748,8 @@ Profiler::Profiler() {
             hijack::teardown(uar->reg_addr);
         if (hostdb::enabled())
             hostdb::disarm(uar);
-        rec().record(rec().now_instant(),
-                     comshu::core::records::EntityClose{{}, {}, h(uar), rr::Mlx5Uar::comshu_type_id});
+        rec().record(rec().now_instant(), comshu::core::records::EntityClose{
+                                              {}, {}, h(uar), rr::Mlx5Uar::comshu_type_id});
     });
 
     this->register_post<devx_obj_create_tag>([](mlx5dv_devx_obj* obj, ibv_context* ctx,

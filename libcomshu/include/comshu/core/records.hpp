@@ -135,6 +135,9 @@ COMSHU_RECORD(MemObject, RecordKind::Entity, 520, "mem_object") {
     // "host memory" or "we never asked". See AttrStatus in vocab.hpp. Sits in
     // the record's tail padding, so the stride does not change.
     AttrStatus attr_status;
+    // Which call made this object known — an application allocation or a
+    // transport registration. See ObjectOrigin in vocab.hpp. Also tail padding.
+    ObjectOrigin origin;
 };
 
 // EVENT — an entity's lifetime ended: dereg_mr, destroy_qp, devx_umem_dereg,
@@ -264,11 +267,11 @@ COMSHU_RECORD(NodeIdentity, RecordKind::Artifact, 524, "node_identity") {
 // Emitted by the engine rather than a provider, for NodeIdentity's reason: every
 // provider needs it and none owns it.
 COMSHU_RECORD(GpuDevice, RecordKind::Artifact, 528, "gpu_device") {
-    std::uint64_t uuid_hi;   // cuDeviceGetUuid bytes 0..7   — cross-check only
-    std::uint64_t uuid_lo;   // cuDeviceGetUuid bytes 8..15  — 0,0 if unavailable
-    std::uint32_t pci_bus;   // domain<<16 | bus<<8 | device; function is always 0
-    Handle        name;      // interned, e.g. "NVIDIA H100"
-    DeviceId      ordinal;   // the runtime ordinal every other record uses
+    std::uint64_t uuid_hi;  // cuDeviceGetUuid bytes 0..7   — cross-check only
+    std::uint64_t uuid_lo;  // cuDeviceGetUuid bytes 8..15  — 0,0 if unavailable
+    std::uint32_t pci_bus;  // domain<<16 | bus<<8 | device; function is always 0
+    Handle        name;     // interned, e.g. "NVIDIA H100"
+    DeviceId      ordinal;  // the runtime ordinal every other record uses
 };
 
 // ARTIFACT — what this rank was ASKED to do, and by which build.
@@ -563,13 +566,13 @@ COMSHU_RECORD(ClockAnchor, RecordKind::Artifact, 590, "clock_anchor") {
 // by the time finalize() gets here, so a string in this record would resolve to
 // nothing. Everything is a number.
 COMSHU_RECORD(CaptureStatus, RecordKind::Artifact, 592, "capture_status") {
-    std::uint64_t records_lost;     // rounded UP; a partial record is a lost one
-    std::uint64_t bytes_lost;       // what the sink knows exactly
-    std::uint32_t streams_open;     // streams framed, INCLUDING this record's own
-    std::uint32_t streams_lost;     // how many streams lost anything at all
-    std::uint8_t  dir_failed;       // the output directory itself could not be made
-    std::uint8_t  header_lost;      // >=1 stream has no header and is unreadable
-    std::uint8_t  never_opened;     // >=1 stream could not be opened at all
+    std::uint64_t records_lost;  // rounded UP; a partial record is a lost one
+    std::uint64_t bytes_lost;    // what the sink knows exactly
+    std::uint32_t streams_open;  // streams framed, INCLUDING this record's own
+    std::uint32_t streams_lost;  // how many streams lost anything at all
+    std::uint8_t  dir_failed;    // the output directory itself could not be made
+    std::uint8_t  header_lost;   // >=1 stream has no header and is unreadable
+    std::uint8_t  never_opened;  // >=1 stream could not be opened at all
     std::uint8_t  pad;
     std::uint32_t pad2;
 };

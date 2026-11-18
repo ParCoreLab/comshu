@@ -101,6 +101,14 @@ enum AttrStatus : uint8 {
   NullAddr = 4, OrdinalFailed = 5, NotQueried = 6
 }
 
+// Which call made a MemObject known: an application allocation (1-8) or a
+// transport registration (9-11). vocab.hpp has the full story.
+enum ObjectOrigin : uint8 {
+  Unstated = 0, NvshmemMalloc = 1, CuMemAlloc = 2, CuMemAllocManaged = 3,
+  CuMemAllocAsync = 4, CuMemHost = 5, CuMemMap = 6, NvbitAlloc = 7,
+  NvbitRegion = 8, IbRegMr = 9, DevxUmem = 10, NcclWindow = 11
+}
+
 // Predicates for Edge records.
 enum EdgePredicate : uint8 {
   TouchedObject = 0,     // access -> mem object
@@ -226,6 +234,7 @@ struct MemObject {
   range:MemRange;
   device:uint16;
   attr_status:AttrStatus;  // why `device` is what it is: host, never asked, failed...
+  origin:ObjectOrigin;     // which call made it known: an allocation or a registration
 }
 
 // type 522, Event. An entity's lifetime ended — dereg_mr, destroy_qp,

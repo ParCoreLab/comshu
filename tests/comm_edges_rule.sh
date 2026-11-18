@@ -57,16 +57,16 @@ CSV
 # and rank 2's stores to device 1 would resolve to nobody — which is exactly the
 # nvshmem_multinode case the view's comment records.
 cat > "$WORK/mem_object.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device,attr_status
-0,2,0,100,0,900,0,1,0,4096,1024,0,0
-1,2,0,100,0,900,0,1,0,4096,1024,1,0
-2,2,0,100,0,900,0,1,0,4096,1024,0,0
-3,2,0,100,0,900,0,1,0,4096,1024,1,0
-0,2,0,100,0,900,0,2,0,268435456,64,65535,1
-0,2,0,100,0,900,0,3,0,268439552,64,65535,3
-1,2,0,100,0,900,0,2,0,268435456,64,65535,3
-2,2,0,100,0,900,0,2,0,268435456,64,65535,5
-3,2,0,100,0,900,0,2,0,268435456,64,65535,4
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,id,name,range_base,range_size,device,attr_status,origin
+0,2,0,100,0,900,0,1,0,4096,1024,0,0,2
+1,2,0,100,0,900,0,1,0,4096,1024,1,0,2
+2,2,0,100,0,900,0,1,0,4096,1024,0,0,2
+3,2,0,100,0,900,0,1,0,4096,1024,1,0,2
+0,2,0,100,0,900,0,2,0,268435456,64,65535,1,2
+0,2,0,100,0,900,0,3,0,268439552,64,65535,3,2
+1,2,0,100,0,900,0,2,0,268435456,64,65535,3,2
+2,2,0,100,0,900,0,2,0,268435456,64,65535,5,2
+3,2,0,100,0,900,0,2,0,268435456,64,65535,4,2
 CSV
 
 # The five rows after the first four carry no device, and say why (attr_status,

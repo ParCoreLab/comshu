@@ -53,7 +53,7 @@ uint32_t comshu_engine_abi_version(void);
  * Returns 0 on success, non-zero on rejection (and reports why on stderr).
  * Safe to call more than once with identical arguments. */
 int comshu_engine_declare_provider(const char* name, uint16_t id_lo, uint16_t id_hi,
-                                  uint32_t abi_version);
+                                   uint32_t abi_version);
 
 /* Is our `dlsym` the one an external caller resolves?
  *
@@ -73,7 +73,8 @@ void comshu_engine_release(void);
 /* Get this thread's arena for a record type, creating it on first use. The
  * returned pointer is stable for the life of the thread, so callers should
  * cache it in a thread_local. `kind` is core::RecordKind. */
-comshu_arena* comshu_engine_arena(uint16_t type_id, uint8_t kind, uint32_t stride, uint32_t capacity);
+comshu_arena* comshu_engine_arena(uint16_t type_id, uint8_t kind, uint32_t stride,
+                                  uint32_t capacity);
 
 /* Hand the filled region to the sink and reset count to 0. */
 void comshu_engine_arena_flush(comshu_arena* arena);
@@ -113,7 +114,7 @@ const char* comshu_engine_so_path(void);
  * back an address (nvshmem_malloc and friends) so this answer does not depend
  * on which provider ran — see core/object_registry.hpp. */
 int comshu_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size, uint32_t* object,
-                           uint16_t* device);
+                            uint16_t* device);
 
 /* Tell the engine a provider just recorded a queue-pair OPEN, so the engine's
  * ibv_destroy_qp interposer can close that exact queue pair.
@@ -167,6 +168,38 @@ int  comshu_engine_dmabuf_find(int fd, uint64_t* base, uint64_t* size, uint16_t*
  * lookups that hit and missed. Any pointer may be NULL. */
 void comshu_engine_dmabuf_stats(uint64_t* per_door4, uint64_t* hits, uint64_t* misses);
 
+/* libcuda's pointer cells — ONE patcher per process (core/libcuda_cells.hpp).
+ *
+ * cudart, static or shared, NCCL and NVSHMEM all reach driver entry points
+ * through cuGetProcAddress[_v2] / cuGetExportTable, and every one of those
+ * returns what libcuda's single writable cell for that entry point holds
+ * (measured, tests/hpc/probes/libcuda_cells). Overwriting the cell before any
+ * pointer leaves libcuda reaches every asker however it was linked.
+ *
+ * It was a header inside the mlx5dv provider. That made "the real function"
+ * a per-.so notion — the shape that let a wrapper adopt another wrapper as
+ * real and call itself (MN5 job 48812008) — and it put the door the engine
+ * now needs for cuMemAlloc behind a provider the user may not have selected.
+ *
+ * overwrite: register `replacement` for driver entry point `name`. Returns 0, or
+ *   -1 when a DIFFERENT replacement already owns that entry point: two owners
+ *   of one cell is a design error, and the second is refused, loudly, rather
+ *   than silently stacked.
+ * real: the driver's own function for `name` — the one the patch displaced, or
+ *   resolved through the libcuda handle. NEVER through RTLD_DEFAULT: the engine
+ *   defines driver symbols itself (the link door), so the default scope names
+ *   the engine. NULL when libcuda is not loaded or has no such symbol.
+ * patch: apply every pending overwrite now if libcuda is loaded; otherwise it
+ *   happens before the first pointer-getter is handed out. Idempotent.
+ * cells: how many cells now hold the replacement for `name` (0 = not patched).
+ *
+ * Added without bumping COMSHU_ENGINE_ABI_VERSION, on comshu_engine_note_qp's
+ * precedent and for its reasons. */
+int      comshu_engine_libcuda_overwrite(const char* name, void* replacement);
+void*    comshu_engine_libcuda_real(const char* name);
+void     comshu_engine_libcuda_patch(void);
+uint64_t comshu_engine_libcuda_cells(const char* name);
+
 /* Record one kernel EXECUTION window. See core/records.hpp GpuKernel (530).
  *
  * The record is the ENGINE's, in its own 500-599 range, but the engine cannot
@@ -192,8 +225,8 @@ void comshu_engine_dmabuf_stats(uint64_t* per_door4, uint64_t* hits, uint64_t* m
  * `grid` is 3 uint32, `block` 3 uint16; either may be NULL when the source does
  * not report launch geometry. */
 void comshu_engine_record_kernel(uint64_t t0, uint64_t t1, uint16_t domain, const char* name,
-                                uint64_t correlation, uint64_t stream, uint16_t device,
-                                uint8_t source, const uint32_t* grid, const uint16_t* block);
+                                 uint64_t correlation, uint64_t stream, uint16_t device,
+                                 uint8_t source, const uint32_t* grid, const uint16_t* block);
 
 /* Record one host-initiated memory COPY. See core/records.hpp CudaMemcpy (534).
  *
@@ -233,10 +266,10 @@ void comshu_engine_record_kernel(uint64_t t0, uint64_t t1, uint16_t domain, cons
  * `undefined symbol: comshu_engine_record_memcpy` rather than mis-accounting
  * anything. */
 void comshu_engine_record_memcpy(uint64_t t0, uint64_t t1, uint16_t domain, uint64_t bytes,
-                                uint64_t correlation, uint64_t stream, uint16_t src_device,
-                                uint16_t dst_device, uint16_t ctx_device, uint8_t kind,
-                                uint8_t src_space, uint8_t dst_space, uint8_t source,
-                                uint8_t async);
+                                 uint64_t correlation, uint64_t stream, uint16_t src_device,
+                                 uint16_t dst_device, uint16_t ctx_device, uint8_t kind,
+                                 uint8_t src_space, uint8_t dst_space, uint8_t source,
+                                 uint8_t async);
 
 /* Report that the CUDA driver is initialised and ANSWERING, right now.
  *

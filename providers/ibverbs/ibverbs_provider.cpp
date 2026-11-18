@@ -226,11 +226,11 @@ static int& dmabuf_depth() noexcept {
 // One dma-buf region, from either door: ibv_reg_dmabuf_mr or libmlx5's
 // mlx5dv_reg_dmabuf_mr. Both name memory by (fd, offset) and differ only in an
 // mlx5 access word the record has no use for, so both are origin Dmabuf.
-static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
-                                 std::size_t length, std::uint64_t iova, int fd, int access) {
+static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset, std::size_t length,
+                                 std::uint64_t iova, int fd, int access) {
     if (!mr)
         return;
-    comshu::core::dmabuf::Range  r{};
+    comshu::core::dmabuf::Range r{};
     const bool                  resolved = comshu::core::dmabuf::lookup(fd, &r);
     const std::uint64_t         base = resolved ? r.base + offset : iova;
     // The registry's device when the fd resolved (status_of_named: it named the
@@ -261,14 +261,14 @@ static void record_dmabuf_region(ibv_mr* mr, ibv_pd* pd, std::uint64_t offset,
     if (base)
         rec().record(rec().now_instant(),
                      comshu::core::records::MemObject{{},
-                                                     {},
-                                                     h(reinterpret_cast<const void*>(base)),
-                                                     comshu::core::kNullHandle,
-                                                     {base, length},
-                                                     attr.device,
-                                                     attr.status});
+                                                      {},
+                                                      h(reinterpret_cast<const void*>(base)),
+                                                      comshu::core::kNullHandle,
+                                                      {base, length},
+                                                      attr.device,
+                                                      attr.status,
+                                                      comshu::core::ObjectOrigin::IbRegMr});
 }
-
 
 // Slots computed by the post_srq_recv PRE-hook, consumed by its post-hook.
 // Thread-local: the two halves run on one thread around one call, and this is
@@ -365,7 +365,7 @@ struct Ops {
     void (*wr_set_inline_data)(ibv_qp_ex*, void*, std::size_t){};
     void (*wr_set_inline_data_list)(ibv_qp_ex*, std::size_t, const ibv_data_buf*){};
     comshu::core::Handle qp_handle{};
-    std::uint32_t       qp_num{};
+    std::uint32_t        qp_num{};
 };
 
 // Written once per QP at creation, read by every wr_* call. A mutex here would
@@ -508,15 +508,15 @@ static void w_rdma_read(ibv_qp_ex* qpx, std::uint32_t rkey, std::uint64_t addr) 
 // builder (with the remote target where the call names one), then forward. The
 // fallback through global_ops is the same invariant every trampoline keeps —
 // the application's call reaches the provider exactly once.
-#define COMSHU_WR_FORWARD(member, ...)                                                    \
-    do {                                                                                  \
-        if (auto* s = slot_for(qpx)) {                                                    \
-            s->ops.member(qpx, __VA_ARGS__);                                              \
-            return;                                                                       \
-        }                                                                                 \
-        Ops ops;                                                                          \
-        if (global_ops(qpx, ops))                                                         \
-            ops.member(qpx, __VA_ARGS__);                                                 \
+#define COMSHU_WR_FORWARD(member, ...)                                                             \
+    do {                                                                                           \
+        if (auto* s = slot_for(qpx)) {                                                             \
+            s->ops.member(qpx, __VA_ARGS__);                                                       \
+            return;                                                                                \
+        }                                                                                          \
+        Ops ops;                                                                                   \
+        if (global_ops(qpx, ops))                                                                  \
+            ops.member(qpx, __VA_ARGS__);                                                          \
     } while (0)
 
 static void w_send_imm(ibv_qp_ex* qpx, __be32 imm) {
@@ -769,8 +769,8 @@ Profiler::Profiler() {
     // provider streams assuming those ranges are disjoint; until now nothing
     // verified it.
     if (comshu_engine_declare_provider("ibverbs", comshu::core::id_range::ibverbs_lo,
-                                      comshu::core::id_range::ibverbs_hi,
-                                      COMSHU_ENGINE_ABI_VERSION) != 0)
+                                       comshu::core::id_range::ibverbs_hi,
+                                       COMSHU_ENGINE_ABI_VERSION) != 0)
         return;  // the engine has already explained why on stderr
     comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
 
@@ -851,7 +851,8 @@ Profiler::Profiler() {
                                               comshu::core::kNullHandle,
                                               {reinterpret_cast<std::uint64_t>(addr), length},
                                               attr.device,
-                                              attr.status});
+                                              attr.status,
+                                              comshu::core::ObjectOrigin::IbRegMr});
     });
 
     // reg_mr -> the legacy registration door, and the same entity. Identical
@@ -887,7 +888,7 @@ Profiler::Profiler() {
                                          static_cast<std::uint32_t>(access),
                                          -1,
                                          static_cast<std::uint8_t>(rr::IbRegionOrigin::RegMr),
-                                     0});
+                                         0});
             const auto attr = comshu::core::attribute(addr);
             rec().record(rec().now_instant(), comshu::core::records::MemObject{
                                                   {},
@@ -896,7 +897,8 @@ Profiler::Profiler() {
                                                   comshu::core::kNullHandle,
                                                   {reinterpret_cast<std::uint64_t>(addr), length},
                                                   attr.device,
-                                                  attr.status});
+                                                  attr.status,
+                                                  comshu::core::ObjectOrigin::IbRegMr});
         });
 
     // reg_dm_mr / alloc_null_mr -> the two MEMORYLESS registration doors.
@@ -953,13 +955,14 @@ Profiler::Profiler() {
     // ...and the device entity's lifetime ends with it. Without this every
     // ib_device row would be an entity opened and never closed, which is a case
     // suite/asserts/entity_close_accounted.sql reports by design.
-    this->register_post<close_device_tag>([](int ret, ibv_context* ctx, std::uint64_t t0, std::uint64_t t1) {
-        if (ret != 0)
-            return;
-        rec().record(span(t0, t1), comshu::core::records::EntityClose{
-                                       {}, {}, h(ctx), rr::IbDevice::comshu_type_id});
-        forget_context(ctx);
-    });
+    this->register_post<close_device_tag>(
+        [](int ret, ibv_context* ctx, std::uint64_t t0, std::uint64_t t1) {
+            if (ret != 0)
+                return;
+            rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                           {}, {}, h(ctx), rr::IbDevice::comshu_type_id});
+            forget_context(ctx);
+        });
 
     // create_cq / create_cq_ex -> the completion-queue entity.
     //
@@ -1053,12 +1056,13 @@ Profiler::Profiler() {
     // destroy_cq -> the CQ's lifetime ended. Same success-only discipline as
     // dereg_mr and destroy_qp: a destroy that failed closed nothing, and
     // recording it would make a live CQ look freed.
-    this->register_post<destroy_cq_tag>([](int ret, ibv_cq* cq, std::uint64_t t0, std::uint64_t t1) {
-        if (ret != 0 || !cq)
-            return;
-        rec().record(span(t0, t1), comshu::core::records::EntityClose{
-                                       {}, {}, h(cq), rr::IbCompletionQueue::comshu_type_id});
-    });
+    this->register_post<destroy_cq_tag>(
+        [](int ret, ibv_cq* cq, std::uint64_t t0, std::uint64_t t1) {
+            if (ret != 0 || !cq)
+                return;
+            rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                           {}, {}, h(cq), rr::IbCompletionQueue::comshu_type_id});
+        });
 
     // create_ah -> the UD path's addressing object, and the only place in the
     // API where a UD destination is named.
@@ -1098,12 +1102,13 @@ Profiler::Profiler() {
                                          a->is_global ? a->grh.traffic_class : std::uint8_t{0}});
     });
 
-    this->register_post<destroy_ah_tag>([](int ret, ibv_ah* ah, std::uint64_t t0, std::uint64_t t1) {
-        if (ret != 0 || !ah)
-            return;
-        rec().record(span(t0, t1), comshu::core::records::EntityClose{
-                                       {}, {}, h(ah), rr::IbAddressHandle::comshu_type_id});
-    });
+    this->register_post<destroy_ah_tag>(
+        [](int ret, ibv_ah* ah, std::uint64_t t0, std::uint64_t t1) {
+            if (ret != 0 || !ah)
+                return;
+            rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                           {}, {}, h(ah), rr::IbAddressHandle::comshu_type_id});
+        });
 
     // create_qp -> queue-pair endpoint entity.
     this->register_post<create_qp_tag>([](ibv_qp* qp, ibv_pd* pd, ibv_qp_init_attr* a, auto...) {
@@ -1191,9 +1196,8 @@ Profiler::Profiler() {
     });
     this->register_post<mlx5dv_reg_dmabuf_mr_tag>(
         [](ibv_mr* mr, ibv_pd* pd, std::uint64_t offset, std::size_t length, std::uint64_t iova,
-           int fd, int access, int /*mlx5_access*/, auto...) {
-            record_dmabuf_region(mr, pd, offset, length, iova, fd, access);
-        });
+           int fd, int access, int /*mlx5_access*/,
+           auto...) { record_dmabuf_region(mr, pd, offset, length, iova, fd, access); });
 
     // dereg_mr / destroy_qp -> the entity's lifetime ended.
     //
@@ -1490,13 +1494,13 @@ Profiler::Profiler() {
 
     // destroy_srq -> the entity's lifetime ended. Success only, like every other
     // close on this path.
-    this->register_post<destroy_srq_tag>([](int ret, ibv_srq* srq, std::uint64_t t0, std::uint64_t t1) {
-        if (ret != 0 || !srq)
-            return;
-        rec().record(span(t0, t1),
-                     comshu::core::records::EntityClose{
-                         {}, {}, h(srq), rr::IbSharedRecvQueue::comshu_type_id});
-    });
+    this->register_post<destroy_srq_tag>(
+        [](int ret, ibv_srq* srq, std::uint64_t t0, std::uint64_t t1) {
+            if (ret != 0 || !srq)
+                return;
+            rec().record(span(t0, t1), comshu::core::records::EntityClose{
+                                           {}, {}, h(srq), rr::IbSharedRecvQueue::comshu_type_id});
+        });
 
     // req_notify_cq -> the CQ was armed. The counterpart to poll_cq, and the
     // only row that distinguishes an application sleeping on a completion
@@ -2039,8 +2043,8 @@ extern "C" ibv_mr* ibv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
     remember_mr(mr);
     return mr;
 }
-extern "C" ibv_mr* mlx5dv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length,
-                                        uint64_t iova, int fd, int access, int mlx5_access) {
+extern "C" ibv_mr* mlx5dv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova,
+                                        int fd, int access, int mlx5_access) {
     trace_mr_caller("mlx5dv_reg_dmabuf_mr", __builtin_return_address(0), (long)length);
     if (pd)
         ibv::ensure_installed(pd->context, "mlx5dv_reg_dmabuf_mr");

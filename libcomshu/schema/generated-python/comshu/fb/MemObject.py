@@ -35,10 +35,13 @@ class MemObject(object):
     def Device(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
     # MemObject
     def AttrStatus(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(74))
+    # MemObject
+    def Origin(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(75))
 
-def CreateMemObject(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, id, name, range_base, range_size, device, attrStatus):
+def CreateMemObject(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, id, name, range_base, range_size, device, attrStatus, origin):
     builder.Prep(8, 80)
-    builder.Pad(5)
+    builder.Pad(4)
+    builder.PrependUint8(origin)
     builder.PrependUint8(attrStatus)
     builder.PrependUint16(device)
     builder.Prep(8, 16)
