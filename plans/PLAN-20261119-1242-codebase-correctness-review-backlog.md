@@ -1,0 +1,524 @@
+# Codebase Correctness Review Backlog
+
+Status: **BACKLOG**
+Created: 2026-11-19 12:42
+Baseline: `build-all/core` ctest 38/38 passing at review time.
+Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `providers/mlx5dv/`, `providers/ucx/`, `providers/ucx_deep/`, `providers/nccl/`, `providers/gpumem/`, `gpu-backends/`, `comshu/`, `comshu-read/`, `comshu-ui/`, `ui/src/`, and `agent/`.
+
+## Summary
+
+| Severity | Count | Ticket Range |
+|---|---:|---|
+| Critical | 6 | `CR-01` – `CR-06` |
+| High | 31 | `CR-07` – `CR-37` |
+| Medium | 28 | `CR-38` – `CR-65` |
+| Low | 10 | `CR-66` – `CR-75` |
+| **Total** | **75** | |
+
+---
+
+## Critical
+
+### `CR-01` — Multi-statement SQL injection & row-cap bypass in `POST /query`
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-ui`
+- **Locations:** `comshu-ui/main.cpp:245-259`, `comshu-ui/query_guard.hpp:59-65`
+- **Problem:** `looks_like_select()` only skips leading whitespace/comments and checks that the first token starts with `SELECT` or `WITH`. `main.cpp:256` wraps `sql` verbatim into `"SELECT * FROM (" + sql + ") LIMIT " + std::to_string(kRowCap)` and passes it to `duckdb_query()`, which executes multi-statement SQL. A payload such as `SELECT 1); DROP TABLE gpu_access; --` executes arbitrary DDL/DML; `SELECT 1) UNION ALL SELECT * FROM huge_table; --` bypasses `kRowCap`.
+- **Fix:** Use `duckdb_extract_statements()` to require exactly one statement and verify it is a read-only `SELECT` (or prepare via `duckdb_prepare()` and reject non-`SELECT` statement types) before executing, rather than string-wrapping raw SQL. Add regression cases to `tests/query_guard_test.cpp`.
+
+### `CR-02` — Lazy preload resolution race (`std::abort()`) and `dlsym(RTLD_DEFAULT, ...)` infinite recursion
+- [ ] **Status:** Open
+- **Subsystem:** `libcomshu/hook`
+- **Locations:** `libcomshu/include/comshu/hook/CompositeHookManager.hpp:208-216`, `libcomshu/include/comshu/hook/detail/PreloadHookManager.hpp:123-131, 235-241`
+- **Problem:**
+  1. `invoke_preload()` checks `if (!real)` without synchronization and calls `register_real<Tag>()`, which calls `std::abort()` if `*real_fn_ptr` is already non-null. Two threads calling an interposed symbol for the first time concurrently race and abort.
+  2. `register_hook()` registers a `smart_dlsym` callback that unconditionally assigns `*real_fn_ptr = reinterpret_cast<Trait::FuncPtr>(real_func)` without checking whether `real_func` is our own `hook_fn`. Any `dlsym(RTLD_DEFAULT, sym)` resolves to our preloaded hook and overwrites `*real_fn_ptr` with itself, causing infinite recursion.
+- **Fix:** Store real function pointers atomically (or resolve under `std::call_once` / mutex, making `register_real` idempotent) and guard the `smart_dlsym` callback with `if (real_func && !is_self(real_func))`.
+
+### `CR-03` — Use-After-Free & freed-heap write in `mlx5dv_devx_free_uar` post-hook
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:746-757`, `providers/mlx5dv/host_doorbell.hpp:395-418`
+- **Problem:** `devx_free_uar_tag` is registered with `register_post`, running *after* `mlx5dv_devx_free_uar(uar)` has `munmap`'d the UAR BAR page and `free()`'d `uar`. Consequently: (1) the repeater thread can write to the unmapped BAR page during free, (2) `hijack::teardown(uar->reg_addr)` reads freed memory, and (3) `hostdb::disarm(uar)` executes `uar->reg_addr = it->second.real` into freed heap memory.
+- **Fix:** Move `hijack::teardown(uar->reg_addr)` and `hostdb::disarm(uar)` into a `register_pre<devx_free_uar_tag>` hook (before the real free runs), keeping `EntityClose` recording in post or pre as appropriate.
+
+### `CR-04` — Use-After-Free on `ibv_cq*` address reuse in CQE ring cache
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ibverbs`
+- **Locations:** `providers/ibverbs/mlx5_cqe.cpp:97-100, 136-197, 203-212, 309-322`, `providers/ibverbs/ibverbs_provider.cpp:1059-1065`
+- **Problem:** `ibv::cqeprobe::rings()` caches `ibv_cq* -> Ring{buf, cnt, size, dbrec}` permanently and never evicts on `ibv_destroy_cq`. When a new CQ reuses a freed `ibv_cq*` heap address, `cqe_at()` and `on_poll()` dereference the old CQ's unmapped `buf` and freed `dbrec`.
+- **Fix:** Evict `cq` from `ibv::cqeprobe::rings()` in the `ibv_destroy_cq` pre-hook (and on `forget_context`).
+
+### `CR-05` — ABI mismatch in `ucp_ep_rkey_unpack_internal` on newer UCX
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ucx`
+- **Locations:** `providers/ucx/ucx_hooks.hpp:284-286`, `providers/ucx/ucx_provider.cpp:139-172, 567-580, 835-841`
+- **Problem:** The hook declares only 7 parameters (`a1..a7`) and `rkey_out_param()` classifies any UCX `1.x` with `minor >= 19` as `RkeyOutParam::Seventh` with no upper bound. Upstream UCX added `uint64_t uct_flags` as arg 7 and moved `ucp_rkey_h *rkey_p` to arg 8. Against such a build, the 8th argument is not forwarded (corrupting stack/memory in `libucp`), and `a7` (`uct_flags`) is dereferenced as `ucp_rkey_h*`.
+- **Fix:** Bound the verified UCX minor version range in `rkey_out_param()` (returning `Unverified` for unverified versions) and/or support the 8-argument signature when matched.
+
+### `CR-06` — Uninitialized `ChannelDev::comshu_dbg` dereferenced by GPU on every `push()`
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/nvbit`
+- **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:1292-1306`, `gpu-backends/nvbit/nvbit-1.7.7.1/utils/channel.hpp:52-55, 165-180`
+- **Problem:** `state->channel_dev` is allocated with `cudaMallocManaged(&state->channel_dev, sizeof(ChannelDev))` without placement-new or `memset`, and `ChannelDev::init()` does not initialize `comshu_dbg`. When `COMSHU_CHANNEL_DEBUG` is unset and `cudaMallocManaged` returns recycled non-zero memory, every GPU `ChannelDev::push()` executes `if (comshu_dbg) atomicAdd(&comshu_dbg[0], 1ull)` on a garbage address.
+- **Fix:** Zero-initialize `state->channel_dev` (or explicitly set `state->channel_dev->comshu_dbg = nullptr;` before the `COMSHU_CHANNEL_DEBUG` check, and initialize it in `ChannelDev::init()`).
+
+---
+
+## High
+
+### Core Engine (`libcomshu/`)
+
+#### `CR-07` — `Tracer::atfork_child()` wipes the child's start-of-run `ClockAnchor` and `NodeIdentity`, and can deadlock on `m_lifecycle`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/tracer.hpp:78, 112-113, 139, 327-330, 349-373`, `libcomshu/src/engine.cpp:481-494`
+- **Problem:** `atfork_child()` calls `reset_for_fork()`, then `t.start(cfg)` (which writes the child's start-of-run `ClockAnchor` and `NodeIdentity` into the cached TLS arenas while they are unregistered), and *then* calls `comshu_engine_reset_arenas_for_fork()`, which sets `a->pub.count = 0` and wipes them. Also, `pthread_atfork` registers no `prepare` handler, so locking `m_lifecycle` in `t.start(cfg)` deadlocks if another thread held it across `fork()`.
+- **Fix:** Reset/re-register arenas *before* `t.start(cfg)` (or clear `pub.count = 0` before `start()` and re-register before emitting start-of-run records), and either acquire/release `m_lifecycle` in `prepare`/`parent`/`child` handlers or placement-reset `m_lifecycle` in `atfork_child()`.
+
+#### `CR-08` — Data race between `Recorder::append()` and cross-thread `Arena::drain()`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/src/engine.cpp:118-135`, `libcomshu/include/comshu/rec/recorder.hpp:73-97`, `libcomshu/include/comshu/rec/thread_buffer_registry.hpp:44-67`
+- **Problem:** `Arena::pub.count` is a plain non-atomic `uint32_t`. During `Tracer::finalize()` or `flush_from_signal()`, `Arena::drain()` reads `pub.count` twice (`bytes` and `count`) and zeroes it while background threads (e.g. NCCL proxy, CQ poll) may still be appending, risking torn records or mismatched `bytes/count` stride.
+- **Fix:** Guard per-arena drain vs append (e.g., atomic sequence/lock or atomic swap/snapshot of `count` with release/acquire ordering after writing the slot).
+
+#### `CR-09` — Uninitialized `m_cpu_domain` and `m_sink` in default-constructed `Recorder`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/rec/recorder.hpp:45, 59, 128-129, 141-142`
+- **Problem:** `Recorder() = default;` leaves `ISink* m_sink;` and `core::DomainId m_cpu_domain;` uninitialized. Any non-static default-constructed `Recorder<>` reads garbage `m_cpu_domain` in `now()`/`now_instant()`, stamping records with an unanchored domain.
+- **Fix:** Add default member initializers `ISink* m_sink = nullptr;` and `core::DomainId m_cpu_domain = core::kDomainHostTsc;` (or `0`).
+
+#### `CR-10` — `dlvsym(RTLD_NEXT, ...)` discards `find_symbol_next()` and calls `real_dlvsym` twice
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/src/hook/Dlsym.cpp:252-270`
+- **Problem:** Line 268 discards both `result = find_symbol_next(caller, symbol)` and `glibc_result` and calls `real_dlvsym(handle, symbol, version)` a second time, resolving relative to `libcomshu_engine.so` instead of the caller.
+- **Fix:** Return/use the resolved `result` (or `glibc_result` fallback) instead of calling `real_dlvsym` again.
+
+#### `CR-11` — `Dlsym` unsynchronized `RegisteredSymbols` map, double `init()` wiping registrations, and null `symbol_name` UB
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/src/hook/Dlsym.cpp:129-165, 180-200, 224-226, 255-257`, `libcomshu/include/comshu/hook/dlsym/Dlsym.hpp:55-57`
+- **Problem:** `RegisteredSymbols` is mutated/read across threads with no mutex; `init()` unconditionally runs `RegisteredSymbols = new ...` (so lazy `dlsym` before `constructor(0)` wipes registrations); `on_symbol_load()` passes `symbol_name` to `find()` without checking for `nullptr`.
+- **Fix:** Guard `init()` with a one-time flag (`std::call_once` / atomic CAS), guard `RegisteredSymbols` access with a lock (or RCU/copy-on-write snapshot for signal/re-entrancy safety), and guard `if (!symbol_name) return real_func;`.
+
+#### `CR-12` — Re-calling `CompositeHookManager::install(obj)` on the same object causes infinite recursion
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/hook/CompositeHookManager.hpp:269-279, 378-395`, `libcomshu/include/comshu/hook/detail/ObjectOpsHookManager.hpp:144-156`
+- **Problem:** On a second `install(obj)`, `get_context(obj)` returns the existing `Context*`, and `install_if_object_ops()` unconditionally executes `ctx->original<Tag>() = op`, overwriting the saved real function with our own trampoline.
+- **Fix:** Make `install(obj)` idempotent (return early if `obj` already has an installed context / if `op` is already one of our trampolines).
+
+#### `CR-13` — Fatal signal handler permanently disables itself after any `SIG_IGN` signal + `g_app_action` data race
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/src/engine.cpp:1267-1302, 1350-1398`
+- **Problem:** `comshu_fatal_signal_handler()` sets `in_handler = 1` (line 1274) and returns on `SIG_IGN` (lines 1289-1290) without resetting `in_handler = 0`, permanently disabling crash flush for any subsequent fatal signal. `g_app_action[sig]` is read/written in `sigaction()`/`signal()` and the signal handler without synchronization or signal masking.
+- **Fix:** Reset `in_handler = 0` before returning on `SIG_IGN` (or check `SIG_IGN` before setting `in_handler = 1` / only set `in_handler` around `flush_from_signal()`), and block the target signal (or use lock-free/atomic publication) when updating `g_app_action[sig]`.
+
+---
+
+### Providers & GPU Backends
+
+#### `CR-14` — Missing dmabuf offset (`in->addr`) in `UmemInfo::gpu_base`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:172-173, 371, 487`
+- **Problem:** Unlike `MemObject` (line 230), `gpu_base` omits `+ reinterpret_cast<std::uint64_t>(addr)` for `ByDmabuf` umems. When a umem is registered at a non-zero offset within a dmabuf, `hijack::register_qp` copies WQEs from offset 0 of the dmabuf and `Mlx5DevxCq.cq_base` records the wrong GPU VA.
+- **Fix:** Add `+ reinterpret_cast<std::uint64_t>(addr)` to `dmabuf_range.base` when computing `gpu_base` for `ByDmabuf`.
+
+#### `CR-15` — Stale `wr::g_ops` and thread-local `wr::slot_for` cache never evicted on QP destruction
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ibverbs`
+- **Locations:** `providers/ibverbs/ibverbs_provider.cpp:374-414, 672-749`
+- **Problem:** `wr::install()` returns early on map collision (`g_ops.emplace(qpx, ops).second`) and `slot_for()` caches `Slot` in a `thread_local` map/pointer with no eviction on QP destroy. Reusing a freed `ibv_qp_ex*` skips patching the new QP's `wr_*` ops and silently drops sends.
+- **Fix:** Evict `qpx` from `wr::g_ops` on `ibv_destroy_qp` and invalidate `thread_local` `slot_for` caches via a generation counter bumped on QP destroy.
+
+#### `CR-16` — Dangling `reg_addr` in `hijack::state().uar_pages` / `uar_ptrs` causes false UAR hijack on VA reuse
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/uar_hijack.hpp:199-200, 234-246, 843-865, 874-884`
+- **Problem:** `teardown()` never erases `reg_addr` from `s.uar_pages` or `s.uar_ptrs`. If the OS maps a regular host buffer at the recycled VA and the app calls `cuMemHostRegister(..., DEVICEMAP)`, `intercept_host_register` falsely hijacks it.
+- **Fix:** Erase `reg_addr` from `s.uar_pages` and `s.uar_ptrs` in `teardown()`.
+
+#### `CR-17` — Missing `mlx5dv_devx_obj_destroy` hook corrupts `last_prod` on QP reuse and leaks CUDA resources
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:120-121, 273, 759-783`, `providers/mlx5dv/uar_hijack.hpp:211-212, 255-268, 761-786`
+- **Problem:** `mlx5dv_devx_obj_destroy` is unhooked, so `g_obj_ctx`, `g_qp_src_lid`, `s.qp_info`, and `s.qp_copy` are never cleaned up. Reused `mlx5dv_devx_obj*` pointers inherit stale `have_last = true` and `last_prod != 0` (skipping WQEs or decoding uninitialized slots), and each destroyed QP leaks its `CUstream` and pinned `host_buf`.
+- **Fix:** Hook `mlx5dv_devx_obj_destroy` to erase from `g_obj_ctx`, `g_qp_src_lid`, `s.qp_info`, and `s.qp_copy` (destroying `CUstream` and freeing `host_buf`).
+
+#### `CR-18` — TOCTOU race in `hostdb::arm()` corrupts refcount, leaks decoy `mmap`, and can chain repeaters
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/host_doorbell.hpp:341-383`
+- **Problem:** `arm()` checks `s.armed.find(uar)` under `s.mutex`, releases the lock to `mmap` a decoy page and start a `RepeaterHandle`, then re-locks and unconditionally overwrites `s.armed[uar]` with `refs = 1`. Two threads concurrently arming a singleton NC UAR leak the first `mmap`, lose a refcount, and can chain a repeater onto the first decoy page.
+- **Fix:** Re-check `s.armed.find(uar)` after re-acquiring `s.mutex` (if already present, increment `refs` and tear down the redundant decoy/repeater), or hold `s.mutex` / reserve a pending slot across setup.
+
+#### `CR-19` — Broken and unsynchronized SRQ free-list walk in `srq_slot()`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ibverbs`
+- **Locations:** `providers/ibverbs/mlx5_cqe.cpp:238-289`, `providers/ibverbs/ibverbs_provider.cpp:1404-1414`
+- **Problem:** `srq_slot(srq, n)` walks `next_wqe_index` `n` times from `out.head` without holding `srq->lock` or checking `slot == out.tail` / bounds. In `rdma-core`, `mlx5_post_srq_recv` lazily links freed WQEs from `free_wqe_bitmap` only when `head == tail`; walking past `tail` reads stale indices, and concurrent post/poll races with the unlocked walk.
+- **Fix:** Check `slot == out.tail` and bounds during the walk, and either synchronize with SRQ posting or record slot mapping safely on post/completion.
+
+#### `CR-20` — Unsynchronized data race / heap-UAF on `G().id_to_memop` in NVBit
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/nvbit`
+- **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:630, 1045`
+- **Problem:** `instrument_function_if_needed()` appends to `G().id_to_memop` under `g_mutex`, while `recv_thread_fun()` reads `G().id_to_memop[ma->opcode_id]` unlocked. Reallocation during concurrent instrumentation causes heap-UAF.
+- **Fix:** Protect `id_to_memop` access (e.g., fixed-size chunks / `std::deque` with atomic size publication, or a lock/shared_mutex).
+
+#### `CR-21` — Unsynchronized data race & null-deref hazard on `g_launch_ticks` / `g_launch_owner` and `g_launch_unknown`
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/nvbit`
+- **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:237-262, 872, 1032-1035`
+- **Problem:** `g_launch_ticks` is allocated and published before `g_launch_owner`, while `launch_time()` only checks `if (!g_launch_ticks)`. `g_launch_owner[slot] = id` is written before `g_launch_ticks[slot] = now` with non-atomic stores, so readers can observe `id` with stale/zero ticks. `++g_launch_unknown` is non-atomic across per-context recv threads.
+- **Fix:** Allocate both arrays before publishing (or use static/fixed arrays), store `ticks` before `owner` with `release`/`acquire` atomics (or a seqlock/mutex), and make `g_launch_unknown` `std::atomic<uint64_t>`.
+
+#### `CR-22` — Static destruction order fiasco (use-after-destruction) on `g_launch_meta` and `g_launch_span`
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/nvbit`
+- **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:208-209, 1015, 1123, 1132, 1388`
+- **Problem:** `g_launch_meta` and `g_launch_span` are namespace-scope `std::unordered_map` objects with non-trivial destructors, accessed by `recv_thread_fun` and `emit_kernel_spans()` inside `nvbit_at_ctx_term`, which can run after C++ static destructors.
+- **Fix:** Move them into the immortal `G()` singleton (constructed via leaky `new`), matching the rest of `nvbit_backend.cu`.
+
+#### `CR-23` — Data race / wrong-parent attribution in `EventPool::resolve()` and free-list corruption on double `release()`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/nccl`
+- **Locations:** `providers/nccl/nccl_profiler_plugin.cpp:113, 116, 207-256, 319-322, 409`
+- **Problem:** `Event::generation` and `Event::id` are plain non-atomic fields written in `acquire()`/`prof_start_event()` and read unlocked in `resolve()`/`parent_id_of()`, allowing data races and mis-attribution on slot reuse. `release()` does not bump `generation` or mark the slot released, so duplicate `release()` appends the same slot to the free list twice (creating a cycle).
+- **Fix:** Make `generation` atomic (or hold `mu_` in `resolve()`/`parent_id_of()`), bump `generation` (e.g. odd/even live/free bit) inside `release()` under `mu_` to make double-release a no-op, and write `ev->id` before exposing the handle.
+
+#### `CR-24` — Unsynchronized data race / iterator invalidation on `ucx_code_ranges_storage()`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ucx_deep`
+- **Locations:** `providers/ucx_deep/ucx_deep_provider.cpp:195-242, 701-707`
+- **Problem:** `on_iface_open()` calls `ops_layout_plausible()` (`is_ucx_code()`) and `refresh_ucx_code_ranges()` (`clear()`/`push_back()`) *before* acquiring `table_mu()`. Concurrent `uct_iface_open()` calls race on the vector.
+- **Fix:** Protect `ucx_code_ranges_storage()` with a mutex (or acquire `table_mu()` before calling `ops_layout_plausible()`/`refresh_ucx_code_ranges()`).
+
+#### `CR-25` — NCCL hooks ignore `ncclInProgress`, dropping non-blocking events and permanently skewing `group_depth()`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/nccl`
+- **Locations:** `providers/nccl/nccl_provider.cpp:158-265, 301, 334, 415, 424`
+- **Problem:** Non-blocking NCCL communicators return `ncclInProgress` on success for init, collectives, P2P, and `ncclGroupEnd`. Every hook checks `res == ncclSuccess` exclusively, dropping those records and failing to decrement `group_depth()` on `ncclGroupEnd`.
+- **Fix:** Treat `res == ncclSuccess || res == ncclInProgress` as success across NCCL hooks.
+- **Not enough for the window hooks** (`providers/nccl/nccl_provider.cpp`, both `window_register_tag` post-callbacks). On a non-blocking communicator `ncclCommWindowRegister` returning `ncclInProgress` means the window is NOT ready: `*win` and the peer pointers `ncclGetPeerDevicePointer` returns (the `nccl_window_peer` rows, 0c73efb) are only valid once `ncclCommGetAsyncError` reports `ncclSuccess`. Record the window and its peer mappings at that point (deferred until the communicator completes), not at return. Until then such windows' stores are counted in `link_health.unattributed_p2p_accesses`, never misplaced.
+
+#### `CR-26` — Wrong `a.thread` attribution for divergent warps in NVBit drain
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/nvbit`
+- **Locations:** `gpu-backends/nvbit/inject_funcs.cu:20-21, 35, 41-46`, `gpu-backends/nvbit/nvbit_backend.cu:1037-1044`
+- **Problem:** `ma.thread_index` is the flat thread ID of `first_laneid` (`ma.lane_id`), not lane 0 of the warp. `nvbit_backend.cu:1044` computes `a.thread = static_cast<uint32_t>(ma->thread_index) + lane;`, double-counting `ma->lane_id` whenever lane 0 is inactive.
+- **Fix:** Compute `(static_cast<uint32_t>(ma->thread_index) - ma->lane_id) + lane` (or store warp base `thread_index - laneid` in `inject_funcs.cu`).
+
+---
+
+### CLI, Reader, SQL & UI Backend
+
+#### `CR-27` — Unsynchronized concurrent access to a single `duckdb_connection` across HTTP worker threads
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-ui`
+- **Locations:** `comshu-ui/main.cpp:111, 243-299`
+- **Problem:** `httplib::Server` serves requests concurrently on a thread pool, and `POST /query` calls `duckdb_query(con, ...)` on a single shared `duckdb_connection con` with no mutex or per-thread connection. Parallel browser panel loads race inside DuckDB.
+- **Fix:** Either open a per-request / `thread_local` `duckdb_connection` via `duckdb_connect(db, ...)` or serialize `duckdb_query` with a mutex.
+
+#### `CR-28` — `mount_raw_tables()` CSV loading path is incompatible with `Raw::ddl`
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`
+- **Locations:** `comshu-read/duck_mount.hpp:157-178`
+- **Problem:** `mount_raw_tables()` creates tables using `Raw::ddl` (raw C++ struct layout with `temporal_*` columns, padding, numeric enums, `UBIGINT`s) and executes `COPY "<name>" FROM '<csv>'`, but `comshu export --csv` emits different column counts/names and decoded/hex text, causing every CSV `COPY` to fail.
+- **Fix:** Either load CSV exports via `read_csv_auto` views (matching `run_sql()`) or align the CSV export format/loader contract and add a test covering `comshu link` / `comshu ui` on `--csv` exports.
+
+#### `CR-29` — Unquoted CSV strings in `Table<GpuKernel>` (and other tables) corrupt `--csv` exports
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`
+- **Locations:** `comshu-read/main.cpp:424-442` (also `300-305`, `320-322`, `355-361`, `802-809`, `1432-1438`)
+- **Problem:** `Table<GpuKernel>::row` (and `MemObject`, `SourceLine`, `GpuDevice`, `IbDevice`, `UctIface`) formats string columns with bare `%s` instead of `csv_quoted()`. Demangled C++ kernel names routinely contain commas, splitting rows into extra columns.
+- **Fix:** Use `csv_quoted(...)` for all string columns in CSV emitters.
+
+#### `CR-30` — Cartesian fan-out in `link_health.capture_streams_missing` produces false-positive defects on replayed captures
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`
+- **Locations:** `comshu-read/link_sql.hpp:3457-3463`, `comshu-read/capture_load.hpp:268-306`
+- **Problem:** Replayed captures produce multiple rows per `rank` in both `capture_status` and `capture_integrity`. Joining them directly on `i.rank = s.rank` creates an N×N Cartesian product per rank and falsely fires `capture_streams_missing` whenever two passes open different numbers of streams.
+- **Fix:** Aggregate per rank (`SUM(streams_found)` vs `SUM(streams_open)`) or carry a pass/subdir key on both tables and join on `(rank, pass)`.
+
+#### `CR-31` — In-place `comshu bake -o <host> <host>` destroys the host binary; 32-bit overflow in TOC bounds check
+- [ ] **Status:** Open
+- **Subsystem:** `comshu`
+- **Locations:** `comshu/baked.cpp:103, 118-123, 448-485`
+- **Problem:**
+  1. `bake_main` opens `host` read-only and then `fopen(out_path, "wb")` before copying, truncating `host` to 0 bytes if `out_path` refers to the same file.
+  2. Line 120 computes `nlen + 32u` in 32-bit `unsigned` arithmetic, which wraps when `nlen >= 0xFFFFFFE0u` and bypasses the bounds check before `e.name.assign(..., nlen)`. Line 103's `toc_off + toc_len` can similarly overflow 64-bit unsigned addition.
+- **Fix:** Write to a temporary file in the destination directory and `rename()` atomically; use `size_t` / overflow-safe subtraction (`end - p < 32 || static_cast<size_t>(end - p) - 32 < nlen`) for TOC/footer bounds checks.
+
+---
+
+### UI & Agent
+
+#### `CR-32` — Middle-stage Sankey node totals are double-counted, halving all stage-1 ribbon heights
+- [ ] **Status:** Open
+- **Subsystem:** `ui`
+- **Locations:** `ui/src/lib/sankey.js:19-21, 58-59`
+- **Problem:** Every link adds `l.value` to both `l.from` and `l.to`, giving stage-1 nodes `value = 2 × flow`. Ribbon heights divide by `a.value` / `b.value`, drawing every stage-1 ribbon at 50% height and leaving the bottom half of every middle-stage node blank.
+- **Fix:** Track `inTotal` and `outTotal` separately per node, set `node.value = Math.max(inTotal, outTotal)`, and divide `ah` by `outTotal` and `bh` by `inTotal`.
+
+#### `CR-33` — Boolean strings from `/query` break approximate-offset indicators (`"false"` is truthy)
+- [ ] **Status:** Open
+- **Subsystem:** `ui`
+- **Locations:** `ui/src/panels/Objects.svelte:131, 147, 232, 307`
+- **Problem:** `/query` returns DuckDB booleans as strings (`"true"` / `"false"`). `b.all_exact ? '' : ' (approx.)'` and `{#if !sp.exact}` treat `"false"` as truthy, so approximate-offset indicators never render.
+- **Fix:** Compare explicitly against `'true'` / `'false'` (e.g., `b.all_exact === 'true'`).
+
+#### `CR-34` — `PiSession.ask()` never settles on child exit/error, causing hangs and `busy` corruption on `/reset`
+- [ ] **Status:** Open
+- **Subsystem:** `agent`
+- **Locations:** `agent/lib/session.mjs:67-81, 118-194`, `agent/bridge.mjs:189-195, 222-246`
+- **Problem:** `PiSession.start()` attaches no `'error'` listener to `this.child` (unhandled error crashes bridge on `ENOENT`). `ask()` does not reject/settle on `this.exited`, hanging for 10 min on child crash or `/reset`. In `bridge.mjs`, `/reset` clears `busy = false` while an earlier `/ask` is still pending, so its `finally` later clobbers `busy` for a newer `/ask`.
+- **Fix:** Attach an `'error'` handler on `spawn()`, race/reject in-flight `ask()` when `child` exits or errors, and guard `busy` with a request token/generation in `bridge.mjs`.
+
+#### `CR-35` — `req.on('close')` attached after `readBody(req)` never detects client disconnect
+- [ ] **Status:** Open
+- **Subsystem:** `agent`
+- **Locations:** `agent/bridge.mjs:204, 224-227`
+- **Problem:** `await readBody(req)` consumes `req` to completion, emitting `'end'`/`'close'` before `req.on('close', ...)` is registered on line 224. Aborting the SSE fetch or closing the browser tab never aborts the agent.
+- **Fix:** Listen on `res.on('close', () => { if (!res.writableEnded) { closed = true; session?.abort(); } })`.
+
+#### `CR-36` — Receive-only ranks silently dropped from Per-rank traffic (`Ranks.svelte`)
+- [ ] **Status:** Open
+- **Subsystem:** `ui`
+- **Locations:** `ui/src/panels/Ranks.svelte:16-31`
+- **Problem:** `FROM out o LEFT JOIN inn i ...` omits ranks with zero outgoing traffic (e.g., gather/reduce sinks).
+- **Fix:** Use `FULL OUTER JOIN` with `coalesce(...)` for `rank`, `transport`, `unit`, `sent`, `ops`, `peers`, and `recv`.
+
+#### `CR-37` — Multi-transport `comm_edges` rows overwrite each other in `Dendrogram.svelte`
+- [ ] **Status:** Open
+- **Subsystem:** `ui`
+- **Locations:** `ui/src/panels/Dendrogram.svelte:10-23`
+- **Problem:** Queries `comm_edges` across all transports without filtering or summing, so `vecs[...][...] = Math.log1p(num(r.bytes))` overwrites earlier transports in arbitrary row order.
+- **Fix:** Either aggregate (`SUM(bytes) GROUP BY src_rank, dst_rank`) or add a transport selector consistent with `Matrix`/`Graph`.
+
+---
+
+## Medium
+
+### Core Engine (`libcomshu/`)
+
+#### `CR-38` — Out-of-bounds `domain` indexing in `comshu_engine_intern_str()`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/src/engine.cpp:550-558`
+- **Problem:** Missing `if (domain >= comshu::rec::kInternDomainCount) return 0;` check (present in `comshu_engine_intern_key()` at line 572).
+- **Fix:** Add the same bounds check at the top of `comshu_engine_intern_str()`.
+
+#### `CR-39` — Integer overflow in bounds check & unchecked `in.read()` in `InternDictionary::load()`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/rec/intern_reader.hpp:126-140`
+- **Problem:** `off + len > blob.size()` can overflow `uint64_t` (throwing uncaught `std::out_of_range` in `blob.substr`), and `in.read()` does not check `gcount()` or stream failure.
+- **Fix:** Check `off > blob.size() || len > blob.size() - off` and verify `in.gcount() == expected` after `in.read()`.
+
+#### `CR-40` — Unchecked `in.read()` in `load_stream()` silently returns zero-filled records on short read
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/rec/stream_reader.hpp:139-144`
+- **Problem:** Does not check `in.gcount()` or `!in`; a short read returns zero-initialized phantom records with `truncated == false`.
+- **Fix:** Check `in.gcount()`, resize `out` to whole records actually read, and mark `found->truncated = true` on short read.
+
+#### `CR-41` — Throwing `std::filesystem` calls and unsigned underflow in `unhandled_streams()`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/rec/version_map.hpp:94, 107`
+- **Problem:** `entry.is_regular_file()` and `entry.file_size()` use throwing overloads; `file_size - sizeof(StreamHeader)` underflows if the file shrank below 32 bytes.
+- **Fix:** Use `ec` overloads and guard `sz >= sizeof(StreamHeader)`.
+
+#### `CR-42` — `mprotect(..., PROT_READ)` on partial tail page of `PT_GNU_RELRO` can write-protect `.data`/`.bss`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/src/libcuda_cells.cpp:185-190`
+- **Problem:** Tests raw `m.relro.hi` instead of `ALIGN_DOWN(m.relro.hi, pagesz)`. Re-protecting a partial tail page shared with writable `.data`/`.bss` causes SIGSEGV.
+- **Fix:** Align `relro.hi` down to `pagesz` (or restore the original page protection parsed from `/proc/self/maps`).
+
+#### `CR-43` — Unsynchronized function pointers & missing `is_driver_fn` check in `dmabuf_registry.hpp`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/core/dmabuf_registry.hpp:107-114, 184, 223-226, 241-264`
+- **Problem:** Function pointers are plain non-atomic globals read/written across threads; `install()`'s `cuMemGetHandleForAddressRange` callback does not check `is_driver_fn(next)` before storing `real_get_handle()`.
+- **Fix:** Use `std::atomic` for cached function pointers and add the `is_driver_fn(next)` check.
+
+#### `CR-44` — Data race on `real_destroy_qp()`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/src/engine.cpp:1459-1490, 1513-1518`
+- **Problem:** Plain non-atomic function pointer read/written concurrently by `ibv_destroy_qp_hook()` and `smart_dlsym` callback.
+- **Fix:** Store in `std::atomic<DestroyQpFn>`.
+
+#### `CR-45` — `Tracer::emit_intern_records()` iterates `InternTable` without locking `m_recorder->mutex(domain)`
+- [ ] **Status:** Open
+- **Locations:** `libcomshu/include/comshu/tracer.hpp:633-668`
+- **Problem:** Iterates `InternTable` containers without acquiring `m_recorder->mutex(domain)`, racing with concurrent `intern()` calls from background threads.
+- **Fix:** Acquire `m_recorder->mutex(domain)` during normal `finalize()` (and keep signal path best-effort / lock-free).
+
+---
+
+### Providers & GPU Backends
+
+#### `CR-46` — `decode_create_qp` omits `rq_bytes` offset for GPU-driven QPs
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:370-373` (cf. `389-394`)
+- **Problem:** Unlike `sqwatch` (lines 389-394), `hijack::register_qp` passes `wq.gpu_base + wq_offset` without adding `rq_bytes` when `rq_type == 0`, reading WQEs from the RQ instead of the SQ.
+- **Fix:** Add `rq_bytes` to the SQ base passed to `hijack::register_qp` when `rq_type == 0`.
+
+#### `CR-47` — Data race on `std::thread` objects between `sqwatch::shutdown()` and `sqwatch::watch()`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/sq_watch.hpp:744-761, 816-833`
+- **Problem:** `watch()` spawns threads under `s.mutex` without checking `s.stop`, while `shutdown()` calls `joinable()`/`join()` without holding `s.mutex`.
+- **Fix:** Check `s.stop` inside `watch()` under `s.mutex`, and move threads out of `s` under `s.mutex` in `shutdown()` before joining them outside the lock.
+
+#### `CR-48` — `mlx5dv_create_qp` post-hook reads `attr->pd` without checking `IBV_QP_INIT_ATTR_PD`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:793-804`
+- **Problem:** Reads `attr->pd` whenever `attr != nullptr`, reading uninitialized memory if `IBV_QP_INIT_ATTR_PD` is not set in `attr->comp_mask`.
+- **Fix:** Guard with `(attr->comp_mask & IBV_QP_INIT_ATTR_PD)` as in `ibverbs_provider.cpp:1153`.
+
+#### `CR-49` — `hijack::intercept_host_get_device_pointer` `fail_open()` leaks CUDA registration and races on `s.fake_pages`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/uar_hijack.hpp:903-962, 921-928, 975-983`
+- **Problem:** `fail_open()` registers `p` with CUDA but leaves `p` in `s.skipped`, so `intercept_host_unregister(p)` skips `real_host_unregister(p)`. Concurrent calls for the same UAR `p` can also allocate two fake pages and overwrite `s.fake_pages[p]` without re-checking under `s.mutex`.
+- **Fix:** Erase `p` from `s.skipped` in `fail_open()` on successful registration, and re-check `s.fake_pages` under `s.mutex` before inserting.
+
+#### `CR-50` — Data race in `hostdb::platform_refuses_gpu_doorbell()`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/host_doorbell.hpp:111-112, 203-277`
+- **Problem:** Non-atomic `cached`, `g_said_unresolved`, and `g_said_inconclusive` are accessed unlocked, and two threads can probe the same `real_reg_addr` simultaneously.
+- **Fix:** Guard the probe with `std::call_once` or a mutex.
+
+#### `CR-51` — `ensure_installed` race window exposes partially-patched `ibv_context->ops`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ibverbs`
+- **Locations:** `providers/ibverbs/ibverbs_provider.cpp:1821-1836`
+- **Problem:** Inserts `ctx` into `g_installed_ctxs` and releases the mutex before `install(ctx)` finishes patching `ctx->ops.*`.
+- **Fix:** Hold a per-context or install mutex across `install(ctx)` before marking `ctx` installed.
+
+#### `CR-52` — Missing re-check between `_umonitor`/`_mm_monitorx` and `_umwait`/`_mm_mwaitx`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/mlx5dv`
+- **Locations:** `providers/mlx5dv/memory_repeater.cpp:47-80`, `providers/mlx5dv/memory_repeater.hpp:84-90`
+- **Problem:** `wait_mem()` arms the monitor and immediately enters `_umwait`/`_mm_mwaitx` without re-checking `*hijack_addr == current`, missing stores that arrive between the prior load and `_umonitor` and stalling ~40 µs per miss.
+- **Fix:** Pass `current` into `wait_mem()` and check `if (*hijack_addr != current) return;` after arming the monitor and before waiting.
+
+#### `CR-53` — Stale `g_qp_lid` and `qp_srq_map` entries on QP destruction / device close
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ibverbs`
+- **Locations:** `providers/ibverbs/ibverbs_provider.cpp:132-148, 303-319, 1928-1934`
+- **Problem:** Neither map is evicted on QP destroy or `forget_context`, causing stale LID/port or dangling `ibv_srq*` on handle/qpn reuse.
+- **Fix:** Evict on `ibv_destroy_qp` and `forget_context`.
+
+#### `CR-54` — `ucp_atomic_op_nbx` records element `count` as operand byte size `op_size`
+- [ ] **Status:** Open
+- **Subsystem:** `providers/ucx`
+- **Locations:** `providers/ucx/ucx_provider.cpp:736-745`, `providers/ucx/ucx_records.hpp:256`
+- **Problem:** `UcxAtomic::op_size` is operand byte width (4 or 8), but `ucp_atomic_op_nbx` passes `count` (typically `1`) instead of decoding `param->datatype` element size.
+- **Fix:** Extract element size from `param->datatype` (e.g. `ucp_dt_length` / datatype shift for contiguous types) and record `elem_size` (or `elem_size * count` as appropriate).
+
+#### `CR-55` — `nvbit_at_cuda_event` ignores `CUresult*` and skips null-checks on alloc/VMM exits
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/nvbit`
+- **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:1173-1174, 1197-1205, 1226-1245, 1254-1282`
+- **Problem:** Failed `cuMemAlloc*` / VMM calls still register garbage handles/pointers and emit bogus `MemObject` records; `p->dptr` is dereferenced without null checks.
+- **Fix:** Name and check `CUresult* res` (`if (res && *res != CUDA_SUCCESS) return;`) on exit events, and null-check output pointers.
+
+#### `CR-56` — NVBit injects `comshu_kernel_stamp` and separate `launch_id`s into non-kernel `__device__` callees
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/nvbit`
+- **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:563-601, 852-904`
+- **Problem:** Related non-inlined `__device__` functions get `comshu_kernel_stamp` injected (without matching `EXIT` since they end with `RET`) and receive distinct `g_grid_launch_id++` values that have no `GpuKernel` metadata row.
+- **Fix:** Inject `comshu_kernel_stamp` only when `nvbit_is_func_kernel(ctx, f)` is true, and pass the *kernel's* `launch_id` to related `__device__` functions instead of incrementing `g_grid_launch_id` per callee.
+
+#### `CR-57` — Null-pointer dereference in `gpumem::Engine::process()` when `declare_provider()` fails
+- [ ] **Status:** Open
+- **Subsystem:** `providers/gpumem`
+- **Locations:** `providers/gpumem/engine.hpp:223-231, 426, 435-438`
+- **Problem:** Early return leaves `m_pipeline == nullptr` and skips `comshu_engine_acquire()`, yet `process()` dereferences `m_pipeline->process(batch)` and `shutdown()` calls `comshu_engine_release()`.
+- **Fix:** Guard `if (!m_pipeline) return;` in `process()` and track `m_acquired` before calling `comshu_engine_release()` in `shutdown()`.
+
+#### `CR-58` — Engine reference-count (`Tracer::m_active`) mismatches in CUPTI, UCX, UCX-deep, and NCCL
+- [ ] **Status:** Open
+- **Subsystem:** `gpu-backends/cupti`, `providers/ucx`, `providers/ucx_deep`, `providers/nccl`
+- **Locations:** `gpu-backends/cupti/cupti_backend.cpp:587, 604-605, 623`; `providers/ucx/ucx_provider.cpp:376-379, 934-949`; `providers/ucx_deep/ucx_deep_provider.cpp:759-763, 811-826`; `providers/nccl/nccl_provider.cpp:151-155, 452-467`
+- **Problem:** `cupti_backend` acquires unconditionally but skips release when `!g_on`; `ucx`/`ucx_deep`/`nccl` skip acquire when `declare_provider()` fails yet still release on `.so` unload, and can double-release if `shutdown()` is called before unload.
+- **Fix:** Track an explicit `bool acquired` flag per provider/backend so every `comshu_engine_acquire()` is paired with exactly one `comshu_engine_release()`.
+
+---
+
+### CLI, Reader, SQL & UI Backend
+
+#### `CR-59` — Unescaped file paths and table names interpolated into DuckDB SQL
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`, `comshu-ui`
+- **Locations:** `comshu-read/duck_mount.hpp:111-118, 135-142, 166-172`; `comshu-read/main.cpp:2607, 2641, 2651, 2669, 2701, 2729, 2850-2851, 2921-2922`; `comshu-ui/main.cpp:213, 218-219`
+- **Problem:** File paths and table stems are concatenated into `'...'` and `"..."` SQL literals without escaping embedded quotes.
+- **Fix:** Add helper functions `sql_quote_str()` (doubling `'`) and `sql_quote_ident()` (doubling `"`) and use them everywhere paths/names enter SQL.
+
+#### `CR-60` — `link_health.wr_flight_backwards` ignores `_wr_pairable` and omits selective-signalling QPs
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`
+- **Locations:** `comshu-read/link_sql.hpp:3880-3900` (cf. `_wr_flight` at `173-253`)
+- **Problem:** Runs branch-1 pairing across all QPs without `_wr_pairable` (false positives on selectively-signalling QPs) and omits branch 2 (false negatives).
+- **Fix:** Mirror `_wr_flight`'s two-branch `_wr_pairable` logic or query `_wr_flight` directly for `done_ns < posted_ns`.
+
+#### `CR-61` — Fan-out / miscount in `object_access.p2p` and `link_health.unattributed_p2p_accesses` on reused base addresses
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`
+- **Locations:** `comshu-read/link_sql.hpp:2001-2016, 3669-3678`
+- **Problem:** `am` selects `DISTINCT rank, id, range_base, range_size FROM mem_object`. Reallocating a different-sized buffer at the same base produces multiple rows with the same `(rank, id)`, duplicating `object_access.p2p` rows and falsely counting valid accesses as unattributed against the smaller extent.
+- **Fix:** Match extents by lifetime window (or deduplicate/constrain to the live extent at access time).
+
+#### `CR-62` — `run_sql()` nondeterministically overwrites `.parquet` views with `.csv` views
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`
+- **Locations:** `comshu-read/main.cpp:2838-2854`
+- **Problem:** `fs::directory_iterator` order is unspecified; when both `<table>.parquet` and `<table>.csv` exist, whichever is visited second wins.
+- **Fix:** Mount `.parquet` files first (recording mounted table names) and only mount `.csv` for stems not already mounted.
+
+#### `CR-63` — Unsigned underflow in `build_trace()` timestamp subtraction & `uint64_t` overflow in `SendRate`
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`
+- **Locations:** `comshu-read/main.cpp:3133-3135, 3273, 3286-3287`
+- **Problem:** `wall_at(t.a.ticks) - origin` underflows `uint64_t` if an event precedes `origin` or uses an unanchored clock domain; `win_bytes * 1000000000ull / window / 1000000ull` overflows `uint64_t` above ~18.4 GB per window.
+- **Fix:** Clamp/handle events `< origin` safely (or skip unanchored timestamps), and simplify `SendRate` to `win_bytes * 1000ull / (window ? window : 1)` (or use `double` / `__uint128_t`).
+
+#### `CR-64` — Unchecked `std::fopen()` in `export_csv()` / `write_mem_owner()` & incomplete JSON escaping in `comshu-ui`
+- [ ] **Status:** Open
+- **Subsystem:** `comshu-read`, `comshu-ui`
+- **Locations:** `comshu-read/main.cpp:2229-2232, 2455-2457, 2484-2485`; `comshu-ui/main.cpp:53-77`
+- **Problem:** `export_csv()` opens 65+ files without checking for `nullptr` before `fprintf`/`fputs`; `comshu-ui`'s `json_escape()` leaves control chars `0x00..0x1F` (other than `\n`, `\r`, `\t`) unescaped, producing invalid JSON.
+- **Fix:** Check `fopen()` return values and return an error cleanly; escape all `static_cast<unsigned char>(c) < 0x20` as `\u00XX` in `comshu-ui`'s `json_escape()`.
+
+---
+
+### UI & Agent
+
+#### `CR-65` — Agent & UI edge-case correctness bundle
+- [ ] **Status:** Open
+- **Subsystem:** `agent`, `ui`
+- **Locations & Fixes:**
+  1. `agent/lib/query.mjs:11-19, 33, 82` — `stripComments()` and `;` check do not respect SQL string literals (`'--'`, `'/*'`, `';'`). Lex string literals before stripping comments / checking semicolons.
+  2. `agent/lib/spec-guard.mjs:88-92, 166-178` & `agent/comshu-agent.ts:141-147` — Guard `view.encoding === null` before `Object.entries()`, and exclude transform-derived `as` field names from the SQL-column existence check.
+  3. `ui/src/lib/chart.js:76, 84-92` — Don't coerce fields to `Number` when `aggregate` is `'count'` or `'distinct'` (causes string columns to become `NaN`).
+  4. `ui/src/lib/Chart.svelte:14-32` — Finalize `View` if `dead` is true when `await render(...)` resolves after unmount.
+  5. `ui/src/panels/Timeline.svelte:138-144, 311, 334-343, 400, 474` — Clear `writeHash` timer on unmount; don't bail on `!rows.length` when `longRows.length > 0`; apply 6 px slop check to `bestLong`; use `qview` in density tooltip; replace `Math.max(...ns)` with a loop to avoid stack overflow on 100k rows.
+  6. `ui/src/panels/Graph.svelte:109, 328-333, 397` — Filter `dst_rank >= 0` in `highlighted` and `peers` set; guard `facetBytes === 0` against `NaN%`.
+  7. `ui/src/panels/Objects.svelte:109-155, 118-121, 360` — Add cancellation tokens to both `$effect` queries; clamp `bin` to `<= 63` for 0-byte writes at `w.hi`; format 64-bit `o.base` with `BigInt(o.base).toString(16)`.
+  8. `ui/src/panels/Devices.svelte:392-398, 643-644, 666` — Check `an === null || on === null` in `reach(r)` so unknown nodes don't match as `'same host'`; pass `devices` to `actorLabel()` in the verbs view.
+  9. `ui/src/panels/Chat.svelte:83-93` — Guard `finally` cleanup (`busy = false; controller = null;`) against clobbering a newer in-flight request after `stop()`.
+  10. `ui/src/panels/Sankey.svelte:22-26` — Namespace `verbs` vs `devx` opcodes (or decode them to names) so incompatible opcode numbers don't collide in stage 1.
+
+---
+
+## Low
+
+- [x] **`CR-66`** (`libcomshu/src/cuda_alloc_doors.cpp:252-289, 421`) — TOCTOU race between `was_created_here(h)` and `map_is_first(h, ptr, size)` acquiring `g_created_mutex` separately. Combine into a single locked operation. **Done 8c01b47:** one `map_is_object()` under one lock.
+- [ ] **`CR-67`** (`libcomshu/include/comshu/core/mem_attr.hpp:51-60`) — Data race on `static CuPointerGetAttributeFn cached` on first resolution; make atomic or use `std::call_once`.
+- [ ] **`CR-68`** (`providers/ibverbs/ibverbs_provider.cpp:1631-1635, 1978-1980, 2025-2027, 2060-2065`) — `trace_unmatched_destroy_cq` and `trace_unmatched_dereg` always print `installed=yes` because `ensure_installed()` runs right before them. Check membership before calling `ensure_installed()`.
+- [ ] **`CR-69`** (`comshu-read/link_sql.hpp:130-136`) — `_wr_pairable` selects `s.rank, s.qp_num` after `FULL JOIN ... USING (rank, qp_num)`, emitting `NULL` for completions-only QPs. Select unqualified `rank, qp_num`.
+- [ ] **`CR-70`** (`comshu-read/link_sql.hpp:2515, 2522`) — `kernel_sends` omits the `n.texts = 1` ambiguity guard when joining `_intern_name`.
+- [ ] **`CR-71`** (`agent/bridge.mjs:57, 74, 159, 170-179, 256-261`) — `startupError` is never cleared once `capture_ok` recovers; `new URL(...)` on malformed `Host` is outside `try/catch`; IPv6 loopback `new URL('http://[::1]:8777').hostname` is `'[::1]'` rather than `'::1'`.
+- [ ] **`CR-72`** (`agent/eval.mjs:58, 104, 188-189`) — `digits()` strips spaces/newlines and concatenates distinct numbers; `--verbose` crashes with `TypeError: r.queries is not iterable` if a case threw.
+- [ ] **`CR-73`** (`ui/src/panels/Matrix.svelte:96`, `ui/src/panels/Graph.svelte:255`) — Empty `comm_edges` leaves both panels stuck on `"loading…"` forever instead of rendering an empty state.
+- [ ] **`CR-74`** (`agent/lib/preamble.mjs:26-27`) — Empty `names` list produces invalid SQL `SELECT t, n FROM () ...` in `tableCounts()`.
+- [ ] **`CR-75`** (Meta / Regression Coverage) — Add targeted unit/regression tests for each Critical/High fix above as tickets are closed (e.g., `query_guard_test`, `fork_smoke` verifying child `ClockAnchor`/`NodeIdentity`, concurrent `PreloadHookManager` resolution test, `sankey.js` unit test, `Objects.svelte` boolean-string check).
