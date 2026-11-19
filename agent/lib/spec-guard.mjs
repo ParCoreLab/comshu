@@ -86,7 +86,8 @@ function checkView(view, path, errors) {
   }
 
   if (view.encoding !== undefined) {
-    if (typeof view.encoding !== 'object' || Array.isArray(view.encoding)) {
+    // null is typeof 'object' and made Object.entries throw (CR-65).
+    if (view.encoding === null || typeof view.encoding !== 'object' || Array.isArray(view.encoding)) {
       errors.push(`${path}.encoding: expected an object`);
     } else {
       for (const [ch, def] of Object.entries(view.encoding)) {
@@ -165,14 +166,31 @@ export function guardSpec(spec) {
  */
 export function specFields(spec) {
   const fields = new Set();
+  // Fields a `transform` CREATES (its `as`) are the spec's own, not the
+  // query's: requiring them in the rows refused every chart that computed a
+  // column, e.g. a calculate of MB from bytes (CR-65).
+  const derived = new Set();
   const walk = (n) => {
     if (Array.isArray(n)) return n.forEach(walk);
     if (!n || typeof n !== 'object') return;
     for (const [k, v] of Object.entries(n)) {
       if (k === 'field' && typeof v === 'string') fields.add(v);
-      else walk(v);
+      else if (k === 'transform' && Array.isArray(v)) {
+        const collect = (as) => {
+          if (typeof as === 'string') derived.add(as);
+          else if (Array.isArray(as)) as.forEach(collect);
+        };
+        for (const t of v) {
+          if (!t || typeof t !== 'object') continue;
+          collect(t.as);
+          // aggregate/window/joinaggregate name their outputs per entry.
+          for (const list of [t.aggregate, t.window, t.joinaggregate])
+            if (Array.isArray(list)) list.forEach((e) => collect(e?.as));
+        }
+        walk(v);
+      } else walk(v);
     }
   };
   walk(spec);
-  return [...fields];
+  return [...fields].filter((f) => !derived.has(f));
 }

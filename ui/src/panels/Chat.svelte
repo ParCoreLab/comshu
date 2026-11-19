@@ -68,7 +68,7 @@
       scroll();
     };
 
-    controller = new AbortController();
+    const mine = (controller = new AbortController());
     try {
       for await (const ev of ask(message, { signal: controller.signal })) {
         if (ev.kind === 'text') patch((t) => ({ ...t, text: t.text + ev.delta }));
@@ -81,13 +81,20 @@
     } catch (e) {
       if (e.name !== 'AbortError') patch((t) => ({ ...t, error: e.message }));
     } finally {
-      busy = false;
-      controller = null;
+      // Only if this request is still the current one. stop() clears `busy`
+      // at once so a new question can be sent; this request's cleanup then
+      // ran later and cleared the NEW request's busy flag and controller,
+      // leaving it unstoppable (CR-65).
+      if (controller === mine) {
+        busy = false;
+        controller = null;
+      }
     }
   }
 
   function stop() {
     controller?.abort();
+    controller = null;  // the aborted request no longer owns the flags
     abort();
     busy = false;
   }

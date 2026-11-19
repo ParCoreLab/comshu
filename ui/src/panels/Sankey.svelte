@@ -18,11 +18,28 @@
   // verbs opcode 1 is write-with-immediate, a MemOp 1 is a Store. Rendering
   // both as "opcode 1" would merge two unrelated things into one node, which is
   // the same conflation the transport dimension exists to prevent.
+  //
+  // Verbs and DEVX number their operations in DIFFERENT spaces — ibv_wr_opcode
+  // (0 = RDMA write) against the mlx5 WQE opcode (0x08 = RDMA write) — and both
+  // were rendered "opcode N", so unrelated operations merged into one node
+  // (CR-65). The well-known ones are decoded to one vocabulary, because a write
+  // is a write whichever plane posted it; anything else keeps its number,
+  // prefixed by the plane it is a number in.
   const SQL = `
     WITH s AS (
-      SELECT 'verbs'  AS transport, 'opcode ' || opcode AS op, length FROM ib_post_send
+      SELECT 'verbs'  AS transport,
+             CASE opcode WHEN 0 THEN 'write' WHEN 1 THEN 'write+imm' WHEN 2 THEN 'send'
+                         WHEN 3 THEN 'send+imm' WHEN 4 THEN 'read' WHEN 5 THEN 'atomic cas'
+                         WHEN 6 THEN 'atomic fadd'
+                         ELSE 'verbs op ' || opcode END AS op,
+             length FROM ib_post_send
       UNION ALL
-      SELECT 'devx',   'opcode ' || opcode,                     length FROM mlx5_device_send
+      SELECT 'devx',
+             CASE opcode WHEN 8 THEN 'write' WHEN 9 THEN 'write+imm' WHEN 10 THEN 'send'
+                         WHEN 11 THEN 'send+imm' WHEN 16 THEN 'read' WHEN 17 THEN 'atomic cas'
+                         WHEN 18 THEN 'atomic fadd'
+                         ELSE 'mlx5 op ' || opcode END,
+             length FROM mlx5_device_send
       UNION ALL
       SELECT 'nvlink',
              CASE op WHEN 0 THEN 'load' WHEN 1 THEN 'store'

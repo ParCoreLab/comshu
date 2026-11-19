@@ -117,3 +117,28 @@ test('a write is refused before it reaches the server', { skip: live ? false : `
   const capture = new Capture(UI);
   await assert.rejects(() => capture.modelQuery('CREATE TABLE t AS SELECT 1'), /only SELECT/);
 });
+
+// CR-65(1): comment and statement markers inside string literals are data.
+import { stripComments as _sc, checkReadOnly as _cro } from '../lib/query.mjs';
+test('string literals are not lexed as comments or statement ends', () => {
+  assert.equal(_sc("SELECT 'a--b' AS x -- trailing"), "SELECT 'a--b' AS x");
+  assert.equal(_sc("SELECT '/* not a comment */' AS x"), "SELECT '/* not a comment */' AS x");
+  assert.equal(_cro("SELECT ';' AS semi"), null, 'a ; inside a string is not a second statement');
+  assert.equal(_sc("SELECT 'it''s' AS x;"), "SELECT 'it''s' AS x");
+  assert.match(_cro('SELECT 1; SELECT 2') ?? '', /one statement/);
+});
+
+// CR-65(2): a null encoding is an error, not a crash; transform outputs are
+// not demanded of the query.
+test('null encoding is reported, transform outputs are the spec\'s own', () => {
+  const g = guardSpec({ mark: 'bar', encoding: null });
+  assert.equal(g.ok, false);
+  assert.deepEqual(
+    specFields({
+      transform: [{ calculate: 'datum.bytes / 1e6', as: 'mb' }],
+      mark: 'bar',
+      encoding: { x: { field: 'rank' }, y: { field: 'mb' } },
+    }).sort(),
+    ['rank'],
+  );
+});

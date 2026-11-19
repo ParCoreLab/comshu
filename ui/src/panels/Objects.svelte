@@ -108,6 +108,9 @@
   // one rather than being silently rescaled.
   $effect(() => {
     if (!sel) { bins = []; return; }
+    // Cancelled when the selection changes: a slow query for the previous
+    // object used to land after the new one's and overwrite it (CR-65).
+    let stale = false;
     const r = num(sel.rank), o = num(sel.id), l = num(sel.life);
     query(`
       -- The window ends at the furthest byte touched. A UCX row's size is a
@@ -118,7 +121,9 @@
         SELECT max(obj_offset + CASE WHEN unit = 'bytes' THEN size ELSE 1 END) AS hi
         FROM object_access WHERE owner_rank = ${r} AND object = ${o} AND life = ${l}
       )
-      SELECT floor(a.obj_offset * ${BINS} / greatest(w.hi, 1))::INT AS bin,
+      -- least(): a 0-byte access AT the window's end computed bin = BINS,
+      -- one past the last (CR-65).
+      SELECT least(floor(a.obj_offset * ${BINS} / greatest(w.hi, 1)), ${BINS - 1})::INT AS bin,
              count(*)::BIGINT                         AS n,
              coalesce(sum(a.size) FILTER (WHERE a.unit = 'bytes'), 0)::BIGINT AS bytes,
              coalesce(sum(a.size) FILTER (WHERE a.unit <> 'bytes'), 0)::BIGINT AS units,
@@ -133,8 +138,9 @@
       FROM object_access a, w
       WHERE a.owner_rank = ${r} AND a.object = ${o} AND a.life = ${l}
       GROUP BY bin ORDER BY bin`)
-      .then((b) => (bins = b))
-      .catch(() => (bins = []));
+      .then((b) => { if (!stale) bins = b; })
+      .catch(() => { if (!stale) bins = []; });
+    return () => { stale = true; };
   });
 
   // Per-source totals for the selected object. The heatmap merges the streams
@@ -143,6 +149,7 @@
   let split = $state([]);
   $effect(() => {
     if (!sel) { split = []; return; }
+    let stale = false;  // as above
     query(`
       SELECT source, bool_and(exact) AS exact, min(unit) AS unit,
              count(*)::BIGINT AS n, sum(size)::BIGINT AS amount,
@@ -150,8 +157,9 @@
       FROM object_access
       WHERE owner_rank = ${num(sel.rank)} AND object = ${num(sel.id)} AND life = ${num(sel.life)}
       GROUP BY 1 ORDER BY n DESC`)
-      .then((r) => (split = r))
-      .catch(() => (split = []));
+      .then((r) => { if (!stale) split = r; })
+      .catch(() => { if (!stale) split = []; });
+    return () => { stale = true; };
   });
 
   // The query returns a row only for bins that were touched, so rendering
@@ -357,7 +365,7 @@
                 <span style="color: {num(o.device) === 65535 ? 'var(--text-3)' : 'var(--text-1)'}">{dev(o.device, o.attr_status)}</span>
               </td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border); color: var(--text-2)">{madeBy(o)}</td>
-              <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">0x{num(o.base).toString(16)}</td>
+              <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">0x{o.base == null ? '?' : BigInt(o.base).toString(16)}</td>
               <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">{bytes(num(o.size))}</td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border); color: var(--text-2)">{lifeLabel(o) || '—'}</td>
               <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">

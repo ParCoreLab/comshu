@@ -149,6 +149,7 @@
                   THEN a.actor_device ELSE an.device END AS actor_device,
              an.devices  AS actor_devices,
              ow.node_ix AS owner_node, ow.device AS owner_device,
+             ow.devices AS owner_devices,
              a.actor_rank, a.owner_rank, a.object, a.source, a.life,
              count(*)::BIGINT    AS n,
              sum(a.size)::BIGINT AS bytes,
@@ -184,7 +185,7 @@
       -- ibv_post_send. Disjoint from verbs by construction (a send takes one
       -- door), so still addable.
       WHERE a.source IN ('verbs', 'verbs_recv', 'devx')
-      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
       ORDER BY n DESC`)
       .then((r) => {
         vbRows = r;
@@ -386,6 +387,12 @@
     if (r.owner_rank === null || r.owner_rank === undefined) return 'unresolved';
     const an = num(r.actor_node), ad = num(r.actor_device);
     const on = num(r.owner_node), od = num(r.owner_device);
+    if (num(r.actor_rank) === num(r.owner_rank) && ad !== null && ad === od) return 'same GPU';
+    // A node the capture could not name on either end makes "same host" a
+    // coincidence of two nulls, not a fact — which the device test below
+    // already refuses to make for GPUs (CR-65).
+    if (an === null || on === null)
+      return num(r.actor_rank) === num(r.owner_rank) ? 'same rank' : 'unresolved';
     // Two ranks whose GPUs are both unknown are NOT "same GPU" — null === null
     // is an absence matching an absence. With no device on either end the only
     // claims available are the rank and the host.
@@ -663,7 +670,7 @@
               <tr>
                 <td class="px-2.5 py-1 border-b font-mono" style="border-color: var(--border)">#{r.object}</td>
                 <td class="px-2.5 py-1 border-b whitespace-nowrap" style="border-color: var(--border)">
-                  {actorLabel(num(r.owner_node), num(r.owner_device))}
+                  {actorLabel(num(r.owner_node), num(r.owner_device), num(r.owner_devices))}
                 </td>
                 <td class="px-2.5 py-1 border-b" style="border-color: var(--border)">{r.owner_rank}</td>
                 <td class="px-2.5 py-1 text-right border-b whitespace-nowrap" style="border-color: var(--border)">

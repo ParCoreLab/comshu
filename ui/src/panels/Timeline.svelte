@@ -142,6 +142,9 @@
       history.replaceState(null, '', `#time,${Math.round(v.lo)},${Math.round(v.hi)}`);
     }, 250);
   }
+  // A zoom made just before switching panels must not rewrite the NEXT panel's
+  // hash 250 ms later (CR-65).
+  $effect(() => () => clearTimeout(hashTimer));
 
   // Bootstrap: the capture's own extent, and which lanes it actually has. Both
   // come from one scan so the panel does not pay for the same table twice.
@@ -308,7 +311,9 @@
   // Nearest mark under the cursor, in the lane under the cursor. Hit-testing in
   // DATA space rather than reading pixels back, so it stays correct at any DPR.
   function pick(x, y) {
-    if (!rows || !rows.length || x < LEFT) return null;
+    // Long spans alone are still hoverable: a window holding only a kernel
+    // that runs through it has no short rows at all (CR-65).
+    if (!rows || (!rows.length && !longRows.length) || x < LEFT) return null;
     const ri = Math.floor((y - AXIS_H) / ROW_H);
     if (ri < 0 || ri >= ranks.length) return null;
     const rank = ranks[ri];
@@ -338,9 +343,12 @@
       const d = t < t0 ? t0 - t : t > t1 ? t - t1 : 0;
       if (d <= bestD) { bestD = d; bestLong = r; }
     }
-    if (bestLong) return { x, y, rank, stream, r: bestLong, asSpan: true };
-    // 6 px of slop, so a 122 ns span is still catchable without pixel-perfect aim.
-    if (!best || bestD > ((view.hi - view.lo) / plotW) * 6) return null;
+    // 6 px of slop, so a 122 ns span is still catchable without pixel-perfect
+    // aim — and the same slop for a long span, which otherwise answered the
+    // hover from anywhere in its lane however far away (CR-65).
+    const slop = ((view.hi - view.lo) / plotW) * 6;
+    if (bestLong && bestD <= slop) return { x, y, rank, stream, r: bestLong, asSpan: true };
+    if (!best || bestD > slop) return null;
     return { x, y, rank, stream, r: best };
   }
 
@@ -396,8 +404,11 @@
     if (mode === 'density') {
       // Log scale, for the reason logScale() carries: the corpus spans five
       // orders of magnitude and linear encodes that as two lit cells.
-      const ns = rows.map((d) => num(d.n));
-      const hi = Math.log(Math.max(1, Math.max(...ns)));
+      // A loop, not Math.max(...ns): spreading 100k values as arguments
+      // overflows the call stack (CR-65).
+      let nmax = 1;
+      for (const d of rows) nmax = Math.max(nmax, num(d.n));
+      const hi = Math.log(nmax);
       // Bucket width in TIME, converted through the current view — so a stale
       // frame drawn at a new zoom scales instead of lying about its resolution.
       // Falls back to the drawn viewport if a frame somehow arrives without one.
@@ -471,7 +482,10 @@
               `${epLabel} ${d.ep}`,
               d.bytes === null ? null : bytes(num(d.bytes))].filter(Boolean);
     }
-    return [head, `t ${fmtT(view.lo + (num(d.px) / PX) * (view.hi - view.lo))}`,
+    // The bucket's time through the window it was QUERIED for, as the draw
+    // and the hit-test do; the drawn view can differ mid-zoom (CR-65).
+    const q = qview ?? { lo: view.lo, span: view.hi - view.lo };
+    return [head, `t ${fmtT(q.lo + (num(d.px) / PX) * q.span)}`,
             `${count(num(d.n))} events`, `max ${durLabel(stream)} ${fmtDur(num(d.dmax))}`,
             num(d.bytes) ? bytes(num(d.bytes)) : null].filter(Boolean);
   });

@@ -20,7 +20,11 @@
         if (dead) return;
         rows = r;
         if (!r.length) return;
-        view = await render(el, chart.spec, r);
+        const v = await render(el, chart.spec, r);
+        // Unmounted while rendering: the cleanup below already ran and saw no
+        // view, so this one would keep its timers and listeners forever (CR-65).
+        if (dead) v.finalize();
+        else view = v;
       })
       .catch((e) => {
         if (!dead) error = e.message;

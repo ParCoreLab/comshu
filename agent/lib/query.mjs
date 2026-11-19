@@ -7,15 +7,58 @@
 
 const CELL_CHARS = 200; // a single cell wider than this is truncated in the model's view
 
-/** Strip SQL comments that would confuse the server's first-token check. */
+/**
+ * Lex SQL just far enough to know what is code: comments are dropped, string
+ * literals ('…', '' escaped) and quoted identifiers ("…") are kept verbatim
+ * and never looked inside. The regex version this replaces (CR-65) stripped a
+ * `--` or `/*` that sat inside a string — `WHERE note = 'a--b'` lost its tail —
+ * and counted a `;` inside a string as a second statement.
+ *
+ * Returns the code with comments removed, and the index (in that code) of
+ * every `;` outside a literal.
+ */
+function lex(sql) {
+  let out = '';
+  const semis = [];
+  for (let i = 0; i < sql.length; ) {
+    const c = sql[i];
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      for (;;) {
+        if (j >= sql.length) break;
+        if (sql[j] === c) {
+          if (sql[j + 1] === c) { j += 2; continue; } // doubled quote: escaped
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      out += sql.slice(i, j);
+      i = j;
+    } else if (c === '-' && sql[i + 1] === '-') {
+      const nl = sql.indexOf('\n', i);
+      i = nl === -1 ? sql.length : nl;
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      out += ' ';
+      i = end === -1 ? sql.length : end + 2;
+    } else {
+      if (c === ';') semis.push(out.length);
+      out += c;
+      i += 1;
+    }
+  }
+  return { code: out, semis };
+}
+
+/** Strip SQL comments and a trailing `;`, never touching string literals. */
 export function stripComments(sql) {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .split('\n')
-    .map((l) => l.replace(/--.*$/, ''))
-    .join('\n')
-    .trim()
-    .replace(/;+\s*$/, '');
+  const { code, semis } = lex(sql);
+  let s = code;
+  // Trailing semicolons only (outside literals): `SELECT 1;` is one statement.
+  for (let k = semis.length - 1; k >= 0 && !s.slice(semis[k] + 1).trim(); k -= 1)
+    s = s.slice(0, semis[k]) + s.slice(semis[k] + 1);
+  return s.trim();
 }
 
 /**
@@ -30,7 +73,8 @@ export function checkReadOnly(sql) {
   const s = stripComments(sql);
   if (!s) return 'empty query';
   if (!/^(select|with)\b/i.test(s)) return 'only SELECT and WITH queries can be run against a capture';
-  if (s.includes(';')) return 'one statement at a time — remove the `;` and the statements after it';
+  if (lex(s).semis.length)
+    return 'one statement at a time — remove the `;` and the statements after it';
   return null;
 }
 

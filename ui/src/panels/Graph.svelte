@@ -106,7 +106,9 @@
     const t = new Map(ranks.map((r) => [r, { out: 0, in: 0, sends: 0, peers: new Set() }]));
     for (const e of facet) {
       const s = num(e.src_rank), d = num(e.dst_rank), b = num(e.bytes);
-      if (t.has(s)) { t.get(s).out += b; t.get(s).sends += num(e.sends); t.get(s).peers.add(d); }
+      // An unresolved destination (-1) is not a peer: counting it made every
+      // rank with unplaceable sends one peer richer than it is (CR-65).
+      if (t.has(s)) { t.get(s).out += b; t.get(s).sends += num(e.sends); if (d >= 0) t.get(s).peers.add(d); }
       if (t.has(d)) { t.get(d).in += b; t.get(d).peers.add(s); }
     }
     return t;
@@ -186,7 +188,10 @@
 
   const incident = $derived((e) =>
     hover === null || num(e.src_rank) === hover || num(e.dst_rank) === hover);
-  const highlighted = $derived(hover === null ? [] : edges.filter(incident));
+  // Only edges the ring can draw: one with an unresolved end has no arc and no
+  // arrowhead position (CR-65).
+  const highlighted = $derived(
+    hover === null ? [] : edges.filter((e) => num(e.dst_rank) >= 0 && incident(e)));
 
   // Group arcs: one labelled band per physical node, outside the ring.
   const arcs = $derived.by(() =>
@@ -394,7 +399,7 @@
       ranks on the same host.
       {#if edges.length !== facet.length}
         Showing the {edges.length} heaviest of {facet.length} edges,
-        {Math.round((shownBytes / facetBytes) * 100)}% of the bytes.
+        {facetBytes ? Math.round((shownBytes / facetBytes) * 100) : 0}% of the bytes.
       {/if}
     </p>
 

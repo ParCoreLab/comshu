@@ -494,7 +494,7 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### UI & Agent
 
 #### `CR-65` — Agent & UI edge-case correctness bundle
-- [ ] **Status:** Open
+- [x] **Status:** Done (all ten items: (1) agent SQL lexer respects string literals; (2) null encoding refused, transform 'as' fields not demanded; (3) counting aggregates not coerced to numbers; (4) Chart finalizes a view rendered after unmount; (5) Timeline: hash timer cleared on unmount, long-only hover, slop on long spans, qview in the density tooltip, no Math.max spread; (6) Graph: unresolved dst excluded from peers and highlights, facetBytes 0 guarded; (7) Objects: stale queries dropped, bin clamped, base via BigInt; (8) Devices: null nodes never 'same host', verbs view passes owner_devices; (9) Chat: only the current request clears busy/controller; (10) Sankey: verbs and mlx5 opcodes decoded/namespaced. Tests: agent/test/lib.test.mjs, ui/test/chart.test.mjs)
 - **Subsystem:** `agent`, `ui`
 - **Locations & Fixes:**
   1. `agent/lib/query.mjs:11-19, 33, 82` — `stripComments()` and `;` check do not respect SQL string literals (`'--'`, `'/*'`, `';'`). Lex string literals before stripping comments / checking semicolons.

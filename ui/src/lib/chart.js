@@ -73,7 +73,14 @@ function quantitativeFields(spec) {
   const walk = (n) => {
     if (Array.isArray(n)) return n.forEach(walk);
     if (!n || typeof n !== 'object') return;
-    if (typeof n.field === 'string' && (n.type === 'quantitative' || n.aggregate || n.bin)) fields.add(n.field);
+    // An aggregate makes a field numeric only when it does ARITHMETIC on it:
+    // count / distinct / valid / missing count rows or values, and coercing the
+    // field turned a string column into NaN — so `distinct` of a transport
+    // name counted one distinct NaN (CR-65).
+    const counting = ['count', 'distinct', 'valid', 'missing'].includes(n.aggregate);
+    if (typeof n.field === 'string' &&
+        (n.type === 'quantitative' || (n.aggregate && !counting) || n.bin))
+      fields.add(n.field);
     Object.values(n).forEach(walk);
   };
   walk(spec.encoding);
