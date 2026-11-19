@@ -279,6 +279,21 @@ struct Table;  // no primary definition: an unspecialized use is a missing entry
 // wide window narrowable — the derived layer joins it to the kernel's own
 // %globaltimer span, which is three orders tighter. It is a key rather than a
 // tighter timestamp for an ordering reason spelled out on GpuAccess::launch.
+// Every string column a CSV row carries goes through this — kernel names,
+// file paths and device names are free text, and a demangled C++ name is full
+// of commas (CR-29). RFC 4180: quoted, inner quotes doubled.
+static std::string csv_quoted(const char* s) {
+    std::string out(1, '"');
+    for (const char* p = s ? s : ""; *p; ++p) {
+        if (*p == '"')
+            out += "\"\"";
+        else
+            out += *p;
+    }
+    out += '"';
+    return out;
+}
+
 template<> struct Table<GpuAccess> {
     static constexpr const char* name = "gpu_access";
     static constexpr const char* cols =
@@ -299,7 +314,7 @@ template<> struct Table<MemObject> {
     static constexpr const char* cols = "ticks,id,name,base,size,device,attr_status,origin";
     static void row(std::FILE* f, const Stamped<MemObject>& s, const rec::InternDictionary& in) {
         std::fprintf(f, "%llu,%u,%s,0x%llx,%llu,%u,%s,%s", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.id, in.str(s.payload.name), (unsigned long long)s.payload.range.base,
+                     s.payload.id, csv_quoted(in.str(s.payload.name)).c_str(), (unsigned long long)s.payload.range.base,
                      (unsigned long long)s.payload.range.size, s.payload.device,
                      attr_status_name(s.payload.attr_status), object_origin_name(s.payload.origin));
     }
@@ -318,7 +333,8 @@ template<> struct Table<SourceLine> {
     static constexpr const char* name = "source_line";
     static constexpr const char* cols = "pc,file,line";
     static void row(std::FILE* f, const Stamped<SourceLine>& s, const rec::InternDictionary& in) {
-        std::fprintf(f, "%u,%s,%u", s.payload.pc, in.str(s.payload.file), s.payload.line);
+        std::fprintf(f, "%u,%s,%u", s.payload.pc, csv_quoted(in.str(s.payload.file)).c_str(),
+                     s.payload.line);
     }
 };
 
@@ -357,7 +373,7 @@ template<> struct Table<GpuDevice> {
                      (s.payload.pci_bus >> 16) & 0xFFFFu, (s.payload.pci_bus >> 8) & 0xFFu,
                      s.payload.pci_bus & 0xFFu, (unsigned long long)s.payload.uuid_hi,
                      (unsigned long long)s.payload.uuid_lo,
-                     in.str(rec::InternDomain::KernelName, s.payload.name));
+                     csv_quoted(in.str(rec::InternDomain::KernelName, s.payload.name)).c_str());
     }
 };
 
@@ -374,18 +390,6 @@ template<> struct Table<GpuDevice> {
 // RFC 4180: wrap in quotes, double any embedded quote. DuckDB's read_csv
 // understands both, including the embedded newlines, which is what keeps
 // `comshu sql` on a --csv export working on this table.
-static std::string csv_quoted(const char* s) {
-    std::string out(1, '"');
-    for (const char* p = s ? s : ""; *p; ++p) {
-        if (*p == '"')
-            out += "\"\"";
-        else
-            out += *p;
-    }
-    out += '"';
-    return out;
-}
-
 template<> struct Table<Invocation> {
     static constexpr const char* name = "invocation";
     static constexpr const char* cols = "pid,argv,providers,build,images,env";
@@ -433,7 +437,8 @@ template<> struct Table<GpuKernel> {
         // dictionary's own header says as much; it is worth not rediscovering.
         std::fprintf(f, "%llu,%llu,%u,%s,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u",
                      (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
-                     s.temporal.a.domain, in.str(rec::InternDomain::KernelName, s.payload.name),
+                     s.temporal.a.domain,
+                     csv_quoted(in.str(rec::InternDomain::KernelName, s.payload.name)).c_str(),
                      (unsigned long long)s.payload.correlation,
                      (unsigned long long)s.payload.stream, s.payload.device, s.payload.source,
                      s.payload.grid_x, s.payload.grid_y, s.payload.grid_z, s.payload.block_x,
@@ -803,7 +808,7 @@ template<> struct Table<ibr::IbDevice> {
                     const rec::InternDictionary& in) {
         std::fprintf(f, "%llu,%u,%s,0x%llx,0x%llx,0x%x,%u,%u,%u",
                      (unsigned long long)s.temporal.a.ticks, s.payload.context,
-                     in.str(s.payload.fw_ver), (unsigned long long)s.payload.node_guid,
+                     csv_quoted(in.str(s.payload.fw_ver)).c_str(), (unsigned long long)s.payload.node_guid,
                      (unsigned long long)s.payload.sys_image_guid, s.payload.vendor_id,
                      s.payload.vendor_part_id, s.payload.hw_ver, s.payload.phys_port_cnt);
     }
@@ -1432,8 +1437,9 @@ template<> struct Table<udr::UctIface> {
     static void row(std::FILE* f, const Stamped<udr::UctIface>& s,
                     const rec::InternDictionary& dict) {
         std::fprintf(f, "%llu,%u,%u,%u,%s,%s,0x%llx,%s,%u", (unsigned long long)s.temporal.a.ticks,
-                     s.payload.iface, s.payload.worker, s.payload.md, dict.str(s.payload.tl_name),
-                     dict.str(s.payload.dev_name), (unsigned long long)s.payload.open_mode,
+                     s.payload.iface, s.payload.worker, s.payload.md,
+                     csv_quoted(dict.str(s.payload.tl_name)).c_str(),
+                     csv_quoted(dict.str(s.payload.dev_name)).c_str(), (unsigned long long)s.payload.open_mode,
                      uct_instrumented_name(s.payload.instrumented), s.payload.patched_ops);
     }
 };
@@ -2700,7 +2706,18 @@ int run_link(const fs::path& dir) {
     }
     duck_exec(con, "SET temp_directory='" + dir.string() + "'", "temp_directory");
 
-    const auto present = mount_raw_tables(con, dir);
+    std::vector<std::string> decoded;
+    const auto               present = mount_raw_tables(con, dir, &decoded);
+    if (!decoded.empty()) {
+        std::fprintf(stderr,
+                     "comshu: %s is a `comshu export --csv` export (%zu tables, e.g. %s):\n"
+                     "  decoded for reading, not for linking. `comshu sql` queries it as is;\n"
+                     "  to link, run `comshu export --parquet` on the capture.\n",
+                     dir.c_str(), decoded.size(), decoded.front().c_str());
+        duckdb_disconnect(&con);
+        duckdb_close(&db);
+        return 1;
+    }
     if (!present) {
         std::fprintf(stderr,
                      "comshu: no raw .parquet tables in %s — run `comshu export --parquet` first\n",

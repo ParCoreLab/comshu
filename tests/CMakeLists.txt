@@ -284,6 +284,20 @@ add_test(NAME capture_integrity_rule
 # What `comshu sql` accepts as a query. Not about SQL at all — about the
 # `COPY (<q>) TO` wrapper, which turns a trailing semicolon and a trailing
 # comment into parse errors that name neither.
+# The --csv export's contract: rows as wide as their header, and a decoded
+# export refused by link/ui by name (CR-28, CR-29).
+add_executable(csv_export_contract_writer csv_export_contract.cpp)
+target_link_libraries(csv_export_contract_writer PRIVATE comshu::comshu comshu::engine)
+comshu_add_test(csv_export_contract_writer)
+add_test(NAME csv_export_contract
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/csv_export_contract.sh $<TARGET_FILE:comshu_launcher>
+                 $<TARGET_FILE:csv_export_contract_writer>)
+
+# comshu bake in place, and archive footers whose bounds arithmetic would wrap (CR-31).
+add_test(NAME bake_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/bake_rule.sh $<TARGET_FILE:comshu_launcher>
+                 $<TARGET_FILE:comshu_engine>)
+
 add_test(NAME sql_cli_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/sql_cli_rule.sh $<TARGET_FILE:comshu_launcher>)
 

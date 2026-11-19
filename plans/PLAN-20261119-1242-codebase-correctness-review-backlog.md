@@ -219,28 +219,28 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Either open a per-request / `thread_local` `duckdb_connection` via `duckdb_connect(db, ...)` or serialize `duckdb_query` with a mutex.
 
 #### `CR-28` — `mount_raw_tables()` CSV loading path is incompatible with `Raw::ddl`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the CSV branch IS load-bearing: the rule tests' fixtures are raw-layout CSV and link through it. What broke was a DECODED `export --csv` (ticks, names, hex) fed into the raw DDL. `mount_raw_tables` now loads a CSV only if its header is the raw layout (same width, opening with rank + the six temporal_* columns; payload names are not compared, because COPY is positional) and reports any other by name; `comshu link` and `comshu ui` refuse a decoded export with directions to use the capture or `--parquet`. `comshu sql` keeps querying CSV exports through read_csv. A stale fixture (`nccl_execution_rule` clock_anchor names) was corrected. Test: `tests/csv_export_contract.sh`)
 - **Subsystem:** `comshu-read`
 - **Locations:** `comshu-read/duck_mount.hpp:157-178`
 - **Problem:** `mount_raw_tables()` creates tables using `Raw::ddl` (raw C++ struct layout with `temporal_*` columns, padding, numeric enums, `UBIGINT`s) and executes `COPY "<name>" FROM '<csv>'`, but `comshu export --csv` emits different column counts/names and decoded/hex text, causing every CSV `COPY` to fail.
 - **Fix:** Either load CSV exports via `read_csv_auto` views (matching `run_sql()`) or align the CSV export format/loader contract and add a test covering `comshu link` / `comshu ui` on `--csv` exports.
 
 #### `CR-29` — Unquoted CSV strings in `Table<GpuKernel>` (and other tables) corrupt `--csv` exports
-- [ ] **Status:** Open
+- [x] **Status:** Done (all six free-text columns (mem_object.name, source_line.file, gpu_device.name, gpu_kernel.name, ib_device.fw_ver, uct_iface tl/dev_name) go through `csv_quoted`. `tests/csv_export_contract.sh` exports a capture with `void k<int, float>(int, float)` and a quoted object name and checks every row's width and the round trip. `ucx_deep_records.sh`'s awk parser now strips quotes. The suite's SQL asserts read through DuckDB and are unaffected; case 27's grep reads an unquoted enum column)
 - **Subsystem:** `comshu-read`
 - **Locations:** `comshu-read/main.cpp:424-442` (also `300-305`, `320-322`, `355-361`, `802-809`, `1432-1438`)
 - **Problem:** `Table<GpuKernel>::row` (and `MemObject`, `SourceLine`, `GpuDevice`, `IbDevice`, `UctIface`) formats string columns with bare `%s` instead of `csv_quoted()`. Demangled C++ kernel names routinely contain commas, splitting rows into extra columns.
 - **Fix:** Use `csv_quoted(...)` for all string columns in CSV emitters.
 
 #### `CR-30` — Cartesian fan-out in `link_health.capture_streams_missing` produces false-positive defects on replayed captures
-- [ ] **Status:** Open
+- [x] **Status:** Done (`capture_streams_missing` compares per-rank SUMS (opened across passes vs found across directories) instead of joining rows; neither table carries a pass key, so a per-pass join was not available without a schema change. `capture_integrity_rule.sh` adds two replayed ranks: two whole passes count 0 (the old join reported 2), and a pass that lost one file counts 1)
 - **Subsystem:** `comshu-read`
 - **Locations:** `comshu-read/link_sql.hpp:3457-3463`, `comshu-read/capture_load.hpp:268-306`
 - **Problem:** Replayed captures produce multiple rows per `rank` in both `capture_status` and `capture_integrity`. Joining them directly on `i.rank = s.rank` creates an N×N Cartesian product per rank and falsely fires `capture_streams_missing` whenever two passes open different numbers of streams.
 - **Fix:** Aggregate per rank (`SUM(streams_found)` vs `SUM(streams_open)`) or carry a pass/subdir key on both tables and join on `(rank, pass)`.
 
 #### `CR-31` — In-place `comshu bake -o <host> <host>` destroys the host binary; 32-bit overflow in TOC bounds check
-- [ ] **Status:** Open
+- [x] **Status:** Done (bake writes to a mkstemp temporary beside the output and `rename()`s it into place (the mode is read before the rename, since in-place the host is the output); every failure path unlinks the temporary. The TOC bound is `toc_len > size || toc_off > size - toc_len` and the name bound `left < 32 || left - 32 < nlen`. `tests/bake_rule.sh`: an in-place bake gives a working launcher that lists its payload, and crafted footers for both wraps are refused; with the old 32-bit check the crafted name length segfaulted --list (mutation-checked))
 - **Subsystem:** `comshu`
 - **Locations:** `comshu/baked.cpp:103, 118-123, 448-485`
 - **Problem:**

@@ -3454,12 +3454,21 @@ UNION ALL
 -- is not damage; fewer than were attested always is. capture_status.streams_open
 -- counts its own stream, so the two numbers are directly comparable — see the
 -- +1 in Tracer::emit_capture_status for why that is done there and not here.
+--
+-- PER RANK, NOT PER ROW (CR-30). A replayed capture holds one capture_status
+-- row and one capture_integrity row PER PASS for the same rank, and neither
+-- carries a pass key — so a row-wise join paired every pass with every other
+-- and reported files missing from captures that had lost nothing. Each side is
+-- summed per rank first; what one rank attested across its passes is compared
+-- with what is on disk across its directories.
 SELECT 'capture_streams_missing',
        'defect',
-       coalesce((SELECT sum(s.streams_open - i.streams_found)
-                 FROM capture_status s
-                 JOIN capture_integrity i ON i.rank = s.rank
-                 WHERE i.streams_found < s.streams_open), 0)::BIGINT,
+       coalesce((SELECT sum(s.opened - i.found)
+                 FROM (SELECT rank, sum(streams_open) AS opened
+                       FROM capture_status GROUP BY rank) s
+                 JOIN (SELECT rank, sum(streams_found) AS found
+                       FROM capture_integrity GROUP BY rank) i ON i.rank = s.rank
+                 WHERE i.found < s.opened), 0)::BIGINT,
        'stream files the writer attested to that are no longer on disk'
 UNION ALL
 SELECT 'colliding_endpoints' AS finding,

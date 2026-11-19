@@ -113,7 +113,7 @@ CSV
 # The clock, or every t0_ns is NULL and the temporal half of both tables is
 # untested. One anchor per (rank, domain).
 cat > "$WORK/clock_anchor.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,domain,ticks,wall_ns,ns_per_tick
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,domain,local_ticks,wall_ns,mono_ns
 0,1,0,0,0,0,0,0,0,1000000000,1.0
 1,1,0,0,0,0,0,0,0,1000000000,1.0
 CSV

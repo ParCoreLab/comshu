@@ -165,7 +165,16 @@ int comshu::cli::ui_main(int argc, char** argv) {
                     ranks.size(), st.tables, st.rows,
                     (st.failed || bad) ? " (SOME FAILED, see above)" : "");
     } else {
-        tables = comshu::duck::mount_raw_tables(con, dir);
+        std::vector<std::string> decoded;
+        tables = comshu::duck::mount_raw_tables(con, dir, &decoded);
+        if (!decoded.empty()) {
+            std::fprintf(stderr,
+                         "comshu ui: %s is a `comshu export --csv` export (%zu tables, e.g. %s):\n"
+                         "  decoded for reading, not for mounting. Serve the capture directory\n"
+                         "  itself, or an `export --parquet` of it.\n",
+                         dir.c_str(), decoded.size(), decoded.front().c_str());
+            return 1;
+        }
     }
 
     // Binding off loopback changes the trust boundary, so it changes the rules.

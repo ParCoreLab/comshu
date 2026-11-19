@@ -82,7 +82,10 @@ if grep -q "unknown to this build" "$WORK/export.out"; then
 fi
 
 fail=0
-csv() { tail -n +2 "$WORK/csv/$1.csv" 2>/dev/null; }
+# Quotes stripped: the export quotes every free-text column (RFC 4180, CR-29),
+# and the ones read here — transport and device names — never hold a comma, so
+# awk -F, still splits them exactly.
+csv() { tail -n +2 "$WORK/csv/$1.csv" 2>/dev/null | tr -d '"'; }
 expect() {  # <label> <expected> <actual>
     if [ "$2" != "$3" ]; then
         echo "FAIL: $1 — expected [$2], got [$3]"

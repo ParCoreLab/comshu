@@ -19,8 +19,11 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 extern "C" {
 #include "duckdb.h"
@@ -144,17 +147,78 @@ inline bool mount_intern_text(duckdb_connection con, const fs::path& dir) {
     return exec(con, kInternTextDdl, kInternTextTable);
 }
 
+// The column names a generated raw-table DDL declares, in order:
+// CREATE TABLE "t"("rank" INTEGER,"temporal_kind" UTINYINT,...) -> rank, temporal_kind, ...
+inline std::vector<std::string> ddl_columns(std::string_view ddl) {
+    std::vector<std::string> cols;
+    auto                     p = ddl.find('(');
+    while (p != std::string_view::npos) {
+        const auto q0 = ddl.find('"', p);
+        if (q0 == std::string_view::npos)
+            break;
+        const auto q1 = ddl.find('"', q0 + 1);
+        if (q1 == std::string_view::npos)
+            break;
+        cols.emplace_back(ddl.substr(q0 + 1, q1 - q0 - 1));
+        p = ddl.find(',', q1);
+    }
+    return cols;
+}
+
+// A CSV file's header names, unquoted, in order.
+inline std::vector<std::string> csv_header(const fs::path& csv) {
+    std::ifstream            in(csv);
+    std::string              line;
+    std::vector<std::string> cols;
+    if (!std::getline(in, line))
+        return cols;
+    std::string cur;
+    for (char c : line) {
+        if (c == ',') {
+            cols.push_back(cur);
+            cur.clear();
+        } else if (c != '"' && c != '\r') {
+            cur += c;
+        }
+    }
+    cols.push_back(cur);
+    return cols;
+}
+
+// Whether a CSV header is the RAW layout of a table with these DDL columns: the
+// same width, opening with the same rank + temporal_* columns. Payload names
+// are not compared — COPY loads by position, and a fixture written against an
+// older field name still means the same column. A decoded export never has the
+// temporal_* columns at all (it writes `ticks`), which is the distinction.
+inline bool raw_layout(const std::vector<std::string>& header,
+                       const std::vector<std::string>& ddl) {
+    constexpr std::size_t kTemporal = 7;  // rank + the six temporal_* columns
+    if (header.size() != ddl.size() || ddl.size() < kTemporal)
+        return false;
+    for (std::size_t i = 0; i < kTemporal; ++i)
+        if (header[i] != ddl[i])
+            return false;
+    return true;
+}
+
 /**
  * Make every raw table reachable by name. Returns how many were actually
  * present; the rest are empty tables with the correct columns.
  *
- * Parquet is preferred and CSV accepted, so a `--csv` export is queryable too.
- * CSV is loaded through the generated DDL and COPY FROM rather than read_csv's
- * auto-detect: the types are declared by the record struct, and inferring them
- * from text is what once made `mem_object.base` a BIGINT on one capture and a
- * VARCHAR on another.
+ * Parquet is preferred and CSV accepted — but only CSV IN THE RAW LAYOUT, the
+ * one the rule tests' fixtures are written in. CSV is loaded through the
+ * generated DDL and COPY FROM rather than read_csv's auto-detect: the types are
+ * declared by the record struct, and inferring them from text is what once made
+ * `mem_object.base` a BIGINT on one capture and a VARCHAR on another.
+ *
+ * `comshu export --csv` is NOT that layout: it is decoded for reading (`ticks`
+ * for the temporal fields, names for handles, hex), and COPYing it into the raw
+ * DDL failed table by table (CR-28). Such a file is recognised by its header,
+ * left out — its table stays empty rather than half-loaded — and named in
+ * `decoded_csv`, so the caller can say what to do instead.
  */
-inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir) {
+inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir,
+                                    std::vector<std::string>* decoded_csv = nullptr) {
     std::size_t present = 0;
     for_each_type<raw::RawRecords>([&]<typename R>() {
         using Raw = raw::RawTable<R>;
@@ -167,6 +231,10 @@ inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir) 
                      parquet.string() + "')",
                  Raw::table);
             present++;
+        } else if (fs::exists(csv) && !raw_layout(csv_header(csv), ddl_columns(Raw::ddl))) {
+            exec(con, Raw::ddl, Raw::table);  // a decoded export: not loadable as raw
+            if (decoded_csv)
+                decoded_csv->push_back(name);
         } else if (fs::exists(csv)) {
             if (exec(con, Raw::ddl, Raw::table) &&
                 exec(con, "COPY \"" + name + "\" FROM '" + csv.string() + "' (FORMAT CSV, HEADER)",

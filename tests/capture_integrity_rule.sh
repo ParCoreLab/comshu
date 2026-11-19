@@ -98,6 +98,12 @@ done
 #   rank 2  no capture_status row at all  capture_unattested_ranks
 #   rank 3  files damaged after the run   unreadable + truncated + missing (6-4)
 #   rank 4  MORE files than attested      must contribute NOTHING — see below
+#   rank 5  replayed: two whole passes    must contribute NOTHING (CR-30)
+#   rank 6  replayed: one pass lost one   missing (12-11)
+#
+# RANKS 5 AND 6 are a replayed capture: one capture_status and one
+# capture_integrity row PER PASS, with no pass key. Joined row by row, rank 5's
+# passes (5 and 7 files, all present) cross-paired into a false "2 missing".
 #
 # RANK 4 IS THE MUTATION GUARD for `WHERE i.streams_found < s.streams_open`. A
 # replayed capture nests several rank-* directories and legitimately holds more
@@ -111,15 +117,23 @@ BAD=$ROOT/damaged; mkdir -p "$BAD"
   echo '0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0'
   echo '1,0,0,0,0,0,0,7,560,5,1,0,0,1,0,0'
   echo '3,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0'
-  echo '4,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0'; } > "$BAD/capture_status.csv"
+  echo '4,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0'
+  echo '5,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0'
+  echo '5,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0'
+  echo '6,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0'
+  echo '6,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0'; } > "$BAD/capture_status.csv"
 { echo "$CI_COLS"
   echo '0,5,0,0,0'
   echo '1,5,0,0,0'
   echo '2,4,0,0,0'
   echo '3,4,1,1,0'
-  echo '4,5,0,0,0'; } > "$BAD/capture_integrity.csv"
+  echo '4,5,0,0,0'
+  echo '5,5,0,0,0'
+  echo '5,7,0,0,0'
+  echo '6,5,0,0,0'
+  echo '6,6,0,0,0'; } > "$BAD/capture_integrity.csv"
 { echo "$CA_COLS"
-  for r in 0 1 2 3 4; do echo "$r,1,0,0,0,0,0,0,0,1000000000,0"; done; } > "$BAD/clock_anchor.csv"
+  for r in 0 1 2 3 4 5 6; do echo "$r,1,0,0,0,0,0,0,0,1000000000,0"; done; } > "$BAD/clock_anchor.csv"
 
 link_or_die "$BAD"
 
@@ -138,10 +152,11 @@ expect "an unframed stream file is counted" \
 expect "a stream cut mid-record is counted" \
     "$(health "$BAD" capture_streams_truncated)" "1"
 
-# rank 3 alone: 6 attested, 4 present. rank 4 has MORE than attested and must
-# not subtract. See the mutation-guard note above.
+# rank 3: 6 attested, 4 present. rank 4 has MORE than attested and must not
+# subtract (the mutation-guard note above). rank 5's two whole passes add
+# nothing; rank 6's lost file adds one. 2 + 0 + 0 + 1.
 expect "files gone since the run are counted, and a replay's extra files are not" \
-    "$(health "$BAD" capture_streams_missing)" "2"
+    "$(health "$BAD" capture_streams_missing)" "3"
 
 # Every one of the five is a 'defect', not a 'note': each is something that
 # makes the tables beside it untrustworthy, which is the severity rule

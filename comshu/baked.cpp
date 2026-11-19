@@ -100,7 +100,10 @@ bool parse(const std::string& path, std::vector<Entry>& out) {
         ::close(fd);
         return false;
     }
-    if (toc_off + toc_len > static_cast<unsigned long long>(st.st_size)) {
+    // Written so neither side can overflow: a crafted footer with toc_off near
+    // 2^64 used to wrap the sum past the check (CR-31).
+    const auto file_size = static_cast<unsigned long long>(st.st_size);
+    if (toc_len > file_size || toc_off > file_size - toc_len) {
         ::close(fd);
         return false;
     }
@@ -117,7 +120,10 @@ bool parse(const std::string& path, std::vector<Entry>& out) {
             return false;
         unsigned nlen = get32(p);
         p += 4;
-        if (static_cast<std::size_t>(end - p) < nlen + 32u)
+        // `nlen + 32u` is 32-bit and wraps for nlen >= 0xFFFFFFE0, which let a
+        // huge name length through to assign() (CR-31). Subtract instead.
+        const auto left = static_cast<std::size_t>(end - p);
+        if (left < 32 || left - 32 < nlen)
             return false;
         Entry e;
         e.name.assign(reinterpret_cast<const char*>(p), nlen);
@@ -462,12 +468,37 @@ int bake_main(int argc, char** argv) {
         }
     }
 
-    std::FILE* out = std::fopen(out_path, "wb");
-    if (!out) {
-        std::fprintf(stderr, "comshu bake: cannot write %s: %s\n", out_path, std::strerror(errno));
-        ::close(hf);
-        return 1;
+    // INTO A TEMPORARY, renamed over the output only once it is complete
+    // (CR-31). Opening the output for writing truncated it before the host was
+    // copied, so `comshu bake -o X X ...` (baking a launcher in place) destroyed
+    // the binary it was reading. A failure now leaves the output as it was.
+    struct TmpOut {
+        std::string path;
+        std::FILE*  f = nullptr;
+        bool        committed = false;
+        ~TmpOut() {
+            if (f)
+                std::fclose(f);
+            if (!committed && !path.empty())
+                ::unlink(path.c_str());
+        }
+    } tmp;
+    {
+        const fs::path dest(out_path);
+        tmp.path = (dest.parent_path().empty() ? fs::path(".") : dest.parent_path()).string() +
+                   "/." + dest.filename().string() + ".bake-XXXXXX";
+        const int fd = ::mkstemp(tmp.path.data());
+        if (fd < 0 || !(tmp.f = ::fdopen(fd, "wb"))) {
+            std::fprintf(stderr, "comshu bake: cannot write beside %s: %s\n", out_path,
+                         std::strerror(errno));
+            if (fd >= 0)
+                ::close(fd);
+            tmp.path.clear();
+            ::close(hf);
+            return 1;
+        }
     }
+    std::FILE* out = tmp.f;
     std::vector<char>  buf(1 << 20);
     unsigned long long left = host_size;
     off_t              off = 0;
@@ -475,7 +506,6 @@ int bake_main(int argc, char** argv) {
         const std::size_t n = static_cast<std::size_t>(left < buf.size() ? left : buf.size());
         if (!read_at(hf, buf.data(), n, off) || std::fwrite(buf.data(), 1, n, out) != n) {
             std::fprintf(stderr, "comshu bake: short copy of %s\n", host);
-            std::fclose(out);
             ::close(hf);
             return 1;
         }
@@ -491,7 +521,6 @@ int bake_main(int argc, char** argv) {
         if (!f) {
             std::fprintf(stderr, "comshu bake: cannot read %s: %s\n", in.c_str(),
                          std::strerror(errno));
-            std::fclose(out);
             return 1;
         }
         Entry e;
@@ -506,7 +535,6 @@ int bake_main(int argc, char** argv) {
             if (std::fwrite(buf.data(), 1, n, out) != n) {
                 std::fprintf(stderr, "comshu bake: short write\n");
                 std::fclose(f);
-                std::fclose(out);
                 return 1;
             }
             h = fnv(buf.data(), n, h);
@@ -521,7 +549,6 @@ int bake_main(int argc, char** argv) {
         for (const auto& prev : entries)
             if (prev.name == e.name) {
                 std::fprintf(stderr, "comshu bake: two inputs are both named %s\n", e.name.c_str());
-                std::fclose(out);
                 return 1;
             }
         std::printf("  + %-28s %10llu bytes\n", e.name.c_str(), e.size);
@@ -540,7 +567,6 @@ int bake_main(int argc, char** argv) {
     const unsigned long long toc_off = pos;
     if (std::fwrite(toc.data(), 1, toc.size(), out) != toc.size()) {
         std::fprintf(stderr, "comshu bake: short write of the table\n");
-        std::fclose(out);
         return 1;
     }
     std::string foot;
@@ -552,13 +578,25 @@ int bake_main(int argc, char** argv) {
     foot.append(kMagic, sizeof kMagic);
     if (std::fwrite(foot.data(), 1, foot.size(), out) != foot.size()) {
         std::fprintf(stderr, "comshu bake: short write of the footer\n");
-        std::fclose(out);
         return 1;
     }
-    std::fclose(out);
+    const bool closed = std::fclose(out) == 0;
+    tmp.f = nullptr;
+    if (!closed) {
+        std::fprintf(stderr, "comshu bake: cannot finish %s: %s\n", tmp.path.c_str(),
+                     std::strerror(errno));
+        return 1;
+    }
     // The host's mode, so the result is executable — and so a baked binary keeps
     // whatever the original was, rather than acquiring a mode from the umask.
-    fs::permissions(out_path, fs::status(host).permissions(), ec);
+    // Read BEFORE the rename: when baking in place, the host is the output.
+    fs::permissions(tmp.path, fs::status(host).permissions(), ec);
+    if (::rename(tmp.path.c_str(), out_path) != 0) {
+        std::fprintf(stderr, "comshu bake: cannot replace %s: %s\n", out_path,
+                     std::strerror(errno));
+        return 1;
+    }
+    tmp.committed = true;
 
     unsigned long long payload = pos - host_size;
     std::printf("comshu bake: %s -> %s (+%.1f MB, %zu file(s))\n", host, out_path, payload / 1e6,
