@@ -37,6 +37,15 @@
 #                                  MagicDNS names do not resolve there, so the
 #                                  configured `ProxyJump university-base` fails
 #                                  and cannot be fixed locally.
+#   COMSHU_A100_NCCL=/DATA/missa18/opt/nccl   NCCL the cases build and run
+#                                  against, when it is there. A user-local
+#                                  extraction of NVIDIA's libnccl2/libnccl-dev
+#                                  .debs (2.32.6, cuda12.9 build — the driver is
+#                                  580 = CUDA 13.0), laid out as include/ + lib/.
+#                                  NOT an apt upgrade: du04 is shared, and the
+#                                  system libnccl (2.28.9) is other users'.
+#                                  2.29+ is what nccl_window_peer needs
+#                                  (ncclGetPeerDevicePointer).
 #   COMSHU_A100_DIR=/DATA/$USER/comshu   checkout on the remote. NOT $HOME —
 #                                  the A100 box's root filesystem runs at 98%
 #                                  and other people's jobs live there.
@@ -44,6 +53,7 @@ set -uo pipefail
 
 REMOTE="${COMSHU_A100:-missa18@a100}"
 RDIR="${COMSHU_A100_DIR:-/DATA/missa18/comshu}"
+A100_NCCL="${COMSHU_A100_NCCL:-/DATA/missa18/opt/nccl}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 ${COMSHU_SSH_OPTS:-}"
 
@@ -200,6 +210,7 @@ for c in $(rsh "ls $RDIR/tests/hpc/cases" | grep -E "^(${cases_filter// /|})" );
        export COMSHU=$RDIR/build/comshu/comshu &&
        export COMSHU_EXPECT_COMMIT=$build_commit &&
        export COMSHU_PREFER_BAKED=1 &&
+       { [ -r $A100_NCCL/include/nccl_device.h ] && export NCCL_HOME=$A100_NCCL || true; } &&
        bash tests/hpc/cases/$c/job.sbatch 2>&1 | tail -40"
 done
 
