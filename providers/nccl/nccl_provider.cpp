@@ -5,6 +5,8 @@
 // attribute NCCL's internal channel traffic.
 
 #include <cstdint>
+#include <mutex>
+#include <unordered_set>
 
 #include <dlfcn.h>
 
@@ -57,6 +59,22 @@ static void close(const void* p, comshu::core::RecordTypeId opener) {
 // A plain int, and that is deliberate — see the UCX endpoint map for what
 // happens when non-trivially-destructible state ends up on a path that runs
 // during teardown. An int has no destructor to have already run.
+#if COMSHU_NCCL_HAS_WINDOW
+// The windows whose OPEN this provider recorded, so a deregister closes only
+// those. NCCL 2.32 registers windows of its own (ce_coll.cc's CE sync window,
+// rma/rma_ce.cc's signals window) through ncclDevrWindowRegisterInGroup, which
+// is internal and cannot be interposed, and then releases them through the
+// public ncclCommWindowDeregister, which is. Closing those named entities no
+// open record created on every rank (du04, NCCL 2.32.6: subjects 111 and 117 in
+// case 28). There is no door to find — the creation never crosses an exported
+// symbol — so the close is not recorded.
+static std::mutex&                     windows_mutex() { static std::mutex m; return m; }
+static std::unordered_set<const void*>& windows_open() {
+    static std::unordered_set<const void*> s;
+    return s;
+}
+#endif
+
 static int& group_depth() {
     static thread_local int depth = 0;
     return depth;
@@ -262,6 +280,10 @@ Profiler::Profiler() {
     // --- symmetric memory ----------------------------------------------------
     register_post<window_register_tag>([](ncclResult_t res, ncclComm_t c, void* buff, size_t size,
                                           ncclWindow_t* win, int flags, auto begin, auto end) {
+        if (res == ncclSuccess && win && *win) {
+            std::lock_guard<std::mutex> lk(windows_mutex());
+            windows_open().insert(*win);
+        }
         if (res == ncclSuccess && win && *win)
             rec().record(span(begin, end), rr::NcclWindow{{},
                                                           {},
@@ -327,6 +349,11 @@ Profiler::Profiler() {
         }
     });
     register_pre<window_deregister_tag>([](ncclComm_t, ncclWindow_t win, auto) {
+        {
+            std::lock_guard<std::mutex> lk(windows_mutex());
+            if (windows_open().erase(win) == 0)
+                return;  // one of NCCL's own windows: we never saw it open
+        }
         close(win, comshu::core::RecordTrait<rr::NcclWindow>::type_id);
     });
     register_post<dev_comm_create_tag>(
