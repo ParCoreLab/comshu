@@ -7,8 +7,15 @@
   // Clusters ranks by *who they talk to*, from the same comm_edges the matrix
   // draws. On a ring this has a known answer — neighbours merge first — which
   // is what makes the panel checkable rather than decorative.
-  const SQL = `SELECT src_rank, dst_rank, bytes
-               FROM comm_edges WHERE dst_rank >= 0 ORDER BY src_rank, dst_rank`;
+  //
+  // ONE ROW PER PAIR. comm_edges has a row per (pair, transport), and keying a
+  // vector cell by pair let whichever transport came last overwrite the rest
+  // (CR-37). The question is "do they talk", so the pair's weight is its
+  // largest edge on any transport — not a sum, which would add NVLink stores
+  // to InfiniBand bytes (the Ranks panel's rule).
+  const SQL = `SELECT src_rank, dst_rank, max(bytes) AS bytes
+               FROM comm_edges WHERE dst_rank >= 0
+               GROUP BY src_rank, dst_rank ORDER BY src_rank, dst_rank`;
 
   const LINE = '#2a78d6';
 

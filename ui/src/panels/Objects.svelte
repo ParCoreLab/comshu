@@ -1,5 +1,5 @@
 <script>
-  import { query, num } from '../lib/query.js';
+  import { query, num, bool } from '../lib/query.js';
   import { bytes, count, logScale, ramp } from '../lib/viz.js';
   import Card from '../lib/Card.svelte';
   import Tooltip from '../lib/Tooltip.svelte';
@@ -229,7 +229,7 @@
     // the participating GPUs. All three are here; the address is absolute, as
     // the one thing you can paste into a debugger.
     tip = {
-      title: `+${bytes(num(b.off_lo))} – ${bytes(num(b.off_hi))}${b.all_exact ? '' : ' (approx.)'}`,
+      title: `+${bytes(num(b.off_lo))} – ${bytes(num(b.off_hi))}${bool(b.all_exact) ? '' : ' (approx.)'}`,
       body: `${count(num(b.n))} touches · ${amount(b.bytes, b.units)} · via ${b.sources} · by ${b.actors}`,
     };
     tipRef?.move(ev);
@@ -304,7 +304,7 @@
                   {sp.unit === 'bytes' ? bytes(num(sp.amount)) : `${count(num(sp.amount))} units`}
                   · by {sp.actors}
                 </span>
-                {#if !sp.exact}
+                {#if !bool(sp.exact)}
                   <span style="color: var(--text-3)"> · offsets approximate</span>
                 {/if}
               </span>

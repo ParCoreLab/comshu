@@ -112,6 +112,10 @@ function cors(req, res) {
 let session = null;
 let systemPrompt = null;
 let busy = false;
+// Which /ask owns `busy`. A /reset clears it while an earlier ask is still
+// settling, and that ask's `finally` used to clear it again — under a NEWER
+// ask that had since started (CR-34). Only the owner may release it.
+let askGen = 0;
 let startupError = null;
 
 async function ensureSession() {
@@ -190,6 +194,7 @@ const server = createServer(async (req, res) => {
     session?.stop();
     session = null;
     busy = false;
+    askGen++;  // whatever ask was running no longer owns `busy`
     json(res, 200, { ok: true });
     return;
   }
@@ -220,8 +225,14 @@ const server = createServer(async (req, res) => {
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
     busy = true;
+    const mine = ++askGen;
     let closed = false;
-    req.on('close', () => {
+    // On the RESPONSE: readBody() has already consumed the request, whose
+    // 'close' therefore fired before this could listen for it — a tab closed
+    // mid-answer never aborted the agent (CR-35). The response closes when the
+    // client goes; if it closes after we ended it, that is just the end.
+    res.on('close', () => {
+      if (res.writableEnded) return;
       closed = true;
       session?.abort();
     });
@@ -242,7 +253,7 @@ const server = createServer(async (req, res) => {
         res.end();
       }
     } finally {
-      busy = false;
+      if (askGen === mine) busy = false;
     }
     return;
   }

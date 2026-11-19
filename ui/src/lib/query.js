@@ -29,3 +29,9 @@ export async function query(sql) {
 // address without dropping the low bits, and those addresses are join keys.
 // Panels cast what they actually need, which is almost never the wide columns.
 export const num = (v) => (v === null || v === undefined ? null : Number(v));
+
+// Booleans arrive as "true"/"false" for the same reason — and "false" is a
+// non-empty string, so testing the raw value is always true. Every panel that
+// branches on a BOOLEAN column goes through this (CR-33). NULL (unknown) is
+// not true.
+export const bool = (v) => v === true || v === 'true';

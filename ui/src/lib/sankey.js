@@ -16,9 +16,15 @@
  * @param {{width:number,height:number,nodeWidth:number,gap:number}} opts
  */
 export function sankey(links, stages, { width, height, nodeWidth = 12, gap = 6 }) {
+  // A node's size is the flow THROUGH it: max(in, out), not in + out. Adding
+  // every link to both ends counted a middle-stage node's flow twice, so its
+  // ribbons — each scaled by the node's value — filled only half of it (CR-32).
+  const inTot = new Map(), outTot = new Map();
+  const add = (m, k, v) => m.set(k, (m.get(k) ?? 0) + v);
+  for (const l of links) { add(outTot, l.from, l.value); add(inTot, l.to, l.value); }
   const totals = new Map();
-  const add = (k, v) => totals.set(k, (totals.get(k) ?? 0) + v);
-  for (const l of links) { add(l.from, l.value); add(l.to, l.value); }
+  for (const k of new Set([...inTot.keys(), ...outTot.keys()]))
+    totals.set(k, Math.max(inTot.get(k) ?? 0, outTot.get(k) ?? 0));
 
   // Each stage is scaled independently to fill the height, so a stage whose
   // total is smaller (because some flow ends early) still reads clearly. Every

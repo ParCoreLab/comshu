@@ -21,14 +21,22 @@
              count(DISTINCT dst_rank) FILTER (dst_rank >= 0) AS peers
       FROM comm_edges GROUP BY 1, 2, 3
     ), inn AS (
-      SELECT dst_rank AS rank, transport, sum(bytes)::BIGINT AS recv
-      FROM comm_edges WHERE dst_rank >= 0 GROUP BY 1, 2
+      SELECT dst_rank AS rank, transport, unit, sum(bytes)::BIGINT AS recv
+      FROM comm_edges WHERE dst_rank >= 0 GROUP BY 1, 2, 3
     )
-    SELECT o.rank, o.transport, o.unit, o.sent, o.ops, o.peers,
-           coalesce(i.recv, 0)::BIGINT AS recv
+    -- FULL, not LEFT: a rank that only RECEIVES on a transport (a gather or
+    -- reduce sink) has no row in \`out\`, and the left join dropped it from
+    -- the panel entirely (CR-36).
+    SELECT coalesce(o.rank, i.rank)             AS rank,
+           coalesce(o.transport, i.transport)   AS transport,
+           coalesce(o.unit, i.unit)             AS unit,
+           coalesce(o.sent, 0)::BIGINT          AS sent,
+           coalesce(o.ops, 0)::BIGINT           AS ops,
+           coalesce(o.peers, 0)::BIGINT         AS peers,
+           coalesce(i.recv, 0)::BIGINT          AS recv
     FROM out o
-    LEFT JOIN inn i ON i.rank = o.rank AND i.transport = o.transport
-    ORDER BY o.transport, o.rank`;
+    FULL JOIN inn i ON i.rank = o.rank AND i.transport = o.transport AND i.unit = o.unit
+    ORDER BY 2, 1`;
 
   const BAR = '#2a78d6';
 

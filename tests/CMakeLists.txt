@@ -376,3 +376,21 @@ if(COMSHU_PROVIDER_UCX)
   set_tests_properties(ucx_records ucx_deep_records PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${_ucx_libdir}:$ENV{LD_LIBRARY_PATH}")
 endif()
+
+# The JavaScript halves: the UI's pure layout/data modules and the agent's
+# libraries, under node's own test runner. Registered only where node exists,
+# and loudly skipped otherwise — the files are globbed here so a new *.test.mjs
+# is picked up on the next configure.
+find_program(COMSHU_NODE node)
+if(COMSHU_NODE)
+  file(GLOB _ui_js_tests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/ui/test/*.test.mjs)
+  file(GLOB _agent_js_tests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/agent/test/*.test.mjs)
+  if(_ui_js_tests)
+    add_test(NAME ui_js COMMAND ${COMSHU_NODE} --test ${_ui_js_tests})
+  endif()
+  if(_agent_js_tests)
+    add_test(NAME agent_js COMMAND ${COMSHU_NODE} --test ${_agent_js_tests})
+  endif()
+else()
+  message(STATUS "node not found: ui/test and agent/test are NOT run by ctest")
+endif()

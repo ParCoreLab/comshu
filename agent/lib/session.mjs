@@ -64,19 +64,31 @@ export class PiSession {
     if (this.provider) args.push('--provider', this.provider);
     if (this.model) args.push('--model', this.model);
 
-    this.child = spawn('pi', args, {
+    const child = spawn('pi', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, COMSHU_UI_URL: this.uiUrl },
     });
+    this.child = child;
     this.stderr = '';
-    this.child.stderr.on('data', (d) => {
+    child.stderr.on('data', (d) => {
       this.stderr = (this.stderr + d.toString()).slice(-4000);
     });
-    this.child.stdout.on('data', (d) => this.#onData(d));
+    child.stdout.on('data', (d) => this.#onData(d));
+    // A write to a child that has died fails with EPIPE on stdin; unhandled,
+    // that error takes the whole bridge down. The exit below already says so.
+    child.stdin.on('error', () => {});
+    // `exited` settles on EITHER event. A spawn that fails (pi not on PATH)
+    // emits 'error' and never 'exit', and with no 'error' listener at all it
+    // crashed the bridge (CR-34). It resolves with a reason, never rejects:
+    // every ask() in flight races it and fails with that reason.
     this.exited = new Promise((resolve) => {
-      this.child.on('exit', (code) => {
-        this.child = null;
-        resolve(code);
+      child.on('exit', (code, signal) => {
+        if (this.child === child) this.child = null;
+        resolve(`the agent process exited (${signal ?? `code ${code}`})`);
+      });
+      child.on('error', (e) => {
+        if (this.child === child) this.child = null;
+        resolve(`the agent process could not run: ${e.message}`);
       });
     });
     return this;
@@ -119,17 +131,27 @@ export class PiSession {
     const state = { text: '', charts: [], queries: [], error: null };
 
     return new Promise((resolve, reject) => {
+      let settled = false;
       const done = (fn, arg) => {
+        if (settled) return;
+        settled = true;
         this.listeners.delete(listener);
         clearTimeout(idle);
         fn(arg);
       };
+      // The child dying ends the question NOW. Without this a crash, a kill
+      // or a /reset left ask() waiting out its 10-minute timer (CR-34).
+      this.exited?.then((why) => done(reject, new Error(why)));
 
       // A local 30B can think for a while; it should not think forever.
+      // unref'd: the timer must never be what keeps a process alive (the
+      // bridge's server does that), or a test of a hung ask waits it out.
       let idle = setTimeout(() => done(reject, new Error('the model did not respond within 10 minutes')), 600000);
+      idle.unref?.();
       const touch = () => {
         clearTimeout(idle);
         idle = setTimeout(() => done(reject, new Error('the model stopped responding')), 600000);
+        idle.unref?.();
       };
 
       const listener = (msg) => {

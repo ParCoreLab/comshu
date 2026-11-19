@@ -253,42 +253,42 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### UI & Agent
 
 #### `CR-32` — Middle-stage Sankey node totals are double-counted, halving all stage-1 ribbon heights
-- [ ] **Status:** Open
+- [x] **Status:** Done (a node's value is max(in, out) flow, not in + out; ribbons scale by it, so a conserving middle node is filled on both sides. `ui/test/sankey.test.mjs`)
 - **Subsystem:** `ui`
 - **Locations:** `ui/src/lib/sankey.js:19-21, 58-59`
 - **Problem:** Every link adds `l.value` to both `l.from` and `l.to`, giving stage-1 nodes `value = 2 × flow`. Ribbon heights divide by `a.value` / `b.value`, drawing every stage-1 ribbon at 50% height and leaving the bottom half of every middle-stage node blank.
 - **Fix:** Track `inTotal` and `outTotal` separately per node, set `node.value = Math.max(inTotal, outTotal)`, and divide `ah` by `outTotal` and `bh` by `inTotal`.
 
 #### `CR-33` — Boolean strings from `/query` break approximate-offset indicators (`"false"` is truthy)
-- [ ] **Status:** Open
+- [x] **Status:** Done (`bool()` in `ui/src/lib/query.js`, beside `num()`, reads `/query`'s "true"/"false" strings (NULL is not true); Objects uses it at both sites, which are the only BOOLEAN columns the panels query. `ui/test/query.test.mjs`)
 - **Subsystem:** `ui`
 - **Locations:** `ui/src/panels/Objects.svelte:131, 147, 232, 307`
 - **Problem:** `/query` returns DuckDB booleans as strings (`"true"` / `"false"`). `b.all_exact ? '' : ' (approx.)'` and `{#if !sp.exact}` treat `"false"` as truthy, so approximate-offset indicators never render.
 - **Fix:** Compare explicitly against `'true'` / `'false'` (e.g., `b.all_exact === 'true'`).
 
 #### `CR-34` — `PiSession.ask()` never settles on child exit/error, causing hangs and `busy` corruption on `/reset`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`PiSession`: `exited` settles on 'exit' OR 'error' (a failed spawn emits only 'error', and without a listener it crashed the bridge); every `ask()` races it and rejects at once with the reason; stdin EPIPE is swallowed; the idle timer is unref'd. Bridge: `busy` is released only by the /ask that owns the current generation, and /reset bumps it. `agent/test/session.test.mjs`: pi missing, and pi dying mid-question, both reject in milliseconds; without the race both time out (mutation-checked))
 - **Subsystem:** `agent`
 - **Locations:** `agent/lib/session.mjs:67-81, 118-194`, `agent/bridge.mjs:189-195, 222-246`
 - **Problem:** `PiSession.start()` attaches no `'error'` listener to `this.child` (unhandled error crashes bridge on `ENOENT`). `ask()` does not reject/settle on `this.exited`, hanging for 10 min on child crash or `/reset`. In `bridge.mjs`, `/reset` clears `busy = false` while an earlier `/ask` is still pending, so its `finally` later clobbers `busy` for a newer `/ask`.
 - **Fix:** Attach an `'error'` handler on `spawn()`, race/reject in-flight `ask()` when `child` exits or errors, and guard `busy` with a request token/generation in `bridge.mjs`.
 
 #### `CR-35` — `req.on('close')` attached after `readBody(req)` never detects client disconnect
-- [ ] **Status:** Open
+- [x] **Status:** Done (the abort listener is on `res` ('close' with `!res.writableEnded`), since `readBody` had already consumed `req`)
 - **Subsystem:** `agent`
 - **Locations:** `agent/bridge.mjs:204, 224-227`
 - **Problem:** `await readBody(req)` consumes `req` to completion, emitting `'end'`/`'close'` before `req.on('close', ...)` is registered on line 224. Aborting the SSE fetch or closing the browser tab never aborts the agent.
 - **Fix:** Listen on `res.on('close', () => { if (!res.writableEnded) { closed = true; session?.abort(); } })`.
 
 #### `CR-36` — Receive-only ranks silently dropped from Per-rank traffic (`Ranks.svelte`)
-- [ ] **Status:** Open
+- [x] **Status:** Done (FULL JOIN with coalesce, and the join now includes `unit` (`out` is grouped by it))
 - **Subsystem:** `ui`
 - **Locations:** `ui/src/panels/Ranks.svelte:16-31`
 - **Problem:** `FROM out o LEFT JOIN inn i ...` omits ranks with zero outgoing traffic (e.g., gather/reduce sinks).
 - **Fix:** Use `FULL OUTER JOIN` with `coalesce(...)` for `rank`, `transport`, `unit`, `sent`, `ops`, `peers`, and `recv`.
 
 #### `CR-37` — Multi-transport `comm_edges` rows overwrite each other in `Dendrogram.svelte`
-- [ ] **Status:** Open
+- [x] **Status:** Done (one row per pair: `max(bytes)` across transports. The panel asks whether two ranks talk, and summing across transports would add NVLink stores to InfiniBand bytes (the Ranks panel's rule). On llm-scaleout, 304 edge rows collapse to 256 pairs, so 48 cells had been overwritten)
 - **Subsystem:** `ui`
 - **Locations:** `ui/src/panels/Dendrogram.svelte:10-23`
 - **Problem:** Queries `comm_edges` across all transports without filtering or summing, so `vecs[...][...] = Math.log1p(num(r.bytes))` overwrites earlier transports in arbitrary row order.
