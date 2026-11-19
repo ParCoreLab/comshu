@@ -105,6 +105,13 @@ target_compile_features(srq_walk_test PRIVATE cxx_std_20)
 target_compile_options(srq_walk_test PRIVATE -UNDEBUG)
 add_test(NAME srq_walk COMMAND srq_walk_test)
 
+# The NCCL profiler plugin's event pool (CR-23). Header-only, no NCCL.
+add_executable(nccl_event_pool_test nccl_event_pool_test.cpp)
+target_include_directories(nccl_event_pool_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/nccl)
+target_link_libraries(nccl_event_pool_test PRIVATE comshu::comshu)
+target_compile_options(nccl_event_pool_test PRIVATE -UNDEBUG)
+add_test(NAME nccl_event_pool COMMAND nccl_event_pool_test)
+
 # The CQE probe's per-CQ ring cache and its eviction (CR-04). Header-only, no
 # ibverbs: driven directly.
 add_executable(cq_ring_cache_test cq_ring_cache_test.cpp)

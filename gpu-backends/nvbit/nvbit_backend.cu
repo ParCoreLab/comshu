@@ -134,7 +134,14 @@ struct Globals {
     std::unordered_set<CUfunction>                                       instrumented;
     std::map<std::string, int>                                           opcode_to_id;
     std::vector<std::string>                                             id_to_opcode;
-    std::vector<MemOp>                                                   id_to_memop;
+    // opcode_id -> MemOp, READ BY THE RECV THREAD WITHOUT g_mutex while
+    // instrumentation appends under it. A std::vector here reallocated under
+    // the reader — a use-after-free (CR-20). A fixed table of atomics never
+    // moves: written once per new opcode (release), read per packet (acquire).
+    // 16Ki entries is far past the distinct SASS opcode+modifier strings a
+    // process meets; an id beyond it is read as a Load rather than out of range.
+    static constexpr std::size_t kMaxOpcodes = 1u << 14;
+    std::atomic<MemOp>           id_to_memop[kMaxOpcodes]{};
     std::string                                                          kernel_filter = "all";
     // Touched only by the CUDA-callback thread, under g_mutex. The recv thread
     // never reads these — it used to, and needed an atomically published
@@ -205,9 +212,18 @@ struct LaunchSpan {
     uint32_t blocks_seen = 0;
 };
 
-pthread_mutex_t                          g_span_mutex = PTHREAD_MUTEX_INITIALIZER;
-std::unordered_map<uint64_t, LaunchMeta> g_launch_meta;  // written by the callback thread
-std::unordered_map<uint64_t, LaunchSpan> g_launch_span;  // written by the recv thread
+pthread_mutex_t g_span_mutex = PTHREAD_MUTEX_INITIALIZER;
+// Leaked, like G(): both are read from nvbit_at_ctx_term and emit_kernel_spans,
+// which can run AFTER C++ static destructors. As namespace-scope maps they
+// were destroyed first and then walked (CR-22).
+std::unordered_map<uint64_t, LaunchMeta>& launch_meta() {  // written by the callback thread
+    static auto* m = new std::unordered_map<uint64_t, LaunchMeta>();
+    return *m;
+}
+std::unordered_map<uint64_t, LaunchSpan>& launch_span() {  // written by the recv thread
+    static auto* m = new std::unordered_map<uint64_t, LaunchSpan>();
+    return *m;
+}
 
 // (globaltimer, CLOCK_REALTIME) per device, sampled at first launch and at
 // teardown. Two points per GPU is what comshu-read's per-(rank, domain) fit
@@ -227,28 +243,33 @@ std::unordered_set<int> g_gpu_anchored;
 // a leak that grows with runtime. Old entries age out and their accesses fall
 // back to an open lower bound, which is honest; inventing one would not be.
 //
-// NB this is a SEPARATE structure from g_launch_span/g_launch_meta above, which
+// NB this is a SEPARATE structure from launch_span()/launch_meta() above, which
 // the kernel-span work keys by the same id. They are not merged because they are
 // written and read by different threads under different locks and with different
 // lifetimes: this one is host TSC, written on the CUDA-callback thread under
 // g_mutex and read on the recv thread; those are globaltimer, reduced on the
 // recv thread under g_span_mutex and drained at teardown. One id, two clocks —
 // which is exactly the pairing a later tightening of ticks_lo would exploit.
-constexpr std::size_t kLaunchRing = 1u << 16;    // 64Ki launches, 512 KB
-std::uint64_t*        g_launch_ticks = nullptr;  // indexed by launch_id % kLaunchRing
-std::uint64_t*        g_launch_owner = nullptr;  // which id that slot holds
-unsigned long long    g_launch_unknown = 0;      // accesses with no launch time
+//
+// WRITTEN ON ONE THREAD, READ ON ANOTHER, so each slot is a tiny seqlock
+// (CR-21): the writer retires the slot's owner, writes the time, then publishes
+// the new owner; the reader accepts a time only if the owner it saw before and
+// after reading it is the id it wants. Plain fields let the recv thread pair a
+// new launch's id with an old launch's time, or read a slot mid-write. Static
+// zero-initialised atomics, so there is no allocate-then-publish window either;
+// owner holds id + 1, so 0 is "empty" without a fill.
+constexpr std::size_t kLaunchRing = 1u << 16;  // 64Ki launches, 1 MiB
+std::atomic<std::uint64_t>      g_launch_ticks[kLaunchRing];  // by launch_id % kLaunchRing
+std::atomic<std::uint64_t>      g_launch_owner[kLaunchRing];  // id + 1 of the launch it holds
+std::atomic<unsigned long long> g_launch_unknown{0};          // accesses with no launch time
 
 // Records the launch time for `id`. Called under g_mutex from the CUDA callback.
 inline void note_launch_time(std::uint64_t id) {
-    if (!g_launch_ticks) {
-        g_launch_ticks = new std::uint64_t[kLaunchRing]();
-        g_launch_owner = new std::uint64_t[kLaunchRing];
-        std::fill(g_launch_owner, g_launch_owner + kLaunchRing, ~0ull);
-    }
     const std::size_t slot = id % kLaunchRing;
-    g_launch_owner[slot] = id;
-    g_launch_ticks[slot] = comshu::helpers::TscClock::now();
+    g_launch_owner[slot].store(0, std::memory_order_relaxed);  // retire the old launch
+    std::atomic_thread_fence(std::memory_order_release);
+    g_launch_ticks[slot].store(comshu::helpers::TscClock::now(), std::memory_order_relaxed);
+    g_launch_owner[slot].store(id + 1, std::memory_order_release);
 }
 
 // The launch time for `id`, or 0 if that launch has aged out of the ring or was
@@ -256,11 +277,26 @@ inline void note_launch_time(std::uint64_t id) {
 // still a stub). 0 means "unknown", and the pipeline leaves the window open
 // below rather than fabricating a bound.
 inline std::uint64_t launch_time(std::uint64_t id) {
-    if (!g_launch_ticks)
-        return 0;
     const std::size_t slot = id % kLaunchRing;
-    return g_launch_owner[slot] == id ? g_launch_ticks[slot] : 0;
+    if (g_launch_owner[slot].load(std::memory_order_acquire) != id + 1)
+        return 0;
+    const std::uint64_t t = g_launch_ticks[slot].load(std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return g_launch_owner[slot].load(std::memory_order_relaxed) == id + 1 ? t : 0;
 }
+
+// Which thread lane `lane` of a warp packet is. The packet's thread_index is
+// that of the lane that PUSHED it — the first active one, ma.lane_id — not of
+// lane 0, so the warp's base is thread_index - lane_id. Adding `lane` to
+// thread_index (as this did) shifted every lane of a warp whose lane 0 was
+// inactive by lane_id (CR-26). Warps are 32 consecutive linear thread ids.
+constexpr std::uint32_t access_thread(std::uint64_t thread_index, std::uint32_t lane_id,
+                                      int lane) {
+    return static_cast<std::uint32_t>(thread_index - lane_id) + static_cast<std::uint32_t>(lane);
+}
+static_assert(access_thread(64, 0, 5) == 69);
+static_assert(access_thread(67, 3, 3) == 67 && "the pushing lane names itself");
+static_assert(access_thread(67, 3, 31) == 95);
 
 struct MutexLock {
     explicit MutexLock(pthread_mutex_t& m) : m_m(&m) { pthread_mutex_lock(m_m); }
@@ -627,8 +663,10 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
             auto [it, inserted] =
                 G().opcode_to_id.emplace(instr->getOpcode(), (int)G().id_to_opcode.size());
             if (inserted) {
+                if (const std::size_t id = G().id_to_opcode.size(); id < Globals::kMaxOpcodes)
+                    G().id_to_memop[id].store(opcode_to_memop(instr->getOpcode()),
+                                              std::memory_order_release);
                 G().id_to_opcode.emplace_back(instr->getOpcode());
-                G().id_to_memop.push_back(opcode_to_memop(instr->getOpcode()));
             }
             int opcode_id = it->second;
 
@@ -892,7 +930,7 @@ void handle_launch(CUcontext ctx, CUfunction func, LaunchGeom geom = {}) {
             m.block[2] = (uint16_t)geom.bz;
             m.dev_id = dev_id;
             MutexLock lk(g_span_mutex);
-            g_launch_meta.emplace(launch_id, std::move(m));
+            launch_meta().emplace(launch_id, std::move(m));
         }
 
         // NB: these run for every related function, not just instrumented ones.
@@ -1013,7 +1051,7 @@ void* recv_thread_fun(void* args) {
                 const uint64_t id = COMSHU_SPAN_LAUNCH(*ma);
                 const uint64_t t = COMSHU_SPAN_TICKS(*ma);
                 MutexLock      lk(g_span_mutex);
-                LaunchSpan&    s = g_launch_span[id];
+                LaunchSpan&    s = launch_span()[id];
                 if (COMSHU_SPAN_IS_END(*ma)) {
                     if (t > s.t1)
                         s.t1 = t;
@@ -1033,7 +1071,7 @@ void* recv_thread_fun(void* args) {
             const std::uint64_t t_lo = launch_time(ma->launch_id);
             const std::uint64_t t_hi = comshu::helpers::TscClock::now();
             if (t_lo == 0)
-                ++g_launch_unknown;
+                g_launch_unknown.fetch_add(1, std::memory_order_relaxed);
 
             for (int lane = 0; lane < 32; lane++) {
                 if (ma->addrs[lane] == 0)
@@ -1042,8 +1080,10 @@ void* recv_thread_fun(void* args) {
                 a.address = ma->addrs[lane];
                 a.pc = comshu::gpumem::pc_handle(ma->instr_index);
                 a.size = ma->access_size;
-                a.thread = static_cast<uint32_t>(ma->thread_index) + lane;
-                a.op = G().id_to_memop[ma->opcode_id];
+                a.thread = access_thread(ma->thread_index, ma->lane_id, lane);
+                a.op = static_cast<std::size_t>(ma->opcode_id) < Globals::kMaxOpcodes
+                           ? G().id_to_memop[ma->opcode_id].load(std::memory_order_acquire)
+                           : MemOp::Load;
                 a.space = comshu::core::MemSpace::Global;
                 a.run_device = static_cast<comshu::core::DeviceId>(ma->dev_id);
                 a.ticks_lo = t_lo;
@@ -1121,7 +1161,7 @@ void emit_kernel_spans() {
     // nvbit_at_ctx_term instead, while the context is still alive.
     MutexLock   lk(g_span_mutex);
     std::size_t emitted = 0, unmatched = 0;
-    for (const auto& [id, s] : g_launch_span) {
+    for (const auto& [id, s] : launch_span()) {
         // A span needs both ends. An entry with no exit means the kernel was
         // still running at teardown, or its exit records were lost with the
         // context — either way the window is unknown and inventing one would be
@@ -1130,8 +1170,8 @@ void emit_kernel_spans() {
             unmatched++;
             continue;
         }
-        auto              it = g_launch_meta.find(id);
-        const LaunchMeta* m = it == g_launch_meta.end() ? nullptr : &it->second;
+        auto              it = launch_meta().find(id);
+        const LaunchMeta* m = it == launch_meta().end() ? nullptr : &it->second;
         const int         dev = m && m->dev_id >= 0 ? m->dev_id : s.dev_id;
         comshu_engine_record_kernel(
             s.t0, s.t1, (uint16_t)(comshu::core::kDomainGpuTimerBase + (dev < 0 ? 0 : dev)),
@@ -1404,11 +1444,11 @@ void nvbit_at_ctx_term(CUcontext ctx) {
         // launches aged out of the ring (raise kLaunchRing) or a launch path we
         // do not intercept — CUDA-graph node launches are the known one,
         // nvbit_at_graph_node_launch is still a stub.
-        if (g_launch_unknown)
+        if (const unsigned long long unknown = g_launch_unknown.load(); unknown)
             std::fprintf(stderr,
                          "[comshu] %llu warp-packets had no launch time — their accesses are "
                          "recorded with an open lower bound (window [0, drain])\n",
-                         g_launch_unknown);
+                         unknown);
         g_engine->shutdown();
     }
 }

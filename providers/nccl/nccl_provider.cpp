@@ -4,8 +4,10 @@
 // nccl_records.hpp for why this records operations rather than trying to
 // attribute NCCL's internal channel traffic.
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <dlfcn.h>
@@ -147,9 +149,90 @@ static void record_comm(ncclComm_t comm, std::uint64_t comm_hash, std::uint64_t 
                  rr::NcclComm{{}, {}, h(comm), comm_hash, nccl_hash, rank, nranks, dev, 0});
 }
 
+// --- non-blocking communicators (CR-25) ---------------------------------------
+//
+// A communicator created with config.blocking = 0 answers its calls with
+// ncclInProgress, not ncclSuccess, for work that WAS issued. Testing for
+// ncclSuccess alone dropped every collective and P2P such a communicator made,
+// and never closed a group: an ncclGroupEnd returning ncclInProgress left
+// group_depth one too high for the rest of the thread.
+static bool issued(ncclResult_t r) {
+#ifdef NCCL_VERSION_CODE
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 14, 0)
+    return r == ncclSuccess || r == ncclInProgress;
+#endif
+#endif
+    return r == ncclSuccess;
+}
+
+// A non-blocking INIT is the exception: ncclInProgress there hands back a
+// communicator whose rank, size and device NCCL is still filling in on another
+// thread. Recording it then would write those placeholders as facts. So it is
+// held here, and recorded — with its init call's timing — the first time a
+// later call on it finds ncclCommGetAsyncError reporting ready. One that never
+// becomes ready is never recorded, and so never closed either.
+struct PendingComm {
+    std::uint64_t comm_hash, nccl_hash, begin, end;
+};
+static std::mutex& pending_mutex() {
+    static auto* m = new std::mutex();
+    return *m;
+}
+static std::unordered_map<ncclComm_t, PendingComm>& pending_comms() {
+    static auto* m = new std::unordered_map<ncclComm_t, PendingComm>();
+    return *m;
+}
+static std::atomic<int> g_pending_count{0};  // the hot path's only cost
+
+static void record_comm(ncclComm_t comm, std::uint64_t comm_hash, std::uint64_t nccl_hash,
+                        std::uint64_t begin, std::uint64_t end);
+
+enum class Settled { NotPending, Recorded, StillPending, Failed };
+
+static Settled settle(ncclComm_t comm) {
+    if (!comm || g_pending_count.load(std::memory_order_acquire) == 0)
+        return Settled::NotPending;
+    PendingComm p{};
+    {
+        std::lock_guard<std::mutex> lk(pending_mutex());
+        auto                        it = pending_comms().find(comm);
+        if (it == pending_comms().end())
+            return Settled::NotPending;
+        ncclResult_t state = ncclSuccess;
+        if (pncclCommGetAsyncError(comm, &state) != ncclSuccess)
+            state = ncclInternalError;
+        if (!issued(state) || state != ncclSuccess) {
+            if (issued(state))
+                return Settled::StillPending;  // ncclInProgress: not yet
+            pending_comms().erase(it);         // init failed: nothing to record
+            g_pending_count.fetch_sub(1, std::memory_order_release);
+            return Settled::Failed;
+        }
+        p = it->second;
+        pending_comms().erase(it);
+        g_pending_count.fetch_sub(1, std::memory_order_release);
+    }
+    record_comm(comm, p.comm_hash, p.nccl_hash, p.begin, p.end);
+    return Settled::Recorded;
+}
+
+static void comm_init_returned(ncclResult_t res, ncclComm_t comm, std::uint64_t comm_hash,
+                               std::uint64_t nccl_hash, std::uint64_t begin, std::uint64_t end) {
+    if (!comm)
+        return;
+    if (res == ncclSuccess) {
+        record_comm(comm, comm_hash, nccl_hash, begin, end);
+    } else if (issued(res)) {
+        std::lock_guard<std::mutex> lk(pending_mutex());
+        if (pending_comms().emplace(comm, PendingComm{comm_hash, nccl_hash, begin, end}).second)
+            g_pending_count.fetch_add(1, std::memory_order_release);
+    }
+}
+
 static void record_coll(rr::CollOp op, const void* sendbuff, void* recvbuff, std::size_t count,
                         ncclDataType_t datatype, int redop, int root, ncclComm_t comm,
                         cudaStream_t stream, std::uint64_t begin, std::uint64_t end) {
+    settle(comm);
     rec().record(span(begin, end), rr::NcclCollective{{},
                                                       {},
                                                       h(comm),
@@ -175,16 +258,16 @@ Profiler::Profiler() {
     // --- communicator lifecycle ---------------------------------------------
     register_post<comm_init_rank_tag>(
         [](ncclResult_t res, ncclComm_t* comm, int, ncclUniqueId id, int, auto begin, auto end) {
-            if (res == ncclSuccess && comm && *comm)
-                record_comm(*comm, fnv1a(id.internal, sizeof(id.internal)),
-                            nccl_comm_hash(id.internal, sizeof(id.internal)), begin, end);
+            if (comm)
+                comm_init_returned(res, *comm, fnv1a(id.internal, sizeof(id.internal)),
+                                   nccl_comm_hash(id.internal, sizeof(id.internal)), begin, end);
         });
     register_post<comm_init_rank_config_tag>([](ncclResult_t res, ncclComm_t* comm, int,
                                                 ncclUniqueId id, int, ncclConfig_t*, auto begin,
                                                 auto end) {
-        if (res == ncclSuccess && comm && *comm)
-            record_comm(*comm, fnv1a(id.internal, sizeof(id.internal)),
-                        nccl_comm_hash(id.internal, sizeof(id.internal)), begin, end);
+        if (comm)
+            comm_init_returned(res, *comm, fnv1a(id.internal, sizeof(id.internal)),
+                               nccl_comm_hash(id.internal, sizeof(id.internal)), begin, end);
     });
     // PRE, not post: after the call the communicator is gone and interning its
     // pointer would name a dead object — and worse, the allocator is free to
@@ -197,10 +280,24 @@ Profiler::Profiler() {
     // result is a "more closes than opens" row — the assertion doing its job,
     // exactly as it did for UCX endpoints — and that is the signal we want
     // rather than a pre-emptive filter over a case we have not observed.
+    // A communicator still pending here was never recorded, so it gets no
+    // close either (CR-25).
     register_pre<comm_destroy_tag>([](ncclComm_t comm, auto) {
+        const Settled st = settle(comm);
+        if (st == Settled::StillPending || st == Settled::Failed)
+            return;
         close(comm, comshu::core::RecordTrait<rr::NcclComm>::type_id);
     });
     register_pre<comm_abort_tag>([](ncclComm_t comm, auto) {
+        const Settled st = settle(comm);
+        if (st == Settled::StillPending) {
+            std::lock_guard<std::mutex> lk(pending_mutex());
+            if (pending_comms().erase(comm))
+                g_pending_count.fetch_sub(1, std::memory_order_release);
+            return;
+        }
+        if (st == Settled::Failed)
+            return;
         close(comm, comshu::core::RecordTrait<rr::NcclComm>::type_id);
     });
 
@@ -212,19 +309,19 @@ Profiler::Profiler() {
     register_post<all_reduce_tag>([](ncclResult_t res, const void* s, void* r, size_t n,
                                      ncclDataType_t dt, ncclRedOp_t op, ncclComm_t c,
                                      cudaStream_t st, auto begin, auto end) {
-        if (res == ncclSuccess)
+        if (issued(res))
             record_coll(rr::CollOp::AllReduce, s, r, n, dt, op, -1, c, st, begin, end);
     });
     register_post<broadcast_tag>([](ncclResult_t res, const void* s, void* r, size_t n,
                                     ncclDataType_t dt, int root, ncclComm_t c, cudaStream_t st,
                                     auto begin, auto end) {
-        if (res == ncclSuccess)
+        if (issued(res))
             record_coll(rr::CollOp::Broadcast, s, r, n, dt, 0xff, root, c, st, begin, end);
     });
     register_post<reduce_tag>([](ncclResult_t res, const void* s, void* r, size_t n,
                                  ncclDataType_t dt, ncclRedOp_t op, int root, ncclComm_t c,
                                  cudaStream_t st, auto begin, auto end) {
-        if (res == ncclSuccess)
+        if (issued(res))
             record_coll(rr::CollOp::Reduce, s, r, n, dt, op, root, c, st, begin, end);
     });
     // AllGather's count is the SEND count and ReduceScatter's is the RECV count
@@ -236,21 +333,23 @@ Profiler::Profiler() {
     register_post<all_gather_tag>([](ncclResult_t res, const void* s, void* r, size_t n,
                                      ncclDataType_t dt, ncclComm_t c, cudaStream_t st, auto begin,
                                      auto end) {
-        if (res == ncclSuccess)
+        if (issued(res))
             record_coll(rr::CollOp::AllGather, s, r, n, dt, 0xff, -1, c, st, begin, end);
     });
     register_post<reduce_scatter_tag>([](ncclResult_t res, const void* s, void* r, size_t n,
                                          ncclDataType_t dt, ncclRedOp_t op, ncclComm_t c,
                                          cudaStream_t st, auto begin, auto end) {
-        if (res == ncclSuccess)
+        if (issued(res))
             record_coll(rr::CollOp::ReduceScatter, s, r, n, dt, op, -1, c, st, begin, end);
     });
 
     // --- point to point ------------------------------------------------------
     register_post<send_tag>([](ncclResult_t res, const void* buf, size_t n, ncclDataType_t dt,
                                int peer, ncclComm_t c, cudaStream_t st, auto begin, auto end) {
-        if (res == ncclSuccess)
-            rec().record(span(begin, end), rr::NcclP2p{{},
+        if (!issued(res))
+            return;
+        settle(c);
+        rec().record(span(begin, end), rr::NcclP2p{{},
                                                        {},
                                                        h(c),
                                                        h(buf),
@@ -263,8 +362,10 @@ Profiler::Profiler() {
     });
     register_post<recv_tag>([](ncclResult_t res, void* buf, size_t n, ncclDataType_t dt, int peer,
                                ncclComm_t c, cudaStream_t st, auto begin, auto end) {
-        if (res == ncclSuccess)
-            rec().record(span(begin, end), rr::NcclP2p{{},
+        if (!issued(res))
+            return;
+        settle(c);
+        rec().record(span(begin, end), rr::NcclP2p{{},
                                                        {},
                                                        h(c),
                                                        h(buf),
@@ -439,7 +540,7 @@ extern "C" ncclResult_t ncclGroupStart() {
     const auto   begin = comshu::helpers::ts::RdtscTimestampSource::Now();
     ncclResult_t res = pncclGroupStart();
     const auto   end = comshu::helpers::ts::RdtscTimestampSource::Now();
-    if (res == ncclSuccess)
+    if (nccl::issued(res))
         nccl::record_group(nccl::rr::GroupEdge::Start, begin, end);
     return res;
 }
@@ -448,7 +549,7 @@ extern "C" ncclResult_t ncclGroupEnd() {
     const auto   begin = comshu::helpers::ts::RdtscTimestampSource::Now();
     ncclResult_t res = pncclGroupEnd();
     const auto   end = comshu::helpers::ts::RdtscTimestampSource::Now();
-    if (res == ncclSuccess)
+    if (nccl::issued(res))
         nccl::record_group(nccl::rr::GroupEdge::End, begin, end);
     return res;
 }

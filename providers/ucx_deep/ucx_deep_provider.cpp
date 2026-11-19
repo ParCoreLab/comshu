@@ -192,14 +192,23 @@ struct CodeRange {
 // the SECOND one. A stale map makes the guard refuse an interface it should
 // have accepted — safe, but it loses capture for no reason — so a failed check
 // refreshes once before it refuses. See ops_layout_plausible's caller.
-static std::vector<CodeRange>& ucx_code_ranges_storage() {
+//
+// Guarded by its own mutex (CR-24): concurrent uct_iface_open calls refresh and
+// read it outside table_mu(), and a clear()/push_back() under a reader's
+// iteration was an iterator invalidation. The maps file is read into a local
+// vector and swapped in, so the lock is never held across I/O.
+static std::mutex& ucx_code_ranges_mu() {
+    static auto* m = new std::mutex();
+    return *m;
+}
+static std::vector<CodeRange>& ucx_code_ranges_storage() {  // caller holds the mutex
     static auto* v = new std::vector<CodeRange>();
     return *v;
 }
 
 static void refresh_ucx_code_ranges() {
-    auto* v = &ucx_code_ranges_storage();
-    v->clear();
+    std::vector<CodeRange> fresh;
+    auto*                  v = &fresh;
     std::FILE* f = std::fopen("/proc/self/maps", "re");
     if (!f) {
         std::fprintf(stderr,
@@ -225,17 +234,16 @@ static void refresh_ucx_code_ranges() {
             v->push_back({static_cast<std::uintptr_t>(lo), static_cast<std::uintptr_t>(hi)});
     }
     std::fclose(f);
-}
-
-static const std::vector<CodeRange>& ucx_code_ranges() {
-    static bool once = (refresh_ucx_code_ranges(), true);
-    (void)once;
-    return ucx_code_ranges_storage();
+    std::lock_guard<std::mutex> lk(ucx_code_ranges_mu());
+    ucx_code_ranges_storage().swap(fresh);
 }
 
 static bool is_ucx_code(const void* p) noexcept {
-    const auto a = reinterpret_cast<std::uintptr_t>(p);
-    for (const auto& r : ucx_code_ranges())
+    static bool once = (refresh_ucx_code_ranges(), true);
+    (void)once;
+    const auto                  a = reinterpret_cast<std::uintptr_t>(p);
+    std::lock_guard<std::mutex> lk(ucx_code_ranges_mu());
+    for (const auto& r : ucx_code_ranges_storage())
         if (a >= r.lo && a < r.hi)
             return true;
     return false;

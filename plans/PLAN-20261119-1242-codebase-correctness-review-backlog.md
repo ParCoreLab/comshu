@@ -158,42 +158,42 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Check `slot == out.tail` and bounds during the walk, and either synchronize with SRQ posting or record slot mapping safely on post/completion.
 
 #### `CR-20` — Unsynchronized data race / heap-UAF on `G().id_to_memop` in NVBit
-- [ ] **Status:** Open
+- [x] **Status:** Done (`Globals::id_to_memop` is a fixed table of `std::atomic<MemOp>` (16Ki entries) that never moves: written once per new opcode with release, read per packet with acquire; an id past the table reads as Load instead of out of range)
 - **Subsystem:** `gpu-backends/nvbit`
 - **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:630, 1045`
 - **Problem:** `instrument_function_if_needed()` appends to `G().id_to_memop` under `g_mutex`, while `recv_thread_fun()` reads `G().id_to_memop[ma->opcode_id]` unlocked. Reallocation during concurrent instrumentation causes heap-UAF.
 - **Fix:** Protect `id_to_memop` access (e.g., fixed-size chunks / `std::deque` with atomic size publication, or a lock/shared_mutex).
 
 #### `CR-21` — Unsynchronized data race & null-deref hazard on `g_launch_ticks` / `g_launch_owner` and `g_launch_unknown`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the launch ring is static zero-initialised atomics (no allocate-then-publish window), and each slot is a seqlock: the writer retires the owner, writes ticks, publishes owner = id + 1; the reader accepts the time only if the owner matched before and after. `g_launch_unknown` is atomic)
 - **Subsystem:** `gpu-backends/nvbit`
 - **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:237-262, 872, 1032-1035`
 - **Problem:** `g_launch_ticks` is allocated and published before `g_launch_owner`, while `launch_time()` only checks `if (!g_launch_ticks)`. `g_launch_owner[slot] = id` is written before `g_launch_ticks[slot] = now` with non-atomic stores, so readers can observe `id` with stale/zero ticks. `++g_launch_unknown` is non-atomic across per-context recv threads.
 - **Fix:** Allocate both arrays before publishing (or use static/fixed arrays), store `ticks` before `owner` with `release`/`acquire` atomics (or a seqlock/mutex), and make `g_launch_unknown` `std::atomic<uint64_t>`.
 
 #### `CR-22` — Static destruction order fiasco (use-after-destruction) on `g_launch_meta` and `g_launch_span`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`launch_meta()`/`launch_span()` are leaked function-local maps, like `G()`, so ctx_term and emit_kernel_spans after static destruction no longer walk destroyed maps)
 - **Subsystem:** `gpu-backends/nvbit`
 - **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:208-209, 1015, 1123, 1132, 1388`
 - **Problem:** `g_launch_meta` and `g_launch_span` are namespace-scope `std::unordered_map` objects with non-trivial destructors, accessed by `recv_thread_fun` and `emit_kernel_spans()` inside `nvbit_at_ctx_term`, which can run after C++ static destructors.
 - **Fix:** Move them into the immortal `G()` singleton (constructed via leaky `new`), matching the rest of `nvbit_backend.cu`.
 
 #### `CR-23` — Data race / wrong-parent attribution in `EventPool::resolve()` and free-list corruption on double `release()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`Event`/`EventPool` moved to `providers/nccl/nccl_event_pool.hpp`. `generation`, `id` and a new `released` flag are atomic. Parent lookup (`id_of`) re-checks the generation after reading `id`, so a racing re-issue reports 0, never the new occupant. `release()` is idempotent via `released`, and stopEvent uses `resolve_live`, so a double stop neither emits twice nor links the slot into the free list twice. The generation is NOT bumped on release, which the ticket proposed: that would end the quarantine that keeps a stopped collective nameable for its late proxy ops. `tests/nccl_event_pool_test.cpp` drains all 2M slots and requires them distinct; with the guard removed it fails (mutation-checked))
 - **Subsystem:** `providers/nccl`
 - **Locations:** `providers/nccl/nccl_profiler_plugin.cpp:113, 116, 207-256, 319-322, 409`
 - **Problem:** `Event::generation` and `Event::id` are plain non-atomic fields written in `acquire()`/`prof_start_event()` and read unlocked in `resolve()`/`parent_id_of()`, allowing data races and mis-attribution on slot reuse. `release()` does not bump `generation` or mark the slot released, so duplicate `release()` appends the same slot to the free list twice (creating a cycle).
 - **Fix:** Make `generation` atomic (or hold `mu_` in `resolve()`/`parent_id_of()`), bump `generation` (e.g. odd/even live/free bit) inside `release()` under `mu_` to make double-release a no-op, and write `ev->id` before exposing the handle.
 
 #### `CR-24` — Unsynchronized data race / iterator invalidation on `ucx_code_ranges_storage()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the code-range vector has its own mutex; refresh reads /proc/self/maps into a local vector and swaps it in under the lock, and `is_ucx_code` iterates under it)
 - **Subsystem:** `providers/ucx_deep`
 - **Locations:** `providers/ucx_deep/ucx_deep_provider.cpp:195-242, 701-707`
 - **Problem:** `on_iface_open()` calls `ops_layout_plausible()` (`is_ucx_code()`) and `refresh_ucx_code_ranges()` (`clear()`/`push_back()`) *before* acquiring `table_mu()`. Concurrent `uct_iface_open()` calls race on the vector.
 - **Fix:** Protect `ucx_code_ranges_storage()` with a mutex (or acquire `table_mu()` before calling `ops_layout_plausible()`/`refresh_ucx_code_ranges()`).
 
 #### `CR-25` — NCCL hooks ignore `ncclInProgress`, dropping non-blocking events and permanently skewing `group_depth()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`issued()` (ncclSuccess or, from 2.14, ncclInProgress) gates collectives, P2P and ncclGroupStart/End, so a non-blocking group closes its depth. A non-blocking INIT returning ncclInProgress is NOT recorded then: its rank and size are still being filled in. It is held pending and recorded, with the init call's timing, when a later call on it finds `ncclCommGetAsyncError` == ncclSuccess; destroy/abort of a comm that never became ready records no close. Window registration stays success-only, since a window that is not ready cannot be asked for peer pointers; deregister already closes only windows seen open. Not yet exercised on hardware: the suite has no non-blocking communicator)
 - **Subsystem:** `providers/nccl`
 - **Locations:** `providers/nccl/nccl_provider.cpp:158-265, 301, 334, 415, 424`
 - **Problem:** Non-blocking NCCL communicators return `ncclInProgress` on success for init, collectives, P2P, and `ncclGroupEnd`. Every hook checks `res == ncclSuccess` exclusively, dropping those records and failing to decrement `group_depth()` on `ncclGroupEnd`.
@@ -201,7 +201,7 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Not enough for the window hooks** (`providers/nccl/nccl_provider.cpp`, both `window_register_tag` post-callbacks). On a non-blocking communicator `ncclCommWindowRegister` returning `ncclInProgress` means the window is NOT ready: `*win` and the peer pointers `ncclGetPeerDevicePointer` returns (the `nccl_window_peer` rows, 0c73efb) are only valid once `ncclCommGetAsyncError` reports `ncclSuccess`. Record the window and its peer mappings at that point (deferred until the communicator completes), not at return. Until then such windows' stores are counted in `link_health.unattributed_p2p_accesses`, never misplaced.
 
 #### `CR-26` — Wrong `a.thread` attribution for divergent warps in NVBit drain
-- [ ] **Status:** Open
+- [x] **Status:** Done (host-side: `access_thread()` (static_assert'ed) uses the warp base thread_index - lane_id, since the packet's thread_index is the pushing (first active) lane's. Device code unchanged)
 - **Subsystem:** `gpu-backends/nvbit`
 - **Locations:** `gpu-backends/nvbit/inject_funcs.cu:20-21, 35, 41-46`, `gpu-backends/nvbit/nvbit_backend.cu:1037-1044`
 - **Problem:** `ma.thread_index` is the flat thread ID of `first_laneid` (`ma.lane_id`), not lane 0 of the warp. `nvbit_backend.cu:1044` computes `a.thread = static_cast<uint32_t>(ma->thread_index) + lane;`, double-counting `ma->lane_id` whenever lane 0 is inactive.
