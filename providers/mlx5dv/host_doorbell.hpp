@@ -200,6 +200,13 @@ inline bool platform_refuses_gpu_doorbell(void* real_reg_addr) {
     // after it inherited that non-answer. Retrying costs one driver call per
     // UAR until the question becomes answerable, which it does as soon as the
     // application has a context.
+    //
+    // SERIALISED (CR-50): two threads allocating UARs at once would otherwise
+    // both probe — register and unregister the same page concurrently — and
+    // race on `cached` and the one-shot flags. Once per UAR allocation, so the
+    // lock costs nothing that matters.
+    static std::mutex           probe_mutex;
+    std::lock_guard<std::mutex> lk(probe_mutex);
     static int cached = -1;  // -1 not yet answered, 0 mapping works, 1 refused
     if (cached >= 0)
         return cached == 1;

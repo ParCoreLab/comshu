@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "comshu/provider/engine_hold.hpp"
 #include "comshu/core/ids.hpp"
 #include "comshu/core/dmabuf_registry.hpp"
 #include "comshu/core/mem_attr.hpp"
@@ -26,6 +27,8 @@
 
 #include <cstring>
 #include <atomic>
+#include <thread>
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <set>
@@ -833,7 +836,8 @@ Profiler::Profiler() {
                                        comshu::core::id_range::ibverbs_hi,
                                        COMSHU_ENGINE_ABI_VERSION) != 0)
         return;  // the engine has already explained why on stderr
-    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
+                                                 cfg.verbose ? 1 : 0);
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>(
@@ -1890,20 +1894,46 @@ static std::set<const void*>* g_installed_ctxs = nullptr;
 // than reasoned from API ordering, which has been wrong here twice.
 static std::map<std::string, unsigned>* g_install_doors = nullptr;  // leaked, like the sets
 
+// Contexts whose ops another thread is patching RIGHT NOW, and by whom (CR-51).
+// The set above answers "installed", and it is entered before install(ctx)
+// runs, so a second thread used to see the context as patched and go straight
+// on to post through ops that were still half the provider's and half ours.
+// That thread now waits for the installer — except the installer itself, which
+// re-enters here from record_device (its ibv_query_device is one of our doors)
+// and must return at once, exactly as before.
+static std::map<const void*, std::thread::id>* g_installing = nullptr;  // leaked
+static std::condition_variable                g_installed_cv;
+
 void ibv::ensure_installed(ibv_context* ctx, const char* door) {
     if (!ctx)
         return;
     {
-        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        std::unique_lock<std::mutex> lk(g_known_mr_mutex);
         if (!g_installed_ctxs)
             g_installed_ctxs = new std::set<const void*>();
-        if (!g_installed_ctxs->insert(ctx).second)
-            return;  // already patched, and still alive
+        if (!g_installing)
+            g_installing = new std::map<const void*, std::thread::id>();
+        if (!g_installed_ctxs->insert(ctx).second) {
+            // Known. Patched already — or being patched by another thread, in
+            // which case wait for it to finish. The installer's own re-entry
+            // does not wait (it would wait for itself).
+            g_installed_cv.wait(lk, [ctx] {
+                const auto it = g_installing->find(ctx);
+                return it == g_installing->end() || it->second == std::this_thread::get_id();
+            });
+            return;
+        }
+        (*g_installing)[ctx] = std::this_thread::get_id();
         if (!g_install_doors)
             g_install_doors = new std::map<std::string, unsigned>();
         ++(*g_install_doors)[door ? door : "?"];
     }
     ibv::Profiler::instance().install(ctx);
+    {
+        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+        g_installing->erase(ctx);
+    }
+    g_installed_cv.notify_all();
     record_device(ctx);
 }
 
@@ -2189,7 +2219,7 @@ public:
     void shutdown() override {
         dump_install_doors();
         comshu_engine_drain_thread();
-        comshu_engine_release();
+        ::comshu::provider::engine_hold().release();
     }
 };
 
@@ -2207,5 +2237,5 @@ static void __attribute__((constructor)) comshu_ibverbs_load() {
 static void __attribute__((destructor)) comshu_ibverbs_unload() {
     dump_install_doors();
     comshu_engine_drain_thread();
-    comshu_engine_release();
+    ::comshu::provider::engine_hold().release();
 }

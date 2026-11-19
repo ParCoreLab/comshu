@@ -6,6 +6,7 @@
 #include <ucp/api/ucp.h>
 #include <ucs/type/status.h>
 
+#include "comshu/provider/engine_hold.hpp"
 #include "comshu/core/mem_attr.hpp"
 #include "comshu/core/records.hpp"
 #include "comshu/engine_abi.h"
@@ -374,7 +375,8 @@ Profiler::Profiler() {
     if (comshu_engine_declare_provider("ucx", comshu::core::id_range::ucx_lo,
                                       comshu::core::id_range::ucx_hi, COMSHU_ENGINE_ABI_VERSION) != 0)
         return;
-    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
+                                                 cfg.verbose ? 1 : 0);
 
     register_post<init_version_tag>([](ucs_status_t status, unsigned major, unsigned minor,
                                        const ucp_params_t*, const ucp_config_t*, ucp_context_h* out,
@@ -735,6 +737,20 @@ Profiler::Profiler() {
             emit_atomic(endpoint, fetch_result, classify(result), value, remote_addr, rkey, op_size,
                         map_fetch_op(op), rr::UcxDoor::Legacy, true, begin, end);
         });
+    // `count` is ELEMENTS, not bytes: the element width is in param->datatype,
+    // a contiguous datatype being `size << UCP_DATATYPE_SHIFT`. Recording count
+    // made every nbx atomic a 1-byte operand (CR-54). 0 when the caller did not
+    // say (no DATATYPE field, or a non-contiguous class) — unknown, not guessed.
+    static constexpr auto nbx_operand_bytes = [](size_t count,
+                                                 const ucp_request_param_t* param) -> std::uint64_t {
+        if (!param || !(param->op_attr_mask & UCP_OP_ATTR_FIELD_DATATYPE))
+            return 0;
+        const ucp_datatype_t dt = param->datatype;
+        if ((dt & UCP_DATATYPE_CLASS_MASK) != UCP_DATATYPE_CONTIG)
+            return 0;
+        return static_cast<std::uint64_t>(dt >> UCP_DATATYPE_SHIFT) * count;
+    };
+    static_assert(ucp_dt_make_contig(8) >> UCP_DATATYPE_SHIFT == 8);
     register_post<atomic_op_nbx_tag>([](ucs_status_ptr_t result, ucp_ep_h endpoint,
                                         ucp_atomic_op_t op, const void* buffer, size_t count,
                                         std::uint64_t remote_addr, ucp_rkey_h rkey,
@@ -742,8 +758,9 @@ Profiler::Profiler() {
         const bool fetching = param && (param->op_attr_mask & UCP_OP_ATTR_FIELD_REPLY_BUFFER) != 0;
         if (nested_in_legacy())
             return;
-        emit_atomic(endpoint, buffer, classify(result), 0, remote_addr, rkey, count, map_nbx_op(op),
-                    rr::UcxDoor::Nbx, fetching, begin, end);
+        emit_atomic(endpoint, buffer, classify(result), 0, remote_addr, rkey,
+                    nbx_operand_bytes(count, param), map_nbx_op(op), rr::UcxDoor::Nbx, fetching,
+                    begin, end);
     });
 }
 
@@ -937,7 +954,7 @@ public:
     }
     void shutdown() override {
         comshu_engine_drain_thread();
-        comshu_engine_release();
+        ::comshu::provider::engine_hold().release();
     }
 };
 }  // namespace comshu::providers
@@ -949,5 +966,5 @@ static void __attribute__((constructor)) comshu_ucx_load() {
 }
 static void __attribute__((destructor)) comshu_ucx_unload() {
     comshu_engine_drain_thread();
-    comshu_engine_release();
+    ::comshu::provider::engine_hold().release();
 }

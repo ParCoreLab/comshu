@@ -34,6 +34,7 @@
 #include <mlx5/mlx5_ifc.h>
 #include <mlx5/mlx5_prm.h>
 
+#include "comshu/provider/engine_hold.hpp"
 #include "comshu/core/ids.hpp"
 #include "comshu/core/mem_attr.hpp"
 #include "comshu/core/records.hpp"
@@ -380,11 +381,23 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
                                 static_cast<std::uint8_t>(service_type),
                                 static_cast<std::uint8_t>(gpu_driven ? 1 : 0)});
 
+    // A regular receive queue shares the WQ buffer and comes FIRST, so the send
+    // queue starts after it. An SRQ (what NVSHMEM's IBGDA and ibdevx both use)
+    // makes it zero bytes — but a queue pair from another stack need not, and
+    // both consumers below need the SEND queue.
+    const auto          rq_type = DEVX_GET(qpc, qpc, rq_type);
+    const std::uint64_t rq_bytes = rq_type == 0
+                                       ? (std::uint64_t{1} << DEVX_GET(qpc, qpc, log_rq_size))
+                                             << (DEVX_GET(qpc, qpc, log_rq_stride) + 4)
+                                       : 0;
+
     // Hand the doorbell hijack this queue pair's send-queue GPU address, so its
     // repeater can copy WQEs out of it. The recorded sq_base above stays an
-    // offset under dmabuf; the real GPU VA is wq.gpu_base + wq_offset.
+    // offset under dmabuf; the real GPU VA is wq.gpu_base + wq_offset, past the
+    // receive queue. Without rq_bytes the copy-out read RQ entries as WQEs on
+    // any queue pair with a regular receive queue (CR-46).
     if ((hijack::enabled() || hostdb::enabled()) && gpu_driven) {
-        hijack::register_qp(obj, qp_num, wq.gpu_base + wq_offset, log_sq_size,
+        hijack::register_qp(obj, qp_num, wq.gpu_base + wq_offset + rq_bytes, log_sq_size,
                             static_cast<std::uint8_t>(service_type),
                             static_cast<std::uint32_t>(DEVX_GET(qpc, qpc, uar_page)));
         // The host path has no UAR swap on an application thread, so this is
@@ -399,15 +412,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
     // ibdevx's shape exactly. IBGDA's queues are GPU-resident and stay with the
     // doorbell paths above.
     if (sqwatch::enabled() && !gpu_driven) {
-        // A regular receive queue shares the WQ buffer and comes FIRST, so the
-        // send queue starts after it. ibdevx uses an SRQ, where it is zero bytes —
-        // but a queue pair from another stack need not.
-        const auto          rq_type = DEVX_GET(qpc, qpc, rq_type);
-        const std::uint64_t rq_bytes = rq_type == 0
-                                           ? (std::uint64_t{1} << DEVX_GET(qpc, qpc, log_rq_size))
-                                                 << (DEVX_GET(qpc, qpc, log_rq_stride) + 4)
-                                           : 0;
-        const std::uint64_t sq_off = wq_offset + rq_bytes;
+        const std::uint64_t sq_off = wq_offset + rq_bytes;  // rq_bytes: see above
         const std::uint64_t sq_bytes = (std::uint64_t{1} << log_sq_size) * hijack::kWqebb;
         // dbr_umem_valid is NOT consulted, only reported. ibdevx sets it; UCX
         // never does (ib_mlx5_dv.c) and still names its doorbell record by
@@ -681,7 +686,8 @@ Profiler::Profiler() {
                                        comshu::core::id_range::mlx5dv_hi,
                                        COMSHU_ENGINE_ABI_VERSION) != 0)
         return;  // the engine has already explained why on stderr
-    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
+                                                 cfg.verbose ? 1 : 0);
 
     this->register_post<devx_umem_reg_tag>(
         [](mlx5dv_devx_umem* out, ibv_context* ctx, void* addr, size_t size, uint32_t access,
@@ -835,12 +841,17 @@ Profiler::Profiler() {
         [](ibv_qp* qp, ibv_context*, ibv_qp_init_attr_ex* attr, mlx5dv_qp_init_attr*, auto...) {
             if (!qp)
                 return;
+            // attr->pd is meaningful only when comp_mask says the caller set it
+            // (the same discipline as ibverbs' create_qp_ex); otherwise it is
+            // whatever the caller's stack held (CR-48). qp->pd is filled in by
+            // libibverbs for every queue pair, so it is the fallback.
+            const bool has_pd = attr && (attr->comp_mask & IBV_QP_INIT_ATTR_PD);
             rec().record(
                 comshu::core::Temporal::none(),
                 rr::Mlx5QueuePair{{},
                                   {},
                                   h(qp),
-                                  h(attr ? attr->pd : nullptr),
+                                  h(has_pd ? attr->pd : qp->pd),
                                   qp->qp_num,
                                   static_cast<std::uint8_t>(attr ? attr->qp_type : qp->qp_type)});
             // ibv_destroy_qp is the engine's (this provider and ibverbs coexist,
@@ -928,7 +939,7 @@ public:
     }
     void shutdown() override {
         comshu_engine_drain_thread();
-        comshu_engine_release();
+        ::comshu::provider::engine_hold().release();
     }
 };
 
@@ -948,5 +959,5 @@ static void __attribute__((destructor)) comshu_mlx5dv_unload() {
         mlx5::hostdb::report_and_shutdown(comshu::Config::from_env().rank);
     mlx5::dmabuf_door::report(comshu::Config::from_env().rank);
     comshu_engine_drain_thread();
-    comshu_engine_release();
+    ::comshu::provider::engine_hold().release();
 }

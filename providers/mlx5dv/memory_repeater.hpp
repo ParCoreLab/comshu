@@ -38,7 +38,10 @@ namespace mlx5::repeater {
 // (MN5's Sapphire Rapids and du04's host both have WAITPKG), MONITORX/MWAITX on
 // AMD, else a PAUSE spin. Defined in memory_repeater.cpp because the wait
 // instructions need per-function target attributes.
-void wait_mem(void* addr) noexcept;
+//
+// `seen` is the value the caller last read: the wait returns at once if the
+// word already differs once the monitor is armed (CR-52).
+void wait_mem(void* addr, std::uint64_t seen) noexcept;
 
 // True when wait_mem degraded to a PAUSE spin loop — no WAITPKG, no MWAITX. On
 // that fallback each hijacked UAR is a busy core, and the ibgda plan requires
@@ -82,7 +85,7 @@ public:
                                                    alive = m_alive, deliver = m_deliver] {
             auto current = *hijack_addr;
             while (*alive) {
-                wait_mem(hijack_addr);
+                wait_mem(hijack_addr, current);
 
                 // The ordering caveat above lives on this load.
                 const DataType written = __atomic_load_n(hijack_addr, __ATOMIC_ACQUIRE);

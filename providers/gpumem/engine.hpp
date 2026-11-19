@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "comshu/provider/engine_hold.hpp"
 #include "comshu/attr/pipeline.hpp"
 #include "comshu/core/ids.hpp"
 #include "comshu/core/records.hpp"
@@ -224,7 +225,8 @@ public:
                                            core::id_range::gpumem_hi,
                                            COMSHU_ENGINE_ABI_VERSION) != 0)
             return;
-        comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+        ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
+                                                 cfg.verbose ? 1 : 0);
         auto& rec = recorder();
         m_pipeline = std::make_unique<attr::AttributionPipeline>(rec);
         m_pipeline->add_filter(std::make_unique<RemoteFilter>());
@@ -423,7 +425,10 @@ public:
             const auto alloc = m_allocs.find(a.address);
             a.mem_device = alloc ? alloc->device : a.run_device;
         }
-        m_pipeline->process(batch);
+        // Null when declare_provider() refused this provider in the
+        // constructor: nothing was built, so there is nothing to feed (CR-57).
+        if (m_pipeline)
+            m_pipeline->process(batch);
     }
 
     // Buffers do not auto-drain at thread exit (leaked TLS, see Recorder) —
@@ -434,7 +439,7 @@ public:
     // inside an exit handler — everything reachable from here is leak-safe).
     void shutdown() {
         drain_thread();
-        comshu_engine_release();
+        ::comshu::provider::engine_hold().release();
     }
 
 private:

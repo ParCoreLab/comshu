@@ -59,6 +59,7 @@
 #include <uct/api/uct.h>
 #include <uct/api/version.h>
 
+#include "comshu/provider/engine_hold.hpp"
 #include "comshu/core/records.hpp"
 #include "comshu/engine_abi.h"
 #include "comshu/provider/provider.hpp"
@@ -768,7 +769,8 @@ Profiler::Profiler() {
                                       comshu::core::id_range::ucx_deep_hi,
                                       COMSHU_ENGINE_ABI_VERSION) != 0)
         return;
-    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
+                                                 cfg.verbose ? 1 : 0);
 
     // One row, written once, saying what this process bound itself to. It is
     // emitted whether or not the guard accepted, because "uct_send is empty"
@@ -818,7 +820,7 @@ public:
     }
     void shutdown() override {
         comshu_engine_drain_thread();
-        comshu_engine_release();
+        ::comshu::provider::engine_hold().release();
     }
 };
 }  // namespace comshu::providers
@@ -830,5 +832,5 @@ static void __attribute__((constructor)) comshu_ucx_deep_load() {
 }
 static void __attribute__((destructor)) comshu_ucx_deep_unload() {
     comshu_engine_drain_thread();
-    comshu_engine_release();
+    ::comshu::provider::engine_hold().release();
 }

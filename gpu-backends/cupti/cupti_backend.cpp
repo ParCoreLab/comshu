@@ -72,6 +72,7 @@
 #include <cuda_runtime.h>
 #include <cupti.h>
 
+#include "comshu/provider/engine_hold.hpp"
 #include "comshu/core/ids.hpp"
 #include "comshu/helpers/timestamp.hpp"
 #include "comshu/tracer.hpp"
@@ -584,7 +585,8 @@ __attribute__((constructor)) void comshu_cupti_load() {
     // is the ENGINE's record, in the engine's already-declared 500-599 range,
     // and claiming a second range for it would make the disjointness check fail
     // on a fact that is not true.
-    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
+                                                 cfg.verbose ? 1 : 0);
 
     // Last resort, and it must exist: an application whose launches we cannot
     // interpose (statically linked cudart reaching the driver through
@@ -601,8 +603,13 @@ __attribute__((constructor)) void comshu_cupti_load() {
 // both must happen while the Tracer still has a recorder — this is a
 // destructor, so it runs before the engine's own exit path.
 __attribute__((destructor)) void comshu_cupti_fini() {
-    if (!g_on.load(std::memory_order_acquire))
+    // Never armed — but the constructor acquired regardless, and returning
+    // without releasing left the engine's count one high for the rest of the
+    // process, so the capture was finalized only by the atexit backstop (CR-58).
+    if (!g_on.load(std::memory_order_acquire)) {
+        ::comshu::provider::engine_hold().release();
         return;
+    }
     emit_anchor();
     cuptiActivityFlushAll(1);
     // Drain the arenas this thread owns; the CUPTI worker's are reached by
@@ -620,7 +627,7 @@ __attribute__((destructor)) void comshu_cupti_fini() {
                      (unsigned long long)g_kernels.load(), (unsigned long long)g_copies.load(),
                      (unsigned long long)g_peer_copies.load(), (unsigned long long)g_dropped.load(),
                      g_armed_by ? g_armed_by : "(never)", g_copies_on ? 1 : 0);
-    comshu_engine_release();
+    ::comshu::provider::engine_hold().release();
 }
 
 }  // extern "C"

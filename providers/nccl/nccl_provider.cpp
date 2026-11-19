@@ -15,6 +15,7 @@
 #include <cuda_runtime_api.h>
 #include <nccl.h>
 
+#include "comshu/provider/engine_hold.hpp"
 #include "comshu/core/mem_attr.hpp"
 #include "comshu/core/records.hpp"
 #include "comshu/helpers/timestamp.hpp"
@@ -253,7 +254,8 @@ Profiler::Profiler() {
                                        comshu::core::id_range::nccl_hi,
                                        COMSHU_ENGINE_ABI_VERSION) != 0)
         return;
-    comshu_engine_acquire(cfg.output_dir.c_str(), cfg.rank, cfg.verbose ? 1 : 0);
+    ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
+                                                 cfg.verbose ? 1 : 0);
 
     // --- communicator lifecycle ---------------------------------------------
     register_post<comm_init_rank_tag>(
@@ -579,7 +581,7 @@ public:
     }
     void shutdown() override {
         comshu_engine_drain_thread();
-        comshu_engine_release();
+        ::comshu::provider::engine_hold().release();
     }
 };
 }  // namespace comshu::providers
@@ -591,5 +593,5 @@ static void __attribute__((constructor)) comshu_nccl_load() {
 }
 static void __attribute__((destructor)) comshu_nccl_unload() {
     comshu_engine_drain_thread();
-    comshu_engine_release();
+    ::comshu::provider::engine_hold().release();
 }

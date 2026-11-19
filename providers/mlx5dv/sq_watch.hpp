@@ -743,6 +743,11 @@ inline void watch(const void* obj, std::uint32_t qpn, std::uint64_t sq_host, std
 
     auto&                       s = state();
     std::lock_guard<std::mutex> lk(s.mutex);
+    // A queue pair created after shutdown began (another thread still setting
+    // up while the process exits) is not watched: starting the threads now
+    // would race shutdown()'s join of them (CR-47).
+    if (s.stop.load(std::memory_order_acquire))
+        return;
     s.qps.push_back(std::move(w));
     s.qps_watched.fetch_add(1, std::memory_order_relaxed);
     if (!s.started) {
@@ -815,10 +820,19 @@ inline void unwatch_umem(const void* umem) {
 
 inline void shutdown(int rank) {
     auto& s = state();
-    if (s.stop.exchange(true, std::memory_order_acq_rel))
-        return;  // already stopped and reported
-    if (s.watcher.joinable())
-        s.watcher.join();
+    // `stop` is raised UNDER the mutex, so watch() either finished starting the
+    // threads before this or sees stop and starts nothing; the thread objects
+    // are then taken out under it and joined outside it (CR-47).
+    std::thread watcher, decoder;
+    {
+        std::lock_guard<std::mutex> lk(s.mutex);
+        if (s.stop.exchange(true, std::memory_order_acq_rel))
+            return;  // already stopped and reported
+        watcher = std::move(s.watcher);
+        decoder = std::move(s.decoder);
+    }
+    if (watcher.joinable())
+        watcher.join();
     std::uint64_t upto = 0;
     {
         std::lock_guard<std::mutex> lk(s.mutex);
@@ -828,8 +842,8 @@ inline void shutdown(int rank) {
     }
     wait_decoded(upto, std::chrono::milliseconds(500));
     s.decoder_stop.store(true, std::memory_order_release);
-    if (s.decoder.joinable())
-        s.decoder.join();
+    if (decoder.joinable())
+        decoder.join();
 
     const std::uint64_t lapped = s.lapped_early.load() + s.lapped_late.load();
     if (s.coverage_sink) {

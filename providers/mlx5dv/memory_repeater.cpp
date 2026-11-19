@@ -15,7 +15,7 @@
 namespace mlx5::repeater {
 namespace {
 
-using WaitFn = void (*)(void*) noexcept;
+using WaitFn = void (*)(void*, std::uint64_t) noexcept;
 
 bool has_mwaitx() noexcept {
     unsigned eax, ebx, ecx, edx;
@@ -44,8 +44,18 @@ bool has_waitpkg() noexcept {
 // enough that the core genuinely parks between doorbells instead of spinning.
 inline constexpr unsigned long long kWaitCycles = 100000;
 
-__attribute__((target("mwaitx"))) void wait_mwaitx(void* addr) noexcept {
+// Both waits re-check the word AFTER arming the monitor (CR-52). A store that
+// lands between the caller's last load and the monitor being armed does not
+// trigger it, so without the re-check it was only noticed when the timer ran
+// out — up to kWaitCycles late, on exactly the doorbell that was racing us.
+inline bool changed(void* addr, std::uint64_t seen) noexcept {
+    return __atomic_load_n(static_cast<std::uint64_t*>(addr), __ATOMIC_ACQUIRE) != seen;
+}
+
+__attribute__((target("mwaitx"))) void wait_mwaitx(void* addr, std::uint64_t seen) noexcept {
     _mm_monitorx(addr, 0, 0);
+    if (changed(addr, seen))
+        return;
     // extensions = 2 sets the timer-enable bit; without it MWAITX ignores the
     // cycle count entirely and waits forever on a store that may already have
     // happened. Passing a count with no enable bit, as this did, is the AMD
@@ -53,8 +63,10 @@ __attribute__((target("mwaitx"))) void wait_mwaitx(void* addr) noexcept {
     _mm_mwaitx(2, 0, static_cast<unsigned>(kWaitCycles));
 }
 
-__attribute__((target("waitpkg"))) void wait_waitpkg(void* addr) noexcept {
+__attribute__((target("waitpkg"))) void wait_waitpkg(void* addr, std::uint64_t seen) noexcept {
     _umonitor(addr);
+    if (changed(addr, seen))
+        return;
     // state 0 = C0.2: deeper sleep, slower wakeup; the doorbell is not latency-
     // critical to the microsecond, and lower power keeps the parked core cool.
     //
@@ -79,7 +91,7 @@ __attribute__((target("waitpkg"))) void wait_waitpkg(void* addr) noexcept {
     _umwait(0, __rdtsc() + kWaitCycles);
 }
 
-void wait_pause(void*) noexcept {
+void wait_pause(void*, std::uint64_t) noexcept {
     _mm_pause();
 }
 
@@ -105,8 +117,8 @@ const Selected& selected() noexcept {
 
 }  // namespace
 
-void wait_mem(void* addr) noexcept {
-    selected().fn(addr);
+void wait_mem(void* addr, std::uint64_t seen) noexcept {
+    selected().fn(addr, seen);
 }
 
 bool wait_is_spin() noexcept {

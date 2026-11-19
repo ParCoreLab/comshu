@@ -353,21 +353,21 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### Providers & GPU Backends
 
 #### `CR-46` — `decode_create_qp` omits `rq_bytes` offset for GPU-driven QPs
-- [ ] **Status:** Open
+- [x] **Status:** Done (`rq_bytes` is computed once and added to the SQ base given to `hijack::register_qp` as well as sqwatch's. NVSHMEM's IBGDA QPs use an SRQ (`IBGDA_SRQ_TYPE_VALUE`, checked in nvshmem-git ibgda.cpp), so they are unaffected; the fix applies to GPU-driven QPs with a regular RQ)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:370-373` (cf. `389-394`)
 - **Problem:** Unlike `sqwatch` (lines 389-394), `hijack::register_qp` passes `wq.gpu_base + wq_offset` without adding `rq_bytes` when `rq_type == 0`, reading WQEs from the RQ instead of the SQ.
 - **Fix:** Add `rq_bytes` to the SQ base passed to `hijack::register_qp` when `rq_type == 0`.
 
 #### `CR-47` — Data race on `std::thread` objects between `sqwatch::shutdown()` and `sqwatch::watch()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`watch()` returns without adding or starting anything once `stop` is set (checked under `s.mutex`); `shutdown()` raises `stop` and moves both thread objects out under the mutex, then joins them outside it)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/sq_watch.hpp:744-761, 816-833`
 - **Problem:** `watch()` spawns threads under `s.mutex` without checking `s.stop`, while `shutdown()` calls `joinable()`/`join()` without holding `s.mutex`.
 - **Fix:** Check `s.stop` inside `watch()` under `s.mutex`, and move threads out of `s` under `s.mutex` in `shutdown()` before joining them outside the lock.
 
 #### `CR-48` — `mlx5dv_create_qp` post-hook reads `attr->pd` without checking `IBV_QP_INIT_ATTR_PD`
-- [ ] **Status:** Open
+- [x] **Status:** Done (PD from `attr` only when `comp_mask & IBV_QP_INIT_ATTR_PD`, else `qp->pd`)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:793-804`
 - **Problem:** Reads `attr->pd` whenever `attr != nullptr`, reading uninitialized memory if `IBV_QP_INIT_ATTR_PD` is not set in `attr->comp_mask`.
@@ -381,21 +381,21 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Erase `p` from `s.skipped` in `fail_open()` on successful registration, and re-check `s.fake_pages` under `s.mutex` before inserting.
 
 #### `CR-50` — Data race in `hostdb::platform_refuses_gpu_doorbell()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the whole probe runs under a function-local mutex; it runs once per UAR allocation)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/host_doorbell.hpp:111-112, 203-277`
 - **Problem:** Non-atomic `cached`, `g_said_unresolved`, and `g_said_inconclusive` are accessed unlocked, and two threads can probe the same `real_reg_addr` simultaneously.
 - **Fix:** Guard the probe with `std::call_once` or a mutex.
 
 #### `CR-51` — `ensure_installed` race window exposes partially-patched `ibv_context->ops`
-- [ ] **Status:** Open
+- [x] **Status:** Done (a context being installed is tracked with its installer's thread id: another thread that finds it waits on a condition variable until the install finishes, while the installer's own re-entry (`record_device` -> ibv_query_device -> ensure_installed) still returns at once)
 - **Subsystem:** `providers/ibverbs`
 - **Locations:** `providers/ibverbs/ibverbs_provider.cpp:1821-1836`
 - **Problem:** Inserts `ctx` into `g_installed_ctxs` and releases the mutex before `install(ctx)` finishes patching `ctx->ops.*`.
 - **Fix:** Hold a per-context or install mutex across `install(ctx)` before marking `ctx` installed.
 
 #### `CR-52` — Missing re-check between `_umonitor`/`_mm_monitorx` and `_umwait`/`_mm_mwaitx`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`wait_mem(addr, seen)`: both MWAITX and UMWAIT re-check the word after arming the monitor and return at once if it already changed)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/memory_repeater.cpp:47-80`, `providers/mlx5dv/memory_repeater.hpp:84-90`
 - **Problem:** `wait_mem()` arms the monitor and immediately enters `_umwait`/`_mm_mwaitx` without re-checking `*hijack_addr == current`, missing stores that arrive between the prior load and `_umonitor` and stalling ~40 µs per miss.
@@ -409,35 +409,35 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Evict on `ibv_destroy_qp` and `forget_context`.
 
 #### `CR-54` — `ucp_atomic_op_nbx` records element `count` as operand byte size `op_size`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the nbx operand width is decoded from `param->datatype` (contiguous class: size << UCP_DATATYPE_SHIFT) times count, or 0 when the caller gives no datatype. Case 22 gains `atomic_operands_are_words.sql` (op_size must be 0, 4 or 8))
 - **Subsystem:** `providers/ucx`
 - **Locations:** `providers/ucx/ucx_provider.cpp:736-745`, `providers/ucx/ucx_records.hpp:256`
 - **Problem:** `UcxAtomic::op_size` is operand byte width (4 or 8), but `ucp_atomic_op_nbx` passes `count` (typically `1`) instead of decoding `param->datatype` element size.
 - **Fix:** Extract element size from `param->datatype` (e.g. `ucp_dt_length` / datatype shift for contiguous types) and record `elem_size` (or `elem_size * count` as appropriate).
 
 #### `CR-55` — `nvbit_at_cuda_event` ignores `CUresult*` and skips null-checks on alloc/VMM exits
-- [ ] **Status:** Open
+- [x] **Status:** Done (an exit callback whose `*status != CUDA_SUCCESS` returns before any handler runs, and the alloc handlers null-check `dptr`)
 - **Subsystem:** `gpu-backends/nvbit`
 - **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:1173-1174, 1197-1205, 1226-1245, 1254-1282`
 - **Problem:** Failed `cuMemAlloc*` / VMM calls still register garbage handles/pointers and emit bogus `MemObject` records; `p->dptr` is dereferenced without null checks.
 - **Fix:** Name and check `CUresult* res` (`if (res && *res != CUDA_SUCCESS) return;`) on exit events, and null-check output pointers.
 
 #### `CR-56` — NVBit injects `comshu_kernel_stamp` and separate `launch_id`s into non-kernel `__device__` callees
-- [ ] **Status:** Open
+- [x] **Status:** Done (one launch id per launch, shared by the kernel and all its related functions (`nvbit_set_at_launch` for each), and `comshu_kernel_stamp` is injected only where `nvbit_is_func_kernel`; the two belong together, because a callee's entry stamp under the kernel's id would count as a block. The id sequence is still drawn whether or not anything is instrumented)
 - **Subsystem:** `gpu-backends/nvbit`
 - **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:563-601, 852-904`
 - **Problem:** Related non-inlined `__device__` functions get `comshu_kernel_stamp` injected (without matching `EXIT` since they end with `RET`) and receive distinct `g_grid_launch_id++` values that have no `GpuKernel` metadata row.
 - **Fix:** Inject `comshu_kernel_stamp` only when `nvbit_is_func_kernel(ctx, f)` is true, and pass the *kernel's* `launch_id` to related `__device__` functions instead of incrementing `g_grid_launch_id` per callee.
 
 #### `CR-57` — Null-pointer dereference in `gpumem::Engine::process()` when `declare_provider()` fails
-- [ ] **Status:** Open
+- [x] **Status:** Done (`process()` skips a null pipeline; the release goes through EngineHold (CR-58), so it happens only if acquire did)
 - **Subsystem:** `providers/gpumem`
 - **Locations:** `providers/gpumem/engine.hpp:223-231, 426, 435-438`
 - **Problem:** Early return leaves `m_pipeline == nullptr` and skips `comshu_engine_acquire()`, yet `process()` dereferences `m_pipeline->process(batch)` and `shutdown()` calls `comshu_engine_release()`.
 - **Fix:** Guard `if (!m_pipeline) return;` in `process()` and track `m_acquired` before calling `comshu_engine_release()` in `shutdown()`.
 
 #### `CR-58` — Engine reference-count (`Tracer::m_active`) mismatches in CUPTI, UCX, UCX-deep, and NCCL
-- [ ] **Status:** Open
+- [x] **Status:** Done (`comshu/provider/engine_hold.hpp`: acquire at most once, release at most once and only if held, with internal linkage so each provider .so keeps its own. All seven providers/backends use it, including ibverbs and mlx5dv, which the ticket did not list but which had the same double release (launcher shutdown() and .so destructor). CUPTI's destructor now releases on its never-armed early return)
 - **Subsystem:** `gpu-backends/cupti`, `providers/ucx`, `providers/ucx_deep`, `providers/nccl`
 - **Locations:** `gpu-backends/cupti/cupti_backend.cpp:587, 604-605, 623`; `providers/ucx/ucx_provider.cpp:376-379, 934-949`; `providers/ucx_deep/ucx_deep_provider.cpp:759-763, 811-826`; `providers/nccl/nccl_provider.cpp:151-155, 452-467`
 - **Problem:** `cupti_backend` acquires unconditionally but skips release when `!g_on`; `ucx`/`ucx_deep`/`nccl` skip acquire when `declare_provider()` fails yet still release on `.so` unload, and can double-release if `shutdown()` is called before unload.

@@ -623,7 +623,12 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
         // so with gpumem loaded the clock has to be read in-kernel instead.
         // Measured at 131 ns/kernel on an H100, against module lifting that
         // already costs ~435 s.
-        if (g_kernel_timing && !instrs.empty()) {
+        //
+        // KERNELS ONLY (CR-56). A related __device__ function that NVBit lifts
+        // separately ends in RET, never EXIT, so its entry stamp had no exit and
+        // — now that callees carry their kernel's launch id — it would also
+        // count as one more block of that kernel.
+        if (g_kernel_timing && !instrs.empty() && nvbit_is_func_kernel(ctx, f)) {
             for (std::size_t i = 0; i < instrs.size(); i++) {
                 Instr*     instr = instrs[i];
                 const bool is_exit = std::strncmp(instr->getOpcode(), "EXIT", 4) == 0;
@@ -888,17 +893,19 @@ void handle_launch(CUcontext ctx, CUfunction func, LaunchGeom geom = {}) {
             std::fprintf(stderr, "[comshu-launch] %s\n", launched.c_str());
     }
 
+    // ONE id per LAUNCH, shared by the kernel and every related function it
+    // calls (CR-56). Each callee used to draw its own, so an access made inside
+    // a non-inlined __device__ function named a launch with no gpu_kernel row.
+    // Drawn whether or not anything is instrumented, so kernel filtering still
+    // cannot shift the id sequence.
+    const uint64_t launch_id = g_grid_launch_id++;
+
     for (auto f : related) {
         std::string func_name(nvbit_get_func_name(ctx, f));
         const bool  want = (G().kernel_filter == "all" ||
                            G().kernel_filter == func_name.substr(0, func_name.find('(')));
         if (want)
             instrument_function_if_needed(ctx, f);
-
-        // The launch id is consumed for every related function whether or not
-        // we instrument it, so that filtering cannot shift the id sequence and
-        // move existing goldens.
-        const uint64_t launch_id = g_grid_launch_id++;
 
         // Stamp before the launch is enqueued: this is the earliest moment any
         // access from it could occur, which is what makes it a sound lower
@@ -1212,9 +1219,15 @@ void nvbit_tool_init(CUcontext) {}
 void nvbit_at_graph_node_launch(CUcontext, CUfunction, CUstream, uint64_t) {}
 
 void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, const char* /*name*/,
-                         void* params, CUresult*) {
+                         void* params, CUresult* status) {
     MutexLock lock(g_mutex);
     if (g_skip_callback)
+        return;
+    // A call that FAILED produced nothing: its out-parameters (the new
+    // pointer, the handle) are whatever they held before, and recording them
+    // registered garbage as allocations and mappings (CR-55). Every exit
+    // handler below reports a result, so none of them runs for a failure.
+    if (is_exit && status && *status != CUDA_SUCCESS)
         return;
     g_skip_callback = true;
 
@@ -1237,13 +1250,16 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
             {p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY, p->blockDimZ});
     } else if (is_exit && cbid == API_CUDA_cuMemAlloc_v2) {
         auto* p = (cuMemAlloc_v2_params*)params;
-        handle_alloc(*p->dptr, p->bytesize);
+        if (p->dptr)
+            handle_alloc(*p->dptr, p->bytesize);
     } else if (is_exit && cbid == API_CUDA_cuMemAlloc) {
         auto* p = (cuMemAlloc_params*)params;
-        handle_alloc(*p->dptr, p->bytesize);
+        if (p->dptr)
+            handle_alloc(*p->dptr, p->bytesize);
     } else if (is_exit && cbid == API_CUDA_cuMemAllocManaged) {
         auto* p = (cuMemAllocManaged_params*)params;
-        handle_alloc(*p->dptr, p->bytesize);
+        if (p->dptr)
+            handle_alloc(*p->dptr, p->bytesize);
     } else if (!is_exit && (cbid == API_CUDA_cuMemFree_v2 || cbid == API_CUDA_cuMemFree)) {
         // On ENTRY, not exit: the pointer is the thing being closed, and after
         // the call returns the address can already have been handed to another
