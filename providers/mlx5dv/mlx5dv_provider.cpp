@@ -267,16 +267,19 @@ struct SrcPort {
     std::uint8_t  port = 0;
 };
 static std::mutex                                 g_lid_mutex;
-static std::unordered_map<std::uint32_t, SrcPort> g_qp_src_lid;
+// Keyed by the DEVX object, not qp_num: RST2INIT and INIT2RTR both arrive on
+// the queue pair's own object, and qp_num repeats across a rank's HCAs — keyed
+// by number, a queue pair on one HCA took the port of its namesake on another.
+static std::unordered_map<const void*, SrcPort> g_qp_src_lid;
 
-static void remember_src_port(std::uint32_t qp_num, SrcPort p) {
+static void remember_src_port(const void* obj, SrcPort p) {
     std::lock_guard<std::mutex> lk(g_lid_mutex);
-    g_qp_src_lid[qp_num] = p;
+    g_qp_src_lid[obj] = p;
 }
 
-static SrcPort src_port_of(std::uint32_t qp_num) {
+static SrcPort src_port_of(const void* obj) {
     std::lock_guard<std::mutex> lk(g_lid_mutex);
-    auto                        it = g_qp_src_lid.find(qp_num);
+    auto                        it = g_qp_src_lid.find(obj);
     return it == g_qp_src_lid.end() ? SrcPort{} : it->second;
 }
 
@@ -288,12 +291,11 @@ static ibv_context* ctx_of(const void* obj) {
 
 static void decode_rst2init(mlx5dv_devx_obj* obj, const void* cmd_in) {
     auto*       qpc = DEVX_ADDR_OF(rst2init_qp_in, const_cast<void*>(cmd_in), qpc);
-    const auto  qp_num = DEVX_GET(rst2init_qp_in, cmd_in, qpn);
     const auto* path = DEVX_ADDR_OF(qpc, qpc, primary_address_path);
     const auto  port_num = DEVX_GET(ads, path, vhca_port_num);
 
     const auto port = static_cast<std::uint8_t>(port_num);
-    remember_src_port(qp_num, {port_lid(ctx_of(obj), port), port});
+    remember_src_port(obj, {port_lid(ctx_of(obj), port), port});
 }
 
 // --- DEVX decoding ---------------------------------------------------------
@@ -366,8 +368,9 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
     // repeater can copy WQEs out of it. The recorded sq_base above stays an
     // offset under dmabuf; the real GPU VA is wq.gpu_base + wq_offset.
     if ((hijack::enabled() || hostdb::enabled()) && gpu_driven) {
-        hijack::register_qp(qp_num, wq.gpu_base + wq_offset, log_sq_size,
-                            static_cast<std::uint8_t>(service_type));
+        hijack::register_qp(obj, qp_num, wq.gpu_base + wq_offset, log_sq_size,
+                            static_cast<std::uint8_t>(service_type),
+                            static_cast<std::uint32_t>(DEVX_GET(qpc, qpc, uar_page)));
         // The host path has no UAR swap on an application thread, so this is
         // where it captures the CUDA context its copy-out will bind to. Free
         // for the GPU hijack, which already has one by now.
@@ -444,7 +447,7 @@ static void decode_create_qp(mlx5dv_devx_obj* obj, const ibv_context* ctx, const
                 static_cast<unsigned long long>(dbr_known ? dbr.size : 0));
             sqwatch::refused(qp_num, why, fields);
         } else {
-            sqwatch::watch(qp_num, wq.addr + sq_off, log_sq_size,
+            sqwatch::watch(obj, qp_num, wq.addr + sq_off, log_sq_size,
                            static_cast<std::uint8_t>(service_type), dbr.addr + dbr_off, wq.umem,
                            dbr.umem);
         }
@@ -510,7 +513,7 @@ static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
     // from this command — see decode_rst2init. port_num is still reported from
     // here so a capture shows what INIT2RTR actually carried (0 on this stack)
     // rather than silently borrowing the INIT value and looking consistent.
-    const SrcPort src = src_port_of(qp_num);
+    const SrcPort src = src_port_of(obj);
 
     // Our GID: the path names it by index into the port's GID table, so it is
     // read back. Only when the path is GID-addressed — the grh bit, or a remote
@@ -536,6 +539,7 @@ static void decode_init2rtr(mlx5dv_devx_obj* obj, const void* cmd_in) {
                                        src_prefix,
                                        src_iface,
                                        qp_num,
+                                       h(obj),
                                        dest_qp_num,
                                        static_cast<std::uint32_t>(dest_lid),
                                        src.lid,
@@ -578,14 +582,14 @@ Profiler::Profiler() {
             [](void* uar_ptr, std::uint32_t qp_num, std::uint32_t prod_idx) {
                 rec().record(rr::Mlx5Doorbell{{}, {}, h(uar_ptr), qp_num, prod_idx});
             },
-            [](std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
+            [](const void* qp_obj, std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr, std::uint32_t rkey,
                std::uint32_t length, std::uint32_t dest_dct, std::uint16_t dest_lid,
                std::uint64_t dest_gid_prefix, std::uint64_t dest_gid_iface, std::uint8_t decode,
                std::uint8_t av_ds, std::uint8_t submitter, std::uint64_t ticks_lo,
                std::uint64_t ticks_hi) {
                 const rr::Mlx5DeviceSend r{
-                    {},    {},        laddr,    raddr,    qp_num,          wqe_idx,
+                    {},    {},        laddr,    raddr,    qp_num, qp_obj ? h(qp_obj) : 0, wqe_idx,
                     lkey,  rkey,      length,   dest_dct, opcode,          decode,
                     av_ds, submitter, dest_lid, 0,        dest_gid_prefix, dest_gid_iface};
                 // A doorbell path calls this at the doorbell: the time is now.

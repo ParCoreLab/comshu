@@ -1174,6 +1174,7 @@ int main() {
         c.payload.src_gid_prefix = 0xFE80000000000001ull;
         c.payload.src_gid_iface = 0x0002C90300FEDCBAull;
         c.payload.qp_num = 0x1EFFD;
+        c.payload.qp_obj = 45;
         c.payload.dest_qp_num = 0x1EFFC;
         c.payload.dest_lid = 0xA93;
         c.payload.src_lid = 0x1F0E;
@@ -1181,7 +1182,7 @@ int main() {
         fb::Mlx5DevxQpConnect f(
             fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(1, 0x90), fb::TimePoint(0, 0), 0),
             0xFE80000000000000ull, 0x0002C90300ABCDEFull, 0xFE80000000000001ull,
-            0x0002C90300FEDCBAull, 0x1EFFD, 0x1EFFC, 0xA93, 0x1F0E, 1);
+            0x0002C90300FEDCBAull, 0x1EFFD, 45, 0x1EFFC, 0xA93, 0x1F0E, 1);
         expect_identical("Mlx5DevxQpConnect", &c, &f, sizeof(c));
     }
     {
@@ -1213,6 +1214,7 @@ int main() {
         c.payload.laddr = 0x7F0011220000ull;
         c.payload.raddr = 0x7F0099880000ull;
         c.payload.qp_num = 0x1EFF9;
+        c.payload.qp_obj = 46;
         c.payload.wqe_idx = 0x0080;
         c.payload.lkey = 0xABCD;
         c.payload.rkey = 0xDCBA;
@@ -1227,7 +1229,7 @@ int main() {
         c.payload.dest_gid_iface = 0x0000FFFF0A0B0C0Eull;
         fb::Mlx5DeviceSend f(
             fb::Temporal(fb::TimeKind_None, fb::TimePoint(0, 0), fb::TimePoint(0, 0), 0),
-            0x7F0011220000ull, 0x7F0099880000ull, 0x1EFF9, 0x0080, 0xABCD, 0xDCBA, 4096, 0x00A5A5,
+            0x7F0011220000ull, 0x7F0099880000ull, 0x1EFF9, 46, 0x0080, 0xABCD, 0xDCBA, 4096, 0x00A5A5,
             0x08, 0x01, 0x03, 0x02, 0x2B50, 0, 0x0000000000000000ull, 0x0000FFFF0A0B0C0Eull);
         expect_identical("Mlx5DeviceSend", &c, &f, sizeof(c));
     }

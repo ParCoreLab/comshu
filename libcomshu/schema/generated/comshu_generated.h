@@ -3041,11 +3041,12 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
   uint64_t src_gid_prefix_;
   uint64_t src_gid_iface_;
   uint32_t qp_num_;
+  uint32_t qp_obj_;
   uint32_t dest_qp_num_;
   uint32_t dest_lid_;
   uint32_t src_lid_;
   uint8_t port_num_;
-  int8_t padding0__;  int16_t padding1__;  int32_t padding2__;
+  int8_t padding0__;  int16_t padding1__;
 
  public:
   Mlx5DevxQpConnect()
@@ -3055,34 +3056,32 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
         src_gid_prefix_(0),
         src_gid_iface_(0),
         qp_num_(0),
+        qp_obj_(0),
         dest_qp_num_(0),
         dest_lid_(0),
         src_lid_(0),
         port_num_(0),
         padding0__(0),
-        padding1__(0),
-        padding2__(0) {
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
-  Mlx5DevxQpConnect(const comshu::fb::Temporal &_temporal, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface, uint64_t _src_gid_prefix, uint64_t _src_gid_iface, uint32_t _qp_num, uint32_t _dest_qp_num, uint32_t _dest_lid, uint32_t _src_lid, uint8_t _port_num)
+  Mlx5DevxQpConnect(const comshu::fb::Temporal &_temporal, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface, uint64_t _src_gid_prefix, uint64_t _src_gid_iface, uint32_t _qp_num, uint32_t _qp_obj, uint32_t _dest_qp_num, uint32_t _dest_lid, uint32_t _src_lid, uint8_t _port_num)
       : temporal_(_temporal),
         dest_gid_prefix_(::flatbuffers::EndianScalar(_dest_gid_prefix)),
         dest_gid_iface_(::flatbuffers::EndianScalar(_dest_gid_iface)),
         src_gid_prefix_(::flatbuffers::EndianScalar(_src_gid_prefix)),
         src_gid_iface_(::flatbuffers::EndianScalar(_src_gid_iface)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        qp_obj_(::flatbuffers::EndianScalar(_qp_obj)),
         dest_qp_num_(::flatbuffers::EndianScalar(_dest_qp_num)),
         dest_lid_(::flatbuffers::EndianScalar(_dest_lid)),
         src_lid_(::flatbuffers::EndianScalar(_src_lid)),
         port_num_(::flatbuffers::EndianScalar(_port_num)),
         padding0__(0),
-        padding1__(0),
-        padding2__(0) {
+        padding1__(0) {
     (void)padding0__;
     (void)padding1__;
-    (void)padding2__;
   }
   const comshu::fb::Temporal &temporal() const {
     return temporal_;
@@ -3101,6 +3100,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DevxQpConnect FLATBUFFERS_FINAL_CLASS
   }
   uint32_t qp_num() const {
     return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint32_t qp_obj() const {
+    return ::flatbuffers::EndianScalar(qp_obj_);
   }
   uint32_t dest_qp_num() const {
     return ::flatbuffers::EndianScalar(dest_qp_num_);
@@ -3213,6 +3215,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   uint64_t laddr_;
   uint64_t raddr_;
   uint32_t qp_num_;
+  uint32_t qp_obj_;
   uint32_t wqe_idx_;
   uint32_t lkey_;
   uint32_t rkey_;
@@ -3224,6 +3227,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   uint8_t submitter_;
   uint16_t dest_lid_;
   uint16_t pad_;
+  int32_t padding0__;
   uint64_t dest_gid_prefix_;
   uint64_t dest_gid_iface_;
 
@@ -3233,6 +3237,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         laddr_(0),
         raddr_(0),
         qp_num_(0),
+        qp_obj_(0),
         wqe_idx_(0),
         lkey_(0),
         rkey_(0),
@@ -3244,14 +3249,17 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         submitter_(0),
         dest_lid_(0),
         pad_(0),
+        padding0__(0),
         dest_gid_prefix_(0),
         dest_gid_iface_(0) {
+    (void)padding0__;
   }
-  Mlx5DeviceSend(const comshu::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint32_t _dest_dct, uint8_t _opcode, uint8_t _decode, uint8_t _av_ds, uint8_t _submitter, uint16_t _dest_lid, uint16_t _pad, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface)
+  Mlx5DeviceSend(const comshu::fb::Temporal &_temporal, uint64_t _laddr, uint64_t _raddr, uint32_t _qp_num, uint32_t _qp_obj, uint32_t _wqe_idx, uint32_t _lkey, uint32_t _rkey, uint32_t _length, uint32_t _dest_dct, uint8_t _opcode, uint8_t _decode, uint8_t _av_ds, uint8_t _submitter, uint16_t _dest_lid, uint16_t _pad, uint64_t _dest_gid_prefix, uint64_t _dest_gid_iface)
       : temporal_(_temporal),
         laddr_(::flatbuffers::EndianScalar(_laddr)),
         raddr_(::flatbuffers::EndianScalar(_raddr)),
         qp_num_(::flatbuffers::EndianScalar(_qp_num)),
+        qp_obj_(::flatbuffers::EndianScalar(_qp_obj)),
         wqe_idx_(::flatbuffers::EndianScalar(_wqe_idx)),
         lkey_(::flatbuffers::EndianScalar(_lkey)),
         rkey_(::flatbuffers::EndianScalar(_rkey)),
@@ -3263,8 +3271,10 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
         submitter_(::flatbuffers::EndianScalar(_submitter)),
         dest_lid_(::flatbuffers::EndianScalar(_dest_lid)),
         pad_(::flatbuffers::EndianScalar(_pad)),
+        padding0__(0),
         dest_gid_prefix_(::flatbuffers::EndianScalar(_dest_gid_prefix)),
         dest_gid_iface_(::flatbuffers::EndianScalar(_dest_gid_iface)) {
+    (void)padding0__;
   }
   const comshu::fb::Temporal &temporal() const {
     return temporal_;
@@ -3277,6 +3287,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
   }
   uint32_t qp_num() const {
     return ::flatbuffers::EndianScalar(qp_num_);
+  }
+  uint32_t qp_obj() const {
+    return ::flatbuffers::EndianScalar(qp_obj_);
   }
   uint32_t wqe_idx() const {
     return ::flatbuffers::EndianScalar(wqe_idx_);
@@ -3318,7 +3331,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5DeviceSend FLATBUFFERS_FINAL_CLASS {
     return ::flatbuffers::EndianScalar(dest_gid_iface_);
   }
 };
-FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 112);
+FLATBUFFERS_STRUCT_END(Mlx5DeviceSend, 120);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) Mlx5SendCoverage FLATBUFFERS_FINAL_CLASS {
  private:

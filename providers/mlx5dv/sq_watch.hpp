@@ -204,6 +204,7 @@ struct alignas(64) StageHdr {
     std::uint32_t log_wq_size;
     std::uint64_t ticks_lo;  // published after this (TSC)...
     std::uint64_t ticks_hi;  // ...and before this: the rows' Window
+    const void*   obj;       // the queue pair's DEVX object, which the rows name it by
     std::uint8_t  service_type;
 };
 static_assert(sizeof(StageHdr) == hijack::kWqebb, "a header is one WQEBB");
@@ -422,6 +423,7 @@ inline void drain_one(Watched& w) {
     hdr->n = delta;
     hdr->log_wq_size = w.shape.log_wq_size;
     hdr->service_type = w.shape.service_type;
+    hdr->obj = w.shape.obj;
     hdr->ticks_lo = since;
     hdr->ticks_hi = seen;
 
@@ -484,7 +486,7 @@ inline void decode_staged() {
             const hijack::ParseCounts pc =
                 hijack::parse_wqes(st.buf.get() + off + hijack::kWqebb, hdr->start,
                                    (hdr->start + hdr->n) & hijack::kProdMask, hdr->qpn,
-                                   hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type},
+                                   hijack::QpInfo{0, hdr->log_wq_size, hdr->service_type, hdr->obj},
                                    hijack::state().device_send_sink, hijack::kSubmitterSqWatch,
                                    hdr->ticks_lo, hdr->ticks_hi);
             s.rows.fetch_add(pc.rows, std::memory_order_relaxed);
@@ -723,14 +725,14 @@ inline void run() {
 inline void shutdown(int rank);  // below; watch() registers it with atexit
 
 // From the DEVX CREATE_QP decode: a queue pair created, so nothing posted yet.
-inline void watch(std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq_size,
+inline void watch(const void* obj, std::uint32_t qpn, std::uint64_t sq_host, std::uint32_t log_wq_size,
                   std::uint8_t service_type, std::uint64_t dbr_host, const void* sq_umem,
                   const void* dbr_umem) {
     auto w = std::make_unique<Watched>();
     w->qpn = qpn;
     w->sq = reinterpret_cast<std::uint8_t*>(sq_host);
     w->dbr_snd = reinterpret_cast<std::uint32_t*>(dbr_host + kSndDbrOffset);
-    w->shape = hijack::QpInfo{sq_host, log_wq_size, service_type};
+    w->shape = hijack::QpInfo{sq_host, log_wq_size, service_type, obj};
     w->sq_umem = sq_umem;
     w->dbr_umem = dbr_umem;
     w->look_ticks = comshu::helpers::TscClock::now();  // just created: nothing was posted before now

@@ -911,12 +911,12 @@ template<> struct Table<mxr::Mlx5DevxQp> {
 template<> struct Table<mxr::Mlx5DevxQpConnect> {
     static constexpr const char* name = "mlx5_devx_qp_connect";
     static constexpr const char* cols =
-        "ticks,qp_num,dest_qp_num,dest_lid,src_lid,port_num,dest_gid_prefix,dest_gid_iface,"
+        "ticks,qp_num,qp_obj,dest_qp_num,dest_lid,src_lid,port_num,dest_gid_prefix,dest_gid_iface,"
         "src_gid_prefix,src_gid_iface";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DevxQpConnect>& s,
                     const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,0x%llx,0x%llx,0x%llx,0x%llx",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num,
+        std::fprintf(f, "%llu,%u,%u,%u,%u,%u,%u,0x%llx,0x%llx,0x%llx,0x%llx",
+                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.qp_obj,
                      s.payload.dest_qp_num, s.payload.dest_lid, s.payload.src_lid,
                      s.payload.port_num, (unsigned long long)s.payload.dest_gid_prefix,
                      (unsigned long long)s.payload.dest_gid_iface,
@@ -1053,14 +1053,15 @@ template<> struct Table<mxr::Mlx5DevxCq> {
 template<> struct Table<mxr::Mlx5DeviceSend> {
     static constexpr const char* name = "mlx5_device_send";
     static constexpr const char* cols =
-        "ticks,qp_num,wqe_idx,opcode,opcode_name,laddr,lkey,raddr,rkey,length,dest_dct,dest_lid,"
+        "ticks,qp_num,qp_obj,wqe_idx,opcode,opcode_name,laddr,lkey,raddr,rkey,length,dest_dct,dest_lid,"
         "decode,decode_name,av_ds,submitter,submitter_name,ticks_hi,dest_gid_prefix,dest_gid_iface";
     static void row(std::FILE* f, const Stamped<mxr::Mlx5DeviceSend>& s,
                     const rec::InternDictionary&) {
         std::fprintf(f,
-                     "%llu,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%u,%s,%u,%u,%s,%"
+                     "%llu,%u,%u,%u,0x%02x,%s,0x%llx,0x%x,0x%llx,0x%x,%u,0x%06x,%u,%u,%s,%u,%u,%s,%"
                      "llu,0x%llx,0x%llx",
-                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.wqe_idx,
+                     (unsigned long long)s.temporal.a.ticks, s.payload.qp_num, s.payload.qp_obj,
+                     s.payload.wqe_idx,
                      s.payload.opcode, mlx5_wqe_opcode_name(s.payload.opcode),
                      (unsigned long long)s.payload.laddr, s.payload.lkey,
                      (unsigned long long)s.payload.raddr, s.payload.rkey, s.payload.length,
@@ -1853,15 +1854,20 @@ struct CsvAgg {
     // _owner_gid.
     using Gid = std::pair<std::uint64_t, std::uint64_t>;
     std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint32_t>, int> gid_owner;
-    // (rank, qp_num) -> the remote end from the RTR transition.
+    // (rank, qp_num, qp_obj) -> the remote end from the RTR transition. qp_obj
+    // is the DEVX queue pair's object, 0 for verbs rows, which carry none.
+    // qp_num alone repeats across a rank's HCAs, and case 12 (MN5 49210863) had a CPU
+    // loopback QP and a GPU QP both numbered 61301 on rank 1 — keyed by number,
+    // the loopback's RTR claimed 49 of the GPU QP's sends as 1 -> 1.
     struct RtrDest {
         std::uint32_t lid{0}, qp_num{0};
         Gid           gid{0, 0};
     };
-    std::map<std::pair<int, std::uint32_t>, RtrDest> rtr_dest;
-    // (rank, qp_num, inbound) -> (sends, bytes), verbs and RC devx. `inbound`
-    // is an RDMA READ, whose bytes travel peer -> rank: link_sql.hpp's _sends.
-    std::map<std::tuple<int, std::uint32_t, bool>, std::pair<long, long>> send_by_qp;
+    std::map<std::tuple<int, std::uint32_t, std::uint32_t>, RtrDest> rtr_dest;
+    // (rank, qp_num, qp_obj, inbound) -> (sends, bytes), verbs and RC devx.
+    // `inbound` is an RDMA READ, whose bytes travel peer -> rank: link_sql.hpp's
+    // _sends.
+    std::map<std::tuple<int, std::uint32_t, std::uint32_t, bool>, std::pair<long, long>> send_by_qp;
     // DC device sends, whose peer is per SEND, not per queue: (rank, dest_lid,
     // dest_gid, dest_dct) -> (sends, bytes). Resolved through gid_owner when
     // the send carried a GID (dest_lid is then forced to 0: on RoCE v2 it is
@@ -2104,7 +2110,7 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbModifyQp>& s) {
     if (s.payload.src_gid_prefix || s.payload.src_gid_iface)
         a.gid_owner[{s.payload.src_gid_prefix, s.payload.src_gid_iface, s.payload.qp_num}] = r.rank;
     if (s.payload.state == 2 /*RTR*/ && s.payload.dest_qp_num)
-        a.rtr_dest[{r.rank, s.payload.qp_num}] = {
+        a.rtr_dest[{r.rank, s.payload.qp_num, 0u}] = {
             s.payload.dest_lid,
             s.payload.dest_qp_num,
             {s.payload.dest_gid_prefix, s.payload.dest_gid_iface}};
@@ -2122,7 +2128,7 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DevxQpConnect
     if (s.payload.src_gid_prefix || s.payload.src_gid_iface)
         a.gid_owner[{s.payload.src_gid_prefix, s.payload.src_gid_iface, s.payload.qp_num}] = r.rank;
     if (s.payload.dest_qp_num)
-        a.rtr_dest[{r.rank, s.payload.qp_num}] = {
+        a.rtr_dest[{r.rank, s.payload.qp_num, s.payload.qp_obj}] = {
             s.payload.dest_lid,
             s.payload.dest_qp_num,
             {s.payload.dest_gid_prefix, s.payload.dest_gid_iface}};
@@ -2140,14 +2146,14 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<mxr::Mlx5DeviceSend>& 
         s.payload.dest_dct
                  ? a.send_by_dct[{r.rank, has_gid ? 0u : s.payload.dest_lid, s.payload.dest_gid_prefix,
                                   s.payload.dest_gid_iface, s.payload.dest_dct, inbound}]
-                 : a.send_by_qp[{r.rank, s.payload.qp_num, inbound}];
+                 : a.send_by_qp[{r.rank, s.payload.qp_num, s.payload.qp_obj, inbound}];
     agg.first += 1;
     agg.second += s.payload.length;
     a.n_send++;
 }
 
 void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
-    auto& agg = a.send_by_qp[{r.rank, s.payload.qp_num, s.payload.opcode == 4 /*RDMA_READ*/}];
+    auto& agg = a.send_by_qp[{r.rank, s.payload.qp_num, 0u, s.payload.opcode == 4 /*RDMA_READ*/}];
     agg.first += 1;
     agg.second += s.payload.length;
     a.n_send++;
@@ -2467,10 +2473,24 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     std::fputs("src_rank,dst_rank,sends,bytes\n", edges);
     std::map<std::pair<int, int>, std::pair<long, long>> edge_agg;
     for (const auto& [key, sb] : agg.send_by_qp) {
-        auto [src_rank, qp_num, inbound] = key;
+        auto [src_rank, qp_num, qp_obj, inbound] = key;
         int dst_rank = -1;
-        if (auto it = agg.rtr_dest.find({src_rank, qp_num}); it != agg.rtr_dest.end()) {
-            const auto& d = it->second;
+        // By the queue pair's object where the send names one. A device send
+        // with qp_obj = 0 is one whose door could not tell same-numbered queue
+        // pairs apart (or a capture from before the field): it takes the rank's
+        // ONE connect under that number, and none if there are several — a
+        // guess between them is how 1 -> 1 got printed. _devx_send_peer.
+        const CsvAgg::RtrDest* dest = nullptr;
+        if (auto it = agg.rtr_dest.find({src_rank, qp_num, qp_obj}); it != agg.rtr_dest.end())
+            dest = &it->second;
+        else if (qp_obj == 0) {
+            auto lo = agg.rtr_dest.lower_bound({src_rank, qp_num, 0u});
+            auto hi = agg.rtr_dest.upper_bound({src_rank, qp_num, ~0u});
+            if (lo != hi && std::next(lo) == hi)
+                dest = &lo->second;
+        }
+        if (dest) {
+            const auto& d = *dest;
             // The GID first where the RTR named one, then the LID — _peer_of_qp.
             if (d.gid != CsvAgg::Gid{0, 0})
                 if (auto o = agg.gid_owner.find({d.gid.first, d.gid.second, d.qp_num});

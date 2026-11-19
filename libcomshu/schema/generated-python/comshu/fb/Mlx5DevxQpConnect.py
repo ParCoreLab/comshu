@@ -33,21 +33,24 @@ class Mlx5DevxQpConnect(object):
     # Mlx5DevxQpConnect
     def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # Mlx5DevxQpConnect
-    def DestQpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    def QpObj(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
     # Mlx5DevxQpConnect
-    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    def DestQpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
     # Mlx5DevxQpConnect
-    def SrcLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
+    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
     # Mlx5DevxQpConnect
-    def PortNum(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(96))
+    def SrcLid(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(96))
+    # Mlx5DevxQpConnect
+    def PortNum(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(100))
 
-def CreateMlx5DevxQpConnect(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, destGidPrefix, destGidIface, srcGidPrefix, srcGidIface, qpNum, destQpNum, destLid, srcLid, portNum):
+def CreateMlx5DevxQpConnect(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, destGidPrefix, destGidIface, srcGidPrefix, srcGidIface, qpNum, qpObj, destQpNum, destLid, srcLid, portNum):
     builder.Prep(8, 104)
-    builder.Pad(7)
+    builder.Pad(3)
     builder.PrependUint8(portNum)
     builder.PrependUint32(srcLid)
     builder.PrependUint32(destLid)
     builder.PrependUint32(destQpNum)
+    builder.PrependUint32(qpObj)
     builder.PrependUint32(qpNum)
     builder.PrependUint64(srcGidIface)
     builder.PrependUint64(srcGidPrefix)

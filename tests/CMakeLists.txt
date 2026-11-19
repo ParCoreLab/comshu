@@ -175,6 +175,11 @@ add_test(NAME object_access_rule
 add_test(NAME object_life_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/object_life_rule.sh $<TARGET_FILE:comshu_launcher>)
 
+# Two queue pairs on one rank sharing a qp_num (per-HCA numbering): each send
+# reaches its own queue pair's peer — MN5 49210863, case 12.
+add_test(NAME qp_namesake_rule
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/qp_namesake_rule.sh $<TARGET_FILE:comshu_launcher>)
+
 # Which kernel issued a GPU-initiated send: the window join, per GPU, with the
 # overlap and after-the-kernel cases MN5 job 48813620 could not produce.
 add_test(NAME kernel_sends_rule

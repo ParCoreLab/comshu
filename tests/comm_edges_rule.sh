@@ -139,26 +139,26 @@ CSV
 # consumer of comm_edges never learn which plane a run used — while `transport`
 # survives so it can still be asked.
 cat > "$WORK/mlx5_devx_qp_connect.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,dest_gid_prefix,dest_gid_iface,src_gid_prefix,src_gid_iface,qp_num,dest_qp_num,dest_lid,src_lid,port_num
-1,1,0,300,0,0,0,0,0,0,0,30,31,20,10,1
-3,1,0,300,0,0,0,0,0,0,0,31,30,10,20,1
-1,1,0,400,0,0,0,0,281470849220608,0,281470849220609,60,61,0,0,1
-0,1,0,400,0,0,0,0,281470849220609,0,281470849220608,61,60,0,0,1
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,dest_gid_prefix,dest_gid_iface,src_gid_prefix,src_gid_iface,qp_num,qp_obj,dest_qp_num,dest_lid,src_lid,port_num
+1,1,0,300,0,0,0,0,0,0,0,30,0,31,20,10,1
+3,1,0,300,0,0,0,0,0,0,0,31,0,30,10,20,1
+1,1,0,400,0,0,0,0,281470849220608,0,281470849220609,60,0,61,0,0,1
+0,1,0,400,0,0,0,0,281470849220609,0,281470849220608,61,0,60,0,0,1
 CSV
 
 cat > "$WORK/mlx5_device_send.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad,dest_gid_prefix,dest_gid_iface
-1,2,0,2100,0,2110,0,8192,4096,30,0,3,7,200,0,8,0,0,1,0,0,0,0
-1,2,0,2200,0,2210,0,8192,4096,30,1,3,7,200,0,8,0,0,1,0,0,0,0
-1,2,0,2300,0,2310,0,8192,0,30,2,3,0,0,0,35,0,0,1,0,0,0,0
-1,2,0,2400,0,2410,0,0,0,30,3,0,0,0,0,200,3,0,1,0,0,0,0
-1,1,0,2500,0,0,0,8192,4096,40,0,3,7,30,900,8,0,1,2,20,0,0,0
-1,1,0,2600,0,0,0,8192,4096,40,1,3,7,40,900,8,0,1,2,10,0,0,0
-1,1,0,2700,0,0,0,8192,4096,40,2,3,7,50,900,8,0,3,2,0,0,0,0
-1,1,0,2800,0,0,0,8192,4096,40,3,3,7,60,901,8,0,3,2,60060,0,0,281470849220611
-1,1,0,2900,0,0,0,8192,4096,40,4,3,7,5,901,8,0,3,2,60060,0,0,281470849220617
-1,2,0,2950,0,2960,0,8192,4096,60,0,3,7,13,0,8,0,0,1,0,0,0,0
-0,2,0,2970,0,2980,0,8192,4096,61,0,3,7,17,0,16,0,0,1,0,0,0,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,laddr,raddr,qp_num,qp_obj,wqe_idx,lkey,rkey,length,dest_dct,opcode,decode,av_ds,submitter,dest_lid,pad,dest_gid_prefix,dest_gid_iface
+1,2,0,2100,0,2110,0,8192,4096,30,0,0,3,7,200,0,8,0,0,1,0,0,0,0
+1,2,0,2200,0,2210,0,8192,4096,30,0,1,3,7,200,0,8,0,0,1,0,0,0,0
+1,2,0,2300,0,2310,0,8192,0,30,0,2,3,0,0,0,35,0,0,1,0,0,0,0
+1,2,0,2400,0,2410,0,0,0,30,0,3,0,0,0,0,200,3,0,1,0,0,0,0
+1,1,0,2500,0,0,0,8192,4096,40,0,0,3,7,30,900,8,0,1,2,20,0,0,0
+1,1,0,2600,0,0,0,8192,4096,40,0,1,3,7,40,900,8,0,1,2,10,0,0,0
+1,1,0,2700,0,0,0,8192,4096,40,0,2,3,7,50,900,8,0,3,2,0,0,0,0
+1,1,0,2800,0,0,0,8192,4096,40,0,3,3,7,60,901,8,0,3,2,60060,0,0,281470849220611
+1,1,0,2900,0,0,0,8192,4096,40,0,4,3,7,5,901,8,0,3,2,60060,0,0,281470849220617
+1,2,0,2950,0,2960,0,8192,4096,60,0,0,3,7,13,0,8,0,0,1,0,0,0,0
+0,2,0,2970,0,2980,0,8192,4096,61,0,0,3,7,17,0,16,0,0,1,0,0,0,0
 CSV
 
 # The RoCE rows above, from the send side:

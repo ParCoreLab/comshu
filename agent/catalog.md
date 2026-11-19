@@ -285,12 +285,19 @@ parent id** — not by our inference from timing or size. This is what makes
   no row here — while their `nccl_execution` rows are complete.
 
 ### `endpoint` — the same traffic, per queue pair
-`rank INT, qp_num UINT, lid UINT, peer_lid UINT, peer_qp_num UINT, peer_rank INT, transport VARCHAR, sends BIGINT, bytes BIGINT`
+`rank INT, qp_num UINT, qp_obj UINT, lid UINT, peer_lid UINT, peer_qp_num UINT, peer_rank INT, transport VARCHAR, sends BIGINT, bytes BIGINT`
 
-One row per `(rank, qp_num)`. Use it when the question is about connections
-rather than ranks: how many QPs a rank opened, whether traffic is spread evenly
-across them, which QP carries a hot flow. `lid` is the local InfiniBand port
-address; a `(lid, qp_num)` pair identifies an endpoint fabric-wide.
+One row per queue pair, `(rank, qp_num, qp_obj)`. Use it when the question is
+about connections rather than ranks: how many QPs a rank opened, whether traffic
+is spread evenly across them, which QP carries a hot flow. `lid` is the local
+InfiniBand port address; a `(lid, qp_num)` pair identifies an endpoint
+fabric-wide. `qp_num` alone does NOT identify a queue pair even within one rank
+— it is numbered per HCA, and a rank on four HCAs can hold two QPs with the same
+number. `qp_obj` is the DEVX queue pair's handle (`mlx5_devx_qp.obj`), 0 for
+verbs queue pairs; `mlx5_device_send.qp_obj` and `mlx5_devx_qp_connect.qp_obj`
+carry the same handle, so join device sends to their queue pair on
+`(rank, qp_obj)`, not on `qp_num`. A device send with `qp_obj = 0` came from a
+door that could not tell same-numbered queue pairs apart.
 
 ### `wr_flow` — one row per work request, posted to completed
 `rank INT, qp_num UINT, wr_id UBIGINT, bytes BIGINT, opcode UTINYINT, status UTINYINT, wc_opcode UTINYINT, t0_ns BIGINT, t1_ns BIGINT, latency_ns BIGINT`

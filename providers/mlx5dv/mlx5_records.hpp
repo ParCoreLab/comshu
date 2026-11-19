@@ -156,6 +156,12 @@ COMSHU_RECORD(Mlx5DevxQpConnect, RecordKind::Event, 208, "mlx5_devx_qp_connect")
     std::uint64_t src_gid_prefix;
     std::uint64_t src_gid_iface;
     std::uint32_t qp_num;
+    // Which queue pair, by the DEVX object that created it: joins
+    // Mlx5DevxQp.obj. qp_num cannot do this inside ONE rank either: it is
+    // allocated per HCA, and a rank driving four HCAs holds queue pairs that
+    // share a number (MN5 job 49210863, case 12: rank 1's qp 61301 was both a
+    // CPU proxy loopback QP and a GPU QP connected to rank 0).
+    Handle        qp_obj;
     std::uint32_t dest_qp_num;
     std::uint32_t dest_lid;
     std::uint32_t src_lid;
@@ -239,6 +245,12 @@ COMSHU_RECORD(Mlx5DeviceSend, RecordKind::Event, 214, "mlx5_device_send") {
     std::uint64_t laddr;  // local address (data segment)
     std::uint64_t raddr;  // remote address (RDMA segment), 0 if none
     std::uint32_t qp_num;
+    // The queue pair this WQE was read from, by its DEVX object: joins
+    // Mlx5DevxQp.obj and Mlx5DevxQpConnect.qp_obj. The door that read the WQE
+    // knows exactly which send queue it read; qp_num alone does not say, since
+    // it repeats across a rank's HCAs (see Mlx5DevxQpConnect.qp_obj). 0 when
+    // the door could not tell which of several same-numbered queue pairs rang.
+    Handle        qp_obj;
     std::uint32_t wqe_idx;  // producer index of this WQE
     std::uint32_t lkey;
     std::uint32_t rkey;    // remote key, 0 if no RDMA segment

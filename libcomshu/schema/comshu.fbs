@@ -756,6 +756,7 @@ struct Mlx5DevxQpConnect {
   src_gid_prefix:uint64;  // our own GID, from the path's src_addr_index
   src_gid_iface:uint64;
   qp_num:uint32;
+  qp_obj:uint32;          // joins Mlx5DevxQp.obj; qp_num repeats across a rank's HCAs
   dest_qp_num:uint32;
   dest_lid:uint32;
   src_lid:uint32;
@@ -791,6 +792,7 @@ struct Mlx5DeviceSend {
   laddr:uint64;
   raddr:uint64;
   qp_num:uint32;
+  qp_obj:uint32;    // joins Mlx5DevxQp.obj; 0 if the door could not tell
   wqe_idx:uint32;
   lkey:uint32;
   rkey:uint32;

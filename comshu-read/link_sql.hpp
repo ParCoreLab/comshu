@@ -851,18 +851,28 @@ QUALIFY row_number() OVER (PARTITION BY r.rank, r.seq
     // no equivalent.
     {"_rtr", R"sql(
 CREATE OR REPLACE VIEW _rtr AS
-SELECT rank, qp_num, max(dest_lid) AS dest_lid, max(dest_qp_num) AS dest_qp_num,
+-- One row per queue pair: (rank, qp_num, qp_obj). qp_obj is the DEVX object
+-- (mlx5_devx_qp.obj), 0 for a verbs queue pair, which records none. qp_num
+-- alone is not a queue pair even within one rank — it is allocated per HCA,
+-- and case 12 (MN5 49210863) had rank 1 holding a CPU loopback QP and a GPU QP
+-- both numbered 61301. Grouped by number, max() spliced the two connects into
+-- one destination that matched no owner, and 672 sends went to -1.
+-- src_lid is carried so a reader naming the queue pair's OWN port (endpoint's
+-- lid) picks this queue pair's, not a namesake's on another HCA.
+SELECT rank, qp_num, qp_obj, max(src_lid) AS src_lid,
+       max(dest_lid) AS dest_lid, max(dest_qp_num) AS dest_qp_num,
        max(dest_gid_prefix) AS dest_gid_prefix, max(dest_gid_iface) AS dest_gid_iface
 FROM (
-    SELECT rank, qp_num, dest_lid, dest_qp_num, dest_gid_prefix, dest_gid_iface
+    SELECT rank, qp_num, 0::UINTEGER AS qp_obj, src_lid, dest_lid, dest_qp_num,
+           dest_gid_prefix, dest_gid_iface
       FROM ib_modify_qp
       WHERE state = 2 AND dest_qp_num <> 0
     UNION ALL
-    SELECT rank, qp_num, dest_lid, dest_qp_num, dest_gid_prefix, dest_gid_iface
+    SELECT rank, qp_num, qp_obj, src_lid, dest_lid, dest_qp_num, dest_gid_prefix, dest_gid_iface
       FROM mlx5_devx_qp_connect
       WHERE dest_qp_num <> 0
 )
-GROUP BY rank, qp_num
+GROUP BY rank, qp_num, qp_obj
 )sql"},
 
     // --- node identity, so a device ordinal can name a rank -----------------
@@ -1282,7 +1292,12 @@ GROUP BY 1, 2, 3
     // the fallback for a peer whose own GID was not recorded.
     {"_peer_of_qp", R"sql(
 CREATE OR REPLACE VIEW _peer_of_qp AS
-SELECT r.rank, r.qp_num, coalesce(g_peer.rank, o_peer.rank) AS peer_rank
+-- `namesakes`: how many of this rank's queue pairs share the number. A verbs
+-- row joins on qp_obj = 0; a device send joins on its own qp_obj, or — when its
+-- door could not tell same-numbered queue pairs apart and recorded 0 — on the
+-- number only if exactly one queue pair has it. Never a guess between several.
+SELECT r.rank, r.qp_num, r.qp_obj, coalesce(g_peer.rank, o_peer.rank) AS peer_rank,
+       count(*) OVER (PARTITION BY r.rank, r.qp_num) AS namesakes
 FROM _rtr r
 LEFT JOIN _owner o_peer
        ON r.dest_lid <> 0 AND o_peer.lid = r.dest_lid AND o_peer.qp_num = r.dest_qp_num
@@ -1320,6 +1335,7 @@ SELECT s.*,
 FROM mlx5_device_send s
 LEFT JOIN _peer_of_qp e
        ON e.rank = s.rank AND e.qp_num = s.qp_num
+      AND ((s.qp_obj <> 0 AND e.qp_obj = s.qp_obj) OR (s.qp_obj = 0 AND e.namesakes = 1))
 LEFT JOIN _owner dc
        ON s.dest_dct <> 0 AND dc.lid = s.dest_lid AND dc.qp_num = s.dest_dct
 LEFT JOIN _owner_gid dg
@@ -1337,10 +1353,10 @@ CREATE OR REPLACE VIEW _sends AS
 -- ends — the rule the UCX lane (_ucx_sends) already applies to a get. Atomics
 -- stay outbound: they modify the peer's memory. Until 2026-11-12 reads were
 -- drawn poster -> peer, i.e. backwards.
-SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank, (s.opcode = 4) AS inbound,
-       count(*) AS sends, sum(s.length)::BIGINT AS bytes
+SELECT s.rank, s.qp_num, 0::UINTEGER AS qp_obj, 'verbs' AS transport, e.peer_rank,
+       (s.opcode = 4) AS inbound, count(*) AS sends, sum(s.length)::BIGINT AS bytes
 FROM ib_post_send s
-LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num AND e.qp_obj = 0
 GROUP BY s.rank, s.qp_num, e.peer_rank, inbound
 UNION ALL
 -- Not every mlx5_device_send row is traffic. The WQE decoder emits a row for
@@ -1353,9 +1369,10 @@ UNION ALL
 -- (decode = 1) do name a peer and stay.
 -- The peer is resolved PER SEND (_devx_send_peer): a DC sender talks to many
 -- peers through one queue, so grouping by qp_num alone would merge them.
-SELECT rank, qp_num, 'devx' AS transport, peer_rank, (opcode = 16) AS inbound,
+SELECT rank, qp_num, qp_obj, 'devx' AS transport, peer_rank, (opcode = 16) AS inbound,
        count(*) AS sends, sum(length)::BIGINT AS bytes
-FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank, inbound
+FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35
+GROUP BY rank, qp_num, qp_obj, peer_rank, inbound
 )sql"},
 
     // The same traffic, one more group-by deep: by SIZE CLASS.
@@ -1388,22 +1405,24 @@ FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, p
     // hazard into a checked invariant.
     {"_sends_sized", R"sql(
 CREATE OR REPLACE VIEW _sends_sized AS
-SELECT s.rank, s.qp_num, 'verbs' AS transport, e.peer_rank, (s.opcode = 4) AS inbound,
+SELECT s.rank, s.qp_num, 0::UINTEGER AS qp_obj, 'verbs' AS transport, e.peer_rank,
+       (s.opcode = 4) AS inbound,
        CASE WHEN s.length > 0 THEN (1::BIGINT << CAST(floor(log2(s.length)) AS INTEGER))
             ELSE 0 END AS size_class,
        count(*) AS sends, sum(s.length)::BIGINT AS bytes
 FROM ib_post_send s
-LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+LEFT JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num AND e.qp_obj = 0
 GROUP BY s.rank, s.qp_num, e.peer_rank, inbound, size_class
 UNION ALL
-SELECT rank, qp_num, 'devx' AS transport, peer_rank, (opcode = 16) AS inbound,
+SELECT rank, qp_num, qp_obj, 'devx' AS transport, peer_rank, (opcode = 16) AS inbound,
        CASE WHEN length > 0 THEN (1::BIGINT << CAST(floor(log2(length)) AS INTEGER))
             ELSE 0 END AS size_class,
        count(*) AS sends, sum(length)::BIGINT AS bytes
 -- Same exclusion as _sends, and it has to be the same one: the suite asserts
 -- that edge_sizes rolls up EXACTLY to comm_edges, so a row counted in one lane
 -- and not the other is a failed invariant rather than a quiet discrepancy.
-FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35 GROUP BY rank, qp_num, peer_rank, inbound, size_class
+FROM _devx_send_peer WHERE decode <= 1 AND opcode != 35
+GROUP BY rank, qp_num, qp_obj, peer_rank, inbound, size_class
 )sql"},
 
     // (rank, rkey) -> how to turn a remote address naming that region into a
@@ -1698,7 +1717,7 @@ LEFT JOIN LATERAL (
         ) s WHERE s.addr IS NOT NULL
     ) a ORDER BY a.pref LIMIT 1
 ) r ON TRUE
-LEFT JOIN _peer_of_qp e ON e.rank = c.rank AND e.qp_num = c.qp_num
+LEFT JOIN _peer_of_qp e ON e.rank = c.rank AND e.qp_num = c.qp_num AND e.qp_obj = 0
 LEFT JOIN _clock kc ON kc.rank = c.rank AND kc.domain = c.temporal_a_domain
 -- The receive buffer's incarnation at the COMPLETION, on the receiver's own
 -- clock — same rank, so no cross-node slack (see _obj_life).
@@ -1966,7 +1985,7 @@ verbs_target AS (
                     ELSE rb.mode END AS mode
         FROM ib_post_send s
         JOIN _peer_of_qp e
-          ON e.rank = s.rank AND e.qp_num = s.qp_num
+          ON e.rank = s.rank AND e.qp_num = s.qp_num AND e.qp_obj = 0
         LEFT JOIN _mr_rebase rb
           ON rb.rank = e.peer_rank AND rb.rkey = s.rkey
         LEFT JOIN _clock k ON k.rank = s.rank AND k.domain = s.temporal_a_domain
@@ -2046,22 +2065,20 @@ verbs AS (
 -- records which; that is a per-send fact, where _rank_device is a per-rank
 -- guess that is wrong for a rank driving two GPUs. The rank's device is the
 -- fallback only for a queue whose buffer could not be placed (65535).
+-- The send names its queue by DEVX object (qp_obj); qp_num is the fallback
+-- for a send whose door could not tell same-numbered queues apart, and there a
+-- number that two queues on different GPUs share — across HCAs, or reused —
+-- would be two devices for one key; max() would name one silently. Refuse.
 devx_qp_device AS (
-    SELECT rank, qp_num, max(device) AS device
-    FROM mlx5_devx_qp
-    WHERE device <> 65535
-    GROUP BY rank, qp_num
-    -- A qp_num reused by a later queue on another GPU would be two devices for
-    -- one key; max() would then name one of them silently. Refuse instead.
-    HAVING count(DISTINCT device) = 1
+    SELECT rank, obj, qp_num, device FROM mlx5_devx_qp WHERE device <> 65535
 ),
 -- Same translation as verbs_target: NCCL GIN's puts name offsets into a
 -- zero-based window, NVSHMEM's name VAs, and only the rkey says which.
 devx_target AS (
-    SELECT q.rank, q.qp_num, q.length, q.peer_rank, q.t_ns,
+    SELECT q.rank, q.qp_num, q.qp_obj, q.length, q.peer_rank, q.t_ns,
            CASE WHEN q.mode = 'rebase' THEN q.base + (q.addr - q.iova) ELSE q.addr END AS target
     FROM (
-        SELECT s.rank, s.qp_num, s.length, s.peer_rank, s.raddr::HUGEINT AS addr,
+        SELECT s.rank, s.qp_num, s.qp_obj, s.length, s.peer_rank, s.raddr::HUGEINT AS addr,
                rb.base, rb.iova,
                (k.w0::HUGEINT + ((s.temporal_a_ticks::HUGEINT - k.t0::HUGEINT)::DOUBLE * k.ns_per_tick)::HUGEINT)::BIGINT AS t_ns,
                CASE WHEN rb.mode IS NULL THEN NULL
@@ -2093,8 +2110,12 @@ devx AS (
            m.life                                   AS life,
            m.in_window                              AS in_window
     FROM devx_target t
-    LEFT JOIN devx_qp_device qd
-      ON qd.rank = t.rank AND qd.qp_num = t.qp_num
+    LEFT JOIN LATERAL (
+        SELECT max(d.device) AS device FROM devx_qp_device d
+        WHERE d.rank = t.rank
+          AND CASE WHEN t.qp_obj <> 0 THEN d.obj = t.qp_obj ELSE d.qp_num = t.qp_num END
+        HAVING count(DISTINCT d.device) = 1
+    ) qd ON TRUE
     LEFT JOIN _rank_device rd ON rd.rank = t.rank AND qd.device IS NULL
     JOIN LATERAL (
         -- The incarnation LIVE when this happened (see _obj_life), innermost
@@ -2373,10 +2394,14 @@ s AS (
                               * c.ns_per_tick)::HUGEINT)::BIGINT          AS t_ns
     FROM _devx_send_peer s
     JOIN _clock c ON c.rank = s.rank AND c.domain = s.temporal_a_domain
-    LEFT JOIN (SELECT rank, qp_num, max(device) AS device FROM mlx5_devx_qp
-               WHERE device <> 65535 GROUP BY rank, qp_num
-               HAVING count(DISTINCT device) = 1) q
-           ON q.rank = s.rank AND q.qp_num = s.qp_num
+    -- The queue's GPU, by its DEVX object; by number only for a send that
+    -- could not name its object, and then only if the number is one GPU's.
+    LEFT JOIN LATERAL (
+        SELECT max(d.device) AS device FROM mlx5_devx_qp d
+        WHERE d.device <> 65535 AND d.rank = s.rank
+          AND CASE WHEN s.qp_obj <> 0 THEN d.obj = s.qp_obj ELSE d.qp_num = s.qp_num END
+        HAVING count(DISTINCT d.device) = 1
+    ) q ON TRUE
     WHERE s.decode <= 1 AND s.opcode != 35
 ),
 m AS (
@@ -2712,10 +2737,11 @@ LEFT JOIN _clock k ON k.rank = p.rank AND k.domain = p.temporal_a_domain
 ORDER BY p.rank, p.temporal_a_ticks
 )sql"},
 
-    {"endpoint", "rank,qp_num,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes",
+    {"endpoint", "rank,qp_num,qp_obj,lid,peer_lid,peer_qp_num,peer_rank,transport,sends,bytes",
      R"sql(
 SELECT r.rank,
        r.qp_num,
+       r.qp_obj,
        o_self.lid              AS lid,
        r.dest_lid              AS peer_lid,
        r.dest_qp_num           AS peer_qp_num,
@@ -2725,8 +2751,9 @@ SELECT r.rank,
        coalesce(sum(s.bytes), 0)::BIGINT  AS bytes
 FROM _rtr r
 LEFT JOIN _owner o_self ON o_self.rank = r.rank AND o_self.qp_num = r.qp_num
-LEFT JOIN _peer_of_qp p ON p.rank = r.rank AND p.qp_num = r.qp_num
-LEFT JOIN _sends s      ON s.rank = r.rank AND s.qp_num = r.qp_num
+                       AND o_self.lid = r.src_lid
+LEFT JOIN _peer_of_qp p ON p.rank = r.rank AND p.qp_num = r.qp_num AND p.qp_obj = r.qp_obj
+LEFT JOIN _sends s      ON s.rank = r.rank AND s.qp_num = r.qp_num AND s.qp_obj = r.qp_obj
 GROUP BY ALL
 ORDER BY r.rank, r.qp_num
 )sql"},
@@ -3561,7 +3588,7 @@ SELECT 'unplaced_offset_sends',
        'sends naming a zero-based region whose VA comshu never recovered (or an ambiguous rkey); object_access cannot place them'
 FROM (
     SELECT e.peer_rank, s.rkey, s.remote_addr AS addr FROM ib_post_send s
-    JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num
+    JOIN _peer_of_qp e ON e.rank = s.rank AND e.qp_num = s.qp_num AND e.qp_obj = 0
     UNION ALL
     SELECT s.peer_rank, s.rkey, s.raddr FROM _devx_send_peer s
     WHERE s.decode <= 1 AND s.opcode != 35 AND s.peer_rank IS NOT NULL

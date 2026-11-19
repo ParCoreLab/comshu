@@ -62,7 +62,10 @@ using DoorbellSink = void (*)(void* uar_ptr, std::uint32_t qp_num, std::uint32_t
 // `ticks_hi` say when: 0/0 from the doorbell paths, which call the sink at the
 // doorbell itself, so the row's time is now; a window from the send-queue
 // watcher, which knows only that the WQE was published between two of its looks.
-using DeviceSendSink = void (*)(std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
+// `qp_obj` is the DEVX object of the queue pair the WQE was read from — what the
+// row names its queue pair by, since qp_num repeats across a rank's HCAs; null
+// when the door could not tell (see pick_qp).
+using DeviceSendSink = void (*)(const void* qp_obj, std::uint32_t qp_num, std::uint32_t wqe_idx, std::uint8_t opcode,
                                 std::uint64_t laddr, std::uint32_t lkey, std::uint64_t raddr,
                                 std::uint32_t rkey, std::uint32_t length, std::uint32_t dest_dct,
                                 std::uint16_t dest_lid, std::uint64_t dest_gid_prefix,
@@ -77,6 +80,13 @@ struct QpInfo {
     std::uint64_t sq_gpu_base{0};   // device VA of the send queue
     std::uint32_t log_wq_size{0};   // WQEBBs = 1 << log_wq_size
     std::uint8_t  service_type{0};  // 0x5 = DCI (carries a datagram segment)
+    // Which queue pair this is. qp_num is allocated per HCA, so a rank driving
+    // several HCAs holds queue pairs that share a number; the DEVX object does
+    // not repeat, and it is what the capture names the queue pair by.
+    const void*   obj{nullptr};
+    // The UAR page the queue pair rings (qpc.uar_page). A doorbell arrives on a
+    // UAR, so this is what tells two same-numbered queue pairs apart at decode.
+    std::uint32_t uar_page{0};
 };
 
 // CUDA driver types and flags, hand-copied from cuda.h and checked by nothing —
@@ -196,8 +206,10 @@ struct State {
     // Stage 2.
     DoorbellSink                                               doorbell_sink{nullptr};
     DeviceSendSink                                             device_send_sink{nullptr};
-    std::unordered_map<std::uint32_t, QpInfo>                  qp_info;  // qpn -> send-queue shape
-    std::unordered_map<std::uint32_t, std::unique_ptr<QpCopy>> qp_copy;  // qpn -> copy state
+    // qpn -> every registered queue pair with that number (one per HCA at most,
+    // in practice); pick_qp chooses by the doorbell's UAR page.
+    std::unordered_map<std::uint32_t, std::vector<QpInfo>>   qp_info;
+    std::unordered_map<const void*, std::unique_ptr<QpCopy>> qp_copy;  // obj -> copy state
     std::atomic<void*> gpu_ctx{nullptr};  // CUcontext captured at the swap
 
     std::atomic<std::uint64_t> num_fake_accesses{0};
@@ -236,11 +248,42 @@ inline void remember_uar(void* reg_addr, void* uar_ptr, std::uint32_t page_id) {
 // The provider hands us each GPU-driven DEVX queue pair: its send-queue GPU
 // address and shape. Without this the decode knows a doorbell rang and cannot
 // read the WQE it announced.
-inline void register_qp(std::uint32_t qp_num, std::uint64_t sq_gpu_base, std::uint32_t log_wq_size,
-                        std::uint8_t service_type) {
+//
+// Keyed by qp_num AND the UAR page, because qp_num alone is not unique within a
+// rank: it is allocated per HCA. A queue pair re-registered on the same page
+// under a number already there replaces the old one — the number was recycled.
+inline void register_qp(const void* obj, std::uint32_t qp_num, std::uint64_t sq_gpu_base,
+                        std::uint32_t log_wq_size, std::uint8_t service_type,
+                        std::uint32_t uar_page) {
     auto&                       s = state();
     std::lock_guard<std::mutex> lk(s.mutex);
-    s.qp_info[qp_num] = QpInfo{sq_gpu_base, log_wq_size, service_type};
+    const QpInfo                info{sq_gpu_base, log_wq_size, service_type, obj, uar_page};
+    auto&                       same = s.qp_info[qp_num];
+    for (auto& q : same)
+        if (q.uar_page == uar_page) {
+            q = info;
+            return;
+        }
+    same.push_back(info);
+}
+
+// Which registered queue pair a doorbell for `qpn` on UAR page `page` is for.
+// One candidate: that one — the UAR page is not needed, and not trusted to be
+// known. Several: the one on this page; if none matches, or the page is unknown,
+// the doorbell cannot be attributed and nothing is guessed — the caller emits
+// the doorbell row and no send. Caller holds the mutex.
+inline const QpInfo* pick_qp(State& s, std::uint32_t qpn, const std::uint32_t* page) {
+    auto it = s.qp_info.find(qpn);
+    if (it == s.qp_info.end() || it->second.empty())
+        return nullptr;
+    if (it->second.size() == 1)
+        return &it->second.front();
+    if (!page)
+        return nullptr;
+    for (const auto& q : it->second)
+        if (q.uar_page == *page)
+            return &q;
+    return nullptr;
 }
 
 inline void set_sinks(DoorbellSink doorbell, DeviceSendSink device_send) {
@@ -625,7 +668,7 @@ inline ParseCounts parse_wqes(const std::uint8_t* buf, std::uint32_t start, std:
         // boundary this provider is most likely to hit, and a capture that
         // quietly omits it is indistinguishable from a run that did not send.
         if (sink) {
-            sink(qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, dest_lid,
+            sink(qp.obj, qpn, prod, opcode, laddr, lkey, raddr, rkey, length, dest_dct, dest_lid,
                  dest_gid_prefix, dest_gid_iface, decode,
                  static_cast<std::uint8_t>(av_ds), submitter, ticks_lo, ticks_hi);
             state().sends_emitted.fetch_add(1, std::memory_order_relaxed);
@@ -682,10 +725,11 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
     QpInfo qp;
     {
         std::lock_guard<std::mutex> lk(s.mutex);
-        auto                        it = s.qp_info.find(qpn);
-        if (it == s.qp_info.end())
-            return;  // doorbell recorded; send queue unknown
-        qp = it->second;
+        const auto                  pg = s.uar_pages.find(reg_addr);
+        const QpInfo* q = pick_qp(s, qpn, pg == s.uar_pages.end() ? nullptr : &pg->second);
+        if (!q)
+            return;  // doorbell recorded; send queue unknown or ambiguous
+        qp = *q;
     }
     if (qp.sq_gpu_base == 0 || !s.device_send_sink)
         return;
@@ -717,7 +761,7 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
     QpCopy* copy = nullptr;
     {
         std::lock_guard<std::mutex> lk(s.mutex);
-        auto&                       slot = s.qp_copy[qpn];
+        auto&                       slot = s.qp_copy[qp.obj];
         if (!slot)
             slot = std::make_unique<QpCopy>();
         copy = slot.get();

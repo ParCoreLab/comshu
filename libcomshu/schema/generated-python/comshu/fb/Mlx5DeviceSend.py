@@ -11,7 +11,7 @@ class Mlx5DeviceSend(object):
 
     @classmethod
     def SizeOf(cls):
-        return 112
+        return 120
 
     # Mlx5DeviceSend
     def Init(self, buf, pos):
@@ -29,36 +29,39 @@ class Mlx5DeviceSend(object):
     # Mlx5DeviceSend
     def QpNum(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
     # Mlx5DeviceSend
-    def WqeIdx(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(68))
+    def QpObj(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(68))
     # Mlx5DeviceSend
-    def Lkey(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
+    def WqeIdx(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
     # Mlx5DeviceSend
-    def Rkey(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
+    def Lkey(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
     # Mlx5DeviceSend
-    def Length(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
+    def Rkey(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # Mlx5DeviceSend
-    def DestDct(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    def Length(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
     # Mlx5DeviceSend
-    def Opcode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    def DestDct(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
     # Mlx5DeviceSend
-    def Decode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(89))
+    def Opcode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
     # Mlx5DeviceSend
-    def AvDs(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(90))
+    def Decode(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(93))
     # Mlx5DeviceSend
-    def Submitter(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(91))
+    def AvDs(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(94))
     # Mlx5DeviceSend
-    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
+    def Submitter(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(95))
     # Mlx5DeviceSend
-    def Pad(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(94))
+    def DestLid(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(96))
     # Mlx5DeviceSend
-    def DestGidPrefix(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(96))
+    def Pad(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(98))
     # Mlx5DeviceSend
-    def DestGidIface(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(104))
+    def DestGidPrefix(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(104))
+    # Mlx5DeviceSend
+    def DestGidIface(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(112))
 
-def CreateMlx5DeviceSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, laddr, raddr, qpNum, wqeIdx, lkey, rkey, length, destDct, opcode, decode, avDs, submitter, destLid, pad, destGidPrefix, destGidIface):
-    builder.Prep(8, 112)
+def CreateMlx5DeviceSend(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, laddr, raddr, qpNum, qpObj, wqeIdx, lkey, rkey, length, destDct, opcode, decode, avDs, submitter, destLid, pad, destGidPrefix, destGidIface):
+    builder.Prep(8, 120)
     builder.PrependUint64(destGidIface)
     builder.PrependUint64(destGidPrefix)
+    builder.Pad(4)
     builder.PrependUint16(pad)
     builder.PrependUint16(destLid)
     builder.PrependUint8(submitter)
@@ -70,6 +73,7 @@ def CreateMlx5DeviceSend(builder, temporal_kind, temporal_a_domain, temporal_a_t
     builder.PrependUint32(rkey)
     builder.PrependUint32(lkey)
     builder.PrependUint32(wqeIdx)
+    builder.PrependUint32(qpObj)
     builder.PrependUint32(qpNum)
     builder.PrependUint64(raddr)
     builder.PrependUint64(laddr)
