@@ -109,6 +109,7 @@ COMSHU_SCHEMA_MATCH(nr::NcclP2p, fb::NcclP2p);
 COMSHU_SCHEMA_MATCH(nr::NcclGroup, fb::NcclGroup);
 COMSHU_SCHEMA_MATCH(nr::NcclWindow, fb::NcclWindow);
 COMSHU_SCHEMA_MATCH(nr::NcclDevComm, fb::NcclDevComm);
+COMSHU_SCHEMA_MATCH(nr::NcclWindowPeer, fb::NcclWindowPeer);
 
 // NCCL profiler plugin, 912-916.
 COMSHU_SCHEMA_MATCH(nr::NcclProfComm, fb::NcclProfComm);
@@ -460,6 +461,18 @@ int main() {
                                        fb::TimePoint(2, 0x900C), 0),
                           0x11, 0);
         expect_identical("NcclDevComm", &c, &f, sizeof(c));
+    }
+    {
+        Stamped<nr::NcclWindowPeer> c{};
+        c.temporal = comshu::core::Temporal::instant({1, 0x900D});
+        c.payload.window = 0x66;
+        c.payload.peer = 3;
+        c.payload.mapped_base = 0x45A0600000ull;
+        c.payload.size = 131072;
+        fb::NcclWindowPeer f(fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(1, 0x900D),
+                                          fb::TimePoint(0, 0), 0),
+                             0x66, 3, 0x45A0600000ull, 131072);
+        expect_identical("NcclWindowPeer", &c, &f, sizeof(c));
     }
     {
         Stamped<nr::NcclProfComm> c{};

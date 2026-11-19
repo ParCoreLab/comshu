@@ -1,6 +1,6 @@
 {
   "case": "28_nccl_lsa",
-  "providers": ["p2p"],
+  "providers": ["p2p", "nccl"],
   "platform": "mn5",
   "topology": "1 node x4 H100, NCCL 2.29 symmetric window, a store ring issued through ncclGetLsaPointer over NVLink",
   "golden": "none, by design — every quantity follows from window_bytes and iters",

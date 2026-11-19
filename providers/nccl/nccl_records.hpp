@@ -190,6 +190,31 @@ COMSHU_RECORD(NcclDevComm, RecordKind::Artifact, 910, "nccl_dev_comm") {
     std::int32_t pad;
 };
 
+// Where a PEER's copy of a window is mapped in this process — the fact that
+// places a GPU store through a symmetric window in the owner's buffer.
+//
+// NCCL maps every local rank's window into one flat range, so a kernel's store
+// to peer `peer` lands at mapped_base + offset in THIS process, a mapping of
+// memory the peer allocated (an import: not an object here, see
+// cuda_alloc_doors.cpp). This row says which peer and which window, and the
+// reader finds the peer's own nccl_window row for the same window and places
+// the byte at its base + offset — the owner's address, exactly.
+//
+// Asked of NCCL through its public host API, ncclGetPeerDevicePointer (2.29+),
+// the counterpart of the nvshmem_ptr call the gpumem backend uses for NVSHMEM:
+// no struct layout is read, and on an NCCL without the call there are simply
+// no rows (and the stores stay unplaced, counted in link_health).
+//
+// `peer` is the rank WITHIN the window's communicator, as NCCL numbers it —
+// nccl_comm.rank on the peer's side. Artifact: it lives and dies with its
+// window, whose Entity row carries the lifetime.
+COMSHU_RECORD(NcclWindowPeer, RecordKind::Artifact, 918, "nccl_window_peer") {
+    Handle        window;  // the nccl_window this is a peer copy of
+    std::int32_t  peer;    // communicator rank of the window's owner
+    std::uint64_t mapped_base;  // where that owner's window starts in THIS process
+    std::uint64_t size;
+};
+
 // ---------------------------------------------------------------------------
 // THE PROFILER-PLUGIN LAYER (912-916) — what NCCL DECIDED, not what was asked.
 //

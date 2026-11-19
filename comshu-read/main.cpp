@@ -1677,6 +1677,17 @@ template<> struct Table<ncr::NcclWindow> {
     }
 };
 
+template<> struct Table<ncr::NcclWindowPeer> {
+    static constexpr const char* name = "nccl_window_peer";
+    static constexpr const char* cols = "ticks,window,peer,mapped_base,size";
+    static void                  row(std::FILE* f, const Stamped<ncr::NcclWindowPeer>& s,
+                                     const rec::InternDictionary&) {
+        std::fprintf(f, "%llu,%u,%d,0x%llx,%llu", (unsigned long long)s.temporal.a.ticks,
+                     s.payload.window, s.payload.peer, (unsigned long long)s.payload.mapped_base,
+                     (unsigned long long)s.payload.size);
+    }
+};
+
 template<> struct Table<ncr::NcclDevComm> {
     static constexpr const char* name = "nccl_dev_comm";
     static constexpr const char* cols = "ticks,comm";
@@ -1774,7 +1785,7 @@ using TableRecords =
                ucr::UcxWorkerProgress, ucr::UcxTagProbe, ucr::UcxAtomic, ucr::UcxWorkerAddress,
                ucr::UcxEpConnection, ucr::UcxRkey, ucr::UcxRkeyPack, udr::UctBinding, udr::UctIface,
                udr::UctEndpoint, udr::UctSend, ncr::NcclComm, ncr::NcclCollective, ncr::NcclP2p,
-               ncr::NcclGroup, ncr::NcclWindow, ncr::NcclDevComm, ncr::NcclProfComm,
+               ncr::NcclGroup, ncr::NcclWindow, ncr::NcclWindowPeer, ncr::NcclDevComm, ncr::NcclProfComm,
                ncr::NcclCollExec, ncr::NcclProxyOp>;
 
 // Moved to capture_load.hpp, with RankDir and the scan, so comshu-ui can load a

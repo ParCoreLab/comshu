@@ -1151,6 +1151,18 @@ struct NcclWindow {
   base:uint64;         // the registered pointer's value: where the window IS
 }
 
+// type 918, Artifact. Where a PEER's copy of a window is mapped in this
+// process (ncclGetPeerDevicePointer, NCCL 2.29+). A store through a symmetric
+// window lands at mapped_base + offset here; the reader places it at the
+// owner's nccl_window.base + offset. `peer` is the communicator rank.
+struct NcclWindowPeer {
+  temporal:Temporal;
+  window:uint32;
+  peer:int32;
+  mapped_base:uint64;
+  size:uint64;
+}
+
 // type 910, Artifact. The existence fact "this workload initiates communication
 // from the GPU". Nothing else in a capture states it: the device API is all
 // NCCL_DEVICE_INLINE and leaves no symbol to interpose.

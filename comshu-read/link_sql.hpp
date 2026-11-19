@@ -1637,6 +1637,66 @@ FROM g
 LEFT JOIN _clock k ON k.rank = g.rank AND k.domain = g.domain
 )sql"},
 
+    // WHERE A STORE THROUGH AN NCCL SYMMETRIC WINDOW LANDS, as the owner names it.
+    //
+    // A kernel's ncclGetLsaPointer(w, off, p) is an address in the WRITER's flat
+    // mapping of rank p's window: memory the writer imported, so the capture
+    // names no object for it (gpu_access.owner_address = 0). nccl_window_peer
+    // says which mapping that is — window and peer, asked of NCCL's public
+    // ncclGetPeerDevicePointer — and the owner's own nccl_window row says where
+    // the same window starts in ITS address space. owner_address is then
+    // owner.base + (address - mapped_base): the same byte, exactly.
+    //
+    // THE OWNER'S WINDOW IS FOUND BY FACTS EVERY RANK AGREES ON, never by
+    // address. Raw addresses happened to agree on nccl_lsa-49229603 (every rank
+    // reserved its flat range at 0x45a0000000) and NCCL promises nothing of the
+    // kind. What it does promise: a communicator's comm_hash is equal on every
+    // rank (FNV-1a of the ncclUniqueId), `peer` is the owner's nccl_rank in it,
+    // and window registration is collective — the k-th ncclCommWindowRegister on
+    // a communicator is the same window on every rank. So (comm_hash, nccl_rank,
+    // k) names the owner's window.
+    //
+    // Refusals, each leaving the store unplaced and counted rather than guessed:
+    // comm_hash 0 (a split communicator, whose hash we cannot derive — see
+    // nccl_comm_hash.hpp); two communicators on one rank with the same hash;
+    // two windows of this rank whose peer mappings overlap (a range reused
+    // after deregistration — gpu_access ticks are drain times, so time cannot
+    // pick); and an offset past the owner's window.
+    {"_nccl_window_place", R"sql(
+CREATE OR REPLACE TABLE _nccl_window_place AS
+WITH win AS (
+    SELECT rank, "window", comm, buffer, size, base,
+           row_number() OVER (PARTITION BY rank, comm ORDER BY temporal_a_ticks, "window") AS k
+    FROM nccl_window
+),
+comm AS (
+    SELECT rank, comm, comm_hash, nccl_rank,
+           count(*) OVER (PARTITION BY rank, comm_hash) AS namesakes
+    FROM (SELECT DISTINCT rank, comm, comm_hash, nccl_rank FROM nccl_comm WHERE comm_hash <> 0)
+),
+peer AS (
+    SELECT DISTINCT rank, "window", peer, mapped_base, size FROM nccl_window_peer
+),
+placed AS (
+    SELECT p.rank,
+           p.mapped_base                      AS lo,
+           p.mapped_base + p.size             AS hi,
+           oc.rank                            AS owner_rank,
+           ow.buffer                          AS object,
+           ow.base                            AS owner_base,
+           ow.size                            AS owner_size
+    FROM peer p
+    JOIN win  ww ON ww.rank = p.rank AND ww."window" = p."window"
+    JOIN comm wc ON wc.rank = p.rank AND wc.comm = ww.comm AND wc.namesakes = 1
+    JOIN comm oc ON oc.comm_hash = wc.comm_hash AND oc.nccl_rank = p.peer AND oc.namesakes = 1
+    JOIN win  ow ON ow.rank = oc.rank AND ow.comm = oc.comm AND ow.k = ww.k
+)
+SELECT a.* FROM placed a
+WHERE NOT EXISTS (SELECT 1 FROM placed b
+                  WHERE b.rank = a.rank AND b.lo < a.hi AND a.lo < b.hi
+                    AND (b.lo, b.owner_rank, b.object) <> (a.lo, a.owner_rank, a.object))
+)sql"},
+
     {"_recv_attr", R"sql(
 CREATE OR REPLACE VIEW _recv_attr AS
 SELECT c.rank                AS recv_rank,
@@ -1970,6 +2030,36 @@ LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
       AND po.owner_address <> 0
       AND po.owner_address >= om.range_base
       AND po.owner_address <  om.range_base + om.range_size
+),
+-- A store through an NCCL symmetric window: the capture named no object (the
+-- writer's mapping is an import), and _nccl_window_place gives the owner, the
+-- owner's window object and where that window starts in the owner's space. The
+-- offset is the byte's distance into the WINDOW, which is the object's base —
+-- exact, and taken only where the owner the window names is the one the device
+-- names (mem_device's owner), so the two attributions cannot disagree silently.
+p2p_window AS (
+    SELECT w.owner_rank                              AS owner_rank,
+           w.object                                  AS object,
+           (g.address - w.lo)::UBIGINT               AS obj_offset,
+           g.size                                    AS size,
+           'p2p'                                     AS source,
+           g.rank::BIGINT                            AS actor_rank,
+           g.run_device::BIGINT                      AS actor_device,
+           TRUE                                      AS exact,
+           ol.life                                   AS life,
+           NULL::BOOLEAN                             AS in_window
+    FROM gpu_access g
+    JOIN _nccl_window_place w
+      ON w.rank = g.rank AND g.address >= w.lo AND g.address < w.hi
+    LEFT JOIN _node n         ON n.rank = g.rank
+    LEFT JOIN _device_key  gk ON gk.rank = g.rank AND gk.device = g.mem_device
+    LEFT JOIN _device_owner o ON o.node = n.node AND o.dev_key = gk.dev_key
+    LEFT JOIN (SELECT rank, object, CASE WHEN count(*) = 1 THEN min(life) END AS life
+               FROM _obj_life GROUP BY rank, object) ol
+           ON ol.rank = w.owner_rank AND ol.object = w.object
+    WHERE g.owner_address = 0
+      AND g.address - w.lo < w.owner_size
+      AND o.rank = w.owner_rank
 ),
 -- The remote address each send names, translated to a VA in the PEER's space.
 -- Plain remote_addr for an ordinary region; base + (remote_addr - iova) for a
@@ -2327,6 +2417,8 @@ ucx_send AS (
     ) m ON TRUE
 )
 SELECT *, 'bytes' AS unit FROM p2p
+UNION ALL
+SELECT *, 'bytes' FROM p2p_window
 UNION ALL
 SELECT *, 'bytes' FROM verbs
 UNION ALL
@@ -3563,11 +3655,11 @@ UNION ALL
 SELECT 'unattributed_p2p_accesses',
        'defect',
        coalesce(count(*), 0)::BIGINT,
-       'GPU accesses object_access could not place: no object named at capture (a peer buffer mapped from another process), owning rank unnameable, or the owner has no buffer at the actor''s extent'
+       'GPU accesses object_access could not place: no object named at capture (a peer buffer mapped from another process, outside any NCCL window the capture can tie to its owner), owning rank unnameable, or the owner has no buffer at the actor''s extent'
 -- The p2p branch's rule, restated: a kTable cannot read another. Keep the two
 -- WHERE clauses saying the same thing.
 FROM (
-    SELECT g.rank, g.object, g.run_device, g.mem_device, g.owner_address,
+    SELECT g.rank, g.object, g.run_device, g.mem_device, g.owner_address, g.address,
            CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
     FROM gpu_access g
     LEFT JOIN _node n         ON n.rank = g.rank
@@ -3580,10 +3672,15 @@ LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
        ON om.rank = po.owner_rank
       AND om.range_base = am.range_base
       AND om.range_size = am.range_size
-WHERE po.owner_rank IS NULL OR om.id IS NULL
+WHERE (po.owner_rank IS NULL OR om.id IS NULL
    OR po.owner_address = 0
    OR po.owner_address <  om.range_base
-   OR po.owner_address >= om.range_base + om.range_size
+   OR po.owner_address >= om.range_base + om.range_size)
+  -- ...and the NCCL window branch did not place it either (its rule restated).
+  AND NOT (po.owner_address = 0 AND EXISTS (
+      SELECT 1 FROM _nccl_window_place w
+      WHERE w.rank = po.rank AND po.address >= w.lo AND po.address < w.hi
+        AND po.address - w.lo < w.owner_size AND po.owner_rank = w.owner_rank))
 UNION ALL
 -- Sends object_access DROPPED because their remote address is an offset into a
 -- region it cannot translate (_mr_rebase mode 'unknown'): a zero-based dmabuf

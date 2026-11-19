@@ -69,12 +69,15 @@ export LD_LIBRARY_PATH="$NCCL_HOME/lib:${LD_LIBRARY_PATH:-}"
 # Symmetric memory needs CUDA P2P among the local ranks, so P2P stays on.
 export NCCL_DEBUG=WARN NCCL_P2P_DISABLE=0
 
+# p2p (gpumem) sees the stores; nccl records the windows and, through NCCL's
+# public ncclGetPeerDevicePointer, where each peer's copy is mapped here. The
+# reader needs both to place a store in its owner's window.
 BYTES=131072 ITERS=10                     # = meta.json's workload block
 DEADLINE=900  # NVBit's fixed cost of processing NCCL's module (case 05: ~435 s)
 rm -rf "$OUT" "$OUT.csv"; mkdir -p "$OUT"
 timeout "$DEADLINE" "$MPIRUN" -np 4 --map-by ppr:4:node \
   -x PATH -x LD_LIBRARY_PATH -x COMSHU_PROVIDER_PATH -x NCCL_DEBUG -x NCCL_P2P_DISABLE \
-  "$COMSHU" run -p p2p -o "$OUT" -- "$APP" "$BYTES" "$ITERS" > "$OUT.app" 2>"$OUT.err"
+  "$COMSHU" run -p p2p,nccl -o "$OUT" -- "$APP" "$BYTES" "$ITERS" > "$OUT.app" 2>"$OUT.err"
 rc=$?
 cat "$OUT.app"; tail -50 "$OUT.err"
 if [ $rc -eq 4 ] || grep -q "no symmetric" "$OUT.err" 2>/dev/null; then

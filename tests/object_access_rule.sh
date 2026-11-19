@@ -268,6 +268,57 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,0,0,4022,0,0,0,50,0,0,0,8,0,0,0,0,0,0
 CSV
 
+# NCCL SYMMETRIC WINDOWS (case 28's shape). A store through ncclGetLsaPointer
+# lands in the WRITER's mapping of the owner's window: an import, so the capture
+# names no object (owner_address 0), and nccl_window_peer says whose window it
+# is. Built so each wrong join names a different, real answer:
+#
+#   COMM RANKS ARE NOT CAPTURE RANKS. Communicator 4242 numbers capture ranks
+#   0, 1, 2 as nccl_rank 2, 0, 1. Rank 0's peer mapping names peer 0, which is
+#   CAPTURE rank 1; reading it as a capture rank names rank 0, the writer.
+#   THE WINDOW IS THE k-th REGISTRATION, not the only one. Rank 1 registered two
+#   windows on the communicator; rank 0's mapping is of its SECOND (k = 2,
+#   object 62 at 200000). Taking the first names object 61 at 100000.
+#   A SPLIT COMMUNICATOR (comm_hash 0) has no hash every rank agrees on, so its
+#   window's peer mapping at 12000000 must place nothing — counted instead.
+#
+# Expected: one store at 9000100 placed in rank 1's object 62 at offset 100.
+cat > "$WORK/nccl_comm.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,comm,comm_hash,nccl_comm_hash,nccl_rank,nranks,cuda_dev,pad
+0,0,0,50,0,0,0,30,4242,0,2,3,0,0
+1,0,0,50,0,0,0,31,4242,0,0,3,1,0
+2,0,0,50,0,0,0,32,4242,0,1,3,2,0
+0,0,0,60,0,0,0,33,0,0,0,2,0,0
+1,0,0,60,0,0,0,34,0,0,1,2,1,0
+CSV
+
+cat > "$WORK/nccl_window.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,window,comm,buffer,size,win_flags,pad,base
+0,2,0,70,0,900,0,39,30,59,1024,1,0,50000
+0,2,0,80,0,900,0,40,30,60,1024,1,0,65536
+1,2,0,70,0,900,0,41,31,61,1024,1,0,100000
+1,2,0,80,0,900,0,42,31,62,1024,1,0,200000
+0,2,0,90,0,900,0,43,33,63,1024,1,0,300000
+1,2,0,90,0,900,0,44,34,64,1024,1,0,400000
+CSV
+
+cat > "$WORK/nccl_window_peer.csv" <<'CSV'
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,window,peer,mapped_base,size
+0,0,0,81,0,0,0,40,0,9000000,1024
+0,0,0,91,0,0,0,43,1,12000000,1024
+CSV
+
+cat >> "$WORK/mem_object.csv" <<'CSV'
+1,2,0,70,0,900,0,61,0,100000,1024,1,0,11
+1,2,0,80,0,900,0,62,0,200000,1024,1,0,11
+1,2,0,90,0,900,0,64,0,400000,1024,1,0,11
+CSV
+
+cat >> "$WORK/gpu_access.csv" <<'CSV'
+0,3,0,3000,0,3100,0,1,0,9000100,0,0,4,1,0,0,1,0
+0,3,0,3000,0,3100,0,1,0,12000004,0,0,4,1,0,0,1,0
+CSV
+
 "$COMSHU" link "$WORK" > "$WORK/link.out" 2>&1
 link_rc=$?
 if grep -q "no DuckDB" "$WORK/link.out"; then
@@ -296,7 +347,7 @@ expect() {  # <label> <sql> <expected>
 # Every placement in one value. Each defect in the header changes it.
 expect "the placements" \
     "SELECT string_agg(source||':'||owner_rank||':'||object||':'||obj_offset||':'||size||':'||exact, ' ' ORDER BY source, owner_rank, object, obj_offset, size) FROM object_access" \
-    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:128:4:true p2p:1:9:256:8:true p2p:1:9:512:8:true p2p:2:7:256:8:true p2p:2:7:512:8:true ucx_rma:1:2:8:16:true ucx_rma:1:8:10:4:true ucx_send:0:3:16:64:true ucx_send:2:7:100:32:true verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
+    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:128:4:true p2p:1:9:256:8:true p2p:1:9:512:8:true p2p:1:62:100:4:true p2p:2:7:256:8:true p2p:2:7:512:8:true ucx_rma:1:2:8:16:true ucx_rma:1:8:10:4:true ucx_send:0:3:16:64:true ucx_send:2:7:100:32:true verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
 
 # The column that meant two things. A peer write is owned by the rank whose
 # memory it landed in, never by the rank that issued it.
@@ -307,7 +358,7 @@ expect "a peer write is never owned by its writer" \
 # owner's name for it, because that is the only one that means anything on the
 # owner's rank.
 expect "the object id is the owner's, not the actor's" \
-    "SELECT string_agg(DISTINCT object, ',' ORDER BY object) FROM object_access WHERE source = 'p2p'" \
+    "SELECT string_agg(DISTINCT object, ',' ORDER BY object) FROM object_access WHERE source = 'p2p' AND object <> 62" \
     "7,9"
 
 # Both mappings are of a 4096-byte object and land at the same two bytes, so
@@ -334,11 +385,19 @@ expect "every placement is exact" \
     "SELECT string_agg(DISTINCT source||'='||exact, ',' ORDER BY source||'='||exact) FROM object_access" \
     "devx=true,p2p=true,ucx_rma=true,ucx_send=true,verbs=true"
 
-# Three accesses could not be placed, for three different reasons. An empty
+expect "a store through a peer's NCCL window lands in the owner's k-th window" \
+    "SELECT owner_rank||':'||object||':'||obj_offset||':'||exact FROM object_access WHERE object = 62" \
+    "1:62:100:true"
+
+expect "a split communicator's window places nothing" \
+    "SELECT count(*) FROM object_access WHERE object IN (61, 64) OR (actor_rank = 0 AND owner_rank = 0)" "0"
+
+# Four accesses could not be placed, for four different reasons (the fourth is
+# the split communicator's store above). An empty
 # Objects panel must read as a count here, not as "this workload touched
 # nothing".
 expect "unplaceable accesses are counted, not dropped" \
-    "SELECT n FROM link_health WHERE finding = 'unattributed_p2p_accesses'" "3"
+    "SELECT n FROM link_health WHERE finding = 'unattributed_p2p_accesses'" "4"
 
 # A local access is still an access into an object — it is only the PEER ones
 # that need an owner resolved — so rank 1's own store must be placed.

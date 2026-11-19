@@ -309,6 +309,8 @@ b.append(note(10, 243, "ordered, so these are enqueue facts.", cls="fnote"))
 b.append(note(10, 271, "nccl_p2p is the only NCCL call that names a", cls="fnote"))
 b.append(note(10, 285, "peer, and so the only one an exact edge", cls="fnote"))
 b.append(note(10, 299, "follows from.", cls="fnote"))
+b.append(box(10, 330, "nccl_window_peer", 918, "ART", "window · peer · mapped_base", "ncc"))
+b.append(path("M236 353 H300 V213 H356", "window", 304, 300, anchor="start"))
 # The profiler-plugin layer. A SECOND column rather than more boxes hanging off
 # the communicator, because these do not join through `comm` at all: the plugin
 # is never told a ncclComm_t, only NCCL's own commHash — which is why nccl_comm
@@ -328,7 +330,7 @@ b.append(note(620, 326, "back to us — not reconstructed from timing.", cls="fn
 b.append(note(620, 348, "No proxy op exists for device-initiated or", cls="fnote"))
 b.append(note(620, 362, "NVLink traffic: it never reaches the CPU proxy.", cls="fnote"))
 FIGS["nccl"] = svg(1060, 400, "".join(b),
-    "The NCCL provider's nine record types: six host-API records hanging off the communicator, and three profiler-plugin records carrying what NCCL chose")
+    "The NCCL provider's ten record types: seven host-API records hanging off the communicator, and three profiler-plugin records carrying what NCCL chose")
 
 # ------------------------------------------------------------ fig: cross-rank
 b = []
@@ -661,6 +663,7 @@ NCC = [
  ("nccl_p2p", 904, "Event", "The only NCCL call that names a peer, and so the only one an exact edge follows from."),
  ("nccl_group", 906, "Event", "Group boundaries: N grouped sends are ONE launch, and nothing in a send row says so."),
  ("nccl_window", 908, "Entity", "A registered symmetric window \u2014 what makes GPU-initiated NCCL attributable where internal channel buffers are not."),
+ ("nccl_window_peer", 918, "Artifact", "Where a PEER's copy of a window is mapped in this process, from NCCL's public ncclGetPeerDevicePointer \u2014 what places a store through a symmetric window in the owner's buffer."),
  ("nccl_dev_comm", 910, "Artifact", "The existence fact 'this workload initiates communication from the GPU'. Nothing else in a capture states it."),
  ("nccl_prof_comm", 912, "Artifact", "The communicator as the profiler plugin was told about it. Carries NCCL's own commHash — the only name the plugin is ever given, and so the only join back to nccl_comm."),
  ("nccl_coll_exec", 914, "Event", "The collective as NCCL EXECUTED it: the algorithm and protocol it chose. Its temporal is the operation's lifetime inside NCCL, NOT nccl_collective's enqueue."),

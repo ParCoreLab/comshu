@@ -156,6 +156,8 @@ struct NcclGroup;
 
 struct NcclWindow;
 
+struct NcclWindowPeer;
+
 struct NcclDevComm;
 
 struct NcclProfComm;
@@ -4833,6 +4835,47 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclWindow FLATBUFFERS_FINAL_CLASS {
   }
 };
 FLATBUFFERS_STRUCT_END(NcclWindow, 88);
+
+FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclWindowPeer FLATBUFFERS_FINAL_CLASS {
+ private:
+  comshu::fb::Temporal temporal_;
+  uint32_t window_;
+  int32_t peer_;
+  uint64_t mapped_base_;
+  uint64_t size_;
+
+ public:
+  NcclWindowPeer()
+      : temporal_(),
+        window_(0),
+        peer_(0),
+        mapped_base_(0),
+        size_(0) {
+  }
+  NcclWindowPeer(const comshu::fb::Temporal &_temporal, uint32_t _window, int32_t _peer, uint64_t _mapped_base, uint64_t _size)
+      : temporal_(_temporal),
+        window_(::flatbuffers::EndianScalar(_window)),
+        peer_(::flatbuffers::EndianScalar(_peer)),
+        mapped_base_(::flatbuffers::EndianScalar(_mapped_base)),
+        size_(::flatbuffers::EndianScalar(_size)) {
+  }
+  const comshu::fb::Temporal &temporal() const {
+    return temporal_;
+  }
+  uint32_t window() const {
+    return ::flatbuffers::EndianScalar(window_);
+  }
+  int32_t peer() const {
+    return ::flatbuffers::EndianScalar(peer_);
+  }
+  uint64_t mapped_base() const {
+    return ::flatbuffers::EndianScalar(mapped_base_);
+  }
+  uint64_t size() const {
+    return ::flatbuffers::EndianScalar(size_);
+  }
+};
+FLATBUFFERS_STRUCT_END(NcclWindowPeer, 72);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) NcclDevComm FLATBUFFERS_FINAL_CLASS {
  private:

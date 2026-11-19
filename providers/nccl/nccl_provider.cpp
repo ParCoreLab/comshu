@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include <dlfcn.h>
+
 #include <cuda_runtime_api.h>
 #include <nccl.h>
 
@@ -286,6 +288,42 @@ Profiler::Profiler() {
                                                           attr.device,
                                                           attr.status,
                                                           comshu::core::ObjectOrigin::NcclWindow});
+        }
+    });
+    // ...and where every PEER's copy of it sits in this process, which is what
+    // lets a store through ncclGetLsaPointer be placed in the owner's buffer
+    // (see NcclWindowPeer). Asked of NCCL's public host API, resolved at run
+    // time because the provider may be built against headers older than 2.29,
+    // where the call does not exist: then there are no rows, which the reader
+    // reports as unplaced stores rather than guessing.
+    register_post<window_register_tag>([](ncclResult_t res, ncclComm_t c, void*, size_t size,
+                                          ncclWindow_t* win, int, auto, auto) {
+        if (res != ncclSuccess || !win || !*win)
+            return;
+        using PeerPtrFn = ncclResult_t (*)(ncclWindow_t, size_t, int, void**);
+        static const auto peer_ptr =
+            reinterpret_cast<PeerPtrFn>(dlsym(RTLD_DEFAULT, "ncclGetPeerDevicePointer"));
+        if (!peer_ptr)
+            return;
+        int self = -1, nranks = 0;
+        if (pncclCommUserRank(c, &self) != ncclSuccess || pncclCommCount(c, &nranks) != ncclSuccess)
+            return;
+        for (int p = 0; p < nranks; ++p) {
+            if (p == self)
+                continue;  // our own window: nccl_window.base already says where
+            void* q = nullptr;
+            // A peer outside this process's LSA team (another node) has no
+            // mapping here: NCCL returns an error or a null, and that peer's
+            // traffic crosses the network, where the verbs records place it.
+            if (peer_ptr(*win, 0, p, &q) != ncclSuccess || !q)
+                continue;
+            rec().record(rec().now_instant(),
+                         rr::NcclWindowPeer{{},
+                                            {},
+                                            h(*win),
+                                            p,
+                                            reinterpret_cast<std::uint64_t>(q),
+                                            static_cast<std::uint64_t>(size)});
         }
     });
     register_pre<window_deregister_tag>([](ncclComm_t, ncclWindow_t win, auto) {
