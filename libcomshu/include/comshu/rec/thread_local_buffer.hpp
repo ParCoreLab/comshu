@@ -20,6 +20,13 @@ class IDrainable {
 public:
     virtual ~IDrainable() = default;
     virtual void drain() = 0;
+    // For a process that is already dying (the fatal-signal handler): drain if
+    // that needs no waiting, and say whether it did. A buffer whose drain could
+    // block on a lock the faulting thread holds must override this.
+    virtual bool try_drain() noexcept {
+        drain();
+        return true;
+    }
 };
 
 // What actually goes on the wire for Events/Entities: temporal header + POD.

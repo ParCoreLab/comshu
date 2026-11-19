@@ -112,6 +112,13 @@ struct InvokeObjectOpsTable<MaxSlots, Derived, Tag, Ret (*)(Args...)> {
 // ================================================================
 template<typename... Tags> class ObjectContext {
 public:
+    // The ContextSlots entry that maps back to this context, shared by every
+    // tag's trampoline. kNoObjectOpsSlot until install() first patches an op.
+    // Kept so a second install() of the same object can recognise its own
+    // trampolines (CR-12), and so an object reusing a freed one's address
+    // reuses its slot rather than burning another.
+    size_t slot = kNoObjectOpsSlot;
+
     // Original function pointers
     template<ValidCallbackTag Tag> auto& original() noexcept {
         constexpr size_t idx = TagIndex<Tag, Tags...>::value;

@@ -79,7 +79,7 @@ static void     app_sigsegv_handler(int) {
 // code paths in glibc: signal() does not route through the public sigaction, so
 // interposing one does not cover the other. OpenMPI imports `sigaction`, which
 // makes that the arm that reproduces the real failure.
-enum class AppDoor { None, Signal, Sigaction };
+enum class AppDoor { None, Signal, Sigaction, IgnoreTermFirst };
 
 static void app_sigaction_handler(int, siginfo_t*, void*) {
     const int fd = ::open(g_marker.c_str(), O_CREAT | O_WRONLY, 0644);
@@ -142,6 +142,12 @@ static int run_dying_child(const fs::path& out, int sig, int n, AppDoor door = A
             sigemptyset(&sa.sa_mask);
             sa.sa_flags = SA_SIGINFO;
             ::sigaction(SIGSEGV, &sa, nullptr);
+        } else if (door == AppDoor::IgnoreTermFirst) {
+            // The application ignores SIGTERM (MPI daemons and services do) and
+            // one arrives: nothing happens, the process carries on — and the
+            // REAL crash after it must still be flushed.
+            ::signal(SIGTERM, SIG_IGN);
+            ::raise(SIGTERM);
         }
 
         ::raise(sig);
@@ -325,6 +331,32 @@ int main() {
     if (died4 != SIGSEGV) {
         std::fprintf(stderr, "crash_identity_smoke: sigaction arm died by %d, not SIGSEGV\n",
                      died4);
+        fail = 1;
+    }
+
+    // ── ARM 5: an IGNORED fatal signal first, then the real crash ───────────
+    //
+    // CR-13. The handler armed its recursion guard and then returned for a
+    // signal the application ignores, leaving the guard set: the next fatal
+    // signal took the "we faulted while flushing" exit and flushed nothing.
+    // So: SIGTERM ignored and delivered, the process carries on, then SIGSEGV —
+    // and every record must still be recovered.
+    const fs::path out5 = base / "ignored-then-segv";
+    const int      died5 = run_dying_child(out5, SIGSEGV, 8, AppDoor::IgnoreTermFirst);
+    const auto     recovered5 = rows<MemObject>(out5 / "rank-0");
+    if (died5 != SIGSEGV) {
+        std::fprintf(stderr,
+                     "crash_identity_smoke: ignored-SIGTERM arm died by %d, not SIGSEGV — an\n"
+                     "  ignored signal must not kill the process\n",
+                     died5);
+        fail = 1;
+    }
+    if (recovered5 != 8) {
+        std::fprintf(stderr,
+                     "crash_identity_smoke: %zu of 8 records recovered from a SIGSEGV that\n"
+                     "  followed an ignored SIGTERM — the ignored signal disabled the crash\n"
+                     "  flush for the rest of the process\n",
+                     recovered5);
         fail = 1;
     }
 

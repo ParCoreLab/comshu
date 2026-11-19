@@ -118,6 +118,30 @@ int main() {
     std::printf("object-ops: patched call=%d, post_add=%d, post_maybe=%d\n", r, g_post_add,
                 g_post_maybe);
 
+    // 2b. install() twice on the same object is a no-op (CR-12). It used to save
+    //     our own trampoline as the original, and the next call recursed until
+    //     the stack ran out.
+    {
+        auto* const patched = ctx.add;
+        mgr.install(&ctx);
+        assert(ctx.add == patched && "a second install() must not re-patch");
+        const int before = g_post_add;
+        assert(ctx.add(&ctx, 1) == 2 && "the real function still runs after re-install");
+        assert(g_post_add == before + 1 && "and the post callback fires exactly once");
+    }
+
+    // 2c. A fresh object at a recycled address: same context key, unpatched
+    //     ops. It must be patched again, and dispatch to ITS originals.
+    {
+        ctx.add = &real_add;  // what a new ibv_context at the old address looks like
+        ctx.maybe = &real_maybe;
+        mgr.install(&ctx);
+        assert(ctx.add != &real_add && "a recycled object's fresh ops are patched");
+        const int before = g_post_add;
+        assert(ctx.add(&ctx, 9) == 10);
+        assert(g_post_add == before + 1);
+    }
+
     // 3. The preload path, actually invoked. Until now this file only
     // static_asserted the traits, so invoke_preload — the choke point every
     // LD_PRELOAD interposer in every provider forwards to — had no runtime
@@ -185,8 +209,8 @@ int main() {
     });
 
     {
-        const auto& chain = (*comshu::smart_dlsym::RegisteredSymbols)["comshu_chain_probe"];
-        assert(chain.size() == 3 && "all three registrants are kept, none rejected");
+        assert(comshu::smart_dlsym::registrant_count("comshu_chain_probe") == 3 &&
+               "all three registrants are kept, none rejected");
 
         // The production path, not a reimplementation of it.
         void* real = reinterpret_cast<void*>(0xdead);
@@ -203,8 +227,45 @@ int main() {
         assert(comshu::smart_dlsym::on_symbol_load(nullptr, nullptr, "comshu_chain_probe") ==
                nullptr);
         assert(order.size() == 3 && "a null real symbol must not run the chain");
+        // dlsym(h, NULL) reaches on_symbol_load with a null name (CR-11).
+        assert(comshu::smart_dlsym::on_symbol_load(real, nullptr, nullptr) == real);
 
-        std::printf("dlsym chain: %zu registrants, front=%p\n", chain.size(), fn);
+        std::printf("dlsym chain: %zu registrants, front=%p\n",
+                    comshu::smart_dlsym::registrant_count("comshu_chain_probe"), fn);
+    }
+
+    // 4b. The registry under concurrent registration and lookup (CR-11): it
+    //     used to be an unsynchronised map, mutated by provider constructors
+    //     while application threads resolved symbols through it. Every
+    //     registration must land, and a lookup must see a whole chain.
+    {
+        constexpr int kThreads = 8, kPerThread = 200;
+        std::atomic<int> ran{0};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < kThreads; ++t)
+            threads.emplace_back([t, &ran] {
+                for (int i = 0; i < kPerThread; ++i) {
+                    comshu::smart_dlsym::register_symbol(
+                        "comshu_concurrent_" + std::to_string(i % 16),
+                        [&ran](void* next, void*, const char*) {
+                            ran.fetch_add(1, std::memory_order_relaxed);
+                            return next;
+                        });
+                    (void)comshu::smart_dlsym::on_symbol_load(
+                        reinterpret_cast<void*>(0xbeef), nullptr,
+                        ("comshu_concurrent_" + std::to_string((i + t) % 16)).c_str());
+                }
+            });
+        for (auto& th : threads)
+            th.join();
+        std::size_t total = 0;
+        for (int k = 0; k < 16; ++k)
+            total += comshu::smart_dlsym::registrant_count(
+                ("comshu_concurrent_" + std::to_string(k)).c_str());
+        assert(total == static_cast<std::size_t>(kThreads * kPerThread) &&
+               "every concurrent registration must land");
+        std::printf("dlsym registry: %zu concurrent registrations, %d callbacks run\n", total,
+                    ran.load());
     }
 
     // 5. SmartDlsym runtime (SymbolResolver.cpp) links and resolves a real export.

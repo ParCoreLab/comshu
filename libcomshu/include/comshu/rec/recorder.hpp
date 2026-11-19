@@ -75,10 +75,14 @@ public:
             core::RecordTrait<R>::type_id, static_cast<std::uint8_t>(core::RecordTrait<R>::kind),
             static_cast<std::uint32_t>(sizeof(Stamped<R>)),
             static_cast<std::uint32_t>(Config::buffer_capacity));
+        // This thread is the only writer of `count`, so it reads its own value
+        // plainly; other threads drain this arena (finalize, the signal
+        // handler) and read it with acquire — see Arena::drain in engine.cpp.
         if (arena->count == arena->capacity)
             comshu_engine_arena_flush(arena);
+        const std::uint32_t k = arena->count;
         auto* slot = reinterpret_cast<Stamped<R>*>(static_cast<std::byte*>(arena->slots) +
-                                                   std::size_t{arena->count} * arena->stride);
+                                                   std::size_t{k} * arena->stride);
         // NOTE: this does NOT currently clean the padding, and the capture
         // still carries stack residue — verified 2026-07-30, 5000/5000 records
         // in a fresh capture. Zeroing the destination is useless because
@@ -93,7 +97,13 @@ public:
         std::memset(static_cast<void*>(slot), 0, sizeof(Stamped<R>));
         slot->temporal = t;
         slot->payload = r;
-        ++arena->count;
+        // PUBLISH, after the slot is complete (CR-08). A drain on another thread
+        // loads `count` with acquire, so every slot below it is whole. A plain
+        // `++count` let that drain read a half-written record, and let this
+        // thread write back a count the drain had just reset. Release is a plain
+        // store on x86; the field stays a plain uint32_t, so nothing changes at
+        // the C ABI the gcc-11/nvcc providers share with the engine.
+        __atomic_store_n(&arena->count, k + 1, __ATOMIC_RELEASE);
     }
 
     // --- interning -----------------------------------------------------------
@@ -138,8 +148,10 @@ public:
     void drain_thread() { comshu_engine_drain_thread(); }
 
 private:
-    ISink*         m_sink;
-    core::DomainId m_cpu_domain;
+    // Initialised because `Recorder() = default` exists: a default-constructed
+    // one used to stamp records with an indeterminate clock domain (CR-09).
+    ISink*         m_sink = nullptr;
+    core::DomainId m_cpu_domain = core::kDomainHostTsc;
 };
 
 // NB deliberately NOT `extern template` any more. It was needed while the

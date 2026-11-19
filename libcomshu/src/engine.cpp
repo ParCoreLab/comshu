@@ -15,6 +15,7 @@
 // still L0-L2 core (see ARCHITECTURE.md §0).
 
 #include <dlfcn.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>  // getpid, and glibc's declaration of `environ`
 
@@ -100,11 +101,29 @@ namespace {
 // The engine-side arena. `pub` is the only part a provider ever sees, and it is
 // plain POD — which is the point: gpumem is built by nvcc/gcc-11.4 and this
 // object by gcc-13.2, so nothing with a C++ ABI may cross between them.
+//
+// ONE WRITER, MANY DRAINERS (CR-08). Only the thread that owns an arena appends
+// to it (Recorder::append, inline in the provider), but any thread may drain it:
+// finalize() flushes threads that never call drain_thread(), and the fatal-signal
+// handler flushes whatever it can. Those used to read and zero `count` under the
+// owner's feet — a half-written record could be submitted, and the owner's
+// `++count` could resurrect a count just reset, writing records twice.
+//
+// So: the owner PUBLISHES `count` with a release store after the slot is whole;
+// every drain holds `m_drain` and reads it with acquire. Only the owner may reset
+// the arena to empty — it is the only thread that knows nothing is being
+// appended. Any other drainer submits [drained, count) and advances the
+// `drained` watermark instead, so the owner's next drain starts where it left
+// off. The hot path pays nothing new: the lock is taken only when a buffer is
+// full or the run is ending.
 struct Arena final : rec::IDrainable {
     comshu_arena           pub{};
     std::vector<std::byte> storage;
     core::RecordTypeId     type_id{};
     core::RecordKind       kind{};
+    pthread_t              owner = pthread_self();  // created on its thread
+    std::mutex             m_drain;
+    std::uint32_t          drained = 0;  // slots [0, drained) already submitted
 
     Arena(core::RecordTypeId id, core::RecordKind k, std::uint32_t stride, std::uint32_t capacity)
         : storage(static_cast<std::size_t>(stride) * capacity), type_id(id), kind(k) {
@@ -116,21 +135,52 @@ struct Arena final : rec::IDrainable {
     }
 
     void drain() override {
-        if (pub.count == 0)
-            return;
-        auto& tracer = Tracer::instance();
-        if (!tracer.has_recorder()) {
-            pub.count = 0;
-            return;
+        std::lock_guard<std::mutex> lk(m_drain);
+        drain_locked();
+    }
+
+    // The signal handler's variant: never wait — the faulting thread may be the
+    // owner, stopped inside its own drain while holding m_drain.
+    bool try_drain() noexcept override {
+        std::unique_lock<std::mutex> lk(m_drain, std::try_to_lock);
+        if (!lk.owns_lock())
+            return false;
+        drain_locked();
+        return true;
+    }
+
+    // Child of a fork: only the forking thread survives, the parent's records
+    // are not ours, and m_drain may have been copied locked.
+    void reset_for_fork() {
+        new (&m_drain) std::mutex();
+        owner = pthread_self();
+        drained = 0;
+        __atomic_store_n(&pub.count, 0u, __ATOMIC_RELEASE);
+    }
+
+private:
+    void drain_locked() {
+        const std::uint32_t n = __atomic_load_n(&pub.count, __ATOMIC_ACQUIRE);
+        const bool          is_owner = pthread_equal(owner, pthread_self()) != 0;
+        if (n > drained) {
+            auto& tracer = Tracer::instance();
+            if (tracer.has_recorder())
+                tracer.recorder().sink().submit(rec::BufferView{
+                    .type_id = type_id,
+                    .kind = kind,
+                    .data = static_cast<const std::byte*>(pub.slots) +
+                            std::size_t{drained} * pub.stride,
+                    .bytes = std::size_t{n - drained} * pub.stride,
+                    .count = n - drained,
+                });
         }
-        tracer.recorder().sink().submit(rec::BufferView{
-            .type_id = type_id,
-            .kind = kind,
-            .data = static_cast<const std::byte*>(pub.slots),
-            .bytes = std::size_t{pub.count} * pub.stride,
-            .count = pub.count,
-        });
-        pub.count = 0;
+        if (is_owner) {
+            // Nothing is being appended while the owner is here: empty it.
+            drained = 0;
+            __atomic_store_n(&pub.count, 0u, __ATOMIC_RELEASE);
+        } else {
+            drained = n;  // the owner may still be appending past n
+        }
     }
 };
 
@@ -488,7 +538,7 @@ void comshu_engine_reset_arenas_for_fork(void) {
     // that can still be reached — and it is the one holding the parent's
     // buffered records.
     for (auto& [id, a] : comshu::arenas_for_this_thread()) {
-        a->pub.count = 0;  // drop the parent's records; the child starts empty
+        a->reset_for_fork();  // drop the parent's records; the child starts empty
         comshu::rec::ThreadBufferRegistry::instance().register_buffer(a.get());
     }
 }
@@ -1229,14 +1279,63 @@ bool comshu_is_fatal_signal(int sig) {
 }
 
 /* What the APPLICATION asked for, per signal — the disposition it believes is
- * installed. Plain arrays with no constructor: this is read from a signal
- * handler, and a std::map there is the use-after-destruction gpumem's
- * static_assert exists to forbid. NSIG is a compile-time bound on every Linux. */
+ * installed. Plain arrays with no dynamic constructor: this is read from a
+ * signal handler, and a std::map there is the use-after-destruction gpumem's
+ * static_assert exists to forbid. NSIG is a compile-time bound on every Linux.
+ *
+ * PUBLISHED UNDER A SEQLOCK (CR-13). The handler reads an entry on whatever
+ * thread faulted while another thread may be inside sigaction()/signal()
+ * rewriting it, and a half-written `struct sigaction` hands the handler a
+ * sa_flags from one disposition and a function pointer from another. The reader
+ * cannot take a lock (it runs in a signal handler, possibly interrupting the
+ * lock's holder), so it retries on a sequence number instead. Writers serialise
+ * on a mutex and BLOCK EVERY SIGNAL while they write: otherwise a fatal signal
+ * landing on the writing thread mid-write would spin forever on the odd
+ * sequence it left behind. */
 struct AppAction {
+    std::atomic<unsigned> seq;  // odd while a write is in flight
+    struct sigaction      act;
+    bool                  set;
+};
+AppAction  g_app_action[NSIG];
+std::mutex g_app_action_write;
+
+struct AppActionView {
     struct sigaction act;
     bool             set;
 };
-AppAction g_app_action[NSIG];
+
+/* Async-signal-safe: no lock, no allocation, bounded by writers finishing. */
+AppActionView app_action_load(int sig) {
+    AppAction&    a = g_app_action[sig];
+    AppActionView v;
+    for (;;) {
+        const unsigned s1 = a.seq.load(std::memory_order_acquire);
+        if (s1 & 1u)
+            continue;  // a writer is mid-update on another thread
+        std::memcpy(&v.act, &a.act, sizeof v.act);
+        v.set = a.set;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (a.seq.load(std::memory_order_relaxed) == s1)
+            return v;
+    }
+}
+
+void app_action_store(int sig, const struct sigaction& act) {
+    sigset_t all, prev;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, &prev);
+    {
+        std::lock_guard<std::mutex> lk(g_app_action_write);
+        AppAction&                  a = g_app_action[sig];
+        a.seq.fetch_add(1, std::memory_order_relaxed);  // odd: readers retry
+        std::atomic_thread_fence(std::memory_order_release);
+        std::memcpy(&a.act, &act, sizeof act);
+        a.set = true;
+        a.seq.fetch_add(1, std::memory_order_release);  // even: published
+    }
+    pthread_sigmask(SIG_SETMASK, &prev, nullptr);
+}
 
 typedef int (*SigactionFn)(int, const struct sigaction*, struct sigaction*);
 SigactionFn comshu_real_sigaction() {
@@ -1265,6 +1364,19 @@ void comshu_restore_default(int sig) {
 }
 
 void comshu_fatal_signal_handler(int sig, siginfo_t* info, void* ctx) {
+    /* What the application asked for, read once. */
+    const AppActionView app = app_action_load(sig);
+
+    /* An IGNORED signal is not fatal: the process carries on and nothing needs
+     * saving. Decided BEFORE the recursion guard is armed, because returning
+     * with it set (as this once did) left every later fatal signal taking the
+     * "we faulted while flushing" exit — no flush for the real crash (CR-13).
+     * sa_handler and sa_sigaction share a union and the kernel reads SIG_IGN
+     * whatever sa_flags say, so this does too; testing SA_SIGINFO first would
+     * call address 1 as a function. */
+    if (app.set && app.act.sa_handler == SIG_IGN)
+        return;
+
     static volatile sig_atomic_t in_handler = 0;
     if (in_handler) { /* guard 2: we faulted while flushing. Give up cleanly. */
         comshu_restore_default(sig);
@@ -1279,15 +1391,12 @@ void comshu_fatal_signal_handler(int sig, siginfo_t* info, void* ctx) {
     ::alarm(0);
 
     /* Then hand the signal on exactly as the application arranged for it. */
-    const AppAction& app = g_app_action[sig];
     if (app.set) {
         if ((app.act.sa_flags & SA_SIGINFO) && app.act.sa_sigaction) {
             in_handler = 0; /* theirs may legitimately fault and handle it */
             app.act.sa_sigaction(sig, info, ctx);
             return;
         }
-        if (app.act.sa_handler == SIG_IGN)
-            return; /* they asked for it to be ignored; honour that */
         if (app.act.sa_handler && app.act.sa_handler != SIG_DFL) {
             in_handler = 0;
             app.act.sa_handler(sig);
@@ -1336,10 +1445,8 @@ void comshu_install_signal_handlers() {
              * us is chained to rather than lost. */
             struct sigaction prev;
             std::memset(&prev, 0, sizeof prev);
-            if (real && real(sig, nullptr, &prev) == 0 && prev.sa_handler != SIG_DFL) {
-                g_app_action[sig].act = prev;
-                g_app_action[sig].set = true;
-            }
+            if (real && real(sig, nullptr, &prev) == 0 && prev.sa_handler != SIG_DFL)
+                app_action_store(sig, prev);
             comshu_install_one(sig);
         }
     });
@@ -1360,8 +1467,8 @@ extern "C" int sigaction(int sig, const struct sigaction* act, struct sigaction*
      * otherwise a library that saves and restores a handler would save OURS and
      * reinstall it later as if it were its own. */
     if (oldact) {
-        if (g_app_action[sig].set) {
-            *oldact = g_app_action[sig].act;
+        if (const AppActionView app = app_action_load(sig); app.set) {
+            *oldact = app.act;
         } else if (real(sig, nullptr, oldact) != 0) {
             return -1;
         } else if (oldact->sa_sigaction == &comshu_fatal_signal_handler) {
@@ -1372,8 +1479,7 @@ extern "C" int sigaction(int sig, const struct sigaction* act, struct sigaction*
     if (!act)
         return 0; /* pure query, already answered */
 
-    g_app_action[sig].act = *act;
-    g_app_action[sig].set = true;
+    app_action_store(sig, *act);
     comshu_install_one(sig); /* ours goes back in front, whatever they asked for */
     return 0;
 }
@@ -1385,14 +1491,14 @@ extern "C" sighandler_t signal(int sig, sighandler_t handler) {
         static auto real = comshu_next_sym<sighandler_t (*)(int, sighandler_t)>("signal");
         return real ? real(sig, handler) : SIG_ERR;
     }
-    sighandler_t     previous = g_app_action[sig].set ? g_app_action[sig].act.sa_handler : SIG_DFL;
+    const AppActionView app = app_action_load(sig);
+    sighandler_t        previous = app.set ? app.act.sa_handler : SIG_DFL;
     struct sigaction act;
     std::memset(&act, 0, sizeof act);
     act.sa_handler = handler;
     sigemptyset(&act.sa_mask);
     act.sa_flags = SA_RESTART;
-    g_app_action[sig].act = act;
-    g_app_action[sig].set = true;
+    app_action_store(sig, act);
     comshu_install_one(sig);
     return previous;
 }
@@ -1504,12 +1610,11 @@ extern "C" int ibv_destroy_qp(void* qp) {
 // hook, and capture the exact real symbol they resolved (its version included).
 // Modelled on core/dmabuf_registry.hpp's cuGetProcAddress registration.
 static void comshu_install_ibv_destroy_qp_hook() {
-    if (!comshu::smart_dlsym::RegisteredSymbols)
+    if (!comshu::smart_dlsym::interposer_ready())
         return;  // dlsym interposer not initialised; nothing resolves through us
-    static bool installed = false;
-    if (installed)
+    static std::atomic<bool> installed{false};
+    if (installed.exchange(true))
         return;
-    installed = true;
     comshu::smart_dlsym::register_symbol(
         "ibv_destroy_qp", [](void* next, void*, const char*) -> void* {
             if (next)

@@ -60,6 +60,12 @@ add_test(NAME fork_smoke COMMAND fork_smoke)
 # high-volume streams survive and the one-row identity streams do not -- so
 # start() flushes those two immediately. This is what stops that line being read
 # as a redundant flush and deleted.
+# Appends racing cross-thread drains: every record exactly once, whole (CR-08).
+add_executable(arena_drain_race arena_drain_race.cpp)
+target_link_libraries(arena_drain_race PRIVATE comshu::comshu comshu::engine)
+comshu_add_test(arena_drain_race)
+add_test(NAME arena_drain_race COMMAND arena_drain_race)
+
 add_executable(crash_identity_smoke crash_identity_smoke.cpp)
 target_link_libraries(crash_identity_smoke PRIVATE comshu::comshu comshu::engine)
 comshu_add_test(crash_identity_smoke)
@@ -99,6 +105,22 @@ target_include_directories(cq_ring_cache_test PRIVATE ${CMAKE_SOURCE_DIR}/provid
 target_compile_features(cq_ring_cache_test PRIVATE cxx_std_20)
 target_compile_options(cq_ring_cache_test PRIVATE -UNDEBUG)
 add_test(NAME cq_ring_cache COMMAND cq_ring_cache_test)
+
+# dlvsym(RTLD_NEXT) through the engine: relative to the caller, and the
+# requested version (CR-10). Two versioned libraries and the engine preloaded.
+foreach(_l real caller)
+  add_library(dlvsym_${_l} SHARED dlvsym_next/${_l}.cpp)
+  target_link_options(dlvsym_${_l} PRIVATE
+    -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/dlvsym_next/${_l}.map)
+endforeach()
+target_link_libraries(dlvsym_caller PRIVATE dl)
+add_executable(dlvsym_next_test dlvsym_next/main.cpp)
+# Order matters: the caller before the real library, so the caller's own
+# vsym_probe sits between the engine and the one RTLD_NEXT must find.
+target_link_libraries(dlvsym_next_test PRIVATE dlvsym_caller dlvsym_real dl)
+add_test(NAME dlvsym_next COMMAND dlvsym_next_test)
+set_tests_properties(dlvsym_next PROPERTIES ENVIRONMENT
+  "LD_PRELOAD=$<TARGET_FILE:comshu_engine>;COMSHU_OUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/dlvsym_next.cap")
 
 # InternTable itself: identity, handle numbering, storage stability, and the
 # shared string/key counter. No engine, no NIC — the paths are all reachable

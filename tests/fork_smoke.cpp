@@ -33,6 +33,14 @@ static void record_n(int n, std::uint16_t dev) {
                            dev});
 }
 
+// Rows of any record type in `dir`.
+template<class R> static std::size_t rows(const fs::path& dir) {
+    auto path = dir / (std::to_string(core::RecordTrait<R>::type_id) + ".pcs");
+    if (!fs::exists(path))
+        return 0;
+    return (fs::file_size(path) - sizeof(rec::StreamHeader)) / sizeof(rec::Stamped<R>);
+}
+
 static std::size_t stream_count(const fs::path& dir) {
     auto path = dir / (std::to_string(core::RecordTrait<MemObject>::type_id) + ".pcs");
     if (!fs::exists(path))
@@ -120,6 +128,20 @@ int main() {
           "child stream does not hold the child's own records");
     check(parent_own == static_cast<std::size_t>(kParentPre + kParentPost),
           "parent stream does not hold the parent's own records");
+
+    // The child's capture must be placeable on its own: its node and BOTH of
+    // its clock anchors (start and end), like the parent's. The start-of-run
+    // pair was written into arenas the fork reset then wiped, so the child had
+    // only its end anchor and no node identity at all (CR-07).
+    const fs::path child_dir = out / ("rank-" + std::to_string(pid));
+    using core::records::ClockAnchor;
+    using core::records::NodeIdentity;
+    std::printf("  anchors parent=%zu child=%zu; node_identity parent=%zu child=%zu\n",
+                rows<ClockAnchor>(out / "rank-0"), rows<ClockAnchor>(child_dir),
+                rows<NodeIdentity>(out / "rank-0"), rows<NodeIdentity>(child_dir));
+    check(rows<NodeIdentity>(child_dir) == 1, "child capture has no node_identity");
+    check(rows<ClockAnchor>(child_dir) == 2, "child capture lacks its start or end clock anchor");
+    check(rows<ClockAnchor>(out / "rank-0") == 2, "parent capture lacks a clock anchor");
 
     if (bad) {
         std::printf("fork_smoke: %d check(s) failed\n", bad);

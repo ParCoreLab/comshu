@@ -61,9 +61,10 @@ public:
         std::unique_lock lock(m_mutex, std::try_to_lock);
         if (!lock.owns_lock())
             return false;
+        bool all = true;
         for (IDrainable* b : m_buffers)
-            b->drain();
-        return true;
+            all = b->try_drain() && all;
+        return all;
     }
 
     std::size_t size() {

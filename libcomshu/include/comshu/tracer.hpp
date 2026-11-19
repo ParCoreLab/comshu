@@ -17,6 +17,7 @@
 #include <memory>
 #include <vector>
 #include <mutex>
+#include <new>
 #include <string>
 
 #include "comshu/core/records.hpp"
@@ -352,7 +353,19 @@ private:
             return;                    // wasn't tracing
         (void)t.m_sink.release();      // leak parent's sink: do NOT flush/fclose
         (void)t.m_recorder.release();  // leak parent's recorder: do NOT drain
+        // Another parent thread may have held m_lifecycle at the fork; it does
+        // not exist here and will never unlock it, so start() below would
+        // deadlock. Only this thread exists, so a fresh mutex is exact (CR-07).
+        new (&t.m_lifecycle) std::mutex();
         rec::ThreadBufferRegistry::instance().reset_for_fork();
+        // Clear and re-register the arenas BEFORE start(): start() writes the
+        // child's start-of-run ClockAnchor and NodeIdentity into them and drains
+        // them to disk. Done after, as it was, the reset zeroed those two rows
+        // and the child capture could not be placed on a node or a clock
+        // (CR-07, fork_smoke). Only the registry reset above is needed first;
+        // the arenas resolve their sink at drain time, so the start() below
+        // still points them at the child's directory.
+        comshu_engine_reset_arenas_for_fork();
         // Child rank <- pid: guarantees a distinct rank-<pid> dir from the
         // parent. A launcher that re-execs overwrites this with the real rank
         // on its next start(). The fresh Recorder has a new address, so the
@@ -365,11 +378,6 @@ private:
         const int attached = t.m_active;
         t.start(cfg);
         t.m_active = attached;
-        // After start(), so the arenas resolve to the child's sink and the
-        // registry mutex reset_for_fork() placement-reset is usable again.
-        // Without this the child's records land in arenas nobody drains: the
-        // parent wrote 130/130 and the child 0 of 50 (fork_smoke).
-        comshu_engine_reset_arenas_for_fork();
     }
 
     // Say it, loudly, on the way out.

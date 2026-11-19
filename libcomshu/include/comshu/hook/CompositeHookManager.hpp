@@ -376,23 +376,35 @@ private:
                 return;
             }
 
-            auto& op = static_cast<Derived&>(*this).template get_op<Tag>(obj);
-            ctx->template original<Tag>() = op;
+            using FuncPtr = typename HookTrait<Tag>::FuncPtr;
+            const auto& table = InvokeObjectOpsTable<Tag, FuncPtr>::table;
+            auto&       op = static_cast<Derived&>(*this).template get_op<Tag>(obj);
 
-            // Allocate a slot and store context there
-            size_t slot = ContextSlots::allocate(ctx);
-            // Table full. Leave the op pointing at the real implementation: an
-            // uninstrumented context is a gap in the capture, whereas patching
-            // with no slot behind it would dispatch through a trampoline whose
-            // context lookup is null — a crash in the application, caused by the
-            // tracer, on the largest runs.
-            if (slot == detail::kNoObjectOpsSlot) {
-                return;
+            // ALREADY OURS: leave it. A second install() of the same object used
+            // to save our own trampoline as the "original", so the trampoline
+            // then called itself until the stack ran out (CR-12). Any of our
+            // trampolines counts, not only this context's: an op copied from
+            // another patched object must not become anyone's original either.
+            for (const auto& ours : table)
+                if (op == ours)
+                    return;
+
+            // One slot per context, shared by all its tags. An object at a
+            // freed one's address arrives here with the old context (and slot)
+            // but fresh, unpatched ops — so reuse the slot, re-save originals.
+            if (ctx->slot == detail::kNoObjectOpsSlot) {
+                ctx->slot = ContextSlots::allocate(ctx);
+                // Table full. Leave the op pointing at the real implementation:
+                // an uninstrumented context is a gap in the capture, whereas
+                // patching with no slot behind it would dispatch through a
+                // trampoline whose context lookup is null — a crash in the
+                // application, caused by the tracer, on the largest runs.
+                if (ctx->slot == detail::kNoObjectOpsSlot)
+                    return;
             }
 
-            // Get the pre-instantiated function pointer for this slot
-            using FuncPtr = typename HookTrait<Tag>::FuncPtr;
-            op = InvokeObjectOpsTable<Tag, FuncPtr>::table[slot];
+            ctx->template original<Tag>() = op;
+            op = table[ctx->slot];
         }
     }
 

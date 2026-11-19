@@ -1,0 +1,2 @@
+V1 { global: vsym_probe; local: *; };
+V2 { global: vsym_probe; } V1;

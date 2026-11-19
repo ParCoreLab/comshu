@@ -33,7 +33,6 @@ extern void* (*real_dlopen)(const char*, int);
 extern void* (*real_dlsym)(void*, const char*);
 extern void* (*real_dlvsym)(void*, const char*, const char*);
 extern void* (*real_dlclose)(void*);
-extern std::unordered_map<std::string, std::vector<CallbackType>>* RegisteredSymbols;
 
 // Register interest in a symbol. MULTIPLE registrants per symbol are supported
 // and compose; this used to throw std::runtime_error on the second one.
@@ -52,9 +51,17 @@ extern std::unordered_map<std::string, std::vector<CallbackType>>* RegisteredSym
 // the real symbol. Order must not matter for correctness. If it does, two
 // registrants are fighting over one entry point, and that is a design error the
 // chain should expose rather than paper over.
-inline void register_symbol(std::string symbol_name, CallbackType callback) {
-    (*RegisteredSymbols)[std::move(symbol_name)].push_back(std::move(callback));
-}
+//
+// Thread-safe, and callable before the interposer's constructor has run (the
+// registry is created on first use rather than by init(), which used to replace
+// it and drop every registration made ahead of it — CR-11).
+void register_symbol(std::string symbol_name, CallbackType callback);
+
+// How many registrants `symbol_name` has. For tests.
+std::size_t registrant_count(const char* symbol_name);
+
+// True once the dlsym/dlvsym interposer has resolved the real dl* functions.
+bool interposer_ready();
 
 // What the dlsym/dlvsym interposers hand back for `symbol_name`: the real
 // symbol run through every registrant, innermost first.

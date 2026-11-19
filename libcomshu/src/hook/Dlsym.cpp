@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -29,8 +30,40 @@ void* (*real_dlsym)(void*, const char*) = nullptr;
 void* (*real_dlvsym)(void*, const char*, const char*) = nullptr;
 void* (*real_dlclose)(void*) = nullptr;
 
-// If you see an undebuggable floating point exception it's this
-std::unordered_map<std::string, std::vector<CallbackType>>* RegisteredSymbols{nullptr};
+// The registry: symbol name -> registrants, innermost first.
+//
+// ONE MUTEX, NEVER HELD ACROSS A CALLBACK (CR-11). dlsym is called from any
+// thread, providers register from their constructors while the application may
+// already be resolving symbols, and the map used to be read and written with no
+// synchronisation at all. A lock held while the chain runs would deadlock the
+// first registrant that resolves a symbol of its own, so a lookup copies the
+// symbol's chain under the lock and runs it after releasing it.
+//
+// Created on first use and never destroyed: dlsym is called during static
+// destruction, and from constructors that run before this file's.
+using SymbolMap = std::unordered_map<std::string, std::vector<CallbackType>>;
+static std::mutex& registry_mutex() {
+    static std::mutex m;  // constant-initialised: safe from constructor(0)
+    return m;
+}
+static SymbolMap& registry_locked() {  // caller holds registry_mutex()
+    static SymbolMap* m = new SymbolMap();
+    return *m;
+}
+
+void register_symbol(std::string symbol_name, CallbackType callback) {
+    std::lock_guard<std::mutex> lk(registry_mutex());
+    registry_locked()[std::move(symbol_name)].push_back(std::move(callback));
+}
+
+std::size_t registrant_count(const char* symbol_name) {
+    if (!symbol_name)
+        return 0;
+    std::lock_guard<std::mutex> lk(registry_mutex());
+    const auto&                 map = registry_locked();
+    const auto                  it = map.find(symbol_name);
+    return it == map.end() ? 0 : it->second.size();
+}
 
 // DIAGNOSTIC, gated on COMSHU_TRACE_DLSYM=1 — which vendor symbols did the
 // application RESOLVE, and which of those do we not intercept?
@@ -127,17 +160,22 @@ static void trace_dlsym_lookup(const char* symbol_name, bool hooked) {
 }
 
 void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
-    if (!real_symbol) {
+    // dlsym(h, NULL) is legal to call and glibc answers it; there is nothing to
+    // look up, and std::string(nullptr) is undefined behaviour (CR-11).
+    if (!real_symbol || !symbol_name) {
         return real_symbol;
     }
 
-    if (!RegisteredSymbols) {
-        return real_symbol;
+    std::vector<CallbackType> chain;
+    {
+        std::lock_guard<std::mutex> lk(registry_mutex());
+        const auto&                 map = registry_locked();
+        const auto                  it = map.find(symbol_name);
+        if (it != map.end())
+            chain = it->second;
     }
-
-    const auto& registered_handler = RegisteredSymbols->find(symbol_name);
-    trace_dlsym_lookup(symbol_name, registered_handler != RegisteredSymbols->end());
-    if (registered_handler == RegisteredSymbols->end()) {
+    trace_dlsym_lookup(symbol_name, !chain.empty());
+    if (chain.empty()) {
         return real_symbol;
     }
 
@@ -148,7 +186,7 @@ void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
     // what the application receives, its replacement calls the one before it,
     // and the first registrant's calls land on the real symbol.
     void* fn = real_symbol;
-    for (const auto& callback : registered_handler->second) {
+    for (const auto& callback : chain) {
         void* next = callback(fn, handle, symbol_name);
         // A registrant that declines, or that fails to build a replacement,
         // must not be able to blank the symbol. The previous code returned the
@@ -177,7 +215,20 @@ static void* find_dl_symbol(const char* name) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wprio-ctor-dtor"
 // If you see an undebuggable double free, however, it's this. Don't load this module more than once !!!!!
+// Resolves the real dl* functions exactly once, whichever arrives first: this
+// constructor, or a dlsym/dlvsym that runs ahead of it. Running it twice used to
+// replace the registry and silently drop every registration made in between
+// (CR-11).
+static std::once_flag g_init_once;
+static std::atomic<bool> g_init_done{false};
+static void init_once();
 static void __attribute__((constructor(0))) init() {
+    std::call_once(g_init_once, init_once);
+}
+bool comshu::smart_dlsym::interposer_ready() {
+    return g_init_done.load(std::memory_order_acquire);
+}
+static void init_once() {
     comshu::smart_dlsym::real_dlopen =
         reinterpret_cast<decltype(comshu::smart_dlsym::real_dlopen)>(find_dl_symbol("dlopen"));
 
@@ -195,8 +246,7 @@ static void __attribute__((constructor(0))) init() {
         std::abort();
     }
 
-    comshu::smart_dlsym::RegisteredSymbols =
-        new std::unordered_map<std::string, std::vector<comshu::smart_dlsym::CallbackType>>();
+    g_init_done.store(true, std::memory_order_release);
 }
 #pragma GCC diagnostic pop
 
@@ -221,9 +271,7 @@ static void log_dlsym(const char* symbol, void* caller, void* result, void* glib
 extern "C" void* dlsym(void* handle, const char* symbol) {
     comshu::smart_dlsym::trace_dlsym_entry("dlsym", symbol,
                                           nullptr);  // FIRST. Before init(), before anything.
-    if (!comshu::smart_dlsym::real_dlsym) {
-        init();
-    }
+    init();  // once; a no-op after the first
 
     // Note[RTLD_NEXT]: RTLD_NEXT must resolve relative to the *original caller*, not us.
     // Forwarding real_dlsym(RTLD_NEXT, ...) would search after our library
@@ -252,20 +300,38 @@ extern "C" void* dlsym(void* handle, const char* symbol) {
 extern "C" void* dlvsym(void* handle, const char* symbol, const char* version) {
     comshu::smart_dlsym::trace_dlsym_entry("dlvsym", symbol,
                                           version);  // FIRST. Before init(), before anything.
-    if (!comshu::smart_dlsym::real_dlvsym) {
-        init();
-    }
+    init();  // once; a no-op after the first
 
     // See Note[RTLD_NEXT]
+    //
+    // glibc's own answer is relative to the object that CALLED it, which here is
+    // libcomshu_engine.so, not the application's library — so it skips every
+    // object between the caller and us, and an interposer asking RTLD_NEXT for
+    // the "real" function can be handed its own definition back. find_symbol_next
+    // walks from the real caller, but finds only the DEFAULT version. So: use it
+    // to name the next library that defines the symbol, then ask glibc for the
+    // requested VERSION in that library (CR-10). Its answer used to be computed
+    // and thrown away, and glibc asked a second time from the wrong place.
     if (handle == RTLD_NEXT) {
         void* caller = __builtin_return_address(0);
-        void* result = find_symbol_next(caller, symbol);
+        void* next_default = find_symbol_next(caller, symbol);
+        void* result = nullptr;
+        if (next_default) {
+            Dl_info info{};
+            if (dladdr(next_default, &info) && info.dli_fname) {
+                if (void* lib = comshu::smart_dlsym::real_dlopen(info.dli_fname,
+                                                                 RTLD_LAZY | RTLD_NOLOAD)) {
+                    result = comshu::smart_dlsym::real_dlvsym(lib, symbol, version);
+                    comshu::smart_dlsym::real_dlclose(lib);
+                }
+            }
+        }
         void* glibc_result = comshu::smart_dlsym::real_dlvsym(handle, symbol, version);
 
         // Debug
         log_dlsym(symbol, caller, result, glibc_result);
 
-        auto* real_symbol = comshu::smart_dlsym::real_dlvsym(handle, symbol, version);
+        auto* real_symbol = result ? result : glibc_result;
         return comshu::smart_dlsym::on_symbol_load(real_symbol, handle, symbol);
     }
 

@@ -70,43 +70,43 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### Core Engine (`libcomshu/`)
 
 #### `CR-07` — `Tracer::atfork_child()` wipes the child's start-of-run `ClockAnchor` and `NodeIdentity`, and can deadlock on `m_lifecycle`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`atfork_child` clears and re-registers the arenas BEFORE `start()` (they used to be wiped after it, taking the child's start-of-run ClockAnchor and NodeIdentity with them), and placement-resets `m_lifecycle` so a lock held by a parent thread at fork cannot deadlock the child. `fork_smoke` now requires the child's node_identity and both of its clock anchors; it reproduced the loss (child: 1 anchor, 0 node_identity) before the fix)
 - **Locations:** `libcomshu/include/comshu/tracer.hpp:78, 112-113, 139, 327-330, 349-373`, `libcomshu/src/engine.cpp:481-494`
 - **Problem:** `atfork_child()` calls `reset_for_fork()`, then `t.start(cfg)` (which writes the child's start-of-run `ClockAnchor` and `NodeIdentity` into the cached TLS arenas while they are unregistered), and *then* calls `comshu_engine_reset_arenas_for_fork()`, which sets `a->pub.count = 0` and wipes them. Also, `pthread_atfork` registers no `prepare` handler, so locking `m_lifecycle` in `t.start(cfg)` deadlocks if another thread held it across `fork()`.
 - **Fix:** Reset/re-register arenas *before* `t.start(cfg)` (or clear `pub.count = 0` before `start()` and re-register before emitting start-of-run records), and either acquire/release `m_lifecycle` in `prepare`/`parent`/`child` handlers or placement-reset `m_lifecycle` in `atfork_child()`.
 
 #### `CR-08` — Data race between `Recorder::append()` and cross-thread `Arena::drain()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the owner publishes `count` with a release store after the slot is whole (still a plain uint32_t, so the C ABI is unchanged); every drain holds a per-arena mutex and loads it with acquire; only the owning thread resets the arena, and other drainers advance a `drained` watermark; the signal path uses `try_drain` and never waits. `tests/arena_drain_race.cpp` (4 threads × 300k records under continuous cross-thread drains) is exact with the fix, and against the old code wrote ~1.9M rows for 1.2M records (~60% duplicated, 3–6% lost))
 - **Locations:** `libcomshu/src/engine.cpp:118-135`, `libcomshu/include/comshu/rec/recorder.hpp:73-97`, `libcomshu/include/comshu/rec/thread_buffer_registry.hpp:44-67`
 - **Problem:** `Arena::pub.count` is a plain non-atomic `uint32_t`. During `Tracer::finalize()` or `flush_from_signal()`, `Arena::drain()` reads `pub.count` twice (`bytes` and `count`) and zeroes it while background threads (e.g. NCCL proxy, CQ poll) may still be appending, risking torn records or mismatched `bytes/count` stride.
 - **Fix:** Guard per-arena drain vs append (e.g., atomic sequence/lock or atomic swap/snapshot of `count` with release/acquire ordering after writing the slot).
 
 #### `CR-09` — Uninitialized `m_cpu_domain` and `m_sink` in default-constructed `Recorder`
-- [ ] **Status:** Open
+- [x] **Status:** Done (default member initialisers `m_sink = nullptr`, `m_cpu_domain = kDomainHostTsc`)
 - **Locations:** `libcomshu/include/comshu/rec/recorder.hpp:45, 59, 128-129, 141-142`
 - **Problem:** `Recorder() = default;` leaves `ISink* m_sink;` and `core::DomainId m_cpu_domain;` uninitialized. Any non-static default-constructed `Recorder<>` reads garbage `m_cpu_domain` in `now()`/`now_instant()`, stamping records with an unanchored domain.
 - **Fix:** Add default member initializers `ISink* m_sink = nullptr;` and `core::DomainId m_cpu_domain = core::kDomainHostTsc;` (or `0`).
 
 #### `CR-10` — `dlvsym(RTLD_NEXT, ...)` discards `find_symbol_next()` and calls `real_dlvsym` twice
-- [ ] **Status:** Open
+- [x] **Status:** Done (the RTLD_NEXT branch takes the library `find_symbol_next()` lands in (relative to the real caller) and asks glibc for the requested VERSION in that library, falling back to glibc's own answer. The ticket's suggested fix (return `find_symbol_next`'s result) would have ignored the version. `tests/dlvsym_next/`: an interposer library with its own vsym_probe@V1 must get the next library's @V1 (101) and @@V2 (102); the old code returned the caller's own (mutation-checked))
 - **Locations:** `libcomshu/src/hook/Dlsym.cpp:252-270`
 - **Problem:** Line 268 discards both `result = find_symbol_next(caller, symbol)` and `glibc_result` and calls `real_dlvsym(handle, symbol, version)` a second time, resolving relative to `libcomshu_engine.so` instead of the caller.
 - **Fix:** Return/use the resolved `result` (or `glibc_result` fallback) instead of calling `real_dlvsym` again.
 
 #### `CR-11` — `Dlsym` unsynchronized `RegisteredSymbols` map, double `init()` wiping registrations, and null `symbol_name` UB
-- [ ] **Status:** Open
+- [x] **Status:** Done (the registry is a map behind one mutex that is never held across a callback (a lookup copies the symbol's chain, then runs it unlocked, so registrants may resolve symbols themselves); created on first use, so a registration made before the constructor survives; `init()` runs once via `call_once`; a null `symbol_name` returns the real symbol. `RegisteredSymbols` is no longer exported (`registrant_count()` and `interposer_ready()` replace it). `hook_smoke` adds 8 threads × 200 concurrent registrations and lookups)
 - **Locations:** `libcomshu/src/hook/Dlsym.cpp:129-165, 180-200, 224-226, 255-257`, `libcomshu/include/comshu/hook/dlsym/Dlsym.hpp:55-57`
 - **Problem:** `RegisteredSymbols` is mutated/read across threads with no mutex; `init()` unconditionally runs `RegisteredSymbols = new ...` (so lazy `dlsym` before `constructor(0)` wipes registrations); `on_symbol_load()` passes `symbol_name` to `find()` without checking for `nullptr`.
 - **Fix:** Guard `init()` with a one-time flag (`std::call_once` / atomic CAS), guard `RegisteredSymbols` access with a lock (or RCU/copy-on-write snapshot for signal/re-entrancy safety), and guard `if (!symbol_name) return real_func;`.
 
 #### `CR-12` — Re-calling `CompositeHookManager::install(obj)` on the same object causes infinite recursion
-- [ ] **Status:** Open
+- [x] **Status:** Done (each context keeps one slot shared by all its tags; `install_if_object_ops` leaves an op alone if it is already any of our trampolines, and an object at a recycled address reuses its context's slot with freshly saved originals. The ticket's suggested early return would have left such a recycled object unpatched. `hook_smoke` covers re-install (the old code segfaulted by infinite recursion, mutation-checked) and a recycled object)
 - **Locations:** `libcomshu/include/comshu/hook/CompositeHookManager.hpp:269-279, 378-395`, `libcomshu/include/comshu/hook/detail/ObjectOpsHookManager.hpp:144-156`
 - **Problem:** On a second `install(obj)`, `get_context(obj)` returns the existing `Context*`, and `install_if_object_ops()` unconditionally executes `ctx->original<Tag>() = op`, overwriting the saved real function with our own trampoline.
 - **Fix:** Make `install(obj)` idempotent (return early if `obj` already has an installed context / if `op` is already one of our trampolines).
 
 #### `CR-13` — Fatal signal handler permanently disables itself after any `SIG_IGN` signal + `g_app_action` data race
-- [ ] **Status:** Open
+- [x] **Status:** Done (an ignored signal returns BEFORE the recursion guard is armed, and the check reads `sa_handler == SIG_IGN` whatever `sa_flags` say (the old SA_SIGINFO-first test would have called address 1). `g_app_action` is a per-signal seqlock: lock-free reads in the handler, and writers serialise and block all signals. `crash_identity_smoke` arm 5 (SIGTERM ignored, then SIGSEGV) recovers all 8 records; with the old guard it recovered 0 (mutation-checked))
 - **Locations:** `libcomshu/src/engine.cpp:1267-1302, 1350-1398`
 - **Problem:** `comshu_fatal_signal_handler()` sets `in_handler = 1` (line 1274) and returns on `SIG_IGN` (lines 1289-1290) without resetting `in_handler = 0`, permanently disabling crash flush for any subsequent fatal signal. `g_app_action[sig]` is read/written in `sigaction()`/`signal()` and the signal handler without synchronization or signal masking.
 - **Fix:** Reset `in_handler = 0` before returning on `SIG_IGN` (or check `SIG_IGN` before setting `in_handler = 1` / only set `in_handler` around `flush_from_signal()`), and block the target signal (or use lock-free/atomic publication) when updating `g_app_action[sig]`.
