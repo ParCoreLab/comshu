@@ -8,5 +8,5 @@
 -- did not say" and is allowed; anything else that is not a word is a decode bug.
 SELECT door, op, op_size, count(*) AS n
 FROM ucx_atomic
-WHERE op_size NOT IN (0, 4, 8)
-GROUP BY ALL
+WHERE CAST(op_size AS INTEGER) NOT IN (0, 4, 8)
+GROUP BY door, op, op_size
