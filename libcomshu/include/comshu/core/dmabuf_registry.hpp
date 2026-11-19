@@ -58,6 +58,7 @@
 
 #include <dlfcn.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 
@@ -104,12 +105,14 @@ inline bool lookup(int fd, Range* out) {
     return true;
 }
 
-inline PfnMemGetHandle& real_get_handle() {
-    static PfnMemGetHandle fn = nullptr;
+// ATOMIC (CR-43): written by whichever door resolves first — a dlsym on one
+// thread, a cuGetProcAddress on another — and read by every interposed call.
+inline std::atomic<PfnMemGetHandle>& real_get_handle() {
+    static std::atomic<PfnMemGetHandle> fn{nullptr};
     return fn;
 }
-inline PfnGetProcAddress& real_get_proc_address() {
-    static PfnGetProcAddress fn = nullptr;
+inline std::atomic<PfnGetProcAddress>& real_get_proc_address() {
+    static std::atomic<PfnGetProcAddress> fn{nullptr};
     return fn;
 }
 
@@ -121,7 +124,7 @@ inline PfnGetProcAddress& real_get_proc_address() {
 template<Door D>
 inline CuResult get_handle_for_address_range(void* handle, CuDevicePtr dptr, std::size_t size,
                                              int handle_type, unsigned long long flags) {
-    auto* real = real_get_handle();
+    auto* real = real_get_handle().load(std::memory_order_acquire);
     if (!real)  // cannot happen via any door; refuse rather than crash
         return 1 /* CUDA_ERROR_INVALID_VALUE */;
 
@@ -181,7 +184,7 @@ inline void substitute_if_conversion(const char* symbol, void** pfn) {
         return;
     if (!is_driver_fn(*pfn))
         return;
-    real_get_handle() = reinterpret_cast<PfnMemGetHandle>(*pfn);
+    real_get_handle().store(reinterpret_cast<PfnMemGetHandle>(*pfn), std::memory_order_release);
     *pfn = reinterpret_cast<void*>(&get_handle_for_address_range<D>);
 }
 
@@ -189,7 +192,7 @@ inline void substitute_if_conversion(const char* symbol, void** pfn) {
 // we care about and passes everything else through untouched.
 inline CuResult get_proc_address(const char* symbol, void** pfn, int driver_version,
                                  unsigned long long flags) {
-    auto* real = real_get_proc_address();
+    auto* real = real_get_proc_address().load(std::memory_order_acquire);
     if (!real)
         return 1 /* CUDA_ERROR_INVALID_VALUE */;
 
@@ -220,14 +223,14 @@ inline CuResult get_proc_address(const char* symbol, void** pfn, int driver_vers
 // cuGetProcAddress_v2 (CUDA 12+): the same lookup with a status out-param. The
 // door cudart_static takes for cudaGetDriverEntryPoint[ByVersion].
 using PfnGetProcAddressV2 = CuResult (*)(const char*, void**, int, unsigned long long, int*);
-inline PfnGetProcAddressV2& real_get_proc_address_v2() {
-    static PfnGetProcAddressV2 fn = nullptr;
+inline std::atomic<PfnGetProcAddressV2>& real_get_proc_address_v2() {
+    static std::atomic<PfnGetProcAddressV2> fn{nullptr};
     return fn;
 }
 template<Door D>
 inline CuResult get_proc_address_v2(const char* symbol, void** pfn, int driver_version,
                                     unsigned long long flags, int* status) {
-    auto* real = real_get_proc_address_v2();
+    auto* real = real_get_proc_address_v2().load(std::memory_order_acquire);
     if (!real)
         return 1 /* CUDA_ERROR_INVALID_VALUE */;
     const CuResult rc = real(symbol, pfn, driver_version, flags, status);
@@ -239,26 +242,35 @@ inline CuResult get_proc_address_v2(const char* symbol, void** pfn, int driver_v
 // Idempotent: registering twice would wrap our own wrapper, which still works
 // but makes the chain harder to read than it needs to be.
 inline void install() {
-    static bool installed = false;
-    if (installed)
+    static std::atomic<bool> installed{false};
+    if (installed.exchange(true))
         return;
-    installed = true;
 
     comshu::smart_dlsym::register_symbol(
         "cuGetProcAddress", [](void* next, void*, const char*) -> void* {
-            real_get_proc_address() = reinterpret_cast<PfnGetProcAddress>(next);
+            real_get_proc_address().store(reinterpret_cast<PfnGetProcAddress>(next),
+                                          std::memory_order_release);
             return reinterpret_cast<void*>(&get_proc_address);
         });
 
     comshu::smart_dlsym::register_symbol(
         "cuGetProcAddress_v2", [](void* next, void*, const char*) -> void* {
-            real_get_proc_address_v2() = reinterpret_cast<PfnGetProcAddressV2>(next);
+            real_get_proc_address_v2().store(reinterpret_cast<PfnGetProcAddressV2>(next),
+                                             std::memory_order_release);
             return reinterpret_cast<void*>(&get_proc_address_v2<kDoorGetProcV2>);
         });
 
     comshu::smart_dlsym::register_symbol(
         "cuMemGetHandleForAddressRange", [](void* next, void*, const char*) -> void* {
-            real_get_handle() = reinterpret_cast<PfnMemGetHandle>(next);
+            // The same positive test as the getproc doors (CR-43): adopt only
+            // libcuda's own function. Anything else is an interposer — another
+            // comshu door already observing, or a third party — and wrapping it
+            // risks the self-call of MN5 job 48812008. Decline: the chain keeps
+            // `next` unchanged.
+            if (!is_driver_fn(next))
+                return nullptr;
+            real_get_handle().store(reinterpret_cast<PfnMemGetHandle>(next),
+                                    std::memory_order_release);
             return reinterpret_cast<void*>(&get_handle_for_address_range<kDoorDlsym>);
         });
 }

@@ -601,6 +601,11 @@ std::uint32_t comshu_engine_intern_str(std::uint8_t domain, const char* s, std::
     auto& tracer = comshu::Tracer::instance();
     if (!tracer.has_recorder())
         return 0;
+    // Same guard as comshu_engine_intern_key below: `domain` crosses a C ABI,
+    // and an out-of-range one indexed the table and its mutex out of bounds
+    // (CR-38). A null string with a length is the caller's bug, not a crash.
+    if (domain >= comshu::rec::kInternDomainCount || (!s && n))
+        return 0;
     auto            d = static_cast<comshu::rec::InternDomain>(domain);
     auto&           rec = tracer.recorder();
     std::lock_guard lock(rec.mutex(d));
@@ -1562,8 +1567,10 @@ using PfnDestroyQp = int (*)(void*);
 // NVSHMEM resolves ibv_destroy_qp@IBVERBS_1.1 through dlvsym, and a bare
 // RTLD_NEXT lookup can land on a different (compat) implementation that then
 // faults on a QP the versioned one owns — the SIGSEGV observed on du04 case 09.
-PfnDestroyQp& real_destroy_qp() {
-    static PfnDestroyQp p = nullptr;
+// ATOMIC (CR-44): set by the dlsym chain on one thread while another may be
+// inside ibv_destroy_qp_hook reading it.
+std::atomic<PfnDestroyQp>& real_destroy_qp() {
+    static std::atomic<PfnDestroyQp> p{nullptr};
     return p;
 }
 
@@ -1574,7 +1581,7 @@ PfnDestroyQp& real_destroy_qp() {
 // the real call returns is safe: no other allocation runs before this thread
 // returns to the caller, so the handle still names this QP.
 int ibv_destroy_qp_hook(void* qp) {
-    PfnDestroyQp real = real_destroy_qp();
+    PfnDestroyQp real = real_destroy_qp().load(std::memory_order_acquire);
     if (!real) {
         // No dlsym registration captured `next` yet — a pure-PLT caller like
         // perftest/pingpong. Resolve from libibverbs' OWN handle, as
@@ -1591,7 +1598,8 @@ int ibv_destroy_qp_hook(void* qp) {
                 real = reinterpret_cast<PfnDestroyQp>(
                     comshu::smart_dlsym::real_dlsym(h, "ibv_destroy_qp"));
         }
-        real_destroy_qp() = real;
+        if (real)
+            real_destroy_qp().store(real, std::memory_order_release);
     }
     const int ret = real ? real(qp) : -1;
     if (ret == 0)
@@ -1618,7 +1626,8 @@ static void comshu_install_ibv_destroy_qp_hook() {
     comshu::smart_dlsym::register_symbol(
         "ibv_destroy_qp", [](void* next, void*, const char*) -> void* {
             if (next)
-                real_destroy_qp() = reinterpret_cast<PfnDestroyQp>(next);
+                real_destroy_qp().store(reinterpret_cast<PfnDestroyQp>(next),
+                                        std::memory_order_release);
             return reinterpret_cast<void*>(&ibv_destroy_qp_hook);
         });
 }

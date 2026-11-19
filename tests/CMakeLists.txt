@@ -66,6 +66,12 @@ target_link_libraries(arena_drain_race PRIVATE comshu::comshu comshu::engine)
 comshu_add_test(arena_drain_race)
 add_test(NAME arena_drain_race COMMAND arena_drain_race)
 
+# A damaged intern index is refused per entry, not thrown out of the reader (CR-39).
+add_executable(intern_damage_test intern_damage_test.cpp)
+target_link_libraries(intern_damage_test PRIVATE comshu::comshu comshu::engine)
+comshu_add_test(intern_damage_test)
+add_test(NAME intern_damage COMMAND intern_damage_test)
+
 add_executable(crash_identity_smoke crash_identity_smoke.cpp)
 target_link_libraries(crash_identity_smoke PRIVATE comshu::comshu comshu::engine)
 comshu_add_test(crash_identity_smoke)

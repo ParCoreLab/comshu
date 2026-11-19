@@ -139,6 +139,17 @@ std::vector<Stamped<R>> load_stream(const std::filesystem::path& file,
     out.resize(payload / sizeof(Stamped<R>));
     in.read(reinterpret_cast<char*>(out.data()),
             static_cast<std::streamsize>(out.size() * sizeof(Stamped<R>)));
+    // The file can shrink between the size check and the read (a capture still
+    // being copied in). Keep only the records actually read: the rest of the
+    // vector would be zero-filled phantoms that look like real rows (CR-40).
+    if (const auto got = static_cast<std::size_t>(in.gcount()) / sizeof(Stamped<R>);
+        got < out.size()) {
+        diag(file, "short read — the file shrank while being read; keeping the records "
+                   "that were read");
+        out.resize(got);
+        if (found)
+            found->truncated = true;
+    }
     if (found)
         found->records = out.size();
     return out;

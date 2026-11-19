@@ -182,7 +182,12 @@ void patch() {
                 if (*reinterpret_cast<void* const*>(a) != r)
                     continue;
                 void*      page = reinterpret_cast<void*>(a & pmask);
-                const bool in_relro = a >= m.relro.lo && a < m.relro.hi;
+                // glibc write-protects RELRO only up to ALIGN_DOWN(relro end)
+                // (_dl_protect_relro): the partial tail page is shared with
+                // .data/.bss and stays writable. A cell there needs no
+                // mprotect at all — and re-protecting it PROT_READ afterwards
+                // made the writable data beside it read-only (CR-42).
+                const bool in_relro = a >= m.relro.lo && a < (m.relro.hi & pmask);
                 if (in_relro && mprotect(page, pagesz, PROT_READ | PROT_WRITE) != 0)
                     continue;  // fail open: this cell keeps the real function
                 *reinterpret_cast<void**>(a) = ow.replacement;

@@ -91,7 +91,10 @@ unhandled_streams(const std::filesystem::path&           rank_dir,
     std::vector<FamilyDiagnostic> out;
     std::error_code               ec;
     for (const auto& entry : fs::directory_iterator(rank_dir, ec)) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".pcs")
+        // The error_code overloads throughout: a file removed or shrunk while
+        // the directory is walked must not throw out of a reader (CR-41).
+        std::error_code fe;
+        if (!entry.is_regular_file(fe) || fe || entry.path().extension() != ".pcs")
             continue;
 
         StreamHeader  h{};
@@ -104,7 +107,8 @@ unhandled_streams(const std::filesystem::path&           rank_dir,
         if (std::find(known.begin(), known.end(), h.type_id) != known.end())
             continue;
 
-        const auto payload = entry.file_size() - sizeof(StreamHeader);
+        const auto sz = entry.file_size(fe);
+        const auto payload = (!fe && sz >= sizeof(StreamHeader)) ? sz - sizeof(StreamHeader) : 0;
         out.push_back({h.type_id, entry.path().filename().string() + ": type " +
                                       std::to_string(h.type_id) + " is unknown to this build (" +
                                       std::to_string(h.stride ? payload / h.stride : 0) +

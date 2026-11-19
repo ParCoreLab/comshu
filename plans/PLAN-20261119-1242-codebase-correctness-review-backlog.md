@@ -301,49 +301,49 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### Core Engine (`libcomshu/`)
 
 #### `CR-38` — Out-of-bounds `domain` indexing in `comshu_engine_intern_str()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the same domain bound as `intern_key`, plus a null string with a non-zero length returns 0)
 - **Locations:** `libcomshu/src/engine.cpp:550-558`
 - **Problem:** Missing `if (domain >= comshu::rec::kInternDomainCount) return 0;` check (present in `comshu_engine_intern_key()` at line 572).
 - **Fix:** Add the same bounds check at the top of `comshu_engine_intern_str()`.
 
 #### `CR-39` — Integer overflow in bounds check & unchecked `in.read()` in `InternDictionary::load()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the bound is `off > size || len > size - off` (cannot wrap), and a blob shorter than its header says is diagnosed and truncated to what was read. `tests/intern_damage_test.cpp` damages one index entry so `off + len` wraps: the old check let `substr()` throw out of the reader (mutation-checked), and now that one name is refused and the rest resolve)
 - **Locations:** `libcomshu/include/comshu/rec/intern_reader.hpp:126-140`
 - **Problem:** `off + len > blob.size()` can overflow `uint64_t` (throwing uncaught `std::out_of_range` in `blob.substr`), and `in.read()` does not check `gcount()` or stream failure.
 - **Fix:** Check `off > blob.size() || len > blob.size() - off` and verify `in.gcount() == expected` after `in.read()`.
 
 #### `CR-40` — Unchecked `in.read()` in `load_stream()` silently returns zero-filled records on short read
-- [ ] **Status:** Open
+- [x] **Status:** Done (after the read, `out` is cut to the whole records `gcount()` delivered, and a short read is diagnosed and marks the stream truncated. Not unit-tested: the file has to shrink between the size check and the read)
 - **Locations:** `libcomshu/include/comshu/rec/stream_reader.hpp:139-144`
 - **Problem:** Does not check `in.gcount()` or `!in`; a short read returns zero-initialized phantom records with `truncated == false`.
 - **Fix:** Check `in.gcount()`, resize `out` to whole records actually read, and mark `found->truncated = true` on short read.
 
 #### `CR-41` — Throwing `std::filesystem` calls and unsigned underflow in `unhandled_streams()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`is_regular_file(ec)` and `file_size(ec)`, and the payload is 0 when the file is shorter than a header)
 - **Locations:** `libcomshu/include/comshu/rec/version_map.hpp:94, 107`
 - **Problem:** `entry.is_regular_file()` and `entry.file_size()` use throwing overloads; `file_size - sizeof(StreamHeader)` underflows if the file shrank below 32 bytes.
 - **Fix:** Use `ec` overloads and guard `sz >= sizeof(StreamHeader)`.
 
 #### `CR-42` — `mprotect(..., PROT_READ)` on partial tail page of `PT_GNU_RELRO` can write-protect `.data`/`.bss`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`in_relro` uses `relro.hi & pmask`, which is glibc's own `_dl_protect_relro` end, so a cell on the partial tail page (writable, shared with .data/.bss) is patched without mprotect and that page is never re-protected read-only)
 - **Locations:** `libcomshu/src/libcuda_cells.cpp:185-190`
 - **Problem:** Tests raw `m.relro.hi` instead of `ALIGN_DOWN(m.relro.hi, pagesz)`. Re-protecting a partial tail page shared with writable `.data`/`.bss` causes SIGSEGV.
 - **Fix:** Align `relro.hi` down to `pagesz` (or restore the original page protection parsed from `/proc/self/maps`).
 
 #### `CR-43` — Unsynchronized function pointers & missing `is_driver_fn` check in `dmabuf_registry.hpp`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the three cached pointers are `std::atomic` (acquire/release), `install()`'s flag is atomic, and the dlsym door for `cuMemGetHandleForAddressRange` adopts `next` only if `is_driver_fn(next)`, otherwise declining so the chain is unchanged: the same positive test the getproc doors use)
 - **Locations:** `libcomshu/include/comshu/core/dmabuf_registry.hpp:107-114, 184, 223-226, 241-264`
 - **Problem:** Function pointers are plain non-atomic globals read/written across threads; `install()`'s `cuMemGetHandleForAddressRange` callback does not check `is_driver_fn(next)` before storing `real_get_handle()`.
 - **Fix:** Use `std::atomic` for cached function pointers and add the `is_driver_fn(next)` check.
 
 #### `CR-44` — Data race on `real_destroy_qp()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`real_destroy_qp()` is `std::atomic<PfnDestroyQp>`; the lazy fallback stores only a non-null resolution)
 - **Locations:** `libcomshu/src/engine.cpp:1459-1490, 1513-1518`
 - **Problem:** Plain non-atomic function pointer read/written concurrently by `ibv_destroy_qp_hook()` and `smart_dlsym` callback.
 - **Fix:** Store in `std::atomic<DestroyQpFn>`.
 
 #### `CR-45` — `Tracer::emit_intern_records()` iterates `InternTable` without locking `m_recorder->mutex(domain)`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`emit_intern_records(from_signal)` holds each domain's intern mutex while walking it during finalize (the one-time emitter is already stopped there, so nothing can block on it); the signal path only try-locks and walks unlocked when it cannot have the lock, as before, because a dying process must not wait on a lock the faulting thread may hold)
 - **Locations:** `libcomshu/include/comshu/tracer.hpp:633-668`
 - **Problem:** Iterates `InternTable` containers without acquiring `m_recorder->mutex(domain)`, racing with concurrent `intern()` calls from background threads.
 - **Fix:** Acquire `m_recorder->mutex(domain)` during normal `finalize()` (and keep signal path best-effort / lock-free).

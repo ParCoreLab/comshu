@@ -125,12 +125,21 @@ public:
 
         std::string blob(static_cast<std::size_t>(bh.byte_count), '\0');
         in.read(blob.data(), static_cast<std::streamsize>(blob.size()));
+        // A short read leaves the tail zero-filled, and an index entry pointing
+        // there would resolve to a run of NULs instead of being refused (CR-39).
+        if (static_cast<std::size_t>(in.gcount()) != blob.size()) {
+            diag(blob_path, "the blob is shorter than its header says — truncated; strings "
+                            "past the end are unresolved");
+            blob.resize(static_cast<std::size_t>(in.gcount()));
+        }
 
         std::size_t out_of_range = 0;
         for (const auto& s : index) {
             const std::uint64_t off = s.payload.offset;
             const std::uint64_t len = s.payload.length;
-            if (off + len > blob.size()) {
+            // Subtracted, not added: off + len can wrap on a damaged index,
+            // pass the check, and then make substr() throw (CR-39).
+            if (off > blob.size() || len > blob.size() - off) {
                 ++out_of_range;
                 continue;
             }

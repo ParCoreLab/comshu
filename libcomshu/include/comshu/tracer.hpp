@@ -243,7 +243,7 @@ public:
         //     handles says nothing; safe to attempt only because (a) is already
         //     on disk and the recursion guard turns a fault here into an
         //     ordinary crash rather than a loop.
-        emit_intern_records();
+        emit_intern_records(/*from_signal=*/true);
         rec::ThreadBufferRegistry::instance().try_drain_all();
         m_sink->flush();
     }
@@ -638,12 +638,24 @@ private:
     //
     // Runs at finalize, once, after the application's own records have drained.
     // Nothing here interns, so no new handles appear while we walk the tables.
-    void emit_intern_records() {
+    // `from_signal`: the fatal-signal path. A normal finalize holds each
+    // domain's intern mutex while it walks that domain, because background
+    // threads (an NCCL proxy, a CQ poller) may still be interning and
+    // InternTable's containers reallocate under a concurrent reader (CR-45).
+    // A dying process must never WAIT, though — the faulting thread may hold
+    // that very mutex — so the signal path only tries, and walks unlocked when
+    // it cannot have it, which is what it always did.
+    void emit_intern_records(bool from_signal = false) {
         auto              blob_path = m_sink->dir() / "intern-blob.bin";
         std::vector<char> blob;
 
         for (std::size_t d = 0; d < rec::kInternDomainCount; ++d) {
-            auto  domain = static_cast<rec::InternDomain>(d);
+            auto                         domain = static_cast<rec::InternDomain>(d);
+            std::unique_lock<std::mutex> lk(m_recorder->mutex(domain), std::defer_lock);
+            if (from_signal)
+                (void)lk.try_lock();
+            else
+                lk.lock();
             auto& table = m_recorder->table(domain);
             if (table.size() == 0)
                 continue;
