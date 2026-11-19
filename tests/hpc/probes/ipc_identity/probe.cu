@@ -20,11 +20,11 @@
 //   C  kcmp(KCMP_FILE) of the exporter's fd against the importer's received
 //      fd: the kernel's own "same open file description?" answer
 //
-// A candidate is an IDENTITY only if the importer's value equals the
-// exporter's for the shared allocation X AND differs from the exporter's value
-// for a second, unshared allocation Y. Equal to both means "every allocation
-// says this"; equal to neither means "per process". The verdict line per
-// candidate says which.
+// A candidate is an IDENTITY only if, with both processes' allocation counters
+// deliberately desynchronised, each of TWO imports equals its own export and
+// nothing else (not the other export, not an unshared control). The first
+// version compared one import with one export and a control, and job 49225862
+// "confirmed" two per-process counters that merely started alike.
 //
 // Two processes, no MPI: fork before CUDA initialises (a forked CUDA context is
 // invalid), pass the fd with SCM_RIGHTS over a socketpair exactly as NCCL's
@@ -142,23 +142,6 @@ static void print(const char* what, const Ids& i) {
                 i.dmabuf_dev, i.dmabuf_ino, i.dmabuf_fdinfo);
 }
 
-// The verdict per candidate: is the importer's value the exporter's X value,
-// and NOT also its Y value?
-static void verdict(const char* name, int ok_b, int ok_x, int ok_y, bool eq_x, bool eq_y) {
-    const char* v;
-    if (!ok_b || !ok_x)
-        v = "UNAVAILABLE (query failed)";
-    else if (eq_x && ok_y && !eq_y)
-        v = "IDENTITY (importer == exporter's X, != exporter's Y)";
-    else if (eq_x && eq_y)
-        v = "useless (same for every allocation)";
-    else if (eq_x)
-        v = "matches X (Y not comparable)";
-    else
-        v = "per-process (importer differs from exporter)";
-    std::printf("[ipcid] VERDICT %-14s %s\n", name, v);
-}
-
 static void send_fd(int sock, int fd) {
     char            dummy = 'x';
     struct iovec    io{&dummy, 1};
@@ -262,24 +245,45 @@ int main() {
         DK(cuDevicePrimaryCtxRetain(&ctx, d));
         DK(cuCtxSetCurrent(ctx));
         const size_t g = granule(0);
-        // X is shared; Y is the control, same size, never shared. Two granules
-        // each, and the queries are made at an INTERIOR address so a
-        // base-only answer would show as a range/mapping mismatch.
-        CUmemGenericAllocationHandle hx, hy;
-        CUdeviceptr                  x = make(0, 2 * g, &hx), y = make(0, 2 * g, &hy);
-        Ids                          ix = query(x + g + 64), iy = query(y + g + 64);
-        dmabuf_of(x, 2 * g, ix);
+        // DESYNCHRONISE THE COUNTERS FIRST. Job 49225862 reported buffer_id and
+        // memory_block as identities, but the exporter's X was its first VMM
+        // allocation and the importer's import was ITS first: two per-process
+        // counters that start alike would agree just the same. So the exporter
+        // makes 7 plain allocations and the control Y before X1, and 4 more
+        // before X2; the importer makes 3 of its own first and imports the two
+        // in REVERSE order with 2 more between. A per-process counter cannot
+        // survive that; an allocation identity is untouched by it.
+        for (int i = 0; i < 7; ++i) {
+            CUdeviceptr junk = 0;
+            DK(cuMemAlloc(&junk, 1 << 20));
+        }
+        CUmemGenericAllocationHandle hy, h1, h2;
+        CUdeviceptr y = make(0, 2 * g, &hy);
+        CUdeviceptr x1 = make(0, 2 * g, &h1);
+        for (int i = 0; i < 4; ++i) {
+            CUdeviceptr junk = 0;
+            DK(cuMemAlloc(&junk, 1 << 20));
+        }
+        CUdeviceptr x2 = make(0, 2 * g, &h2);
+        // Queried at an INTERIOR address, so a base-only answer would show.
+        Ids iy = query(y + g + 64), i1 = query(x1 + g + 64), i2 = query(x2 + g + 64);
         dmabuf_of(y, 2 * g, iy);
-        print("X(shared)", ix);
+        dmabuf_of(x1, 2 * g, i1);
+        dmabuf_of(x2, 2 * g, i2);
         print("Y(control)", iy);
+        print("X1(shared)", i1);
+        print("X2(shared)", i2);
 
-        int fd = -1;
-        DK(cuMemExportToShareableHandle(&fd, hx, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
-        std::printf("[ipcid] exporter pid=%d export_fd=%d granule=%zu\n", getpid(), fd, g);
+        int fd = -1, fd2 = -1;
+        DK(cuMemExportToShareableHandle(&fd, h1, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+        DK(cuMemExportToShareableHandle(&fd2, h2, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+        std::printf("[ipcid] exporter pid=%d export_fd=%d,%d granule=%zu\n", getpid(), fd, fd2, g);
         unsigned long long sz = 2 * g;
         xfer(s, &sz, sizeof sz, true);
         send_fd(s, fd);
-        xfer(s, &ix, sizeof ix, true);
+        send_fd(s, fd2);
+        xfer(s, &i1, sizeof i1, true);
+        xfer(s, &i2, sizeof i2, true);
         xfer(s, &iy, sizeof iy, true);
 
         // kcmp from the PARENT: Yama's ptrace_scope=1 allows a parent to
@@ -319,37 +323,73 @@ int main() {
     unsigned long long sz = 0;
     xfer(s, &sz, sizeof sz, false);
     const int fd = recv_fd(s);
-    Ids ex{}, ey{};
-    xfer(s, &ex, sizeof ex, false);
+    const int fd2 = recv_fd(s);
+    Ids e1{}, e2{}, ey{};
+    xfer(s, &e1, sizeof e1, false);
+    xfer(s, &e2, sizeof e2, false);
     xfer(s, &ey, sizeof ey, false);
-
-    CUmemGenericAllocationHandle h;
-    DK(cuMemImportFromShareableHandle(&h, reinterpret_cast<void*>(static_cast<intptr_t>(fd)),
-                                      CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
-    CUdeviceptr va = 0;
-    DK(cuMemAddressReserve(&va, sz, 0, 0, 0));
-    DK(cuMemMap(va, sz, 0, h, 0));
-    CUmemAccessDesc acc = {};
-    acc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    acc.location.id = mydev;
-    acc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    DK(cuMemSetAccess(va, sz, &acc, 1));
     const size_t g = sz / 2;
-    Ids ib = query(va + g + 64);
-    dmabuf_of(va, sz, ib);
-    std::printf("[ipcid] importer pid=%d dev=%d received_fd=%d mapped=0x%llx\n", getpid(), mydev,
-                fd, static_cast<unsigned long long>(va));
-    print("X(imported)", ib);
 
-    verdict("buffer_id", ib.ok_buffer_id, ex.ok_buffer_id, ey.ok_buffer_id,
-            ib.buffer_id == ex.buffer_id, ib.buffer_id == ey.buffer_id);
-    verdict("memory_block", ib.ok_block_id, ex.ok_block_id, ey.ok_block_id,
-            ib.block_id == ex.block_id, ib.block_id == ey.block_id);
-    verdict("p2p_token", ib.ok_p2p, ex.ok_p2p, ey.ok_p2p, ib.p2p_token == ex.p2p_token,
-            ib.p2p_token == ey.p2p_token);
-    verdict("dmabuf_inode", ib.ok_dmabuf, ex.ok_dmabuf, ey.ok_dmabuf,
-            ib.dmabuf_dev == ex.dmabuf_dev && ib.dmabuf_ino == ex.dmabuf_ino,
-            ib.dmabuf_dev == ey.dmabuf_dev && ib.dmabuf_ino == ey.dmabuf_ino);
+    // Three allocations of the importer's own before anything is imported.
+    Ids mine[3];
+    for (int i = 0; i < 3; ++i) {
+        CUmemGenericAllocationHandle hl;
+        CUdeviceptr                  l = make(mydev, sz, &hl);
+        mine[i] = query(l + g + 64);
+        print("local", mine[i]);
+    }
+
+    auto import = [&](int f) {
+        CUmemGenericAllocationHandle h;
+        DK(cuMemImportFromShareableHandle(&h, reinterpret_cast<void*>(static_cast<intptr_t>(f)),
+                                          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+        CUdeviceptr va = 0;
+        DK(cuMemAddressReserve(&va, sz, 0, 0, 0));
+        DK(cuMemMap(va, sz, 0, h, 0));
+        CUmemAccessDesc acc = {};
+        acc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        acc.location.id = mydev;
+        acc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+        DK(cuMemSetAccess(va, sz, &acc, 1));
+        Ids r = query(va + g + 64);
+        dmabuf_of(va, sz, r);
+        return r;
+    };
+    // Reverse order, with two more local allocations between.
+    Ids b2 = import(fd2);
+    for (int i = 0; i < 2; ++i) {
+        CUdeviceptr junk = 0;
+        DK(cuMemAlloc(&junk, 1 << 20));
+    }
+    Ids b1 = import(fd);
+    std::printf("[ipcid] importer pid=%d dev=%d received_fd=%d,%d\n", getpid(), mydev, fd, fd2);
+    print("X1(imported)", b1);
+    print("X2(imported)", b2);
+
+    // IDENTITY needs all of: each import equals ITS export, differs from the
+    // other export and from the control, and the two imports differ.
+    auto judge = [&](const char* name, auto get, auto ok) {
+        const bool all_ok = ok(b1) && ok(b2) && ok(e1) && ok(e2) && ok(ey);
+        const char* v;
+        if (!all_ok)
+            v = "UNAVAILABLE (query failed)";
+        else if (get(b1) == get(e1) && get(b2) == get(e2) && get(e1) != get(e2) &&
+                 get(b1) != get(ey) && get(b2) != get(ey))
+            v = "IDENTITY (each import == its export; exports, control all distinct)";
+        else if (get(e1) == get(e2) && get(e1) == get(ey))
+            v = "useless (same for every allocation)";
+        else
+            v = "NOT an identity (per-process, or matches the wrong allocation)";
+        std::printf("[ipcid] VERDICT %-14s %s\n", name, v);
+    };
+    judge("buffer_id", [](const Ids& i) { return i.buffer_id; },
+          [](const Ids& i) { return i.ok_buffer_id != 0; });
+    judge("memory_block", [](const Ids& i) { return i.block_id; },
+          [](const Ids& i) { return i.ok_block_id != 0; });
+    judge("p2p_token", [](const Ids& i) { return i.p2p_token; },
+          [](const Ids& i) { return i.ok_p2p != 0; });
+    judge("dmabuf_inode", [](const Ids& i) { return i.dmabuf_ino; },
+          [](const Ids& i) { return i.ok_dmabuf != 0; });
     std::fflush(stdout);
     int fd_out = fd;
     xfer(s, &fd_out, sizeof fd_out, true);

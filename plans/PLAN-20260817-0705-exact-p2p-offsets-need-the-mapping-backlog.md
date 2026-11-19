@@ -394,3 +394,38 @@ assert against `--link` Parquet (or a `comshu ui` instance) instead of CSV, for
 derived tables only. That is a change to how the suite reads a capture, not to
 what it checks, and it should be decided before more assertions are written
 against a table the UI does not use.
+
+## The driver's own identities, probed (2026-11-19, jobs 49225862, 49226164)
+
+`tests/hpc/probes/ipc_identity/` — two processes, one share, bare (no tracer),
+NCCL's exact sequence: cuMemCreate(POSIX fd) -> export -> SCM_RIGHTS -> import
+-> cuMemMap. Every identity the importer's driver calls can see, judged with
+both processes' allocation counters deliberately desynchronised (the exporter
+allocates 7 + control + X1 + 4 + X2; the importer allocates 3 of its own, then
+imports X2, 2 more, X1):
+
+| candidate | exporter X1 / X2 | importer X1 / X2 | verdict |
+|---|---|---|---|
+| `CU_POINTER_ATTRIBUTE_BUFFER_ID` | 984 / 990 | 985 / 981 | per-process counter |
+| `CU_POINTER_ATTRIBUTE_MEMORY_BLOCK_ID` | 65 / 70 | 71 / 67 | per-process counter |
+| `CU_POINTER_ATTRIBUTE_P2P_TOKENS` | 0x0 / 0x0 | 0x0 / 0x0 | same for every allocation |
+| dma-buf of the range (`cuMemGetHandleForAddressRange`), inode | 162416 / 162417 | 162419 / 162418 | a new dma-buf per call |
+| `kcmp(KCMP_FILE)` of exported vs received fd | — | — | SAME open file |
+
+Identical in both runs. **A trap, recorded so it is not repeated:** the first
+version compared one import with one export and a control, and reported
+buffer_id and memory_block as IDENTITIES — the export was the exporter's first
+VMM allocation and the import the importer's first, and both counters start at
+975 / 58 after cuInit. Only desynchronising the counters exposed it.
+
+**So no driver-visible value ties an import to its export.** The one thing that
+does is the kernel's: the received fd IS the exported open file. kcmp can say
+so, but only with both processes alive, both fd numbers in hand, and ptrace
+permission — that is a live cross-rank protocol inside the capture, not a key a
+reader can join on, and NCCL closes its fds right after import. Not pursued.
+
+**Status: NCCL-over-NVLink object placement stays unplaced and counted**
+(`link_health.unattributed_p2p_accesses`). The owning RANK is still known from
+the memory's device, so comm_edges is unaffected. What would unblock it: fabric
+handles (IMEX; MNNVL machines), or NCCL exposing its own exchange (its
+`ncclP2pBuff.directPtr` is the exporter's VA, passed internally as `ownerPtr`).
