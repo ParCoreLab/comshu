@@ -177,6 +177,17 @@ int main(int argc, char** argv) {
     std::printf("route=imported-map size=%zu addr=0x%llx (must NOT be an object)\n", gran,
                 (unsigned long long)xbase);
 
+    // A second mapping of memory this process already mapped: hv[0] again, at a
+    // fresh address, the way ncclCommWindowRegister maps ncclMemAlloc's handle
+    // into its symmetric flat range. Mapping again allocates nothing, so the
+    // CuMemMap object count stays at two only if the doors call it an alias.
+    CUdeviceptr abase = 0;
+    DK(cuMemAddressReserve(&abase, gran, 0, 0, 0));
+    DK(cuMemMap(abase, gran, 0, hv[0], 0));
+    DK(cuMemSetAccess(abase, gran, &acc, 1));
+    std::printf("route=alias-map size=%zu addr=0x%llx (must NOT be an object)\n", gran,
+                (unsigned long long)abase);
+
     // --- 2. the loop, beside every live buffer ------------------------------------
     for (size_t i = 0; i < loop_iters; ++i) {
         void* q = nullptr;
@@ -197,6 +208,8 @@ int main(int argc, char** argv) {
     CK(cudaFreeHost(h2));
     DK(cuMemFree(d));
     DK(ff(dd));
+    DK(cuMemUnmap(abase, gran));     // the alias goes first: the object stays open
+    DK(cuMemAddressFree(abase, gran));
     DK(cuMemUnmap(base, 2 * gran));  // ONE call, two mappings
     for (int i = 0; i < 2; ++i)
         DK(cuMemRelease(hv[i]));
@@ -209,7 +222,7 @@ int main(int argc, char** argv) {
 
     CK(cudaStreamDestroy(st));
     std::printf("oracle: 1 cudaMalloc, 1 pitch, 1 managed (unfreed), 1 async, 2 pinned host, "
-                "1 cuMemAlloc, 1 dlsym, 2 cuMemMap (1 unmap), 1 imported map (no object), "
+                "1 cuMemAlloc, 1 dlsym, 2 cuMemMap (1 unmap), 1 imported map and 1 alias map (no objects), "
                 "%zu loop allocations\n",
                 loop_iters);
     return 0;

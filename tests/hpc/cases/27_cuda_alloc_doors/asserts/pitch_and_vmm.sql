@@ -12,6 +12,9 @@
 -- workload ALSO maps a third chunk through an imported handle (exported as an
 -- fd and imported back, as NCCL maps a peer's buffer); that mapping is not an
 -- object, so a 3 here means imported memory is being recorded as the mapper's.
+-- And it maps the first chunk's handle a SECOND time at another address, as
+-- NCCL's window registration does: an alias, not an allocation, so a 3 can also
+-- mean an alias is being recorded as a buffer (nccl_lsa, MN5 49229603).
 SELECT 'cudaMallocPitch did not produce one object of pitch x height' AS problem, objects
 FROM (SELECT count(*) AS objects FROM mem_object m, params p
       WHERE m.origin = 'CuMemAlloc'

@@ -46,13 +46,16 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <map>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include "comshu/core/vocab.hpp"
 #include "comshu/engine_abi.h"
@@ -262,6 +265,39 @@ bool was_created_here(CuMemHandle h) {
     return g_created.count(h) != 0;
 }
 
+// The LIVE mappings of created handles, so a second mapping of the same memory
+// is known to be one. An object is memory the process allocated, and mapping it
+// again allocates nothing: NCCL's ncclCommWindowRegister maps the handle
+// ncclMemAlloc already mapped (cuMemRetainAllocationHandle returns the same
+// handle) into the symmetric flat range. Recording both said every window was
+// two buffers of the same rank (nccl_lsa, MN5 49229603: the ncclMemAlloc
+// mapping and the one at the rank's flat-range slot), and a peer access could
+// land in either. The first live mapping is the object; later ones are aliases,
+// tallied and not recorded.
+//
+// Keyed by mapping address so cuMemUnmap — which names an address range, not a
+// handle — can retire them.
+std::map<CuDevicePtr, std::pair<CuMemHandle, std::size_t>> g_maps;  // under g_created_mutex
+std::unordered_map<CuMemHandle, int>                       g_live;  // under g_created_mutex
+
+// Records a mapping of created handle `h` and says whether it is the first live
+// one, i.e. the object.
+bool map_is_first(CuMemHandle h, CuDevicePtr ptr, std::size_t size) {
+    std::lock_guard<std::mutex> lk(g_created_mutex);
+    g_maps[ptr] = {h, size};
+    return g_live[h]++ == 0;
+}
+
+void unmapped(CuDevicePtr lo, CuDevicePtr hi) {
+    std::lock_guard<std::mutex> lk(g_created_mutex);
+    for (auto it = g_maps.lower_bound(lo); it != g_maps.end() && it->first < hi;) {
+        auto l = g_live.find(it->second.first);
+        if (l != g_live.end() && --l->second <= 0)
+            g_live.erase(l);
+        it = g_maps.erase(it);
+    }
+}
+
 void closing(Door d, Api a, std::uint64_t base) {
     tally(d, a, base, 0);
     comshu::engine::close_object(base);
@@ -382,10 +418,11 @@ CuResult mem_map(CuDevicePtr ptr, std::size_t size, std::size_t offset, CuMemHan
     COMSHU_ALLOC_GUARD;
     const CuResult rc = f(ptr, size, offset, h, flags);
     if (g.outer && rc == kSuccess && doors_enabled()) {
-        if (was_created_here(h))
+        if (was_created_here(h) && map_is_first(h, ptr, size))
             opened(D, kMemMap, ptr, size, ObjectOrigin::CuMemMap, device_of_vmm_handle(h));
         else
-            tally(D, kMemMap, ptr, size);  // a peer's memory: seen, not an object
+            tally(D, kMemMap, ptr, size);  // a peer's memory, or another address
+                                           // for our own: seen, not an object
     }
     return rc;
 }
@@ -479,6 +516,7 @@ template<Door D> CuResult mem_unmap(CuDevicePtr ptr, std::size_t size) {
     COMSHU_ALLOC_GUARD;
     if (g.outer && doors_enabled()) {
         tally(D, kMemUnmap, ptr, size);
+        unmapped(ptr, ptr + size);
         comshu::engine::close_objects_in(ptr, ptr + size);
     }
     return f(ptr, size);
