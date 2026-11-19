@@ -3,6 +3,8 @@
 
 #include "mlx5_cqe.hpp"
 
+#include "cq_ring_cache.hpp"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +43,8 @@ bool enabled() {
 RecvCqe read_recv_cqe(ibv_cq*, int, int, const ibv_wc&) {
     return {};
 }
+void forget_cq(const ibv_cq*) {}
+void forget_context(const ibv_context*) {}
 SrqSlot srq_slot(ibv_srq*, unsigned) {
     return {};
 }
@@ -94,8 +98,8 @@ inline std::mutex& mu() {
     static std::mutex m;
     return m;
 }
-inline std::unordered_map<const void*, Ring>& rings() {
-    static auto* m = new std::unordered_map<const void*, Ring>();  // leaked: outlives atexit
+inline CqRingCache<Ring>& rings() {
+    static auto* m = new CqRingCache<Ring>();  // leaked: outlives atexit
     return *m;
 }
 inline Stats& stats() {
@@ -134,9 +138,8 @@ inline void report() {
 // The ring for one CQ, resolved once. A CQ that is not mlx5 (or a libmlx5 that
 // refuses) is marked unusable and never asked again.
 inline const Ring& ring_for(ibv_cq* cq) {
-    auto it = rings().find(cq);
-    if (it != rings().end())
-        return it->second;
+    if (const Ring* cached = rings().find(cq))
+        return *cached;
 
     Ring r{};
     // RTLD_DEFAULT IS NOT ENOUGH, and job 44542213 is why.
@@ -193,7 +196,23 @@ inline const Ring& ring_for(ibv_cq* cq) {
             std::fprintf(stderr, "[comshu-cqeprobe] mlx5dv_init_obj not resolvable\n");
         }
     }
-    return rings().emplace(cq, r).first->second;
+    return rings().insert(cq, cq->context, r);
+}
+
+// --- lifetime -----------------------------------------------------------------
+
+void forget_cq(const ibv_cq* cq) {
+    if (!cq)
+        return;
+    std::lock_guard<std::mutex> lk(mu());
+    rings().forget_cq(cq);
+}
+
+void forget_context(const ibv_context* ctx) {
+    if (!ctx)
+        return;
+    std::lock_guard<std::mutex> lk(mu());
+    rings().forget_context(ctx);
 }
 
 // --- the production path ----------------------------------------------------

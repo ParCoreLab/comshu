@@ -258,29 +258,61 @@ DEFINE_PRELOAD_HOOK(ucx, rkey_destroy, "ucp_rkey_destroy", void, ucp_rkey_h);
 // A library built -Bsymbolic-functions would bind those internally and this hook
 // would silently never fire, so that check is the precondition, not a detail.
 //
-// SEVEN PARAMETERS DECLARED FOR A FUNCTION THAT HAS SIX ON THIS MACHINE, and
-// that is the whole trick. The signature gained `ucs_sys_device_t sys_device`
-// immediately before the out-parameter between two releases — pinned by reading
-// both tags, not inferred:
+// EIGHT PARAMETERS DECLARED FOR A FUNCTION THAT HAS SIX, SEVEN OR EIGHT, and
+// that is the whole trick. The signature has grown twice, each time immediately
+// before the out-parameter — pinned by reading the release tags, not inferred:
 //
-//   v1.18.0  (ep, buffer, length, unpack_md_map, skip_md_map,             rkey_p)
-//   v1.19.0  (ep, buffer, length, unpack_md_map, skip_md_map, sys_device, rkey_p)
+//   v1.18.x        (ep, buffer, length, unpack_md_map, skip_md_map,                        rkey_p)
+//   v1.19 – v1.22  (ep, buffer, length, unpack_md_map, skip_md_map, sys_device,            rkey_p)
+//   v1.23.0-rc3 on (ep, buffer, length, unpack_md_map, skip_md_map, sys_device, uct_flags, rkey_p)
 //
-// so `rkey_p` is argument 6 on the HPC-X 2.22.1 build MN5 runs and argument 7
-// from 1.19 on — %r9 versus the first stack slot. Declaring the superset and
-// choosing at RUNTIME is the only correct option here, because this .so is built
-// once and dlopened against whatever libucp the application already loaded; a
-// build-time #if would bake in the wrong answer for every other cluster.
+// so `rkey_p` is %r9 on the HPC-X 2.22.1 build MN5 runs, the first stack slot
+// from 1.19, and the second from 1.23 (upstream db905d96f). Declaring the
+// superset and choosing at RUNTIME is the only correct option here, because this
+// .so is built once and dlopened against whatever libucp the application
+// already loaded; a build-time #if would bake in the wrong answer for every
+// other cluster.
 //
-// Under the SysV AMD64 ABI both directions of the mismatch are safe. Forwarding
-// seven integer/pointer arguments to a six-parameter callee is fine — the callee
-// ignores the extra one and the caller cleans up. Reading the seventh when only
-// six were passed yields an undefined stack slot, which is why the provider
-// reads it ONLY when the version says it is real.
+// THE SUPERSET IS WHAT KEEPS THE CALL CORRECT, not only the record. When this
+// hook declared seven, a 1.23 caller's eighth argument — rkey_p itself — was
+// never forwarded, so libucp wrote the unpacked key through whatever qword sat
+// in that stack slot (CR-05). Under the SysV AMD64 ABI forwarding MORE integer
+// arguments than the callee takes is harmless (it ignores them; the caller
+// cleans up), and reading a slot the caller did not pass reads its own frame,
+// which is mapped. So forward all eight, always, and READ a trailing slot only
+// when the version says it is real.
 //
 // The trailing slots are typed as plain uint64_t rather than with UCX typedefs
 // on purpose: `ucs_sys_device_t` is an enum whose width is not part of any
 // contract, and this hook must not stop compiling when it changes.
 DEFINE_PRELOAD_HOOK(ucx, ep_rkey_unpack_internal, "ucp_ep_rkey_unpack_internal", ucs_status_t,
                     ucp_ep_h, const void*, size_t, std::uint64_t, std::uint64_t, std::uint64_t,
-                    std::uint64_t);
+                    std::uint64_t, std::uint64_t);
+
+// Which argument carries rkey_p in the LOADED libucp, from ucp_get_version.
+// constexpr and UCX-free so the table is checked at compile time below and by
+// tests/ucx_rkey_abi.sh.
+enum class RkeyOutParam { Unverified, Sixth, Seventh, Eighth };
+
+constexpr RkeyOutParam rkey_out_param_for(unsigned major, unsigned minor, unsigned release) {
+    if (major != 1 || minor < 18)
+        return RkeyOutParam::Unverified;  // never read: could be anywhere
+    if (minor == 18)
+        return RkeyOutParam::Sixth;
+    if (minor <= 22)
+        return RkeyOutParam::Seventh;
+    if (minor == 23)
+        // 1.23.0 is ambiguous: rc1/rc2 still take seven, rc3 on take eight, and
+        // all report 1.23.0. Reading the wrong slot dereferences a garbage
+        // pointer, so refuse it; 1.23.1+ only ever shipped the eight.
+        return release >= 1 ? RkeyOutParam::Eighth : RkeyOutParam::Unverified;
+    return RkeyOutParam::Unverified;  // newer than anything read: unverified
+}
+static_assert(rkey_out_param_for(1, 17, 0) == RkeyOutParam::Unverified);
+static_assert(rkey_out_param_for(1, 18, 1) == RkeyOutParam::Sixth);
+static_assert(rkey_out_param_for(1, 19, 0) == RkeyOutParam::Seventh);
+static_assert(rkey_out_param_for(1, 22, 0) == RkeyOutParam::Seventh);
+static_assert(rkey_out_param_for(1, 23, 0) == RkeyOutParam::Unverified);
+static_assert(rkey_out_param_for(1, 23, 2) == RkeyOutParam::Eighth);
+static_assert(rkey_out_param_for(1, 24, 0) == RkeyOutParam::Unverified);
+static_assert(rkey_out_param_for(2, 0, 0) == RkeyOutParam::Unverified);

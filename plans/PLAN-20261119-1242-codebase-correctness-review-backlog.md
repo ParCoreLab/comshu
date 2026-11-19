@@ -43,21 +43,21 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Move `hijack::teardown(uar->reg_addr)` and `hostdb::disarm(uar)` into a `register_pre<devx_free_uar_tag>` hook (before the real free runs), keeping `EntityClose` recording in post or pre as appropriate.
 
 ### `CR-04` — Use-After-Free on `ibv_cq*` address reuse in CQE ring cache
-- [ ] **Status:** Open
+- [x] **Status:** Done (the ring cache is `providers/ibverbs/cq_ring_cache.hpp`, keyed by CQ and remembering its context; `register_pre<destroy_cq_tag>` calls `cqeprobe::forget_cq` and `register_pre<close_device_tag>` `cqeprobe::forget_context`, both before the free. `tests/cq_ring_cache_test.cpp` covers reuse of a destroyed CQ's address and per-context eviction)
 - **Subsystem:** `providers/ibverbs`
 - **Locations:** `providers/ibverbs/mlx5_cqe.cpp:97-100, 136-197, 203-212, 309-322`, `providers/ibverbs/ibverbs_provider.cpp:1059-1065`
 - **Problem:** `ibv::cqeprobe::rings()` caches `ibv_cq* -> Ring{buf, cnt, size, dbrec}` permanently and never evicts on `ibv_destroy_cq`. When a new CQ reuses a freed `ibv_cq*` heap address, `cqe_at()` and `on_poll()` dereference the old CQ's unmapped `buf` and freed `dbrec`.
 - **Fix:** Evict `cq` from `ibv::cqeprobe::rings()` in the `ibv_destroy_cq` pre-hook (and on `forget_context`).
 
 ### `CR-05` — ABI mismatch in `ucp_ep_rkey_unpack_internal` on newer UCX
-- [ ] **Status:** Open
+- [x] **Status:** Done (the signature was checked against every release tag: rkey_p is argument 6 on 1.18, 7 on 1.19–1.22, and 8 from 1.23.0-rc3 on (`uct_flags`, upstream db905d96f). The hook now declares and ALWAYS forwards eight slots; `rkey_out_param_for(major, minor, release)` in `ucx_hooks.hpp` is a static_assert'ed table: 1.23.0 is Unverified because rc1/rc2 still take seven, and anything newer than 1.23 is Unverified and says so once on stderr. `tests/ucx_rkey_abi.sh` runs the provider against stand-in 7- and 8-argument libucps at 1.19/1.22/1.23.2/1.23.0/1.24, and goes red if the eighth argument is not forwarded (mutation-checked))
 - **Subsystem:** `providers/ucx`
 - **Locations:** `providers/ucx/ucx_hooks.hpp:284-286`, `providers/ucx/ucx_provider.cpp:139-172, 567-580, 835-841`
 - **Problem:** The hook declares only 7 parameters (`a1..a7`) and `rkey_out_param()` classifies any UCX `1.x` with `minor >= 19` as `RkeyOutParam::Seventh` with no upper bound. Upstream UCX added `uint64_t uct_flags` as arg 7 and moved `ucp_rkey_h *rkey_p` to arg 8. Against such a build, the 8th argument is not forwarded (corrupting stack/memory in `libucp`), and `a7` (`uct_flags`) is dereferenced as `ucp_rkey_h*`.
 - **Fix:** Bound the verified UCX minor version range in `rkey_out_param()` (returning `Unverified` for unverified versions) and/or support the 8-argument signature when matched.
 
 ### `CR-06` — Uninitialized `ChannelDev::comshu_dbg` dereferenced by GPU on every `push()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`nvbit_at_ctx_init` value-initialises the managed ChannelDev with placement new, so `comshu_dbg` starts null, and a failed `cudaMallocManaged` aborts with a message instead of a nameless segfault. No GPU on the local build host: verified by the MN5 gpumem cases)
 - **Subsystem:** `gpu-backends/nvbit`
 - **Locations:** `gpu-backends/nvbit/nvbit_backend.cu:1292-1306`, `gpu-backends/nvbit/nvbit-1.7.7.1/utils/channel.hpp:52-55, 165-180`
 - **Problem:** `state->channel_dev` is allocated with `cudaMallocManaged(&state->channel_dev, sizeof(ChannelDev))` without placement-new or `memset`, and `ChannelDev::init()` does not initialize `comshu_dbg`. When `COMSHU_CHANNEL_DEBUG` is unset and `cudaMallocManaged` returns recycled non-zero memory, every GPU `ChannelDev::push()` executes `if (comshu_dbg) atomicAdd(&comshu_dbg[0], 1ull)` on a garbage address.

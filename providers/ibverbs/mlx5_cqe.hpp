@@ -103,6 +103,17 @@ bool enabled();
  */
 void on_poll(ibv_cq* cq, int ret, ibv_wc* wc);
 
+/**
+ * Forget the ring cached for `cq`. Called BEFORE ibv_destroy_cq frees the CQ and
+ * its ring, so a CQ later allocated at the same address resolves its own ring
+ * (CR-04). Harmless for a CQ never seen, and when the destroy then fails: the
+ * ring is resolved again on the next poll.
+ */
+void forget_cq(const ibv_cq* cq);
+
+/** Forget every cached ring of `ctx`'s CQs; for ibv_close_device. */
+void forget_context(const ibv_context* ctx);
+
 // --- the production path ----------------------------------------------------
 //
 // The probe above answers "is this readable" and prints. The two below answer

@@ -92,6 +92,14 @@ target_link_libraries(wr_builder_test PRIVATE comshu::comshu)
 comshu_add_test(wr_builder_test)
 add_test(NAME wr_builder COMMAND wr_builder_test)
 
+# The CQE probe's per-CQ ring cache and its eviction (CR-04). Header-only, no
+# ibverbs: driven directly.
+add_executable(cq_ring_cache_test cq_ring_cache_test.cpp)
+target_include_directories(cq_ring_cache_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/ibverbs)
+target_compile_features(cq_ring_cache_test PRIVATE cxx_std_20)
+target_compile_options(cq_ring_cache_test PRIVATE -UNDEBUG)
+add_test(NAME cq_ring_cache COMMAND cq_ring_cache_test)
+
 # InternTable itself: identity, handle numbering, storage stability, and the
 # shared string/key counter. No engine, no NIC — the paths are all reachable
 # from the header.
@@ -293,6 +301,27 @@ if(COMSHU_PROVIDER_UCX)
                    $<TARGET_FILE:comshu_engine>
                    $<TARGET_FILE:ucx_trace>
                    $<TARGET_FILE:ucx_deep_trace>)
+  # CR-05: the rendezvous door's argument count, against stand-in libucps in
+  # each shape UCX shipped (7 args to 1.22, 8 from 1.23). Needs no UCX at all,
+  # only the provider — which is why it can check a signature this host's UCX
+  # does not have. Each fake is libucp.so.0 in its own directory.
+  foreach(_n 7 8)
+    add_library(fake_ucp${_n} SHARED ucx_rkey_abi/fake_ucp.cpp)
+    target_compile_definitions(fake_ucp${_n} PRIVATE FAKE_UCP_ARGS=${_n})
+    set_target_properties(fake_ucp${_n} PROPERTIES
+      OUTPUT_NAME ucp SOVERSION 0 VERSION 0.0.0
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fake_ucp${_n})
+  endforeach()
+  add_executable(ucx_rkey_abi_driver ucx_rkey_abi/driver.cpp)
+  target_link_libraries(ucx_rkey_abi_driver PRIVATE fake_ucp8)
+  add_test(NAME ucx_rkey_abi
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/ucx_rkey_abi.sh
+                   $<TARGET_FILE:comshu_launcher>
+                   $<TARGET_FILE:comshu_engine>
+                   $<TARGET_FILE:ucx_trace>
+                   $<TARGET_FILE:ucx_rkey_abi_driver>
+                   $<TARGET_FILE_DIR:fake_ucp7>
+                   $<TARGET_FILE_DIR:fake_ucp8>)
   get_filename_component(_ucx_libdir "${UCX_UCP_LIB}" DIRECTORY)
   set_tests_properties(ucx_records ucx_deep_records PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${_ucx_libdir}:$ENV{LD_LIBRARY_PATH}")

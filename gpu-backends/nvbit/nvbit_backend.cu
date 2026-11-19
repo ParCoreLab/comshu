@@ -21,6 +21,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -1289,7 +1290,19 @@ void nvbit_at_ctx_init(CUcontext ctx) {
     CtxState* state = new CtxState;
     assert(G().ctx_state.find(ctx) == G().ctx_state.end());
     G().ctx_state[ctx] = state;
-    cudaMallocManaged(&state->channel_dev, sizeof(ChannelDev));
+    // cudaMallocManaged runs no constructor, so ChannelDev's default member
+    // initialisers — comshu_dbg = nullptr above all — never ran: on recycled
+    // managed memory every device push() tested a garbage comshu_dbg and
+    // atomicAdd'ed through it (CR-06). Value-initialise in place.
+    const cudaError_t alloc = cudaMallocManaged(&state->channel_dev, sizeof(ChannelDev));
+    if (alloc != cudaSuccess || !state->channel_dev) {
+        // Nothing below can run without the channel, and a null one would fail
+        // later as a segfault with no name; say what happened instead.
+        std::fprintf(stderr, "[comshu gpumem] cannot allocate the device channel: %s\n",
+                     cudaGetErrorString(alloc));
+        std::abort();
+    }
+    new (state->channel_dev) ChannelDev();
     // Diagnostic counters (COMSHU_CHANNEL_DEBUG): host-mapped so the recv thread
     // can watch where the device stops. See channel.hpp comshu_bump slots.
     if (std::getenv("COMSHU_CHANNEL_DEBUG")) {

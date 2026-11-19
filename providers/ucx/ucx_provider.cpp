@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstdio>
 #include <mutex>
 #include <unordered_map>
 
@@ -124,21 +125,10 @@ static std::uint64_t fnv1a(const void* data, std::size_t len) {
 }
 
 // Which declared parameter of ucp_ep_rkey_unpack_internal actually holds
-// `rkey_p` on the libucp this process loaded. See the hook's comment in
-// ucx_hooks.hpp for the two signatures and why the choice cannot be made at
+// `rkey_p` on the libucp this process loaded. RkeyOutParam and the release
+// table, rkey_out_param_for(), live in ucx_hooks.hpp beside the declaration
+// whose argument count they decide, with why the choice cannot be made at
 // build time.
-enum class RkeyOutParam { Unverified, Sixth, Seventh };
-
-// The boundary, read off the release tags rather than inferred from the one
-// version that happened to be in front of us:
-//   v1.18.0  ... skip_md_map,             rkey_p)   -> 6th
-//   v1.19.0  ... skip_md_map, sys_device, rkey_p)   -> 7th
-// and upstream master still matches 1.19. UCX 1.x has never renumbered, so
-// "1.19 or newer" is the test; a hypothetical 2.x is Unverified until someone
-// reads its header, which is the safe direction to be wrong in.
-static constexpr unsigned kSysDeviceMajor = 1;
-static constexpr unsigned kSysDeviceMinor = 19;
-static constexpr unsigned kOldestVerifiedMinor = 18;
 
 // Asked once, of the LOADED library. ucp_get_version is public API and has been
 // since 1.0, so this needs no hook and no dlsym dance of its own.
@@ -164,9 +154,17 @@ static RkeyOutParam rkey_out_param() noexcept {
     static const RkeyOutParam kLayout = [] {
         unsigned major = 0, minor = 0, release = 0;
         ucp_get_version(&major, &minor, &release);
-        if (major != kSysDeviceMajor || minor < kOldestVerifiedMinor)
-            return RkeyOutParam::Unverified;
-        return minor >= kSysDeviceMinor ? RkeyOutParam::Seventh : RkeyOutParam::Sixth;
+        const auto layout = rkey_out_param_for(major, minor, release);
+        if (layout == RkeyOutParam::Unverified)
+            // Said once, because the hole it leaves (no ucx_rkey rows from the
+            // rendezvous door) would otherwise look like a workload that
+            // unpacked nothing. The call itself is still forwarded intact.
+            std::fprintf(stderr,
+                         "[comshu ucx] libucp %u.%u.%u: ucp_ep_rkey_unpack_internal's "
+                         "out-parameter position is unverified for this version; its "
+                         "remote keys are NOT recorded (calls are forwarded unchanged)\n",
+                         major, minor, release);
+        return layout;
     }();
     return kLayout;
 }
@@ -554,7 +552,8 @@ Profiler::Profiler() {
     // The rendezvous door. ucx_hooks.hpp explains why this symbol is declared
     // with one more parameter than it has here; this is where that is resolved.
     //
-    // `a6` is rkey_p up to and including 1.18, `a7` from 1.19 on. Asking the
+    // `a6` is rkey_p up to and including 1.18, `a7` from 1.19, `a8` from 1.23
+    // (ucx_hooks.hpp has the table). Asking the
     // LOADED library rather than a header, because this .so is dlopened against
     // whichever libucp the application brought with it.
     //
@@ -567,13 +566,16 @@ Profiler::Profiler() {
     register_post<ep_rkey_unpack_internal_tag>([](ucs_status_t status, ucp_ep_h endpoint,
                                                   const void*, std::size_t, std::uint64_t,
                                                   std::uint64_t, std::uint64_t a6, std::uint64_t a7,
-                                                  auto begin, auto end) {
+                                                  std::uint64_t a8, auto begin, auto end) {
         if (status != UCS_OK || rkey_unpack_depth() > 0)
             return;
         const auto layout = rkey_out_param();
         if (layout == RkeyOutParam::Unverified)
             return;
-        auto* out = reinterpret_cast<ucp_rkey_h*>(layout == RkeyOutParam::Seventh ? a7 : a6);
+        const std::uint64_t slot = layout == RkeyOutParam::Eighth    ? a8
+                                   : layout == RkeyOutParam::Seventh ? a7
+                                                                     : a6;
+        auto*               out = reinterpret_cast<ucp_rkey_h*>(slot);
         if (!out || !*out)
             return;
         rec().record(span(begin, end), rr::UcxRkey{{}, {}, h(*out), h(endpoint)});
@@ -824,20 +826,22 @@ extern "C" ucs_status_t ucp_rkey_pack(ucp_context_h context, ucp_mem_h memh, voi
 extern "C" void ucp_rkey_destroy(ucp_rkey_h rkey) {
     ucx::Profiler::invoke_preload<ucx::rkey_destroy_tag>(rkey);
 }
-// Seven parameters for a function that takes six on MN5's UCX 1.18. Deliberate,
-// and safe in both directions under the SysV AMD64 ABI: forwarding a seventh
-// integer argument to a six-parameter callee is ignored by the callee, and the
-// seventh slot is only ever *read* when rkey_out_param() says the loaded library
-// really passes one. ucx_hooks.hpp carries the full argument.
+// Eight parameters for a function that takes six (1.18), seven (1.19-1.22) or
+// eight (1.23). Deliberate, and safe in every direction under the SysV AMD64
+// ABI: a callee ignores integer arguments it does not take, and a trailing slot
+// is only ever *read* when rkey_out_param() says the loaded library really
+// passes one. Declaring fewer than the library takes is what is NOT safe — the
+// missing argument is rkey_p itself (CR-05). ucx_hooks.hpp carries the table.
 //
-// Named a6/a7 rather than sys_device/rkey_p because neither name is true on both
-// versions, and a comment is a worse guard than a name that refuses to lie.
+// Named a6/a7/a8 rather than sys_device/uct_flags/rkey_p because no name is
+// true on every version, and a comment is a worse guard than a name that
+// refuses to lie.
 extern "C" ucs_status_t ucp_ep_rkey_unpack_internal(ucp_ep_h endpoint, const void* rkey_buffer,
                                                     std::size_t length, std::uint64_t unpack_md_map,
                                                     std::uint64_t skip_md_map, std::uint64_t a6,
-                                                    std::uint64_t a7) {
+                                                    std::uint64_t a7, std::uint64_t a8) {
     return ucx::Profiler::invoke_preload<ucx::ep_rkey_unpack_internal_tag>(
-        endpoint, rkey_buffer, length, unpack_md_map, skip_md_map, a6, a7);
+        endpoint, rkey_buffer, length, unpack_md_map, skip_md_map, a6, a7, a8);
 }
 extern "C" ucs_status_t ucp_worker_get_address(ucp_worker_h worker, ucp_address_t** address,
                                                size_t* length) {

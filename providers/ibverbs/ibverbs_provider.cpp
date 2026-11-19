@@ -963,6 +963,11 @@ Profiler::Profiler() {
                                            {}, {}, h(ctx), rr::IbDevice::comshu_type_id});
             forget_context(ctx);
         });
+    // ...and BEFORE it runs, any CQE ring still cached for one of its CQs: the
+    // close frees them whether or not the application destroyed them first, and
+    // a pointer comparison after the free is all a later lookup would do (CR-04).
+    this->register_pre<close_device_tag>(
+        [](ibv_context* ctx, std::uint64_t) { cqeprobe::forget_context(ctx); });
 
     // create_cq / create_cq_ex -> the completion-queue entity.
     //
@@ -1056,6 +1061,12 @@ Profiler::Profiler() {
     // destroy_cq -> the CQ's lifetime ended. Same success-only discipline as
     // dereg_mr and destroy_qp: a destroy that failed closed nothing, and
     // recording it would make a live CQ look freed.
+    //
+    // The CQE probe's cached ring for this CQ goes BEFORE the destroy: after it
+    // the ring is unmapped and the doorbell record freed, and a CQ created at
+    // the same address must resolve its own (CR-04). Evicting a CQ whose destroy
+    // then fails costs one re-resolution on its next poll, nothing more.
+    this->register_pre<destroy_cq_tag>([](ibv_cq* cq, std::uint64_t) { cqeprobe::forget_cq(cq); });
     this->register_post<destroy_cq_tag>(
         [](int ret, ibv_cq* cq, std::uint64_t t0, std::uint64_t t1) {
             if (ret != 0 || !cq)
