@@ -1,4 +1,4 @@
--- requires: object_access params.ranks params.iters params.window_bytes
+-- requires: link_health params.ranks params.iters params.window_bytes
 -- Every window store lands in the RIGHT NEIGHBOUR's window, at the offset the
 -- kernel named, and nothing is left unplaced.
 --
@@ -13,6 +13,12 @@
 -- of its ncclMemAlloc allocation — and every row exact. One object per owner,
 -- so a duplicate record of the same memory (NCCL also maps the owner's OWN
 -- allocation into the flat range) cannot split the traffic.
+--
+-- WHY `link_health` and not `object_access`: a requires-table with no rows
+-- makes the check SKIP, and an empty object_access is exactly the failure this
+-- asserts against — the first run (MN5 job 49229603) placed 0 of 1,310,720
+-- stores and this check reported [skip]. link_health is derived, so it routes
+-- the check to the Parquet path, and it always has rows.
 WITH RECURSIVE expected(r) AS (
   SELECT 0
   UNION ALL SELECT r + 1 FROM expected WHERE r + 1 < (SELECT ranks FROM params)
