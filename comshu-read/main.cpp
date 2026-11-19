@@ -2211,7 +2211,7 @@ void aggregate(CsvAgg& a, const RankDir& r, const Stamped<ibr::IbPostSend>& s) {
 //   (any provider may hook CUDA itself); two providers DISAGREEING about which
 //   GPU owns it is a finding. `device` prints the lowest, and `devices > 1` is
 //   the flag that says the value is not to be trusted.
-void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
+bool write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
     // A rank that recorded objects but no access never reached settle_lives()
     // through aggregate(GpuAccess); settle it here so it is not read as having
     // no lifetimes at all.
@@ -2233,6 +2233,11 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
         }
 
     std::FILE* f = std::fopen((outdir / "mem_owner.csv").c_str(), "w");
+    if (!f) {
+        std::fprintf(stderr, "comshu: cannot write %s: %s\n",
+                     (outdir / "mem_owner.csv").c_str(), std::strerror(errno));
+        return false;
+    }
     std::fputs("rank,source,base,size,device,devices,emitters,refs,direct_refs,"
                "ambiguous_refs,nested_refs\n",
                f);
@@ -2421,7 +2426,7 @@ void write_mem_owner(const fs::path& outdir, CsvAgg& agg) {
                              ambiguous_lives, ambiguous_lives);
         }
     }
-    std::fclose(f);
+    return std::fclose(f) == 0;
 }
 
 int export_csv(const fs::path& root, const fs::path& outdir) {
@@ -2456,12 +2461,28 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
                      unhandled);
 
     // One <name>.csv per Table<>, each row prefixed with the rank.
+    //
+    // EVERY open is checked (CR-64): an unwritable or full output directory
+    // used to hand fprintf a null FILE* and crash halfway through an export.
     std::unordered_map<core::RecordTypeId, std::FILE*> files;
+    std::string                                        open_failed;
     for_each_type<TableRecords>([&]<typename R>() {
-        std::FILE* f = std::fopen((outdir / (std::string(Table<R>::name) + ".csv")).c_str(), "w");
+        const auto path = outdir / (std::string(Table<R>::name) + ".csv");
+        std::FILE* f = std::fopen(path.c_str(), "w");
+        if (!f) {
+            if (open_failed.empty())
+                open_failed = path.string() + ": " + std::strerror(errno);
+            return;
+        }
         std::fprintf(f, "rank,%s\n", Table<R>::cols);
         files[core::RecordTrait<R>::type_id] = f;
     });
+    if (!open_failed.empty()) {
+        std::fprintf(stderr, "comshu: cannot write %s\n", open_failed.c_str());
+        for (const auto& [_, f] : files)
+            std::fclose(f);
+        return 1;
+    }
 
     CsvAgg agg;
     for (const auto& r : ranks) {
@@ -2488,6 +2509,13 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     // dest_dct) each one names) — the same rules as link_sql.hpp,
     // and tests/comm_edges_rule.sh compares the two.
     std::FILE* edges = std::fopen((outdir / "comm_edges.csv").c_str(), "w");
+    if (!edges) {
+        std::fprintf(stderr, "comshu: cannot write %s: %s\n",
+                     (outdir / "comm_edges.csv").c_str(), std::strerror(errno));
+        for (const auto& [_, f] : files)
+            std::fclose(f);
+        return 1;
+    }
     std::fputs("src_rank,dst_rank,sends,bytes\n", edges);
     std::map<std::pair<int, int>, std::pair<long, long>> edge_agg;
     for (const auto& [key, sb] : agg.send_by_qp) {
@@ -2541,12 +2569,17 @@ int export_csv(const fs::path& root, const fs::path& outdir) {
     }
     for (const auto& [rk, e] : edge_agg)
         std::fprintf(edges, "%d,%d,%ld,%ld\n", rk.first, rk.second, e.first, e.second);
-    std::fclose(edges);
-
-    write_mem_owner(outdir, agg);
-
+    // Closes checked too: a full disk often surfaces only when the buffers
+    // are flushed, and an export that lost its tail must not report success.
+    bool written = std::fclose(edges) == 0;
+    written = write_mem_owner(outdir, agg) && written;
     for (const auto& [_, f] : files)
-        std::fclose(f);
+        written = std::fclose(f) == 0 && written;
+    if (!written) {
+        std::fprintf(stderr, "comshu: the export to %s is INCOMPLETE — a write failed (%s)\n",
+                     outdir.c_str(), std::strerror(errno));
+        return 1;
+    }
 
     std::printf("comshu: %zu ranks, %zu gpu-accesses, %zu ib-sends -> %s/"
                 "{gpu_access,mem_object,source_line,clock_anchor,comm_edges,mem_owner,ib_*}.csv\n",
@@ -2610,7 +2643,7 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     // to, so give it one: a capture an order of magnitude larger should get
     // slower, not killed. (Reading one rank at a time above is a real but much
     // smaller saving; it is not what dominates.)
-    duck_exec(con, "SET temp_directory='" + outdir.string() + "'", "temp_directory");
+    duck_exec(con, "SET temp_directory=" + duck::sql_str(outdir.string()), "temp_directory");
 
     // The load is capture_load.hpp's, shared with comshu-ui so that "read a
     // capture into DuckDB" has one implementation. What stays here is the only
@@ -2644,7 +2677,8 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
 
         const auto out = (outdir / (std::string(Raw::table) + ".parquet")).string();
         if (duck_exec(con,
-                      "COPY \"" + std::string(Raw::table) + "\" TO '" + out + "' (FORMAT PARQUET)",
+                      "COPY " + duck::sql_ident(Raw::table) + " TO " + duck::sql_str(out) +
+                          " (FORMAT PARQUET)",
                       Raw::table))
             tables++;
         else
@@ -2654,8 +2688,8 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
     if (intern_rows) {
         const auto out = (outdir / (std::string(duck::kInternTextTable) + ".parquet")).string();
         if (duck_exec(con,
-                      "COPY \"" + std::string(duck::kInternTextTable) + "\" TO '" + out +
-                          "' (FORMAT PARQUET)",
+                      "COPY " + duck::sql_ident(duck::kInternTextTable) + " TO " +
+                          duck::sql_str(out) + " (FORMAT PARQUET)",
                       duck::kInternTextTable)) {
             tables++;
             rows_total += intern_rows;
@@ -2672,8 +2706,8 @@ int export_parquet(const fs::path& root, const fs::path& outdir) {
         const auto out =
             (outdir / (std::string(duck::kCaptureIntegrityTable) + ".parquet")).string();
         if (duck_exec(con,
-                      "COPY \"" + std::string(duck::kCaptureIntegrityTable) + "\" TO '" + out +
-                          "' (FORMAT PARQUET)",
+                      "COPY " + duck::sql_ident(duck::kCaptureIntegrityTable) + " TO " +
+                          duck::sql_str(out) + " (FORMAT PARQUET)",
                       duck::kCaptureIntegrityTable)) {
             tables++;
             rows_total += integrity_rows;
@@ -2704,7 +2738,7 @@ int run_link(const fs::path& dir) {
         std::fprintf(stderr, "comshu: cannot open an in-memory DuckDB\n");
         return 1;
     }
-    duck_exec(con, "SET temp_directory='" + dir.string() + "'", "temp_directory");
+    duck_exec(con, "SET temp_directory=" + duck::sql_str(dir.string()), "temp_directory");
 
     std::vector<std::string> decoded;
     const auto               present = mount_raw_tables(con, dir, &decoded);
@@ -2743,7 +2777,9 @@ int run_link(const fs::path& dir) {
             continue;
         }
         const auto out = (dir / (std::string(t.name) + ".parquet")).string();
-        if (duck_exec(con, "COPY (" + std::string(t.sql) + ") TO '" + out + "' (FORMAT PARQUET)",
+        if (duck_exec(con,
+                      "COPY (" + std::string(t.sql) + ") TO " + duck::sql_str(out) +
+                          " (FORMAT PARQUET)",
                       t.name))
             written++;
         else
@@ -2852,22 +2888,31 @@ int run_sql(const fs::path& dir, const std::string& query) {
     // Parquet preferred, CSV accepted. A --csv export is a perfectly good thing
     // to query, and refusing it would mean the suite's existing outputs are
     // unreachable from here for no reason.
-    std::size_t views = 0;
-    for (const auto& entry : fs::directory_iterator(dir)) {
-        if (!entry.is_regular_file())
-            continue;
-        const auto ext = entry.path().extension();
-        const bool parquet = ext == ".parquet";
-        if (!parquet && ext != ".csv")
-            continue;
-        const auto name = entry.path().stem().string();
-        const auto reader = parquet ? "read_parquet('" : "read_csv('";
-        const auto suffix = parquet ? "')" : "', header=true, auto_detect=true, sample_size=-1)";
-        if (duck_exec(con,
-                      "CREATE OR REPLACE VIEW \"" + name + "\" AS SELECT * FROM " + reader +
-                          entry.path().string() + suffix,
-                      name.c_str()))
-            views++;
+    //
+    // PARQUET FIRST, then CSV only for tables Parquet did not provide. With
+    // both <t>.parquet and <t>.csv present, directory order — unspecified —
+    // decided which one the view named (CR-62).
+    std::size_t           views = 0;
+    std::set<std::string> mounted;
+    for (const bool want_parquet : {true, false}) {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_regular_file())
+                continue;
+            const auto ext = entry.path().extension();
+            if (ext != (want_parquet ? ".parquet" : ".csv"))
+                continue;
+            const auto name = entry.path().stem().string();
+            if (!mounted.insert(name).second)
+                continue;
+            const auto reader = want_parquet ? "read_parquet(" : "read_csv(";
+            const auto suffix =
+                want_parquet ? ")" : ", header=true, auto_detect=true, sample_size=-1)";
+            if (duck_exec(con,
+                          "CREATE OR REPLACE VIEW " + duck::sql_ident(name) + " AS SELECT * FROM " +
+                              reader + duck::sql_str(entry.path().string()) + suffix,
+                          name.c_str()))
+                views++;
+        }
     }
     if (!views) {
         std::fprintf(stderr, "comshu: no .parquet or .csv tables in %s\n", dir.c_str());
@@ -2935,8 +2980,8 @@ int run_sql(const fs::path& dir, const std::string& query) {
     // `comshu sql ... > out.csv` that printed anything beforehand.
     const bool ok = duck_exec(con, bind, "query") &&
                     duck_exec(con,
-                              "COPY (SELECT * FROM " + std::string(kQueryView) + ") TO '" +
-                                  tmp.string() + "' (FORMAT CSV, HEADER)",
+                              "COPY (SELECT * FROM " + std::string(kQueryView) + ") TO " +
+                                  duck::sql_str(tmp.string()) + " (FORMAT CSV, HEADER)",
                               "query");
     if (ok) {
         if (std::FILE* f = std::fopen(tmp.c_str(), "rb")) {
@@ -3126,6 +3171,7 @@ struct TraceStats {
     std::size_t flows{};
     std::size_t unmatched{};
     std::size_t unanchored{};
+    std::size_t before_origin{};  // events earlier than the trace's origin, pinned to it
     std::size_t counters{};
     std::size_t unsignalled_qps{};    // queue pairs refused for pairing
     std::size_t unsignalled_sends{};  // sends on them, left with no flow
@@ -3147,8 +3193,15 @@ TraceStats build_trace(const std::vector<RankDir>& ranks, const std::vector<Rank
     // Each record through ITS OWN domain's fit — see build_clocks. A verbs
     // record is domain 0; a kernel record is not, and pushing one through the
     // other's rate is how a timeline becomes fiction.
-    auto ns = [&](const RankClocks& rc, const core::Temporal& t) {
-        return clock_for(rc, t.a.domain, st.unanchored).wall_at(t.a.ticks) - origin;
+    // Unsigned, so an event before `origin` — or on a clock whose fit puts it
+    // there — wrapped to a timestamp ~584 years out and stretched the whole
+    // timeline to fit it (CR-63). Pinned to the origin and counted instead.
+    auto ns = [&](const RankClocks& rc, const core::Temporal& t) -> std::uint64_t {
+        const std::uint64_t wall = clock_for(rc, t.a.domain, st.unanchored).wall_at(t.a.ticks);
+        if (wall >= origin)
+            return wall - origin;
+        ++st.before_origin;
+        return 0;
     };
     auto dur = [&](const RankClocks& rc, const core::Temporal& t) {
         return static_cast<std::uint64_t>(clock_for(rc, t.a.domain, st.unanchored).dur_ns(t));
@@ -3300,8 +3353,11 @@ TraceStats build_trace(const std::vector<RankDir>& ranks, const std::vector<Rank
             // Bytes per window -> MB/s. Integer megabytes per second: the track
             // is read for shape and magnitude, and a double here would buy
             // precision the sampling has already spent.
-            const auto rate = static_cast<std::int64_t>(win_bytes * 1000000000ull /
-                                                        (window ? window : 1) / 1000000ull);
+            // bytes/window_ns * 1e9 / 1e6 is bytes * 1000 / window_ns. The old
+            // spelling multiplied by 1e9 first and overflowed 64 bits above
+            // ~18 GB in one window (CR-63); 128-bit intermediates cannot.
+            const auto rate = static_cast<std::int64_t>(
+                static_cast<unsigned __int128>(win_bytes) * 1000u / (window ? window : 1));
             on_counter(r.rank, Counter::SendRate, at, rate);
             st.counters += 2;
             win_bytes = 0;
@@ -3408,6 +3464,11 @@ inline void report_trace_stats(const TraceStats& st) {
                      "comshu: %zu events had no clock anchor for their domain and are placed at "
                      "their raw tick — the capture is missing a ClockAnchor row\n",
                      st.unanchored);
+    if (st.before_origin)
+        std::fprintf(stderr,
+                     "comshu: %zu events fall before the trace's origin and are drawn AT it — "
+                     "their clock disagrees with the anchor that set the origin\n",
+                     st.before_origin);
     // Unmatched send-side completions are a finding about the capture, not a
     // rounding error: every one is a completion whose (qp_num, wr_id) named no
     // post_send this capture recorded. A handful means a trace that starts

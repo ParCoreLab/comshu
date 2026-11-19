@@ -52,6 +52,12 @@ CSV
 # An address inside both must resolve to the smaller, so "ORDER BY range_size
 # LIMIT 1" is doing work rather than picking the only candidate.
 #
+# Rank 2 REALLOCATED a buffer at one base (CR-61): object 70 is [40000, 41024)
+# and later [40000, 44096). Same base, so the same interned id — two extents
+# under one name. An access at 40100 lies in both and must produce ONE row (the
+# smaller, offset 100); one at 42000 lies only in the larger and must be placed
+# there (offset 2000), not counted unattributed against the smaller.
+#
 # And rank 1 holds one object at base 0. That row exists ONLY so the
 # remote_addr = 0 guard has something to fail into: without it the fixture
 # cannot express that defect, because no object would contain address 0 and the
@@ -70,6 +76,8 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 1,2,0,100,0,900,0,6,0,30000,2048,1,0,2
 1,2,0,100,0,900,0,8,0,60000,1024,1,0,2
 0,2,0,100,0,900,0,3,0,4096,1024,0,0,2
+2,2,0,100,0,900,0,70,0,40000,1024,2,0,2
+2,2,0,950,0,990,0,70,0,40000,4096,2,0,2
 CSV
 
 cat > "$WORK/ib_modify_qp.csv" <<'CSV'
@@ -201,6 +209,8 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,3,0,3000,0,3100,0,1,99,777,777,0,8,1,0,0,1,0
 2,3,0,3000,0,3100,0,1,7,5000,5000,0,8,1,0,2,5,0
 0,3,0,3000,0,3100,0,1,0,70000,0,0,8,1,0,0,1,0
+2,3,0,3000,0,3100,0,1,70,40100,40100,0,4,1,0,2,2,0
+2,3,0,3000,0,3100,0,1,70,42000,42000,0,4,1,0,2,2,0
 CSV
 
 # THE UCX HALF (PLAN-20261118-1930). Workers: rank 0 owns prefix 0xA0, rank 1
@@ -347,7 +357,7 @@ expect() {  # <label> <sql> <expected>
 # Every placement in one value. Each defect in the header changes it.
 expect "the placements" \
     "SELECT string_agg(source||':'||owner_rank||':'||object||':'||obj_offset||':'||size||':'||exact, ' ' ORDER BY source, owner_rank, object, obj_offset, size) FROM object_access" \
-    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:128:4:true p2p:1:9:256:8:true p2p:1:9:512:8:true p2p:1:62:100:4:true p2p:2:7:256:8:true p2p:2:7:512:8:true ucx_rma:1:2:8:16:true ucx_rma:1:8:10:4:true ucx_send:0:3:16:64:true ucx_send:2:7:100:32:true verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
+    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:128:4:true p2p:1:9:256:8:true p2p:1:9:512:8:true p2p:1:62:100:4:true p2p:2:7:256:8:true p2p:2:7:512:8:true p2p:2:70:100:4:true p2p:2:70:2000:4:true ucx_rma:1:2:8:16:true ucx_rma:1:8:10:4:true ucx_send:0:3:16:64:true ucx_send:2:7:100:32:true verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
 
 # The column that meant two things. A peer write is owned by the rank whose
 # memory it landed in, never by the rank that issued it.
@@ -358,14 +368,14 @@ expect "a peer write is never owned by its writer" \
 # owner's name for it, because that is the only one that means anything on the
 # owner's rank.
 expect "the object id is the owner's, not the actor's" \
-    "SELECT string_agg(DISTINCT object, ',' ORDER BY object) FROM object_access WHERE source = 'p2p' AND object <> 62" \
+    "SELECT string_agg(DISTINCT object, ',' ORDER BY object) FROM object_access WHERE source = 'p2p' AND object NOT IN (62, 70)" \
     "7,9"
 
 # Both mappings are of a 4096-byte object and land at the same two bytes, so
 # the largest offset is the true 512 — not ~1e9 (raw addresses across two
 # mappings), and not 256 (an anchor at the lowest byte touched).
 expect "the offset is the owner-side address minus the buffer's base" \
-    "SELECT max(obj_offset) FROM object_access WHERE source = 'p2p'" "512"
+    "SELECT max(obj_offset) FROM object_access WHERE source = 'p2p' AND object <> 70" "512"
 
 expect "no offset escapes its object" \
     "SELECT count(*) FROM object_access WHERE obj_offset >= 4096 AND source = 'p2p'" "0"

@@ -19,6 +19,20 @@ fail=0
 "$COMSHU" export "$WORK/cap" --csv "$WORK/csv" > "$WORK/export.out" 2>&1 || {
     cat "$WORK/export.out"; echo "FAIL: export"; exit 1; }
 
+# An output directory that exists but cannot be written (CR-64): the export
+# used to fprintf into a null FILE* and crash. It must refuse, by name.
+mkdir -p "$WORK/ro"; chmod 555 "$WORK/ro"
+"$COMSHU" export "$WORK/cap" --csv "$WORK/ro" > "$WORK/ro.out" 2>&1
+rc=$?
+chmod 755 "$WORK/ro"
+if [ "$rc" -ge 128 ] || [ "$rc" -eq 0 ]; then
+    cat "$WORK/ro.out"; echo "FAIL: export into an unwritable directory gave rc=$rc"; fail=1
+elif ! grep -q 'cannot write' "$WORK/ro.out"; then
+    cat "$WORK/ro.out"; echo "FAIL: the refusal did not say what it could not write"; fail=1
+else
+    echo "ok: an unwritable output directory is refused, not crashed into"
+fi
+
 # RFC 4180 width check, in awk-free python so quoting is parsed, not guessed.
 python3 - "$WORK/csv" <<'PY' || fail=1
 import csv, os, sys

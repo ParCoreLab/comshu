@@ -51,6 +51,11 @@ CSV
 # qp 8 — UNBALANCED (2 sends, 1 completion), the unsignalled-WR signature. The
 # guard must refuse the whole queue pair; without it, this pairs and adds a
 # latency of 200.
+#
+# qp 11 — UNBALANCED too (declared sq_sig_all = 0, signals nothing), and its one completion (4900)
+# names wr_id 800 and PRECEDES both sends. The lane refuses this queue pair, so
+# it has no pairs at all and nothing to call backwards. wr_flight_backwards
+# used to pair it again on its own, by wr_id, and count it (CR-60).
 cat > "$WORK/ib_post_send.csv" <<'CSV'
 rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,qp,wr_id,remote_addr,rkey,length,qp_num,send_flags,opcode,num_sge
 0,2,0,2000,0,2010,0,1,100,0,0,64,7,2,0,1
@@ -63,6 +68,8 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,2,0,3100,0,3110,0,1,600,0,0,64,9,2,0,1
 0,2,0,4000,0,4010,0,1,700,0,0,64,10,2,0,1
 0,2,0,4100,0,4110,0,1,701,0,0,64,10,2,0,1
+0,2,0,5000,0,5010,0,1,800,0,0,64,11,0,0,1
+0,2,0,5100,0,5110,0,1,800,0,0,64,11,0,0,1
 CSV
 
 # opcode 128 is IBV_WC_RECV; opcode 0 is IBV_WC_SEND.
@@ -76,6 +83,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,2,0,2200,0,2210,0,2,500,64,8,0,0
 0,2,0,3400,0,3410,0,2,600,64,9,0,0
 0,2,0,4500,0,4510,0,2,700,64,10,0,0
+0,2,0,4900,0,4910,0,2,800,64,11,0,0
 CSV
 
 # send_flags is column 14 of ib_post_send above; bit 1 (value 2) is
@@ -93,6 +101,7 @@ rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal
 0,0,0,0,0,0,0,2,8,0
 0,0,0,0,0,0,0,3,9,0
 0,0,0,0,0,0,0,4,10,0
+0,0,0,0,0,0,0,5,11,0
 CSV
 
 # qp 9 is selectively signalling AND said which work requests it signalled, so
@@ -143,24 +152,24 @@ expect "no send paired to a RECEIVE completion" \
 expect "the backwards pair was dropped and counted" \
     "SELECT n FROM link_health WHERE finding = 'wr_flight_backwards'" "1"
 
-# qps 8, 9 and 10 all post more than they complete, and ALL THREE declared
+# qps 8, 9, 10 and 11 all post more than they complete, and ALL FOUR declared
 # sq_sig_all = 0. So the capture can name the cause of every one of them and
 # nothing is left unexplained — which is the point of the row being zero here
 # rather than absent.
 expect "no unpairable queue pair is left without a cause" \
     "SELECT n FROM link_health WHERE finding = 'wr_flight_unexplained_qps'" "0"
 
-# The same three, on the side of the rubric that is not a defect. They declared
+# The same four, on the side of the rubric that is not a defect. They declared
 # they would not signal every work request; the mismatch is the declaration
 # coming true, not a failure of the link.
 expect "the cause of the refusal is named, not guessed" \
-    "SELECT n FROM link_health WHERE finding = 'wr_flight_selective_signalling_qps'" "3"
+    "SELECT n FROM link_health WHERE finding = 'wr_flight_selective_signalling_qps'" "4"
 
-# THE SPLIT IS THE WHOLE POINT. Six sends never reached the flight lane, and
+# THE SPLIT IS THE WHOLE POINT. Eight sends never reached the flight lane, and
 # exactly ONE of them is a defect: qp 7's backwards work request, on the only
-# queue pair that declared it signals everything. The other five are qp 8's two,
-# qp 9's unsignalled one and qp 10's two — posts for which no completion was
-# ever going to be emitted, because their queue pairs said so at creation.
+# queue pair that declared it signals everything. The other seven are qp 8's
+# two, qp 9's unsignalled one, qp 10's two and qp 11's two — posts for which no
+# completion was ever going to be emitted, because their queue pairs said so.
 #
 # Before the severity column this read 6, and a reader chasing it found five
 # posts that were working as designed. That ratio is 1:5 on a ten-row fixture;
@@ -169,7 +178,7 @@ expect "unretired sends with no declared cause" \
     "SELECT n FROM link_health WHERE finding = 'wr_flight_unretired'" "1"
 
 expect "unretired sends the queue pair already accounted for" \
-    "SELECT n FROM link_health WHERE finding = 'wr_flight_unretired_selective'" "5"
+    "SELECT n FROM link_health WHERE finding = 'wr_flight_unretired_selective'" "7"
 
 # The split RECLASSIFIES, it does not lose rows: the two counts must still sum
 # to every post the flight lane could not pair. Without this, narrowing the

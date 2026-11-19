@@ -35,6 +35,33 @@ namespace comshu::duck {
 namespace fs = std::filesystem;
 
 /** One SQL statement, with the error text surfaced rather than dropped. */
+// A value as a SQL string literal: '...' with every ' doubled. Every file path
+// that enters a statement goes through this — a path containing a quote used
+// to end the literal early and the rest of it became SQL (CR-59).
+inline std::string sql_str(std::string_view v) {
+    std::string out(1, '\'');
+    for (char c : v) {
+        if (c == '\'')
+            out += '\'';
+        out += c;
+    }
+    out += '\'';
+    return out;
+}
+
+// A name as a SQL identifier: "..." with every " doubled. Table names come
+// from file stems, which are whatever is on disk (CR-59).
+inline std::string sql_ident(std::string_view v) {
+    std::string out(1, '"');
+    for (char c : v) {
+        if (c == '"')
+            out += '"';
+        out += c;
+    }
+    out += '"';
+    return out;
+}
+
 inline bool exec(duckdb_connection con, const std::string& sql, const char* what) {
     duckdb_result res;
     const bool    ok = duckdb_query(con, sql.c_str(), &res) == DuckDBSuccess;
@@ -111,14 +138,14 @@ inline bool mount_capture_integrity(duckdb_connection con, const fs::path& dir) 
     const auto csv = dir / (std::string(kCaptureIntegrityTable) + ".csv");
     if (fs::exists(parquet))
         return exec(con,
-                    "CREATE OR REPLACE VIEW \"" + std::string(kCaptureIntegrityTable) +
-                        "\" AS SELECT * FROM read_parquet('" + parquet.string() + "')",
+                    "CREATE OR REPLACE VIEW " + sql_ident(kCaptureIntegrityTable) +
+                        " AS SELECT * FROM read_parquet(" + sql_str(parquet.string()) + ")",
                     kCaptureIntegrityTable);
     if (fs::exists(csv))
         return exec(con, kCaptureIntegrityDdl, kCaptureIntegrityTable) &&
                exec(con,
-                    "COPY \"" + std::string(kCaptureIntegrityTable) + "\" FROM '" + csv.string() +
-                        "' (FORMAT CSV, HEADER)",
+                    "COPY " + sql_ident(kCaptureIntegrityTable) + " FROM " + sql_str(csv.string()) +
+                        " (FORMAT CSV, HEADER)",
                     kCaptureIntegrityTable);
     return exec(con, kCaptureIntegrityDdl, kCaptureIntegrityTable);
 }
@@ -135,14 +162,14 @@ inline bool mount_intern_text(duckdb_connection con, const fs::path& dir) {
     const auto csv = dir / (std::string(kInternTextTable) + ".csv");
     if (fs::exists(parquet))
         return exec(con,
-                    "CREATE OR REPLACE VIEW \"" + std::string(kInternTextTable) +
-                        "\" AS SELECT * FROM read_parquet('" + parquet.string() + "')",
+                    "CREATE OR REPLACE VIEW " + sql_ident(kInternTextTable) +
+                        " AS SELECT * FROM read_parquet(" + sql_str(parquet.string()) + ")",
                     kInternTextTable);
     if (fs::exists(csv))
         return exec(con, kInternTextDdl, kInternTextTable) &&
                exec(con,
-                    "COPY \"" + std::string(kInternTextTable) + "\" FROM '" + csv.string() +
-                        "' (FORMAT CSV, HEADER)",
+                    "COPY " + sql_ident(kInternTextTable) + " FROM " + sql_str(csv.string()) +
+                        " (FORMAT CSV, HEADER)",
                     kInternTextTable);
     return exec(con, kInternTextDdl, kInternTextTable);
 }
@@ -227,8 +254,8 @@ inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir,
         const auto csv = dir / (name + ".csv");
         if (fs::exists(parquet)) {
             exec(con,
-                 "CREATE OR REPLACE VIEW \"" + name + "\" AS SELECT * FROM read_parquet('" +
-                     parquet.string() + "')",
+                 "CREATE OR REPLACE VIEW " + sql_ident(name) + " AS SELECT * FROM read_parquet(" +
+                     sql_str(parquet.string()) + ")",
                  Raw::table);
             present++;
         } else if (fs::exists(csv) && !raw_layout(csv_header(csv), ddl_columns(Raw::ddl))) {
@@ -237,7 +264,7 @@ inline std::size_t mount_raw_tables(duckdb_connection con, const fs::path& dir,
                 decoded_csv->push_back(name);
         } else if (fs::exists(csv)) {
             if (exec(con, Raw::ddl, Raw::table) &&
-                exec(con, "COPY \"" + name + "\" FROM '" + csv.string() + "' (FORMAT CSV, HEADER)",
+                exec(con, "COPY " + sql_ident(name) + " FROM " + sql_str(csv.string()) + " (FORMAT CSV, HEADER)",
                      Raw::table))
                 present++;
         } else {

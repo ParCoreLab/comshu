@@ -448,42 +448,42 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### CLI, Reader, SQL & UI Backend
 
 #### `CR-59` — Unescaped file paths and table names interpolated into DuckDB SQL
-- [ ] **Status:** Open
+- [x] **Status:** Done (`duck::sql_str` (doubles ') and `duck::sql_ident` (doubles ") in duck_mount.hpp, used at every site that splices a path or a table name into SQL: duck_mount, main.cpp (export, link, sql, temp_directory) and comshu-ui. `sql_cli_rule.sh` runs `comshu sql` and `comshu link` on a directory named `it's a "dir"`)
 - **Subsystem:** `comshu-read`, `comshu-ui`
 - **Locations:** `comshu-read/duck_mount.hpp:111-118, 135-142, 166-172`; `comshu-read/main.cpp:2607, 2641, 2651, 2669, 2701, 2729, 2850-2851, 2921-2922`; `comshu-ui/main.cpp:213, 218-219`
 - **Problem:** File paths and table stems are concatenated into `'...'` and `"..."` SQL literals without escaping embedded quotes.
 - **Fix:** Add helper functions `sql_quote_str()` (doubling `'`) and `sql_quote_ident()` (doubling `"`) and use them everywhere paths/names enter SQL.
 
 #### `CR-60` — `link_health.wr_flight_backwards` ignores `_wr_pairable` and omits selective-signalling QPs
-- [ ] **Status:** Open
+- [x] **Status:** Done (`_wr_flight_pairs` is both branches' pairs with no time filter; `_wr_flight` is its forward rows and `wr_flight_backwards` counts its backward ones, so the two cannot disagree. `wr_flow_rule.sh` adds qp 11, unpairable, whose completion carries the same wr_id but predates the sends: the old per-wr_id count reported it (2), and now only qp 7's real backwards pair counts (1))
 - **Subsystem:** `comshu-read`
 - **Locations:** `comshu-read/link_sql.hpp:3880-3900` (cf. `_wr_flight` at `173-253`)
 - **Problem:** Runs branch-1 pairing across all QPs without `_wr_pairable` (false positives on selectively-signalling QPs) and omits branch 2 (false negatives).
 - **Fix:** Mirror `_wr_flight`'s two-branch `_wr_pairable` logic or query `_wr_flight` directly for `done_ns < posted_ns`.
 
 #### `CR-61` — Fan-out / miscount in `object_access.p2p` and `link_health.unattributed_p2p_accesses` on reused base addresses
-- [ ] **Status:** Open
+- [x] **Status:** Done (`object_access.p2p` gives each access ONE extent, the smallest that contains it (`QUALIFY` over a per-access row id), and `unattributed_p2p_accesses` counts an access only when NO candidate extent contains it. `object_access_rule.sh` adds a buffer reallocated at the same base (one id, two sizes): an access in both yields one row, and one only in the larger is placed rather than counted. Without the QUALIFY the placements go red (mutation-checked))
 - **Subsystem:** `comshu-read`
 - **Locations:** `comshu-read/link_sql.hpp:2001-2016, 3669-3678`
 - **Problem:** `am` selects `DISTINCT rank, id, range_base, range_size FROM mem_object`. Reallocating a different-sized buffer at the same base produces multiple rows with the same `(rank, id)`, duplicating `object_access.p2p` rows and falsely counting valid accesses as unattributed against the smaller extent.
 - **Fix:** Match extents by lifetime window (or deduplicate/constrain to the live extent at access time).
 
 #### `CR-62` — `run_sql()` nondeterministically overwrites `.parquet` views with `.csv` views
-- [ ] **Status:** Open
+- [x] **Status:** Done (`run_sql` mounts in two passes, Parquet first, then CSV only for stems not yet mounted)
 - **Subsystem:** `comshu-read`
 - **Locations:** `comshu-read/main.cpp:2838-2854`
 - **Problem:** `fs::directory_iterator` order is unspecified; when both `<table>.parquet` and `<table>.csv` exist, whichever is visited second wins.
 - **Fix:** Mount `.parquet` files first (recording mounted table names) and only mount `.csv` for stems not already mounted.
 
 #### `CR-63` — Unsigned underflow in `build_trace()` timestamp subtraction & `uint64_t` overflow in `SendRate`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`ns()` pins an event before `origin` to 0 and counts it (`before_origin`, reported beside `unanchored`) instead of wrapping; the rate is `bytes * 1000 / window_ns` (MB/s exactly) in 128-bit)
 - **Subsystem:** `comshu-read`
 - **Locations:** `comshu-read/main.cpp:3133-3135, 3273, 3286-3287`
 - **Problem:** `wall_at(t.a.ticks) - origin` underflows `uint64_t` if an event precedes `origin` or uses an unanchored clock domain; `win_bytes * 1000000000ull / window / 1000000ull` overflows `uint64_t` above ~18.4 GB per window.
 - **Fix:** Clamp/handle events `< origin` safely (or skip unanchored timestamps), and simplify `SendRate` to `win_bytes * 1000ull / (window ? window : 1)` (or use `double` / `__uint128_t`).
 
 #### `CR-64` — Unchecked `std::fopen()` in `export_csv()` / `write_mem_owner()` & incomplete JSON escaping in `comshu-ui`
-- [ ] **Status:** Open
+- [x] **Status:** Done (every fopen in export_csv/write_mem_owner is checked and every fclose too; failures name the file and exit 1, so an incomplete export no longer reports success. `json_escape` emits \\u00XX for all control characters. `csv_export_contract.sh` exports into an existing read-only directory: refused by name, where it used to segfault)
 - **Subsystem:** `comshu-read`, `comshu-ui`
 - **Locations:** `comshu-read/main.cpp:2229-2232, 2455-2457, 2484-2485`; `comshu-ui/main.cpp:53-77`
 - **Problem:** `export_csv()` opens 65+ files without checking for `nullptr` before `fprintf`/`fputs`; `comshu-ui`'s `json_escape()` leaves control chars `0x00..0x1F` (other than `\n`, `\r`, `\t`) unescaped, producing invalid JSON.

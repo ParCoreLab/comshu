@@ -70,7 +70,16 @@ std::string json_escape(const char* s) {
                 out += "\\t";
                 break;
             default:
-                out += *p;
+                // Every other control character must be escaped too, or the
+                // body is not JSON and the page's parse fails on, say, an
+                // interned name carrying a \x01 (CR-64).
+                if (static_cast<unsigned char>(*p) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof buf, "\\u%04x", static_cast<unsigned char>(*p));
+                    out += buf;
+                } else {
+                    out += *p;
+                }
         }
     }
     return out;
@@ -219,13 +228,14 @@ int comshu::cli::ui_main(int argc, char** argv) {
             continue;
         const auto    name = e.path().stem().string();
         duckdb_result r;
-        const auto    probe = "SELECT 1 FROM \"" + name + "\" LIMIT 0";
+        const auto    probe = "SELECT 1 FROM " + comshu::duck::sql_ident(name) + " LIMIT 0";
         const bool    known = duckdb_query(con, probe.c_str(), &r) == DuckDBSuccess;
         duckdb_destroy_result(&r);
         if (known)
             continue;  // already mounted above
-        const auto sql = "CREATE OR REPLACE VIEW \"" + name + "\" AS SELECT * FROM read_parquet('" +
-                         e.path().string() + "')";
+        const auto sql = "CREATE OR REPLACE VIEW " + comshu::duck::sql_ident(name) +
+                         " AS SELECT * FROM read_parquet(" + comshu::duck::sql_str(e.path().string()) +
+                         ")";
         duckdb_result r2;
         if (duckdb_query(con, sql.c_str(), &r2) == DuckDBSuccess)
             tables++;

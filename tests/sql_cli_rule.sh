@@ -119,5 +119,23 @@ if "$COMSHU" sql "$WORK" "SELECT FROM WHERE" >/dev/null 2>&1; then
     fail=1
 fi
 
+# A directory whose NAME carries both quote characters (CR-59). Paths and file
+# stems were spliced into '...' and "..." unescaped, so this one ended the
+# literal early and the rest of the path became SQL.
+QDIR="$WORK/it's a \"dir\""
+mkdir -p "$QDIR"
+cp "$WORK/node_identity.csv" "$QDIR/"
+got=$("$COMSHU" sql "$QDIR" "SELECT count(*) FROM node_identity" 2>&1 | tail -1 | tr -d '"')
+if [ "$got" != "3" ]; then
+    echo "FAIL: a path containing quotes broke comshu sql"
+    echo "  got: ${got:-<no result>}"
+    fail=1
+fi
+if ! "$COMSHU" link "$QDIR" > "$WORK/qlink.out" 2>&1 && ! grep -q "no DuckDB" "$WORK/qlink.out"; then
+    cat "$WORK/qlink.out"
+    echo "FAIL: a path containing quotes broke comshu link"
+    fail=1
+fi
+
 [ "$fail" -eq 0 ] || exit 1
 echo "ok: comshu sql accepts what a person writes and still refuses what is broken"

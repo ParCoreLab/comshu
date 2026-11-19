@@ -170,8 +170,15 @@ FROM ib_post_send
 WHERE (send_flags & 2) <> 0
 )sql"},
 
-    {"_wr_flight", R"sql(
-CREATE OR REPLACE TABLE _wr_flight AS
+    // Every send/completion pair the two branches below make, BEFORE the
+    // time-order filter. _wr_flight keeps the forward ones and
+    // link_health.wr_flight_backwards counts the rest — from this one view, so
+    // the two can never disagree about which pairs exist. The count used to
+    // re-derive its own pairing by wr_id alone, ignoring _wr_pairable: it
+    // reported backwards pairs on queue pairs the lane refuses and missed the
+    // selectively signalling branch entirely (CR-60).
+    {"_wr_flight_pairs", R"sql(
+CREATE OR REPLACE VIEW _wr_flight_pairs AS
 WITH s AS (
     SELECT rank, qp_num, wr_id, length, opcode,
            temporal_a_domain AS domain, temporal_a_ticks AS a,
@@ -205,12 +212,6 @@ FROM s JOIN c
 -- of its work requests were signalled, and by nothing at all when it did not.
 JOIN _wr_pairable p
   ON  p.rank = s.rank AND p.qp_num = s.qp_num AND p.sends = p.comps
--- A completion cannot precede the send it retires. One that appears to means
--- the capture began mid-flight and the first completion has no post in this
--- trace; drawing it would give the lane a negative-width span. Dropped here and
--- COUNTED in link_health.wr_flight_backwards, on the same trade the clock join
--- makes: a hole you can see beats a chart that looks complete.
-WHERE c.a >= s.a
 
 UNION ALL
 
@@ -249,7 +250,17 @@ JOIN _wr_pairable p
   ON  p.rank = s.rank AND p.qp_num = s.qp_num
   AND p.sends <> p.comps
   AND p.signalled = p.comps
-WHERE c.a >= s.a
+)sql"},
+
+    // A completion cannot precede the send it retires. One that appears to
+    // means the capture began mid-flight and the first completion has no post
+    // in this trace; drawing it would give the lane a negative-width span.
+    // Dropped here and COUNTED in link_health.wr_flight_backwards, on the same
+    // trade the clock join makes: a hole you can see beats a chart that looks
+    // complete.
+    {"_wr_flight", R"sql(
+CREATE OR REPLACE TABLE _wr_flight AS
+SELECT * FROM _wr_flight_pairs WHERE b >= a
 )sql"},
 
     // Posts the flight lane could not pair, per queue pair, WITH THE QUEUE
@@ -1990,7 +2001,8 @@ WITH p2p AS (
            NULL::BOOLEAN                            AS in_window
     FROM (
         SELECT g.*,
-               CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
+               CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank,
+               row_number() OVER () AS acc  -- one per access, for the QUALIFY below
         FROM gpu_access g
         LEFT JOIN _node n         ON n.rank = g.rank
         LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
@@ -2030,6 +2042,14 @@ LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
       AND po.owner_address <> 0
       AND po.owner_address >= om.range_base
       AND po.owner_address <  om.range_base + om.range_size
+    -- ONE ROW PER ACCESS (CR-61). An object id is its interned base address, so
+    -- a buffer freed and reallocated at the same base with another size leaves
+    -- two extents under one id, and every access joined both: duplicated
+    -- object_access rows. Time cannot choose the incarnation (see `om` above),
+    -- so the rule is geometric: the SMALLEST extent that contains the byte.
+    -- link_health.unattributed_p2p_accesses applies the same rule.
+    QUALIFY row_number() OVER (PARTITION BY po.acc
+                               ORDER BY om.range_size, om.range_base) = 1
 ),
 -- A store through an NCCL symmetric window: the capture named no object (the
 -- writer's mapping is an import), and _nccl_window_place gives the owner, the
@@ -3667,24 +3687,36 @@ SELECT 'unattributed_p2p_accesses',
        'GPU accesses object_access could not place: no object named at capture (a peer buffer mapped from another process, outside any NCCL window the capture can tie to its owner), owning rank unnameable, or the owner has no buffer at the actor''s extent'
 -- The p2p branch's rule, restated: a kTable cannot read another. Keep the two
 -- WHERE clauses saying the same thing.
+--
+-- PER ACCESS, not per (access, extent) pair (CR-61): an access is unattributed
+-- only when NO candidate extent contains it. Counting pairs charged an access
+-- in the larger of two same-base extents as unattributed against the smaller.
 FROM (
-    SELECT g.rank, g.object, g.run_device, g.mem_device, g.owner_address, g.address,
-           CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
-    FROM gpu_access g
-    LEFT JOIN _node n         ON n.rank = g.rank
-    LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
+    SELECT po.acc, any_value(po.rank) AS rank, any_value(po.address) AS address,
+           any_value(po.owner_address) AS owner_address,
+           any_value(po.owner_rank) AS owner_rank,
+           bool_or(po.owner_rank IS NOT NULL AND om.id IS NOT NULL
+                   AND po.owner_address <> 0
+                   AND po.owner_address >= om.range_base
+                   AND po.owner_address <  om.range_base + om.range_size) AS placed
+    FROM (
+        SELECT g.rank, g.object, g.run_device, g.mem_device, g.owner_address, g.address,
+               CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank,
+               row_number() OVER () AS acc
+        FROM gpu_access g
+        LEFT JOIN _node n         ON n.rank = g.rank
+        LEFT JOIN _device_key   gk ON gk.rank = g.rank AND gk.device = g.mem_device
 LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
+    ) po
+    LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) am
+           ON am.rank = po.rank AND am.id = po.object
+    LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
+           ON om.rank = po.owner_rank
+          AND om.range_base = am.range_base
+          AND om.range_size = am.range_size
+    GROUP BY po.acc
 ) po
-LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) am
-       ON am.rank = po.rank AND am.id = po.object
-LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
-       ON om.rank = po.owner_rank
-      AND om.range_base = am.range_base
-      AND om.range_size = am.range_size
-WHERE (po.owner_rank IS NULL OR om.id IS NULL
-   OR po.owner_address = 0
-   OR po.owner_address <  om.range_base
-   OR po.owner_address >= om.range_base + om.range_size)
+WHERE NOT po.placed
   -- ...and the NCCL window branch did not place it either (its rule restated).
   AND NOT (po.owner_address = 0 AND EXISTS (
       SELECT 1 FROM _nccl_window_place w
@@ -3890,23 +3922,7 @@ SELECT 'wr_flight_backwards',
        'defect',
        coalesce(count(*), 0)::BIGINT,
        'completions timed before the send they retire — capture began mid-flight'
-FROM (
-    WITH s AS (
-        SELECT rank, qp_num, wr_id, temporal_a_ticks AS a,
-               row_number() OVER (PARTITION BY rank, qp_num, wr_id
-                                  ORDER BY temporal_a_ticks) AS gen
-        FROM ib_post_send
-    ), c AS (
-        SELECT rank, qp_num, wr_id, temporal_a_ticks AS a,
-               row_number() OVER (PARTITION BY rank, qp_num, wr_id
-                                  ORDER BY temporal_a_ticks) AS gen
-        FROM ib_poll_cq WHERE (opcode & 128) = 0
-    )
-    SELECT s.rank
-    FROM s JOIN c
-      ON c.rank = s.rank AND c.qp_num = s.qp_num AND c.wr_id = s.wr_id AND c.gen = s.gen
-    WHERE c.a < s.a
-)
+FROM _wr_flight_pairs WHERE b < a
 UNION ALL
 -- ucx_deep declined to patch uct_iface_ops_t, so this capture has NO UCT data
 -- plane at all.
