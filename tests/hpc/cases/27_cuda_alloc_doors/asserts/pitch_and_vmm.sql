@@ -8,7 +8,10 @@
 --
 -- cuMemMap: two chunks mapped into one reservation are two objects of one size.
 -- Asserting 2 is also a measurement: the driver's own stream-ordered pool maps
--- memory too, and if that ever reached a door this count would say so.
+-- memory too, and if that ever reached a door this count would say so. The
+-- workload ALSO maps a third chunk through an imported handle (exported as an
+-- fd and imported back, as NCCL maps a peer's buffer); that mapping is not an
+-- object, so a 3 here means imported memory is being recorded as the mapper's.
 SELECT 'cudaMallocPitch did not produce one object of pitch x height' AS problem, objects
 FROM (SELECT count(*) AS objects FROM mem_object m, params p
       WHERE m.origin = 'CuMemAlloc'

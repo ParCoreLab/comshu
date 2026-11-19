@@ -161,6 +161,9 @@ ALLOWED_SYMBOLS = {
         "cuMemFreeAsync_ptsz",
         "cuMemFreeHost",
         "cuMemUnmap",
+        "cuMemCreate",
+        "cuMemImportFromShareableHandle",
+        "cuMemRelease",
     },
 }
 

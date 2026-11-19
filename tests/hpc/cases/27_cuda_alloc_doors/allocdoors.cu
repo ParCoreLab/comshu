@@ -20,6 +20,11 @@
 // And three behaviours the engine must get right, not just see:
 //   - two VMM chunks mapped into one reservation and unmapped by ONE cuMemUnmap:
 //     both objects close, and only those two;
+//   - a chunk EXPORTED as a file descriptor, imported back and mapped — the way
+//     NCCL and NVSHMEM map a peer's buffer: that mapping is NOT an object. The
+//     memory is the exporter's; recording the importer's window onto it as the
+//     importer's buffer is what credited rank 0's writes into GPU 1 to rank 0
+//     (nccl_p2p, MN5 49207744). The one process plays both sides here;
 //   - cudaFree of the same pointer twice: one close, not two;
 //   - an allocate/free loop at one size: one open and one close per iteration,
 //     and a registry that revives its entry rather than growing per call.
@@ -30,6 +35,9 @@
 #include <cuda_runtime.h>
 #include <dlfcn.h>
 
+#include <unistd.h>
+
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -150,6 +158,25 @@ int main(int argc, char** argv) {
     acc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     DK(cuMemSetAccess(base, 2 * gran, &acc, 1));
 
+    // An imported mapping: create an exportable chunk, export it as a POSIX fd,
+    // import the fd and map THAT handle. Only the import is mapped, so the
+    // CuMemMap object count stays at the two above if and only if the doors
+    // leave an imported mapping alone.
+    CUmemAllocationProp xprop = prop;
+    xprop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+    CUmemGenericAllocationHandle hx = 0, himp = 0;
+    DK(cuMemCreate(&hx, gran, &xprop, 0));
+    int fd = -1;
+    DK(cuMemExportToShareableHandle(&fd, hx, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+    DK(cuMemImportFromShareableHandle(&himp, reinterpret_cast<void*>(static_cast<intptr_t>(fd)),
+                                      CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+    CUdeviceptr xbase = 0;
+    DK(cuMemAddressReserve(&xbase, gran, 0, 0, 0));
+    DK(cuMemMap(xbase, gran, 0, himp, 0));
+    DK(cuMemSetAccess(xbase, gran, &acc, 1));
+    std::printf("route=imported-map size=%zu addr=0x%llx (must NOT be an object)\n", gran,
+                (unsigned long long)xbase);
+
     // --- 2. the loop, beside every live buffer ------------------------------------
     for (size_t i = 0; i < loop_iters; ++i) {
         void* q = nullptr;
@@ -174,10 +201,16 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 2; ++i)
         DK(cuMemRelease(hv[i]));
     DK(cuMemAddressFree(base, 2 * gran));
+    DK(cuMemUnmap(xbase, gran));
+    DK(cuMemRelease(himp));
+    DK(cuMemRelease(hx));
+    DK(cuMemAddressFree(xbase, gran));
+    close(fd);
 
     CK(cudaStreamDestroy(st));
     std::printf("oracle: 1 cudaMalloc, 1 pitch, 1 managed (unfreed), 1 async, 2 pinned host, "
-                "1 cuMemAlloc, 1 dlsym, 2 cuMemMap (1 unmap), %zu loop allocations\n",
+                "1 cuMemAlloc, 1 dlsym, 2 cuMemMap (1 unmap), 1 imported map (no object), "
+                "%zu loop allocations\n",
                 loop_iters);
     return 0;
 }

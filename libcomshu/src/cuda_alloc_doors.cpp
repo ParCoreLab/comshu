@@ -46,6 +46,8 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <mutex>
+#include <unordered_set>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -92,6 +94,9 @@ enum Api : std::uint8_t {
     kMemFreeAsyncPtsz,
     kMemFreeHost,
     kMemUnmap,
+    kMemCreate,
+    kMemImportFromShareableHandle,
+    kMemRelease,
     kApiCount
 };
 constexpr const char* kName[kApiCount] = {
@@ -110,6 +115,9 @@ constexpr const char* kName[kApiCount] = {
     "cuMemFreeAsync_ptsz",
     "cuMemFreeHost",
     "cuMemUnmap",
+    "cuMemCreate",
+    "cuMemImportFromShareableHandle",
+    "cuMemRelease",
 };
 
 bool doors_enabled() {
@@ -225,6 +233,35 @@ int device_of_vmm_handle(CuMemHandle h) {
     return loc_type == 1 && loc_id >= 0 ? loc_id : -1;
 }
 
+// The VMM handles THIS process created. A mapping is this process's object only
+// if the memory behind it is: cuMemCreate makes memory, while
+// cuMemImportFromShareableHandle hands back a handle to memory ANOTHER process
+// created — NCCL and NVSHMEM map every peer's buffer into their own address
+// space that way. Recording such a mapping as an object of the mapper said rank
+// 0 owned a buffer on GPU 1, and the reader then credited rank 0's writes into
+// rank 1's memory to rank 0 (nccl_p2p, MN5 49207744 onward: 589,935 accesses).
+//
+// Kept as the set of handles CREATED here, not of handles imported, so that a
+// handle this file never saw being made — created before the doors armed, or
+// through cuMemRetainAllocationHandle — records nothing rather than something
+// wrong. A handle value can be reused once released, so release and import both
+// remove it.
+std::mutex                      g_created_mutex;
+std::unordered_set<CuMemHandle> g_created;
+
+void created_here(CuMemHandle h, bool yes) {
+    std::lock_guard<std::mutex> lk(g_created_mutex);
+    if (yes)
+        g_created.insert(h);
+    else
+        g_created.erase(h);
+}
+
+bool was_created_here(CuMemHandle h) {
+    std::lock_guard<std::mutex> lk(g_created_mutex);
+    return g_created.count(h) != 0;
+}
+
 void closing(Door d, Api a, std::uint64_t base) {
     tally(d, a, base, 0);
     comshu::engine::close_object(base);
@@ -330,6 +367,10 @@ template<Door D> CuResult mem_host_alloc(void** pp, std::size_t bytes, unsigned 
 // cuMemAddressReserve makes an address range with no memory behind it. Only the
 // map joins them, and one reservation may hold many maps (PyTorch's expandable
 // segments grow one reservation chunk by chunk), each its own object.
+//
+// ONLY a mapping of memory this process created (see g_created). A mapping of
+// an imported handle is a window onto a peer's buffer; that buffer is the PEER's
+// object, recorded by the peer, and the mapping is not an object at all.
 template<Door D>
 CuResult mem_map(CuDevicePtr ptr, std::size_t size, std::size_t offset, CuMemHandle h,
                  unsigned long long flags) {
@@ -340,9 +381,59 @@ CuResult mem_map(CuDevicePtr ptr, std::size_t size, std::size_t offset, CuMemHan
         return kNotInitialized;
     COMSHU_ALLOC_GUARD;
     const CuResult rc = f(ptr, size, offset, h, flags);
-    if (g.outer && rc == kSuccess && doors_enabled())
-        opened(D, kMemMap, ptr, size, ObjectOrigin::CuMemMap, device_of_vmm_handle(h));
+    if (g.outer && rc == kSuccess && doors_enabled()) {
+        if (was_created_here(h))
+            opened(D, kMemMap, ptr, size, ObjectOrigin::CuMemMap, device_of_vmm_handle(h));
+        else
+            tally(D, kMemMap, ptr, size);  // a peer's memory: seen, not an object
+    }
     return rc;
+}
+
+// The three calls that say whose memory a handle is. Tracked whoever called —
+// the ownership of a handle does not depend on who asked for it — and never
+// recorded: a handle has no address, so it is not an object; only its map is.
+template<Door D>
+CuResult mem_create(CuMemHandle* h, std::size_t size, const void* prop, unsigned long long flags) {
+    auto* f = real<CuResult (*)(CuMemHandle*, std::size_t, const void*, unsigned long long)>(
+        kMemCreate);
+    if (!f)
+        return kNotInitialized;
+    COMSHU_ALLOC_GUARD;
+    const CuResult rc = f(h, size, prop, flags);
+    if (rc == kSuccess && h && doors_enabled()) {
+        if (g.outer)
+            tally(D, kMemCreate, 0, size);
+        created_here(*h, true);
+    }
+    return rc;
+}
+
+template<Door D> CuResult mem_import(CuMemHandle* h, void* os_handle, int type) {
+    auto* f = real<CuResult (*)(CuMemHandle*, void*, int)>(kMemImportFromShareableHandle);
+    if (!f)
+        return kNotInitialized;
+    COMSHU_ALLOC_GUARD;
+    const CuResult rc = f(h, os_handle, type);
+    if (rc == kSuccess && h && doors_enabled()) {
+        if (g.outer)
+            tally(D, kMemImportFromShareableHandle, 0, 0);
+        created_here(*h, false);
+    }
+    return rc;
+}
+
+template<Door D> CuResult mem_release(CuMemHandle h) {
+    auto* f = real<CuResult (*)(CuMemHandle)>(kMemRelease);
+    if (!f)
+        return kNotInitialized;
+    COMSHU_ALLOC_GUARD;
+    if (doors_enabled()) {
+        if (g.outer)
+            tally(D, kMemRelease, 0, 0);
+        created_here(h, false);
+    }
+    return f(h);
 }
 
 template<Door D> CuResult mem_free(CuDevicePtr p) {
@@ -427,6 +518,12 @@ template<Door D> void* wrapper(Api a) {
             return reinterpret_cast<void*>(&mem_free_host<D>);
         case kMemUnmap:
             return reinterpret_cast<void*>(&mem_unmap<D>);
+        case kMemCreate:
+            return reinterpret_cast<void*>(&mem_create<D>);
+        case kMemImportFromShareableHandle:
+            return reinterpret_cast<void*>(&mem_import<D>);
+        case kMemRelease:
+            return reinterpret_cast<void*>(&mem_release<D>);
         case kApiCount:
             break;
     }
@@ -561,5 +658,17 @@ CuResult cuMemFreeHost(void* p) {
 CuResult cuMemUnmap(CuDevicePtr ptr, std::size_t size) {
     COMSHU_LINK_CALLER;
     return mem_unmap<kLink>(ptr, size);
+}
+CuResult cuMemCreate(CuMemHandle* h, std::size_t size, const void* prop, unsigned long long flags) {
+    COMSHU_LINK_CALLER;
+    return mem_create<kLink>(h, size, prop, flags);
+}
+CuResult cuMemImportFromShareableHandle(CuMemHandle* h, void* os_handle, int type) {
+    COMSHU_LINK_CALLER;
+    return mem_import<kLink>(h, os_handle, type);
+}
+CuResult cuMemRelease(CuMemHandle h) {
+    COMSHU_LINK_CALLER;
+    return mem_release<kLink>(h);
 }
 }  // extern "C"

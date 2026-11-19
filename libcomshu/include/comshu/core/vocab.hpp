@@ -61,8 +61,11 @@ enum class AttrStatus : std::uint8_t {
 //                        the order the GPU reached the alloc and the free
 //     CuMemHost          cuMemAllocHost_v2 / cuMemHostAlloc — page-locked host
 //                        memory, cudaMallocHost / cudaHostAlloc
-//     CuMemMap           one cuMemMap of a VMM allocation (cuMemCreate is a
-//                        handle with no address; the mapping is the object)
+//     CuMemMap           one cuMemMap of a VMM allocation this process
+//                        CREATED (cuMemCreate is a handle with no address; the
+//                        mapping is the object). A mapping of an IMPORTED
+//                        handle — a peer's buffer, as NCCL and NVSHMEM map them
+//                        — is never an object: the peer records its own
 //     NvbitAlloc         a device allocation gpumem saw through NVBit, which
 //                        does not say which API made it
 //     NvbitRegion        a mapped region gpumem's region pass found (the
