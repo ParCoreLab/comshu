@@ -78,3 +78,17 @@ The fix is at capture: the decoder knows which devx QP object a doorbell's WQE
 belongs to, and the connect is decoded from a modify on a known object, so both
 records can carry the QP's devx `obj`, and the readers can join on (rank, obj)
 instead of (rank, qp_num). Its own plan; not done here.
+
+## Follow-up: the qp_num collision, fixed at capture (ee75636)
+
+Mlx5DeviceSend and Mlx5DevxQpConnect now carry `qp_obj`, the queue pair's
+interned DEVX object; readers key queue pairs on (rank, qp_num, qp_obj) and fall
+back to the number only when one queue pair on the rank has it.
+`tests/qp_namesake_rule.sh` is the 61301 case in miniature.
+
+MN5 board 49220686: SUITE GREEN (09/10 SKIP, no PeerMappingOverride). Case 12:
+every one of 1,347 device sends carries a nonzero qp_obj and resolves
+(0→1 675, 1→0 672, 0 unresolved). This run's numbering did NOT collide (no
+rank had two connects under one number), so the collision branch on real
+hardware is still covered only by the local rule test; a board whose numbers
+collide again will exercise it.
