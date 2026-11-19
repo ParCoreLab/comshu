@@ -72,12 +72,13 @@ using comshu::rec::InternDomain;
 // histogram dumped at unload is the only way to know it rather than argue it.
 static void ensure_installed(ibv_context* ctx, const char* door);
 static void forget_context(const ibv_context* ctx);
+static bool context_installed(const void* ctx);
 // Emits the IbDevice row for a context. Called from ensure_installed, which is
 // the one place that runs exactly once per context whatever door it arrives at.
 static void record_device(ibv_context* ctx);
 // Diagnostics for the unmatched-CQ hunt; see their definitions at the bottom.
 static void remember_cq(const ibv_cq* cq);
-static void trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr);
+static void trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr, bool was_installed);
 
 // How much this run records. Read ONCE — poll_cq is the hottest path in the
 // process (5.86 M rows in a 64-rank hub capture) and a getenv per completion
@@ -1705,9 +1706,12 @@ extern "C" ibv_cq_ex* mlx5dv_create_cq(ibv_context* context, ibv_cq_init_attr_ex
 // it: a CQ hangs off a context rather than a PD, so this is one of the two doors
 // through which a context carrying only completion queues can first reach us.
 extern "C" int ibv_destroy_cq(ibv_cq* cq) {
+    // Read BEFORE ensure_installed, which installs the context and so made the
+    // diagnostic's `installed=` say yes every time (CR-68).
+    const bool was_installed = cq && ibv::context_installed(cq->context);
     if (cq)
         ibv::ensure_installed(cq->context, "destroy_cq");
-    ibv::trace_unmatched_destroy_cq(cq, __builtin_return_address(0));
+    ibv::trace_unmatched_destroy_cq(cq, __builtin_return_address(0), was_installed);
     return ibv::Profiler::invoke_preload<ibv::destroy_cq_tag>(cq);
 }
 // The classic SRQ doors. ibv_create_srq takes a PD, so unlike create_cq it can
@@ -2027,6 +2031,11 @@ static void dump_install_doors() {
     std::fflush(stderr);
 }
 
+bool ibv::context_installed(const void* ctx) {
+    std::lock_guard<std::mutex> lk(g_known_mr_mutex);
+    return ctx && g_installed_ctxs && g_installed_ctxs->count(ctx);
+}
+
 void ibv::forget_context(const ibv_context* ctx) {
     if (!ctx)
         return;
@@ -2064,7 +2073,7 @@ void ibv::remember_cq(const ibv_cq* cq) {
     g_known_cqs->insert(cq);
 }
 
-void ibv::trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr) {
+void ibv::trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr, bool was_installed) {
     if (!cq || !trace_mr_callers_enabled())
         return;
     {
@@ -2076,11 +2085,7 @@ void ibv::trace_unmatched_destroy_cq(const ibv_cq* cq, void* ret_addr) {
     const bool  ok = dladdr(ret_addr, &info) != 0;
     const char* who = (ok && info.dli_fname) ? info.dli_fname : "?";
     const char* fn = (ok && info.dli_sname) ? info.dli_sname : "?";
-    bool        installed = false;
-    {
-        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
-        installed = g_installed_ctxs && cq->context && g_installed_ctxs->count(cq->context);
-    }
+    const bool  installed = was_installed;
     static std::mutex            m;
     std::lock_guard<std::mutex>  lk(m);
     static std::set<std::string> seen;
@@ -2103,7 +2108,7 @@ static void remember_mr(const ibv_mr* mr) {
     g_known_mrs->insert(mr);
 }
 
-static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
+static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr, bool was_installed) {
     if (!mr || !trace_mr_callers_enabled())
         return;
     {
@@ -2123,11 +2128,7 @@ static void trace_unmatched_dereg(const ibv_mr* mr, void* ret_addr) {
     const char* fn = (ok && info.dli_sname) ? info.dli_sname : "?";
     // Was this mr's context one we installed into? If not, the door to find is
     // the one that OPENED the context, not the one that registered the memory.
-    bool installed = false;
-    {
-        std::lock_guard<std::mutex> lk(g_known_mr_mutex);
-        installed = g_installed_ctxs && mr->context && g_installed_ctxs->count(mr->context);
-    }
+    const bool installed = was_installed;
     std::fprintf(stderr,
                  "[comshu-unmatched] dereg mr=%p addr=%p len=%zu lkey=%u ctx=%p installed=%s <- %s "
                  "in %s\n",
@@ -2162,9 +2163,10 @@ extern "C" ibv_mr* mlx5dv_reg_dmabuf_mr(ibv_pd* pd, uint64_t offset, size_t leng
 }
 extern "C" int ibv_dereg_mr(ibv_mr* mr) {
     trace_mr_caller("dereg_mr", __builtin_return_address(0), mr ? (long)mr->length : -1);
+    const bool was_installed = mr && ibv::context_installed(mr->context);  // see destroy_cq
     if (mr)
         ibv::ensure_installed(mr->context, "dereg_mr");
-    trace_unmatched_dereg(mr, __builtin_return_address(0));
+    trace_unmatched_dereg(mr, __builtin_return_address(0), was_installed);
     return ibv::Profiler::invoke_preload<ibv::dereg_mr_tag>(mr);
 }
 

@@ -55,7 +55,9 @@ const cases = (await readFile(join(here, 'eval', 'questions.jsonl'), 'utf8'))
   .filter((c) => !opts.only || opts.only.includes(c.id));
 
 /** Digits only, so "81,920" / "81 920" / "81920" all compare equal. */
-const digits = (s) => String(s).replace(/[\s,_]/g, '');
+// Thousands separators BETWEEN digits only. Stripping every space and comma
+// joined distinct numbers — "1 2" read as 12 (CR-72).
+const digits = (s) => String(s).replace(/(\d)[,_](?=\d{3}(?!\d))/g, '$1');
 
 /**
  * Did the answer state this number?
@@ -185,7 +187,7 @@ for (const r of results) {
   );
   for (const [, , why] of bad) process.stdout.write(`        ${why}\n`);
   if (opts.verbose) {
-    for (const q of r.queries) process.stdout.write(`        sql: ${q.replace(/\s+/g, ' ').slice(0, 120)}\n`);
+    for (const q of r.queries ?? []) process.stdout.write(`        sql: ${q.replace(/\s+/g, ' ').slice(0, 120)}\n`);
     process.stdout.write(`        ${r.text.replace(/\n+/g, ' ').slice(0, 300)}\n`);
   }
 }

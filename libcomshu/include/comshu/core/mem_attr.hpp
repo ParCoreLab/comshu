@@ -18,6 +18,7 @@
 // "which GPU touched this byte". Per-access attribution is a different question
 // and still belongs to the NVBit engine.
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -48,15 +49,21 @@ inline constexpr int kMemoryTypeDevice = 2;   // CU_MEMORYTYPE_DEVICE
 // The result is cached once RESOLVED and deliberately not cached when it is
 // not. An earlier version latched on first call — `static fn = [...]()` runs
 // exactly once — so a single early miss made attribution permanently dead.
+//
+// Atomic: attribution runs on every recording thread, and two of them racing a
+// first resolution wrote and read a plain pointer concurrently (CR-67). Both
+// resolve to the same symbol, so a lost store is harmless; a torn one is not.
 inline CuPointerGetAttributeFn cu_pointer_get_attribute() {
-    static CuPointerGetAttributeFn cached = nullptr;
-    if (cached)
-        return cached;
+    static std::atomic<CuPointerGetAttributeFn> cached{nullptr};
+    if (auto fn = cached.load(std::memory_order_acquire))
+        return fn;
     void* lib = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_NOLOAD);
     if (!lib)
         return nullptr;
-    cached = reinterpret_cast<CuPointerGetAttributeFn>(dlsym(lib, "cuPointerGetAttribute"));
-    return cached;
+    auto fn = reinterpret_cast<CuPointerGetAttributeFn>(dlsym(lib, "cuPointerGetAttribute"));
+    if (fn)
+        cached.store(fn, std::memory_order_release);
+    return fn;
 }
 
 // PROBE, gated on COMSHU_TRACE_HOOKS=1 — prints the FIRST attribution attempt

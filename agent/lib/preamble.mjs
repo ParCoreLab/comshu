@@ -23,6 +23,8 @@ export async function tableCounts(capture) {
     .map((r) => r.t)
     .filter((t) => !t.startsWith('_'));
 
+  // No tables at all is an answer, not a query: `FROM ()` is a syntax error (CR-74).
+  if (!names.length) return [];
   const union = names.map((t) => `SELECT '${t}' AS t, count(*) AS n FROM "${t}"`).join(' UNION ALL ');
   const rows = await capture.rows(`SELECT t, n FROM (${union}) ORDER BY n DESC, t`);
   return rows.map((r) => ({ table: r.t, rows: Number(r.n) }));

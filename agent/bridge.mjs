@@ -54,7 +54,10 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 
-const isLoopback = (a) => a === '127.0.0.1' || a === 'localhost' || a === '::1';
+// URL.hostname keeps the brackets on an IPv6 literal, so '[::1]' is loopback
+// too (CR-71).
+const isLoopback = (a) =>
+  a === '127.0.0.1' || a === 'localhost' || a === '::1' || a === '[::1]';
 
 if (!isLoopback(opts.bind) && !opts.allowRemote) {
   process.stderr.write(
@@ -160,7 +163,14 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  // A malformed Host header made this throw out of the handler (CR-71).
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host}`);
+  } catch {
+    json(res, 400, { error: 'malformed request URL or Host header' });
+    return;
+  }
 
   if (url.pathname === '/health') {
     let capture_ok = true;
@@ -170,6 +180,16 @@ const server = createServer(async (req, res) => {
     } catch (e) {
       capture_ok = false;
       detail = e.message;
+    }
+    // The capture answers now but did not at startup: build the prompt that
+    // failed then, so the startup error stops being reported forever (CR-71).
+    if (capture_ok && systemPrompt === null) {
+      try {
+        systemPrompt = await buildSystemPrompt(capture);
+        startupError = null;
+      } catch (e) {
+        startupError = `cannot read the capture at ${opts.ui}: ${e.message}`;
+      }
     }
     json(res, 200, {
       ok: capture_ok && !startupError,

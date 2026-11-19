@@ -50,10 +50,14 @@
   const LIMITS = [50, 200, 1000, Infinity];
   let limit = $state(200);
 
+  // Loaded and empty is not loading: an empty comm_edges left this panel on
+  // "loading…" forever (CR-73).
+  let loaded = $state(false);
   $effect(() => {
     query('SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM comm_edges')
       .then((r) => {
         all = r;
+        loaded = true;
         const present = [...new Set(r.map((e) => e.transport))];
         if (!present.includes(transport)) transport = present[0] ?? null;
       })
@@ -257,8 +261,10 @@
       Needs the derived <code>comm_edges</code> table — a capture, or an export
       run through <code>comshu link</code>.
     </p>
-  {:else if !facet.length}
+  {:else if !loaded}
     <p class="text-[13px] m-0" style="color: var(--text-2)">loading…</p>
+  {:else if !facet.length}
+    <p class="text-[13px] m-0" style="color: var(--text-2)">No rank-to-rank traffic in this capture's <code>comm_edges</code>.</p>
   {:else}
     <div class="flex flex-wrap items-center gap-1 mb-3">
       {#if transports.length > 1}

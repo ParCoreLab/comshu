@@ -18,10 +18,14 @@
   // says which unit it is holding.
   let transport = $state(null);
 
+  // Loaded and empty is not loading: an empty comm_edges left this panel on
+  // "loading…" forever (CR-73).
+  let loaded = $state(false);
   $effect(() => {
     query('SELECT src_rank, dst_rank, transport, unit, sends, bytes FROM comm_edges')
       .then((r) => {
         all = r;
+        loaded = true;
         const present = [...new Set(r.map((e) => e.transport))];
         if (!present.includes(transport)) transport = present[0] ?? null;
       })
@@ -93,8 +97,10 @@
       Export and link a capture first:
       <code>comshu-read &lt;trace&gt; --parquet &lt;dir&gt; &amp;&amp; comshu-read --link &lt;dir&gt;</code>
     </p>
-  {:else if !edges.length}
+  {:else if !loaded}
     <p class="text-[13px]" style="color: var(--text-2)">loading…</p>
+  {:else if !edges.length}
+    <p class="text-[13px]" style="color: var(--text-2)">No rank-to-rank traffic in this capture's <code>comm_edges</code>.</p>
   {:else}
     {#if transports.length > 1}
       <div class="flex gap-1 mb-3">

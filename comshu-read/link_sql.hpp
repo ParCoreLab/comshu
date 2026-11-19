@@ -128,7 +128,9 @@ GROUP BY rank, domain
     // have none, and unknown must read as unknown rather than as 0.
     {"_wr_pairable", R"sql(
 CREATE OR REPLACE VIEW _wr_pairable AS
-SELECT s.rank, s.qp_num, s.n AS sends, c.n AS comps, g.sq_sig_all,
+-- Unqualified: after FULL JOIN ... USING the merged column is the one that is
+-- never NULL; s.rank was NULL for a queue pair with completions only (CR-69).
+SELECT rank, qp_num, s.n AS sends, c.n AS comps, g.sq_sig_all,
        f.n AS signalled
 FROM      (SELECT rank, qp_num, count(*) AS n FROM ib_post_send GROUP BY 1, 2) s
 FULL JOIN (SELECT rank, qp_num, count(*) AS n FROM ib_poll_cq
@@ -2539,7 +2541,11 @@ SELECT k.rank, k.device, coalesce(n.text, '?') AS kernel, k.t0_ns, k.t1_ns,
        count(m.sid) FILTER (WHERE m.sid IN (SELECT sid FROM shared))::BIGINT AS shared_sends
 FROM k
 LEFT JOIN m ON m.kid = k.kid
+-- texts = 1, as every _intern_name reader must: a handle that names two
+-- different texts (a replayed capture) is ambiguous, and naming one of them is
+-- a guess; '?' is the honest answer (CR-70).
 LEFT JOIN _intern_name n ON n.rank = k.rank AND n.domain = 3 AND n.handle = k.name
+                        AND n.texts = 1
 GROUP BY k.kid, k.rank, k.device, n.text, k.t0_ns, k.t1_ns
 )sql"},
 
