@@ -54,6 +54,10 @@ set -uo pipefail
 REMOTE="${COMSHU_A100:-missa18@a100}"
 RDIR="${COMSHU_A100_DIR:-/DATA/missa18/comshu}"
 A100_NCCL="${COMSHU_A100_NCCL:-/DATA/missa18/opt/nccl}"
+# NVBit needs nvdisasm, and du04's /usr/local/cuda is compiler-only: without it
+# NVBit prints an error, exits 0 and leaves an EMPTY capture. The HPC SDK's
+# copy matches the installed nvcc (13.0).
+A100_NVDISASM="${COMSHU_A100_NVDISASM:-/opt/nvidia/hpc_sdk/Linux_x86_64/25.9/cuda/13.0/bin}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 ${COMSHU_SSH_OPTS:-}"
 
@@ -161,7 +165,7 @@ fi
 
 # ---- build ----------------------------------------------------------------
 if [ "$do_build" -eq 1 ]; then
-  echo "== build (mlx5dv provider)"
+  echo "== build (ibverbs + mlx5dv providers)"
   # `set -o pipefail` is not decoration. `cmake --build | tail -3` exits with
   # TAIL's status, so a failed build returned 0, the `||` below never fired, and
   # the runner went on to execute cases against the previous binary. That is
@@ -171,6 +175,26 @@ if [ "$do_build" -eq 1 ]; then
        cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=ON -DCOMSHU_PROVIDER_MLX5DV=ON -DCOMSHU_DUCKDB=$DUCK_STATIC -DCOMSHU_DUCKDB_STATIC=$DUCK_STATIC -DCOMSHU_UI=OFF >/dev/null &&
        cmake --build build -j 2>&1 | tail -3" || {
     echo "run_on_a100.sh: build failed" >&2; exit 1; }
+
+  # gpumem (NVBit), in its own tree because it needs CUDA as a LANGUAGE and the
+  # main configure does not. A100 = sm_80. g++-11 as the CUDA host compiler:
+  # NVBit is a prebuilt object, and 11.4 is what MN5 builds it with.
+  # Copied into build/providers so bake_providers.sh carries it.
+  echo "== build (gpumem provider, sm_80)"
+  rsh "set -o pipefail; export COMSHU_COMMIT=$build_commit; cd $RDIR &&
+       cmake -B build-gpumem -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=OFF -DCOMSHU_PROVIDER_GPUMEM=ON -DCMAKE_CUDA_ARCHITECTURES=80 -DCMAKE_CUDA_HOST_COMPILER=g++-11 -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc >/dev/null &&
+       cmake --build build-gpumem --target gpumem_trace -j 2>&1 | tail -2 &&
+       mkdir -p build/providers/gpumem && cp build-gpumem/providers/gpumem/libgpumem_trace.so build/providers/gpumem/" || {
+    echo "run_on_a100.sh: gpumem build failed" >&2; exit 1; }
+
+  # nccl: headers only, it links no libnccl (providers/nccl/CMakeLists.txt), so
+  # the headers of the NCCL the cases run against are the right ones.
+  echo "== build (nccl provider, headers from $A100_NCCL)"
+  rsh "set -o pipefail; export COMSHU_COMMIT=$build_commit; cd $RDIR &&
+       cmake -B build-nccl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOMSHU_BUILD_TESTS=OFF -DCOMSHU_PROVIDER_IBVERBS=OFF -DCOMSHU_PROVIDER_NCCL=ON -DNCCL_INCLUDE_DIR=$A100_NCCL/include -DCUDA_RT_INCLUDE_DIR=/usr/local/cuda/include >/dev/null &&
+       cmake --build build-nccl --target nccl_trace -j 2>&1 | tail -2 &&
+       mkdir -p build/providers/nccl && cp build-nccl/providers/nccl/libnccl_trace.so build/providers/nccl/" || {
+    echo "run_on_a100.sh: nccl build failed" >&2; exit 1; }
 fi
 
 # ---- is the build newer than the source it claims to be? -------------------
@@ -211,6 +235,7 @@ for c in $(rsh "ls $RDIR/tests/hpc/cases" | grep -E "^(${cases_filter// /|})" );
        export COMSHU_EXPECT_COMMIT=$build_commit &&
        export COMSHU_PREFER_BAKED=1 &&
        { [ -r $A100_NCCL/include/nccl_device.h ] && export NCCL_HOME=$A100_NCCL || true; } &&
+       export PATH=$A100_NVDISASM:\$PATH &&
        bash tests/hpc/cases/$c/job.sbatch 2>&1 | tail -40"
 done
 

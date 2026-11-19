@@ -1,7 +1,7 @@
 {
   "case": "28_nccl_lsa",
   "providers": ["p2p", "nccl"],
-  "platform": "mn5",
+  "platform": "mn5, du04",
   "topology": "1 node x4 H100, NCCL 2.29 symmetric window, a store ring issued through ncclGetLsaPointer over NVLink",
   "golden": "none, by design — every quantity follows from window_bytes and iters",
   "why": "NCCL has two ways to reach a peer GPU. The classic transport (case 05) exchanges each connection's buffer by fd and leaves no identity comshu can place an access by. Symmetric windows (2.27+, the memory GIN and the device API use) map every local rank's window into one flat range at a fixed stride: ncclGetLsaPointer(w, off, r) = lsaFlatBase + r*stride + off, so an offset names the same byte on every rank. That is the NVSHMEM shape, which comshu places exactly; this case says whether it does for NCCL too.",

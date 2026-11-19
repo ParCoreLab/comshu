@@ -57,7 +57,7 @@ if [ ! -x "$APP" ]; then
   comshu_load_build
   command -v "${COMSHU_NVCC:-nvcc}" >/dev/null 2>&1 || fail "no nvcc (COMSHU_SDK=${COMSHU_SDK:-unset})"
   ${COMSHU_NVCC:-nvcc} -ccbin=mpic++ -std=c++17 -O2 -lineinfo \
-    -gencode arch=compute_90,code=sm_90 \
+    -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 \
     -I"$NCCL_HOME/include" "$CASE_DIR/lsa_ring.cu" -o "$APP" \
     -L"$NCCL_HOME/lib" -lnccl -lcudart -Xlinker -rpath -Xlinker "$NCCL_HOME/lib" \
     || fail "workload did not build"
