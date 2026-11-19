@@ -98,6 +98,13 @@ target_link_libraries(wr_builder_test PRIVATE comshu::comshu)
 comshu_add_test(wr_builder_test)
 add_test(NAME wr_builder COMMAND wr_builder_test)
 
+# The SRQ free-list walk stops at the tail (CR-19). Header-only, no mlx5dv.
+add_executable(srq_walk_test srq_walk_test.cpp)
+target_include_directories(srq_walk_test PRIVATE ${CMAKE_SOURCE_DIR}/providers/ibverbs)
+target_compile_features(srq_walk_test PRIVATE cxx_std_20)
+target_compile_options(srq_walk_test PRIVATE -UNDEBUG)
+add_test(NAME srq_walk COMMAND srq_walk_test)
+
 # The CQE probe's per-CQ ring cache and its eviction (CR-04). Header-only, no
 # ibverbs: driven directly.
 add_executable(cq_ring_cache_test cq_ring_cache_test.cpp)

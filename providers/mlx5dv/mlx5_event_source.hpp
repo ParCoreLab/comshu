@@ -17,11 +17,11 @@ class Mlx5dvEventSource
     : public comshu::hook::CompositeHookManager<
           Derived, comshu::hook::DefaultHookManagerConfig, devx_umem_reg_tag, devx_umem_reg_ex_tag,
           devx_umem_dereg_tag, devx_alloc_uar_tag, devx_free_uar_tag, devx_obj_create_tag,
-          devx_obj_modify_tag, create_qp_tag> {
+          devx_obj_modify_tag, devx_obj_destroy_tag, create_qp_tag> {
     using Base = comshu::hook::CompositeHookManager<
         Derived, comshu::hook::DefaultHookManagerConfig, devx_umem_reg_tag, devx_umem_reg_ex_tag,
         devx_umem_dereg_tag, devx_alloc_uar_tag, devx_free_uar_tag, devx_obj_create_tag,
-        devx_obj_modify_tag, create_qp_tag>;
+        devx_obj_modify_tag, devx_obj_destroy_tag, create_qp_tag>;
 
 public:
     using Context = typename Base::Context;

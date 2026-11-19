@@ -116,14 +116,14 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### Providers & GPU Backends
 
 #### `CR-14` — Missing dmabuf offset (`in->addr`) in `UmemInfo::gpu_base`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`umem_gpu_base()` (static_assert'ed) gives range base + the umem's offset under dmabuf; `UmemInfo::gpu_base` and the MemObject row share it, so the hijack's copy-out base and `Mlx5DevxCq.cq_base` can no longer disagree with the object. Hardware check: du04 cases 09/12)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:172-173, 371, 487`
 - **Problem:** Unlike `MemObject` (line 230), `gpu_base` omits `+ reinterpret_cast<std::uint64_t>(addr)` for `ByDmabuf` umems. When a umem is registered at a non-zero offset within a dmabuf, `hijack::register_qp` copies WQEs from offset 0 of the dmabuf and `Mlx5DevxCq.cq_base` records the wrong GPU VA.
 - **Fix:** Add `+ reinterpret_cast<std::uint64_t>(addr)` to `dmabuf_range.base` when computing `gpu_base` for `ByDmabuf`.
 
 #### `CR-15` — Stale `wr::g_ops` and thread-local `wr::slot_for` cache never evicted on QP destruction
-- [ ] **Status:** Open
+- [x] **Status:** Done (providers never see ibv_destroy_qp (the engine owns it), so eviction happens where a recycled QP must pass: `install()` treats an existing entry whose QP now carries fresh provider pointers as stale, replaces it and bumps `g_ops_gen`; a second conversion of a patched QP (wr_start already ours) is left alone. Each thread's slot cache compares the generation (one relaxed load) and refreshes its saved ops in place, which keeps a batch open on another QP. No local test (needs a verbs device); covered by the MN5 IB cases)
 - **Subsystem:** `providers/ibverbs`
 - **Locations:** `providers/ibverbs/ibverbs_provider.cpp:374-414, 672-749`
 - **Problem:** `wr::install()` returns early on map collision (`g_ops.emplace(qpx, ops).second`) and `slot_for()` caches `Slot` in a `thread_local` map/pointer with no eviction on QP destroy. Reusing a freed `ibv_qp_ex*` skips patching the new QP's `wr_*` ops and silently drops sends.
@@ -137,21 +137,21 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Erase `reg_addr` from `s.uar_pages` and `s.uar_ptrs` in `teardown()`.
 
 #### `CR-17` — Missing `mlx5dv_devx_obj_destroy` hook corrupts `last_prod` on QP reuse and leaks CUDA resources
-- [ ] **Status:** Open
+- [x] **Status:** Done (`mlx5dv_devx_obj_destroy` is now hooked (pre): it erases `g_obj_ctx`/`g_qp_src_lid` and calls `hijack::forget_qp`, which drops the QP's `qp_info` entries and copy state. `qp_copy` holds shared_ptrs so an in-flight copy-out cannot be freed under it; a `dead` flag stops a waiting one; the stream and pinned buffer are released inside a context push/pop so the application's current context is untouched. Nothing is recorded, so entity accounting is unchanged)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:120-121, 273, 759-783`, `providers/mlx5dv/uar_hijack.hpp:211-212, 255-268, 761-786`
 - **Problem:** `mlx5dv_devx_obj_destroy` is unhooked, so `g_obj_ctx`, `g_qp_src_lid`, `s.qp_info`, and `s.qp_copy` are never cleaned up. Reused `mlx5dv_devx_obj*` pointers inherit stale `have_last = true` and `last_prod != 0` (skipping WQEs or decoding uninitialized slots), and each destroyed QP leaks its `CUstream` and pinned `host_buf`.
 - **Fix:** Hook `mlx5dv_devx_obj_destroy` to erase from `g_obj_ctx`, `g_qp_src_lid`, `s.qp_info`, and `s.qp_copy` (destroying `CUstream` and freeing `host_buf`).
 
 #### `CR-18` — TOCTOU race in `hostdb::arm()` corrupts refcount, leaks decoy `mmap`, and can chain repeaters
-- [ ] **Status:** Open
+- [x] **Status:** Done (`arm()` re-checks `s.armed` after its unlocked setup: whoever arrives second takes a reference and discards its own repeater (joined) and decoy (munmap))
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/host_doorbell.hpp:341-383`
 - **Problem:** `arm()` checks `s.armed.find(uar)` under `s.mutex`, releases the lock to `mmap` a decoy page and start a `RepeaterHandle`, then re-locks and unconditionally overwrites `s.armed[uar]` with `refs = 1`. Two threads concurrently arming a singleton NC UAR leak the first `mmap`, lose a refcount, and can chain a repeater onto the first decoy page.
 - **Fix:** Re-check `s.armed.find(uar)` after re-acquiring `s.mutex` (if already present, increment `refs` and tear down the redundant decoy/repeater), or hold `s.mutex` / reserve a pending slot across setup.
 
 #### `CR-19` — Broken and unsynchronized SRQ free-list walk in `srq_slot()`
-- [ ] **Status:** Open
+- [x] **Status:** Done (the walk is `providers/ibverbs/srq_walk.hpp` and stops at `tail`: libmlx5 links past the tail only while posting (set_next_tail/set_next_contig_wqes, checked in rdma-core srq.c), so later WRs in the chain get slot-unknown instead of a stale link's guess. `tests/srq_walk_test.cpp`. The race with another thread posting to the same SRQ is not closable from outside libmlx5 (its lock is private); the CQE wqe_counter cross-check is what keeps it from becoming a wrong attribution)
 - **Subsystem:** `providers/ibverbs`
 - **Locations:** `providers/ibverbs/mlx5_cqe.cpp:238-289`, `providers/ibverbs/ibverbs_provider.cpp:1404-1414`
 - **Problem:** `srq_slot(srq, n)` walks `next_wqe_index` `n` times from `out.head` without holding `srq->lock` or checking `slot == out.tail` / bounds. In `rdma-core`, `mlx5_post_srq_recv` lazily links freed WQEs from `free_wqe_bitmap` only when `head == tail`; walking past `tail` reads stale indices, and concurrent post/poll races with the unlocked walk.
@@ -374,7 +374,7 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Guard with `(attr->comp_mask & IBV_QP_INIT_ATTR_PD)` as in `ibverbs_provider.cpp:1153`.
 
 #### `CR-49` — `hijack::intercept_host_get_device_pointer` `fail_open()` leaks CUDA registration and races on `s.fake_pages`
-- [ ] **Status:** Open
+- [x] **Status:** Done (fail_open erases `skipped[p]` once the real register succeeds, so the unregister reaches the driver (also CR-76); the fake page insert re-checks `fake_pages` under the lock, and the loser joins its repeater, frees its page and returns the winner's device pointer)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/uar_hijack.hpp:903-962, 921-928, 975-983`
 - **Problem:** `fail_open()` registers `p` with CUDA but leaves `p` in `s.skipped`, so `intercept_host_unregister(p)` skips `real_host_unregister(p)`. Concurrent calls for the same UAR `p` can also allocate two fake pages and overwrite `s.fake_pages[p]` without re-checking under `s.mutex`.
@@ -402,7 +402,7 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Pass `current` into `wait_mem()` and check `if (*hijack_addr != current) return;` after arming the monitor and before waiting.
 
 #### `CR-53` — Stale `g_qp_lid` and `qp_srq_map` entries on QP destruction / device close
-- [ ] **Status:** Open
+- [x] **Status:** Done (QP creation (both doors) calls `note_qp_created`, which drops the QP's stale `g_qp_lid` entry and erases `qp_srq_map[(ctx, qpn)]` for a QP without an SRQ (it used to keep the previous QP's possibly destroyed SRQ); `forget_context` drops both maps' entries for the context (`QpPort` now remembers its ctx))
 - **Subsystem:** `providers/ibverbs`
 - **Locations:** `providers/ibverbs/ibverbs_provider.cpp:132-148, 303-319, 1928-1934`
 - **Problem:** Neither map is evicted on QP destroy or `forget_context`, causing stale LID/port or dangling `ibv_srq*` on handle/qpn reuse.
@@ -522,4 +522,4 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - [ ] **`CR-73`** (`ui/src/panels/Matrix.svelte:96`, `ui/src/panels/Graph.svelte:255`) — Empty `comm_edges` leaves both panels stuck on `"loading…"` forever instead of rendering an empty state.
 - [ ] **`CR-74`** (`agent/lib/preamble.mjs:26-27`) — Empty `names` list produces invalid SQL `SELECT t, n FROM () ...` in `tableCounts()`.
 - [ ] **`CR-75`** (Meta / Regression Coverage) — Add targeted unit/regression tests for each Critical/High fix above as tickets are closed (e.g., `query_guard_test`, `fork_smoke` verifying child `ClockAnchor`/`NodeIdentity`, concurrent `PreloadHookManager` resolution test, `sankey.js` unit test, `Objects.svelte` boolean-string check).
-- [ ] **`CR-76`** (`providers/mlx5dv/uar_hijack.hpp` `intercept_host_get_device_pointer` fail-open, `intercept_host_unregister`) — After a fail-open, the UAR page IS registered with the real driver (`reg(p, intent.bytesize, intent.flags)`), but `skipped[p]` stays, so `intercept_host_unregister` answers success and never calls the real `cuMemHostUnregister`: the registration leaks for the life of the process. Record the fail-open (e.g. erase `skipped[p]` after the real register succeeds, or mark the intent as really registered) so the unregister is forwarded.
+- [x] **`CR-76`** (`providers/mlx5dv/uar_hijack.hpp` `intercept_host_get_device_pointer` fail-open, `intercept_host_unregister`) — After a fail-open, the UAR page IS registered with the real driver (`reg(p, intent.bytesize, intent.flags)`), but `skipped[p]` stays, so `intercept_host_unregister` answers success and never calls the real `cuMemHostUnregister`: the registration leaks for the life of the process. Record the fail-open (e.g. erase `skipped[p]` after the real register succeeds, or mark the intent as really registered) so the unregister is forwarded. **Done:** with CR-49: fail_open erases `skipped[p]` after a successful real register

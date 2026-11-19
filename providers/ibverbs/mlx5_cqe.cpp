@@ -4,6 +4,7 @@
 #include "mlx5_cqe.hpp"
 
 #include "cq_ring_cache.hpp"
+#include "srq_walk.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -299,11 +300,18 @@ SrqSlot srq_slot(ibv_srq* srq, unsigned n) {
     // Read here rather than named from a vendored header because those four
     // bytes are all of it, and third_party/mlx5 carries the PRM structs, not
     // libmlx5's internal ones.
-    std::uint32_t slot = out.head;
-    for (unsigned k = 0; k < n; ++k) {
-        const auto* wqe = static_cast<const std::uint8_t*>(out.buf) + slot * out.stride;
-        slot = be16toh(*reinterpret_cast<const std::uint16_t*>(wqe + 2));
-    }
+    //
+    // And the walk stops at the tail: past it the links are written by the
+    // post itself (srq_walk.hpp, CR-19). A chain longer than what is linked
+    // gets slot-unknown for its remainder rather than a stale link's guess.
+    //
+    // Not synchronised with another thread posting to the same SRQ (its lock
+    // is libmlx5's own); what keeps a race from becoming a wrong attribution
+    // is the CQE cross-check: a receive's wqe_counter names the slot it
+    // actually used, and the reader joins on that.
+    std::uint32_t slot = 0;
+    if (!srq_walk(out.buf, out.stride, out.head, out.tail, n, &slot))
+        return {};
     return {out.srqn, slot, true};
 }
 

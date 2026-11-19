@@ -54,6 +54,11 @@ DEFINE_PRELOAD_HOOK(mlx5, devx_obj_create, "mlx5dv_devx_obj_create", mlx5dv_devx
                     const void*, size_t, void*, size_t);
 DEFINE_PRELOAD_HOOK(mlx5, devx_obj_modify, "mlx5dv_devx_obj_modify", int, mlx5dv_devx_obj*,
                     const void*, size_t, void*, size_t);
+// The end of a DEVX object's life. Everything the provider keyed by the object
+// pointer (its context, its source port, the doorbell copy-out state) must go
+// with it: the allocator hands the address to the next object, which used to
+// inherit a dead queue pair's producer index (CR-17).
+DEFINE_PRELOAD_HOOK(mlx5, devx_obj_destroy, "mlx5dv_devx_obj_destroy", int, mlx5dv_devx_obj*);
 
 // Not DEVX, but the same blind spot one layer up: perftest creates its queue
 // pairs with mlx5dv_create_qp and never calls ibv_create_qp, which is why case

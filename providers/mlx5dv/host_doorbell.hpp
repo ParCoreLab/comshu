@@ -369,7 +369,23 @@ inline void arm(mlx5dv_devx_uar* uar) {
     handle.start();
 
     {
-        std::lock_guard<std::mutex> lk(s.mutex);
+        std::unique_lock<std::mutex> lk(s.mutex);
+        // RE-CHECK: the setup above ran unlocked, and two threads arming the
+        // same singleton NC UAR both got past the first check. The loser used
+        // to overwrite the winner's entry with refs = 1 (a reference lost, the
+        // winner's decoy leaked) — and if it read reg_addr after the winner's
+        // swap, its `real` was the winner's decoy and its repeater forwarded
+        // into it (CR-18). Whoever arrives second takes a reference and
+        // discards its own setup.
+        if (auto it = s.armed.find(uar); it != s.armed.end()) {
+            ++it->second.refs;
+            lk.unlock();
+            {
+                repeater::RepeaterHandle discard(std::move(handle));
+            }  // stops and joins our repeater before its page goes
+            ::munmap(decoy, kUarPageSize);
+            return;
+        }
         Armed& a = s.armed[uar];
         a.decoy = decoy;
         a.real = real;

@@ -128,14 +128,20 @@ static comshu::core::Handle h(const void* p) {
 struct QpPort {
     std::uint32_t lid = 0;
     std::uint8_t  port = 0;
+    const void*   ctx = nullptr;  // so close_device can drop its QPs' entries
 };
+// Keyed by the ibv_qp*, which the allocator hands out again after a destroy we
+// do not see (the engine owns ibv_destroy_qp). So an entry is dropped when a QP
+// is CREATED at that address and when its context closes (CR-53); a lookup
+// between a recycled QP's creation and its INIT used to return the old QP's
+// port and LID.
 static std::mutex                                g_lid_mutex;
 static std::unordered_map<const ibv_qp*, QpPort> g_qp_lid;
 
 static QpPort local_port(ibv_qp* qp, const ibv_qp_attr* attr, int mask) {
     if ((mask & IBV_QP_PORT) && qp && qp->context) {
         ibv_port_attr pa{};
-        QpPort        p{0, attr->port_num};
+        QpPort        p{0, attr->port_num, qp->context};
         if (ibv_query_port(qp->context, attr->port_num, &pa) == 0)
             p.lid = pa.lid;
         std::lock_guard<std::mutex> lk(g_lid_mutex);
@@ -305,11 +311,38 @@ std::map<std::pair<const void*, std::uint32_t>, ibv_srq*>& qp_srq_map() {
     return *m;
 }
 
-void note_qp_srq(ibv_qp* qp) {
-    if (!qp || !qp->srq || !qp->context)
+// Called at every QP creation: a new QP owns its (context, qp_num) and its
+// address, so whatever an earlier QP left under either is gone. A QP without an
+// SRQ used to leave the map untouched, and a recycled qp_num then resolved its
+// receives to the previous QP's (possibly destroyed) SRQ (CR-53).
+void note_qp_created(ibv_qp* qp) {
+    if (!qp)
+        return;
+    {
+        std::lock_guard<std::mutex> lk(g_lid_mutex);
+        g_qp_lid.erase(qp);
+    }
+    if (!qp->context)
         return;
     std::lock_guard<std::mutex> lk(qp_srq_mutex());
-    qp_srq_map()[{qp->context, qp->qp_num}] = qp->srq;
+    if (qp->srq)
+        qp_srq_map()[{qp->context, qp->qp_num}] = qp->srq;
+    else
+        qp_srq_map().erase({qp->context, qp->qp_num});
+}
+
+// close_device: every QP of `ctx` is gone, and the next context at this address
+// numbers its QPs afresh.
+void forget_context_qps(const ibv_context* ctx) {
+    {
+        std::lock_guard<std::mutex> lk(qp_srq_mutex());
+        auto&                       m = qp_srq_map();
+        for (auto it = m.lower_bound({ctx, 0}); it != m.end() && it->first.first == ctx;)
+            it = m.erase(it);
+    }
+    std::lock_guard<std::mutex> lk(g_lid_mutex);
+    for (auto it = g_qp_lid.begin(); it != g_qp_lid.end();)
+        it = it->second.ctx == ctx ? g_qp_lid.erase(it) : std::next(it);
 }
 
 ibv_srq* srq_of_qp(const ibv_context* ctx, std::uint32_t qp_num) {
@@ -373,6 +406,12 @@ struct Ops {
 // the thread-local cache below.
 static std::mutex                          g_ops_mutex;
 static std::unordered_map<ibv_qp_ex*, Ops> g_ops;
+// Bumped whenever an entry of g_ops is REPLACED: a QP created at a destroyed
+// one's address (CR-15). Every thread's slot cache compares it on lookup and
+// drops itself when it moved, so no thread keeps dispatching a new QP's sends
+// through the dead QP's saved function pointers. One relaxed load on the send
+// path; it changes only when a QP address is reused.
+static std::atomic<std::uint64_t> g_ops_gen{0};
 
 // Per (thread, QP) batch state. The builder must be per-thread because a batch
 // is a critical section between wr_start and wr_complete on one thread; the ops
@@ -398,7 +437,17 @@ static bool global_ops(ibv_qp_ex* qpx, Ops& out) {
 
 static Slot* slot_for(ibv_qp_ex* qpx) {
     static thread_local std::unordered_map<ibv_qp_ex*, Slot> slots;
-    static thread_local Slot* last = nullptr;  // applications post in a loop
+    static thread_local Slot*         last = nullptr;  // applications post in a loop
+    static thread_local std::uint64_t gen = 0;
+    if (const auto now = g_ops_gen.load(std::memory_order_acquire); now != gen) {
+        // A QP address was reused since this thread last looked: any cached
+        // slot may hold a dead QP's ops. Refresh them from g_ops IN PLACE —
+        // clearing would also throw away a batch this thread has open on some
+        // other QP between its wr_start and wr_complete.
+        for (auto& [q, slot] : slots)
+            (void)global_ops(q, slot.ops);
+        gen = now;
+    }
     if (last && last->qpx == qpx)
         return last;  // on one QP: this hits ~always
 
@@ -701,8 +750,20 @@ static void install(ibv_qp* qp, ibv_qp_ex* qpx) {
 
     {
         std::lock_guard lk(g_ops_mutex);
-        if (!g_ops.emplace(qpx, ops).second)
-            return;  // already patched
+        auto [it, inserted] = g_ops.emplace(qpx, ops);
+        if (!inserted) {
+            // This QP's pointers are ours already: a second conversion of the
+            // same QP. Saving them again would make the trampolines the
+            // "originals" and every send recurse.
+            if (ops.wr_start == &w_start)
+                return;
+            // Fresh provider pointers at a known address: a NEW QP where a
+            // destroyed one lived (its destroy is the engine's, not seen here).
+            // The old entry used to win and the new QP was never patched — its
+            // sends silently unrecorded (CR-15).
+            it->second = ops;
+            g_ops_gen.fetch_add(1, std::memory_order_release);
+        }
     }
 
     qpx->wr_start = &w_start;
@@ -1125,7 +1186,7 @@ Profiler::Profiler() {
     this->register_post<create_qp_tag>([](ibv_qp* qp, ibv_pd* pd, ibv_qp_init_attr* a, auto...) {
         if (!qp)
             return;
-        note_qp_srq(qp);
+        note_qp_created(qp);
         rec().record(comshu::core::Temporal::none(),
                      rr::IbQueuePair{{},
                                      {},
@@ -1157,7 +1218,7 @@ Profiler::Profiler() {
                                              auto...) {
         if (!qp)
             return;
-        note_qp_srq(qp);
+        note_qp_created(qp);
         // Same mask discipline as modify_qp: ibv_qp_init_attr_ex fields are
         // only meaningful when comp_mask says the caller set them, and pd is
         // one of them. qp_type is a base field and always set.
@@ -1939,6 +2000,7 @@ static void dump_install_doors() {
 void ibv::forget_context(const ibv_context* ctx) {
     if (!ctx)
         return;
+    forget_context_qps(ctx);
     std::lock_guard<std::mutex> lk(g_known_mr_mutex);
     if (g_installed_ctxs)
         g_installed_ctxs->erase(ctx);

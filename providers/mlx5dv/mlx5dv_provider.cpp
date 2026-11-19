@@ -85,6 +85,21 @@ static comshu::core::Handle h(const void* p) {
 // send-queue address requires remembering what each id was. Kept here rather
 // than reconstructed by the reader because the reader would have to join across
 // streams and would still not know the owning device.
+// The GPU virtual address a umem's bytes start at. Under dmabuf `addr` is an
+// OFFSET into the exported range, so the address is the range base PLUS it —
+// the doorbell hijack copies WQEs from here and Mlx5DevxCq.cq_base records it,
+// and the range base alone put every sub-range on top of the first (CR-14; the
+// MemObject row below always added it). 0 when the export was not observed.
+constexpr std::uint64_t umem_gpu_base(bool by_dmabuf, bool resolved, std::uint64_t range_base,
+                                      std::uint64_t addr) {
+    if (!by_dmabuf)
+        return addr;
+    return resolved ? range_base + addr : 0;
+}
+static_assert(umem_gpu_base(false, false, 0, 0x7000) == 0x7000);
+static_assert(umem_gpu_base(true, true, 0x10000000, 0x20000) == 0x10020000);
+static_assert(umem_gpu_base(true, false, 0x10000000, 0x20000) == 0);
+
 struct UmemInfo {
     std::uint64_t          addr{0};
     std::uint64_t          size{0};
@@ -92,7 +107,8 @@ struct UmemInfo {
     UmemBinding            binding{UmemBinding::ByAddress};
     std::int32_t           dmabuf_fd{-1};
     // The buffer's real GPU virtual address base: the umem addr for a by_addr
-    // binding, the dmabuf-exported range base for by_dmabuf. This is what the
+    // binding, the dmabuf-exported range base plus the umem's offset into it for
+    // by_dmabuf (umem_gpu_base). This is what the
     // doorbell hijack copies WQEs from — the recorded sq_base stays an offset
     // under dmabuf on purpose (umem_binding_as_configured asserts that), so the
     // GPU address is kept here separately rather than by rewriting the row.
@@ -169,8 +185,8 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
     comshu::core::dmabuf::Range dmabuf_range{};
     const bool resolved = by_dmabuf && comshu::core::dmabuf::lookup(dmabuf_fd, &dmabuf_range);
 
-    const std::uint64_t gpu_base =
-        by_dmabuf ? (resolved ? dmabuf_range.base : 0) : reinterpret_cast<std::uint64_t>(addr);
+    const std::uint64_t gpu_base = umem_gpu_base(by_dmabuf, resolved, dmabuf_range.base,
+                                                 reinterpret_cast<std::uint64_t>(addr));
     const comshu::core::Attribution attr =
         by_dmabuf
             ? comshu::core::Attribution{resolved ? dmabuf_range.device : kUnknownDevice,
@@ -227,7 +243,7 @@ static void record_umem(mlx5dv_devx_umem* out, const ibv_context* ctx, const voi
                                                       attr.status,
                                                       comshu::core::ObjectOrigin::DevxUmem});
     } else if (resolved) {
-        const std::uint64_t base = dmabuf_range.base + reinterpret_cast<std::uint64_t>(addr);
+        const std::uint64_t base = gpu_base;
         rec().record(rec().now_instant(),
                      comshu::core::records::MemObject{{},
                                                       {},
@@ -761,6 +777,26 @@ Profiler::Profiler() {
                                               {}, {}, h(uar), rr::Mlx5Uar::comshu_type_id});
     });
 
+    // destroy -> forget everything keyed by this object pointer, BEFORE the
+    // free hands the address on (CR-17). A queue pair created at a recycled
+    // address used to inherit the dead one's context, source port and doorbell
+    // copy-out state (have_last with a stale last_prod: WQEs skipped or decoded
+    // from uninitialised slots). Nothing is recorded: whether a DEVX object is
+    // an entity with a lifetime is the reader's question, not this hook's.
+    this->register_pre<devx_obj_destroy_tag>([](mlx5dv_devx_obj* obj, auto...) {
+        if (!obj)
+            return;
+        {
+            std::lock_guard<std::mutex> lk(g_obj_mutex);
+            g_obj_ctx.erase(obj);
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_lid_mutex);
+            g_qp_src_lid.erase(obj);
+        }
+        hijack::forget_qp(obj);
+    });
+
     this->register_post<devx_obj_create_tag>([](mlx5dv_devx_obj* obj, ibv_context* ctx,
                                                 const void* cmd_in, size_t inlen, void* cmd_out,
                                                 size_t, auto...) {
@@ -859,6 +895,9 @@ extern "C" void mlx5dv_devx_free_uar(mlx5dv_devx_uar* uar) {
 extern "C" mlx5dv_devx_obj* mlx5dv_devx_obj_create(ibv_context* ctx, const void* in, size_t inlen,
                                                    void* out, size_t outlen) {
     return mlx5::Profiler::invoke_preload<mlx5::devx_obj_create_tag>(ctx, in, inlen, out, outlen);
+}
+extern "C" int mlx5dv_devx_obj_destroy(mlx5dv_devx_obj* obj) {
+    return mlx5::Profiler::invoke_preload<mlx5::devx_obj_destroy_tag>(obj);
 }
 extern "C" int mlx5dv_devx_obj_modify(mlx5dv_devx_obj* obj, const void* in, size_t inlen, void* out,
                                       size_t outlen) {

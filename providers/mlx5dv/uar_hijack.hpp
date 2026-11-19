@@ -35,6 +35,7 @@
 //   * Forward unconditionally. That rule lives in memory_repeater.hpp, on the
 //     store the repeater must never skip.
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -186,6 +187,7 @@ struct RegisterIntent {
 // because teardown touches it from another thread.
 struct QpCopy {
     std::mutex    mutex;
+    bool          dead{false};  // its queue pair was destroyed: copy nothing more
     std::uint32_t last_prod{0};
     bool          have_last{false};
     void*         stream{nullptr};    // CUstream
@@ -209,7 +211,9 @@ struct State {
     // qpn -> every registered queue pair with that number (one per HCA at most,
     // in practice); pick_qp chooses by the doorbell's UAR page.
     std::unordered_map<std::uint32_t, std::vector<QpInfo>>   qp_info;
-    std::unordered_map<const void*, std::unique_ptr<QpCopy>> qp_copy;  // obj -> copy state
+    // obj -> copy state. shared_ptr because forget_qp() removes an entry while
+    // a repeater thread may be mid-copy on it: whoever finishes last frees it.
+    std::unordered_map<const void*, std::shared_ptr<QpCopy>> qp_copy;
     std::atomic<void*> gpu_ctx{nullptr};  // CUcontext captured at the swap
 
     std::atomic<std::uint64_t> num_fake_accesses{0};
@@ -758,16 +762,18 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
     }
 
     // Per-QP copy state.
-    QpCopy* copy = nullptr;
+    std::shared_ptr<QpCopy> copy;
     {
         std::lock_guard<std::mutex> lk(s.mutex);
         auto&                       slot = s.qp_copy[qp.obj];
         if (!slot)
-            slot = std::make_unique<QpCopy>();
-        copy = slot.get();
+            slot = std::make_shared<QpCopy>();
+        copy = slot;
     }
 
     std::lock_guard<std::mutex> lk(copy->mutex);
+    if (copy->dead)
+        return;  // destroyed while this doorbell waited: its ring is gone
     if (!copy->have_last) {
         // A queue pair this provider saw CREATED starts with its producer index
         // at zero, so the first doorbell announcing prod_idx = N is announcing
@@ -834,6 +840,61 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
     parse_wqes(copy->host_buf, start, end, qpn, qp, s.device_send_sink,
                enabled() ? kSubmitterGpuDoorbell : kSubmitterHostDoorbell, 0, 0);
     copy->last_prod = end;
+}
+
+// A DEVX queue pair was destroyed (CR-17). Forget it, so a queue pair created
+// at the same object address starts from a zero producer index and its own
+// shape, and release the stream and pinned buffer its copy-out held — one of
+// each leaked per destroyed queue pair before this existed.
+//
+// The CUDA frees run on the destroying (application) thread, inside a
+// push/pop of the context the copy-out used, so the application's own current
+// context is left exactly as it was.
+inline void forget_qp(const void* obj) {
+    if (!obj)
+        return;
+    auto&                   s = state();
+    std::shared_ptr<QpCopy> copy;
+    {
+        std::lock_guard<std::mutex> lk(s.mutex);
+        for (auto it = s.qp_info.begin(); it != s.qp_info.end();) {
+            auto& v = it->second;
+            v.erase(std::remove_if(v.begin(), v.end(),
+                                   [obj](const QpInfo& q) { return q.obj == obj; }),
+                    v.end());
+            it = v.empty() ? s.qp_info.erase(it) : std::next(it);
+        }
+        if (auto it = s.qp_copy.find(obj); it != s.qp_copy.end()) {
+            copy = std::move(it->second);
+            s.qp_copy.erase(it);
+        }
+    }
+    if (!copy)
+        return;
+    std::lock_guard<std::mutex> lk(copy->mutex);  // waits out an in-flight copy
+    copy->dead = true;
+    if (!copy->stream && !copy->host_buf)
+        return;
+    using PfnCtxPush = CuResult (*)(void*);
+    using PfnCtxPop = CuResult (*)(void**);
+    using PfnStreamDestroy = CuResult (*)(void*);
+    static auto push = reinterpret_cast<PfnCtxPush>(resolve2({"cuCtxPushCurrent_v2", "cuCtxPushCurrent"}));
+    static auto pop = reinterpret_cast<PfnCtxPop>(resolve2({"cuCtxPopCurrent_v2", "cuCtxPopCurrent"}));
+    static auto stream_destroy =
+        reinterpret_cast<PfnStreamDestroy>(resolve2({"cuStreamDestroy_v2", "cuStreamDestroy"}));
+    void* ctx = s.gpu_ctx.load(std::memory_order_acquire);
+    if (!ctx || !push || !pop || push(ctx) != kCudaSuccess)
+        return;  // cannot reach the context: leak rather than free on the wrong one
+    if (copy->stream && stream_destroy)
+        stream_destroy(copy->stream);
+    if (copy->host_buf)
+        if (auto* free_host = real_free_host())
+            free_host(copy->host_buf);
+    copy->stream = nullptr;
+    copy->host_buf = nullptr;
+    copy->host_buf_bytes = 0;
+    void* popped = nullptr;
+    pop(&popped);
 }
 
 // Tear down the repeater(s) for a UAR and free its fake page. Idempotent and
@@ -938,7 +999,14 @@ inline CuResult intercept_host_get_device_pointer(CuDevicePtr* pdptr, void* p, u
         if (debug_on())
             std::fprintf(stderr, "[hijack] p=%p FAIL-OPEN -> real register+getdevptr\n", p);
         if (auto* reg = real_host_register())
-            reg(p, intent.bytesize, intent.flags);
+            if (reg(p, intent.bytesize, intent.flags) == kCudaSuccess) {
+                // The page IS registered with the driver now, so it is no longer
+                // a skipped register: the application's cuMemHostUnregister must
+                // reach the driver. Left in `skipped`, the unregister was
+                // answered here and the registration leaked (CR-49, CR-76).
+                std::lock_guard<std::mutex> lk(s.mutex);
+                s.skipped.erase(p);
+            }
         return real(pdptr, p, flags);
     };
 
@@ -971,7 +1039,21 @@ inline CuResult intercept_host_get_device_pointer(CuDevicePtr* pdptr, void* p, u
     handle.start();
 
     {
-        std::lock_guard<std::mutex> lk(s.mutex);
+        std::unique_lock<std::mutex> lk(s.mutex);
+        // RE-CHECK: the fake page and repeater above were set up unlocked, so a
+        // second thread asking for the same UAR got here too. The loser used to
+        // overwrite fake_pages[p] (one fake page leaked, two repeaters on one
+        // UAR). Whoever arrives second hands back the winner's page (CR-49).
+        if (auto fk = s.fake_pages.find(p); fk != s.fake_pages.end()) {
+            void* const winner = fk->second;
+            lk.unlock();
+            {
+                repeater::RepeaterHandle discard(std::move(handle));
+            }  // joined before its page is freed
+            if (auto* free_host = real_free_host())
+                free_host(fake);
+            return real(pdptr, winner, flags);
+        }
         s.fake_pages[p] = fake;
         s.handles[p].emplace_back(std::move(handle));
     }
