@@ -18,9 +18,11 @@
 //     the symbol;
 //  5. the ELF symbol resolver links and resolves a real libc export.
 
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -35,6 +37,9 @@ DEFINE_PRELOAD_HOOK(demo, puts, "puts", int, const char*);
 // A preload hook whose "real" implementation lives in this binary, so
 // invoke_preload's dispatch can be exercised without a vendor library.
 DEFINE_PRELOAD_HOOK(demo, preload_fn, "demo_preload_fn", int, int);
+
+// A preload hook for testing register_hook's self-recursion guard.
+DEFINE_PRELOAD_HOOK(demo, self_guard_fn, "demo_self_guard_fn", int, const char*);
 
 // A fake "device context" with an ops table, standing in for ibv_context.
 struct fake_ctx;
@@ -128,21 +133,21 @@ int main() {
     // by the suite on MN5. What is coverable here is everything after it:
     // registered-tag gating, interval stamping, pre/post dispatch, and the real
     // result coming back out.
-    static int  g_post_pf = 0;
-    static bool g_pre_pf = false;
+    static std::atomic<int>  g_post_pf{0};
+    static std::atomic<bool> g_pre_pf{false};
     mgr.real_func<demo::preload_fn_tag>() = &real_preload_fn;
-    mgr.register_pre<demo::preload_fn_tag>([](int, Timestamp) { g_pre_pf = true; });
+    mgr.register_pre<demo::preload_fn_tag>([](int, Timestamp) { g_pre_pf.store(true); });
     mgr.register_post<demo::preload_fn_tag>([](int ret, int x, Timestamp t0, Timestamp t1) {
         assert(ret == x * 2 && "post callback sees the real return value");
         assert(t1 >= t0 && "call interval is ordered");
-        g_post_pf++;
+        g_post_pf.fetch_add(1, std::memory_order_relaxed);
     });
 
     const int pr = DemoHooks::invoke_preload<demo::preload_fn_tag>(21);
     assert(pr == 42 && "the real function ran and its result came back");
-    assert(g_pre_pf && "pre callback fired");
-    assert(g_post_pf == 1 && "post callback fired exactly once");
-    std::printf("preload: ret=%d pre=%d post=%d\n", pr, int(g_pre_pf), g_post_pf);
+    assert(g_pre_pf.load() && "pre callback fired");
+    assert(g_post_pf.load() == 1 && "post callback fired exactly once");
+    std::printf("preload: ret=%d pre=%d post=%d\n", pr, int(g_pre_pf.load()), g_post_pf.load());
 
     // 4. The dlsym registry composes multiple registrants for ONE symbol.
     //
@@ -211,6 +216,69 @@ int main() {
     assert(comshu::smart_dlsym::real_dlsym != nullptr);
     std::printf("smart_dlsym::real_dlsym = %p\n",
                 reinterpret_cast<void*>(comshu::smart_dlsym::real_dlsym));
+
+    // 6. CR-02 regressions:
+    //    (a) register_real() is idempotent and thread-safe when multiple threads
+    //        race on lazy resolution (used to call std::abort() on the second thread).
+    //    (b) register_hook()'s dlsym callback refuses to overwrite real_func with
+    //        hook_fn itself (e.g. when a caller does dlsym(RTLD_DEFAULT, sym)),
+    //        preventing infinite recursion.
+    {
+        std::atomic<bool>        go{false};
+        std::vector<std::thread> threads;
+        for (int i = 0; i < 8; ++i) {
+            threads.emplace_back([&] {
+                while (!go.load(std::memory_order_acquire)) {}
+                const int v = DemoHooks::invoke_preload<demo::preload_fn_tag>(5);
+                assert(v == 10);
+            });
+        }
+        go.store(true, std::memory_order_release);
+        for (auto& t : threads)
+            t.join();
+        assert(g_post_pf.load() == 9);
+
+        // Direct concurrent register_real() on an already-resolved slot must be a no-op,
+        // never aborting.
+        comshu::hook::detail::PreloadHookManager<demo::preload_fn_tag> pm;
+        pm.real_func<demo::preload_fn_tag>().store(&real_preload_fn, std::memory_order_release);
+        std::atomic<bool>        go2{false};
+        std::vector<std::thread> t2;
+        for (int i = 0; i < 8; ++i) {
+            t2.emplace_back([&] {
+                while (!go2.load(std::memory_order_acquire)) {}
+                pm.register_real<demo::preload_fn_tag>();
+            });
+        }
+        go2.store(true, std::memory_order_release);
+        for (auto& t : t2)
+            t.join();
+        assert(pm.real_func<demo::preload_fn_tag>().load() == &real_preload_fn);
+
+        // Self-recursion guard in register_hook()'s smart_dlsym callback:
+        // passing hook_fn itself (as dlsym(RTLD_DEFAULT, sym) does) must NOT
+        // overwrite real_func; passing an external symbol (e.g. from libc) MUST.
+        auto* external_fn =
+            reinterpret_cast<comshu::hook::HookTrait<demo::self_guard_fn_tag>::FuncPtr>(p);
+        auto* fake_hook = +[](const char*) noexcept -> int { return 0; };
+        static comshu::hook::detail::PreloadHookManager<demo::self_guard_fn_tag> guard_pm;
+        guard_pm.register_hook<demo::self_guard_fn_tag>(fake_hook);
+
+        void* hook_addr = reinterpret_cast<void*>(fake_hook);
+        // Simulate dlsym returning an external library symbol first:
+        void* ret1 = comshu::smart_dlsym::on_symbol_load(
+            reinterpret_cast<void*>(external_fn), nullptr, "demo_self_guard_fn");
+        assert(ret1 == hook_addr);
+        assert(guard_pm.real_func<demo::self_guard_fn_tag>().load() == external_fn &&
+               "external real symbol updates real_func");
+
+        // Simulate dlsym(RTLD_DEFAULT, sym) returning our own hook_fn:
+        void* ret2 =
+            comshu::smart_dlsym::on_symbol_load(hook_addr, nullptr, "demo_self_guard_fn");
+        assert(ret2 == hook_addr);
+        assert(guard_pm.real_func<demo::self_guard_fn_tag>().load() == external_fn &&
+               "self hook_fn must never overwrite real_func");
+    }
 
     std::puts("hook_smoke OK");
     return 0;

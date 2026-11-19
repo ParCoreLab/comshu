@@ -30,6 +30,20 @@ int main() {
     assert(!looks_like_select(""));
     assert(!looks_like_select("   \n\t"));
 
+    // Trailing semicolon and quoted special characters stay allowed.
+    assert(looks_like_select("SELECT 1;"));
+    assert(looks_like_select("SELECT 1; -- trailing comment"));
+    assert(looks_like_select("SELECT 'a;b)c' AS s"));
+    assert(comshu::ui::strip_trailing_semicolon("SELECT 1;") == "SELECT 1");
+    assert(comshu::ui::strip_trailing_semicolon("SELECT 'a;b';") == "SELECT 'a;b'");
+
+    // Multi-statement and subquery-breakout injections must be refused (CR-01).
+    assert(!looks_like_select("SELECT 1; DROP TABLE comm_edges"));
+    assert(!looks_like_select("SELECT 1); DROP TABLE gpu_access; --"));
+    assert(!looks_like_select("SELECT 1) UNION ALL SELECT * FROM comm_edges; --"));
+    assert(!looks_like_select("SELECT 1; /* unterminated"));
+    assert(!looks_like_select("SELECTIVE 1"));
+
     std::puts("ok: query_guard skips leading comments and still refuses writes");
     return 0;
 }

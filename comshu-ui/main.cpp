@@ -196,8 +196,8 @@ int comshu::cli::ui_main(int argc, char** argv) {
         }
         std::fprintf(stderr,
                      "comshu ui: bound to %s — reachable by anyone who can route to it.\n"
-                     "  External file access is OFF; the query endpoint is still SELECT-only\n"
-                     "  by a first-token check, not a parser. Serve captures you would show\n"
+                     "  External file access is OFF and the query endpoint answers one\n"
+                     "  SELECT (checked by DuckDB's parser). Serve captures you would show\n"
                      "  that audience anyway.\n",
                      bind_addr.c_str());
     }
@@ -250,13 +250,61 @@ int comshu::cli::ui_main(int argc, char** argv) {
                             "application/json");
             return;
         }
+
+        // One DuckDB connection per request: httplib dispatches handlers on a
+        // thread pool and a single duckdb_connection is not thread-safe (CR-27).
+        duckdb_connection req_con{};
+        if (duckdb_connect(db, &req_con) != DuckDBSuccess) {
+            res.status = 500;
+            res.set_content("{\"error\":\"cannot open DuckDB connection\"}", "application/json");
+            return;
+        }
+        struct ConnGuard {
+            duckdb_connection* c;
+            ~ConnGuard() { duckdb_disconnect(c); }
+        } conn_guard{&req_con};
+
+        // Authoritative parser-level check (CR-01): require exactly one
+        // statement and verify DuckDB classifies it as SELECT before wrapping.
+        duckdb_extracted_statements stmts{};
+        const idx_t                 n_stmts = duckdb_extract_statements(req_con, sql.c_str(), &stmts);
+        if (n_stmts != 1) {
+            const char* err = (n_stmts == 0) ? duckdb_extract_statements_error(stmts) : nullptr;
+            res.status = 400;
+            res.set_content("{\"error\":\"" + json_escape(err ? err : kReadOnlyErr) + "\"}",
+                            "application/json");
+            duckdb_destroy_extracted(&stmts);
+            return;
+        }
+        duckdb_prepared_statement prep{};
+        if (duckdb_prepare_extracted_statement(req_con, stmts, 0, &prep) != DuckDBSuccess) {
+            const char* err = duckdb_prepare_error(prep);
+            res.status = 400;
+            res.set_content("{\"error\":\"" + json_escape(err ? err : "query failed") + "\"}",
+                            "application/json");
+            duckdb_destroy_prepare(&prep);
+            duckdb_destroy_extracted(&stmts);
+            return;
+        }
+        const duckdb_statement_type stype = duckdb_prepared_statement_type(prep);
+        duckdb_destroy_prepare(&prep);
+        duckdb_destroy_extracted(&stmts);
+        if (stype != DUCKDB_STATEMENT_TYPE_SELECT) {
+            res.status = 400;
+            res.set_content(std::string("{\"error\":\"") + kReadOnlyErr + "\"}",
+                            "application/json");
+            return;
+        }
+
         // LIMIT is applied by wrapping, not by trusting the caller to include
         // one: an accidental unbounded scan should be slow, not fatal to the
-        // browser tab.
-        const auto capped = "SELECT * FROM (" + sql + ") LIMIT " + std::to_string(kRowCap);
+        // browser tab. The newline before ')' ensures a trailing `--` comment
+        // cannot comment out `) LIMIT ...`.
+        const auto capped = "SELECT * FROM (" + comshu::ui::strip_trailing_semicolon(sql) +
+                            "\n) LIMIT " + std::to_string(kRowCap);
 
         duckdb_result r;
-        if (duckdb_query(con, capped.c_str(), &r) != DuckDBSuccess) {
+        if (duckdb_query(req_con, capped.c_str(), &r) != DuckDBSuccess) {
             const char* err = duckdb_result_error(&r);
             res.status = 400;
             res.set_content("{\"error\":\"" + json_escape(err ? err : "query failed") + "\"}",

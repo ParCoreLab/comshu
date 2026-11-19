@@ -20,14 +20,14 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ## Critical
 
 ### `CR-01` — Multi-statement SQL injection & row-cap bypass in `POST /query`
-- [ ] **Status:** Open
+- [x] **Status:** Done (`query_guard.hpp` checks balanced parens + single statement + trailing `;` stripping; `comshu-ui/main.cpp` verifies `duckdb_extract_statements == 1` and `DUCKDB_STATEMENT_TYPE_SELECT` via DuckDB parser; regression cases in `tests/query_guard_test.cpp`)
 - **Subsystem:** `comshu-ui`
 - **Locations:** `comshu-ui/main.cpp:245-259`, `comshu-ui/query_guard.hpp:59-65`
 - **Problem:** `looks_like_select()` only skips leading whitespace/comments and checks that the first token starts with `SELECT` or `WITH`. `main.cpp:256` wraps `sql` verbatim into `"SELECT * FROM (" + sql + ") LIMIT " + std::to_string(kRowCap)` and passes it to `duckdb_query()`, which executes multi-statement SQL. A payload such as `SELECT 1); DROP TABLE gpu_access; --` executes arbitrary DDL/DML; `SELECT 1) UNION ALL SELECT * FROM huge_table; --` bypasses `kRowCap`.
 - **Fix:** Use `duckdb_extract_statements()` to require exactly one statement and verify it is a read-only `SELECT` (or prepare via `duckdb_prepare()` and reject non-`SELECT` statement types) before executing, rather than string-wrapping raw SQL. Add regression cases to `tests/query_guard_test.cpp`.
 
 ### `CR-02` — Lazy preload resolution race (`std::abort()`) and `dlsym(RTLD_DEFAULT, ...)` infinite recursion
-- [ ] **Status:** Open
+- [x] **Status:** Done (atomic `RealFunctionStorage`, mutex-guarded idempotent `register_real()`, self-recursion guard in `register_hook()`, regression tests in `tests/hook_smoke.cpp`)
 - **Subsystem:** `libcomshu/hook`
 - **Locations:** `libcomshu/include/comshu/hook/CompositeHookManager.hpp:208-216`, `libcomshu/include/comshu/hook/detail/PreloadHookManager.hpp:123-131, 235-241`
 - **Problem:**
@@ -212,7 +212,7 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 ### CLI, Reader, SQL & UI Backend
 
 #### `CR-27` — Unsynchronized concurrent access to a single `duckdb_connection` across HTTP worker threads
-- [ ] **Status:** Open
+- [x] **Status:** Done (`comshu-ui/main.cpp` opens a per-request `duckdb_connection` via `duckdb_connect(db, &req_con)` with RAII disconnect)
 - **Subsystem:** `comshu-ui`
 - **Locations:** `comshu-ui/main.cpp:111, 243-299`
 - **Problem:** `httplib::Server` serves requests concurrently on a thread pool, and `POST /query` calls `duckdb_query(con, ...)` on a single shared `duckdb_connection con` with no mutex or per-thread connection. Parallel browser panel loads race inside DuckDB.

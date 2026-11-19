@@ -3,8 +3,10 @@
 #include <dlfcn.h>  // dladdr
 #include <link.h>   // dl_iterate_phdr
 
+#include <atomic>
 #include <cassert>
 #include <iostream>
+#include <mutex>
 
 #include "comshu/hook/dlsym/Dlsym.hpp"
 
@@ -73,13 +75,13 @@ inline void* scan_loaded_libraries(const char* symbol, void* skip_base) noexcept
 // ================================================================
 template<typename... Tags> class RealFunctionStorage {
 public:
-    template<typename Tag> HookTrait<Tag>::FuncPtr& get() {
+    template<typename Tag> std::atomic<typename HookTrait<Tag>::FuncPtr>& get() {
         constexpr size_t idx = TagIndex<Tag, Tags...>::value;
         return std::get<idx>(m_funcs);
     }
 
 private:
-    std::tuple<typename HookTrait<Tags>::FuncPtr...> m_funcs{};
+    std::tuple<std::atomic<typename HookTrait<Tags>::FuncPtr>...> m_funcs{};
 };
 
 // ================================================================
@@ -114,7 +116,7 @@ public:
 
     template<ValidCallbackTag Tag>
         requires is_preload_hook_v<Tag>
-    HookTrait<Tag>::FuncPtr& real_func() {
+    std::atomic<typename HookTrait<Tag>::FuncPtr>& real_func() {
         return m_real_funcs.template get<Tag>();
     }
 
@@ -123,11 +125,11 @@ public:
     void register_real() noexcept {
         using Trait = HookTrait<Tag>;
 
-        auto** real_fn_ptr = &m_real_funcs.template get<Tag>();
-        if (*real_fn_ptr) {
-            std::cerr << "[hook] ERROR: Real function for " << Trait::symbol_name
-                      << " already registered" << std::endl;
-            std::abort();
+        std::lock_guard<std::mutex> lock(m_resolve_mutex);
+
+        auto& real_slot = m_real_funcs.template get<Tag>();
+        if (real_slot.load(std::memory_order_acquire) != nullptr) {
+            return;
         }
 
         // Identify our own provider .so to detect self-resolution.
@@ -161,7 +163,8 @@ public:
             if (!resolved || is_self(resolved)) {
                 return false;
             }
-            *real_fn_ptr = reinterpret_cast<Trait::FuncPtr>(resolved);
+            real_slot.store(reinterpret_cast<typename Trait::FuncPtr>(resolved),
+                            std::memory_order_release);
             return true;
         };
 
@@ -190,7 +193,8 @@ public:
         if (our_base) {
             auto* found = scan_loaded_libraries(Trait::symbol_name, our_base);
             if (found && !is_self(found)) {
-                *real_fn_ptr = reinterpret_cast<Trait::FuncPtr>(found);
+                real_slot.store(reinterpret_cast<typename Trait::FuncPtr>(found),
+                                std::memory_order_release);
                 return;
             }
         }
@@ -205,21 +209,11 @@ public:
     void register_hook(HookTrait<Tag>::FuncPtr default_func = nullptr) noexcept {
         using Trait = HookTrait<Tag>;
 
-        /*
-             * We no longer preload functions to avoid messing with the symbol resolution order
-             * Instead, we wait for the target application to resolve and call the functions
-             * and late load them at that poi
-            // Preload in case downstream users don't use dlsym
-            auto** real_fn_ptr = &m_real_funcs.template get<Tag>();
-            if (!*real_fn_ptr) {
-                *real_fn_ptr = reinterpret_cast<Trait::FuncPtr>(comshu::smart_dlsym::real_dlsym(handle, Trait::symbol_name));
-            }
-            */
-
-        auto** real_fn_ptr = &m_real_funcs.template get<Tag>();
-        auto*  hook_fn =
+        auto& real_slot = m_real_funcs.template get<Tag>();
+        auto* hook_fn =
             comshu::smart_dlsym::real_dlsym(comshu::smart_dlsym::DL_RTLD_DEFAULT, Trait::symbol_name);
-        if (!hook_fn || hook_fn == reinterpret_cast<void*>(*real_fn_ptr)) {
+        if (!hook_fn ||
+            hook_fn == reinterpret_cast<void*>(real_slot.load(std::memory_order_acquire))) {
             if (!hook_fn) {
                 std::cerr << "[hook] WARN: No hook function for " << Trait::symbol_name
                           << std::endl;
@@ -229,20 +223,36 @@ public:
             hook_fn = reinterpret_cast<void*>(default_func);
         }
 
+        Dl_info hook_info{};
+        void*   our_base = (hook_fn && dladdr(hook_fn, &hook_info)) ? hook_info.dli_fbase : nullptr;
+
         // Register with the dlsym interposer: when the target application
         // resolves this symbol at runtime, it receives our hook and we
         // learn the real pointer it would have gotten.
         comshu::smart_dlsym::register_symbol(
-            Trait::symbol_name, [real_fn_ptr, hook_fn](void* real_func, auto&&...) {
-                // Update real function pointer (may be first resolution when using RTLD_NEXT)
-                *real_fn_ptr = reinterpret_cast<Trait::FuncPtr>(real_func);
+            Trait::symbol_name, [&real_slot, hook_fn, our_base](void* real_func, auto&&...) {
+                // Never overwrite real_slot with our own hook (or another symbol
+                // in our provider .so): dlsym(RTLD_DEFAULT, sym) resolves to our
+                // preloaded hook_fn, which would otherwise cause infinite recursion.
+                if (real_func && real_func != hook_fn) {
+                    bool is_self = false;
+                    if (our_base) {
+                        Dl_info ri{};
+                        is_self = dladdr(real_func, &ri) && ri.dli_fbase == our_base;
+                    }
+                    if (!is_self) {
+                        real_slot.store(reinterpret_cast<typename Trait::FuncPtr>(real_func),
+                                        std::memory_order_release);
+                    }
+                }
 
                 return hook_fn;
             });
     }
 
 protected:
-    RealFuncs m_real_funcs;
+    RealFuncs  m_real_funcs;
+    std::mutex m_resolve_mutex;
 };
 
 }  // namespace comshu::hook::detail

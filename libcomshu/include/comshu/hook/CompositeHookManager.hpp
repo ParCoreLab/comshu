@@ -184,7 +184,7 @@ public:
 
     template<ValidCallbackTag Tag>
         requires is_preload_hook_v<Tag>
-    [[nodiscard]] HookTrait<Tag>::FuncPtr& real_func() {
+    [[nodiscard]] std::atomic<typename HookTrait<Tag>::FuncPtr>& real_func() {
         return m_preload_impl.template real_func<Tag>();
     }
 
@@ -205,9 +205,10 @@ public:
         // Lazy resolution: the real library may not have been loaded at
         // registration time. If we are here at all, the target application
         // just called the symbol, so it is resolvable now — or never.
-        auto& real = mgr.template real_func<Tag>();
+        auto real = mgr.template real_func<Tag>().load(std::memory_order_acquire);
         if (!real) {
             mgr.m_preload_impl.template register_real<Tag>();
+            real = mgr.template real_func<Tag>().load(std::memory_order_acquire);
             if (!real) {
                 std::cerr << "ERROR: Real function for Tag " << HookTrait<Tag>::name << " is empty!"
                           << std::endl;

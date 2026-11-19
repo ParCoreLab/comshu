@@ -24,17 +24,23 @@
 // Header-only and free of DuckDB and httplib so tests/query_guard_test.cpp can
 // exercise it without the server.
 
+#include <cctype>
 #include <cstddef>
 #include <string>
 #include <strings.h>
 
 namespace comshu::ui {
 
+inline bool is_ident_char(char c) {
+    const auto uc = static_cast<unsigned char>(c);
+    return std::isalnum(uc) != 0 || c == '_';
+}
+
 // Index of the first character that is neither whitespace nor inside a leading
 // `--` line comment or `/* */` block comment; npos if there is none, or if a
 // block comment never closes.
-inline std::size_t skip_leading_comments(const std::string& sql) {
-    std::size_t i = 0;
+inline std::size_t skip_leading_comments(const std::string& sql, std::size_t start = 0) {
+    std::size_t i = start;
     for (;;) {
         i = sql.find_first_not_of(" \t\r\n", i);
         if (i == std::string::npos)
@@ -56,12 +62,126 @@ inline std::size_t skip_leading_comments(const std::string& sql) {
     }
 }
 
+// Returns true iff `sql` is a single SELECT / WITH statement with balanced
+// parentheses and no trailing statement after a semicolon (CR-01).
+// comshu-ui/main.cpp also verifies the statement with DuckDB's own parser
+// (`duckdb_extract_statements` + `duckdb_prepared_statement_type`).
 inline bool looks_like_select(const std::string& sql) {
     const std::size_t i = skip_leading_comments(sql);
     if (i == std::string::npos)
         return false;
     const char* head = sql.c_str() + i;
-    return strncasecmp(head, "SELECT", 6) == 0 || strncasecmp(head, "WITH", 4) == 0;
+    const auto  rem = sql.size() - i;
+    const bool  is_select =
+        rem >= 6 && strncasecmp(head, "SELECT", 6) == 0 && (rem == 6 || !is_ident_char(head[6]));
+    const bool is_with =
+        rem >= 4 && strncasecmp(head, "WITH", 4) == 0 && (rem == 4 || !is_ident_char(head[4]));
+    if (!is_select && !is_with)
+        return false;
+
+    int  depth = 0;
+    bool saw_semi = false;
+    for (std::size_t p = i; p < sql.size();) {
+        const char c = sql[p];
+        if (saw_semi) {
+            // Only whitespace and comments may follow a trailing semicolon.
+            const std::size_t next = skip_leading_comments(sql, p);
+            if (next == std::string::npos) {
+                // Either all trailing whitespace/comments, or an unterminated /*.
+                // Check if an unterminated /* caused npos.
+                const std::size_t ws = sql.find_first_not_of(" \t\r\n", p);
+                if (ws != std::string::npos && sql.compare(ws, 2, "/*") == 0)
+                    return false;
+                break;
+            }
+            return false;
+        }
+        if (c == '\'' || c == '"') {
+            const char q = c;
+            ++p;
+            while (p < sql.size()) {
+                if (sql[p] == q) {
+                    ++p;
+                    if (p < sql.size() && sql[p] == q) {
+                        ++p;  // escaped quote '' or ""
+                        continue;
+                    }
+                    break;
+                }
+                ++p;
+            }
+            continue;
+        }
+        if (c == '-' && p + 1 < sql.size() && sql[p + 1] == '-') {
+            const std::size_t nl = sql.find('\n', p + 2);
+            if (nl == std::string::npos)
+                break;
+            p = nl + 1;
+            continue;
+        }
+        if (c == '/' && p + 1 < sql.size() && sql[p + 1] == '*') {
+            const std::size_t end = sql.find("*/", p + 2);
+            if (end == std::string::npos)
+                return false;
+            p = end + 2;
+            continue;
+        }
+        if (c == '(') {
+            ++depth;
+        } else if (c == ')') {
+            if (--depth < 0)
+                return false;
+        } else if (c == ';') {
+            saw_semi = true;
+        }
+        ++p;
+    }
+    return depth == 0;
+}
+
+// Removes a single trailing semicolon (outside quotes/comments) so a valid
+// statement like `SELECT 1;` can be wrapped in `SELECT * FROM (... \n) LIMIT N`.
+inline std::string strip_trailing_semicolon(const std::string& sql) {
+    std::size_t last_semi = std::string::npos;
+    for (std::size_t p = 0; p < sql.size();) {
+        const char c = sql[p];
+        if (c == '\'' || c == '"') {
+            const char q = c;
+            ++p;
+            while (p < sql.size()) {
+                if (sql[p] == q) {
+                    ++p;
+                    if (p < sql.size() && sql[p] == q) {
+                        ++p;
+                        continue;
+                    }
+                    break;
+                }
+                ++p;
+            }
+            continue;
+        }
+        if (c == '-' && p + 1 < sql.size() && sql[p + 1] == '-') {
+            const std::size_t nl = sql.find('\n', p + 2);
+            if (nl == std::string::npos)
+                break;
+            p = nl + 1;
+            continue;
+        }
+        if (c == '/' && p + 1 < sql.size() && sql[p + 1] == '*') {
+            const std::size_t end = sql.find("*/", p + 2);
+            if (end == std::string::npos)
+                break;
+            p = end + 2;
+            continue;
+        }
+        if (c == ';')
+            last_semi = p;
+        ++p;
+    }
+    if (last_semi == std::string::npos)
+        return sql;
+    return sql.substr(0, last_semi) + sql.substr(last_semi + 1);
 }
 
 }  // namespace comshu::ui
