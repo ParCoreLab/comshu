@@ -1,0 +1,19 @@
+{
+  "case": "28_nccl_lsa",
+  "providers": ["p2p"],
+  "platform": "mn5",
+  "topology": "1 node x4 H100, NCCL 2.29 symmetric window, a store ring issued through ncclGetLsaPointer over NVLink",
+  "golden": "none, by design — every quantity follows from window_bytes and iters",
+  "why": "NCCL has two ways to reach a peer GPU. The classic transport (case 05) exchanges each connection's buffer by fd and leaves no identity comshu can place an access by. Symmetric windows (2.27+, the memory GIN and the device API use) map every local rank's window into one flat range at a fixed stride: ncclGetLsaPointer(w, off, r) = lsaFlatBase + r*stride + off, so an offset names the same byte on every rank. That is the NVSHMEM shape, which comshu places exactly; this case says whether it does for NCCL too.",
+  "workload": {
+    "ranks": 4,
+    "nodes": 1,
+    "gpus": 4,
+    "iters": 10,
+    "window_bytes": 131072,
+    "elem_bytes": 4
+  },
+  "workload_params": ["window_bytes", "iters"],
+  "workload_note": "`lsa_ring 131072 10`: every iteration each rank writes window_bytes/4 words, one volatile 4-byte store each, into its right neighbour's window through ncclGetLsaPointer, then checks its own window against its left neighbour's pattern for that iteration. No collective and no device communicator, so the only peer stores in the program are these: window_bytes/4 * iters = 327,680 per rank, each at window offset 4*i, owned by rank (r+1) % ranks.",
+  "expect_tables": ["gpu_access", "mem_object"]
+}
