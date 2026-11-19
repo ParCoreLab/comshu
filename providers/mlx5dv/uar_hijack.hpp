@@ -840,7 +840,14 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
 // keyed on reg_addr, because free_uar and cuMemHostUnregister can arrive in
 // either order and both call this. Destroying a RepeaterHandle stops delivery,
 // stops the thread and joins it; the fake page is freed only after the join.
-inline void teardown(void* reg_addr) {
+// When `forget_uar` is true (called from mlx5dv_devx_free_uar), also drop the
+// UAR page address from uar_pages/uar_ptrs so a recycled VA cannot be hijacked
+// as a UAR later (CR-16). `skipped` is deliberately kept: it is the record that
+// the application believes this page is registered, and a cuMemHostUnregister
+// arriving after the free must still find it and be answered without the real
+// driver, which never saw the register. A stale entry is dropped by
+// intercept_host_register when the VA is registered again as ordinary memory.
+inline void teardown(void* reg_addr, bool forget_uar = false) {
     auto& s = state();
 
     std::vector<repeater::RepeaterHandle> to_join;
@@ -854,6 +861,10 @@ inline void teardown(void* reg_addr) {
         if (auto it = s.fake_pages.find(reg_addr); it != s.fake_pages.end()) {
             fake = it->second;
             s.fake_pages.erase(it);
+        }
+        if (forget_uar) {
+            s.uar_pages.erase(reg_addr);
+            s.uar_ptrs.erase(reg_addr);
         }
     }
 
@@ -871,9 +882,9 @@ inline CuResult intercept_host_register(void* p, std::size_t bytesize, unsigned 
 
     auto& s = state();
     s.register_calls.fetch_add(1, std::memory_order_relaxed);
-    if ((flags & kMemHostRegisterDeviceMap) != 0) {
+    {
         std::lock_guard<std::mutex> lk(s.mutex);
-        if (s.uar_pages.count(p)) {
+        if ((flags & kMemHostRegisterDeviceMap) != 0 && s.uar_pages.count(p)) {
             s.skipped[p] = RegisterIntent{bytesize, flags};
             if (debug_on())
                 std::fprintf(stderr,
@@ -881,6 +892,10 @@ inline CuResult intercept_host_register(void* p, std::size_t bytesize, unsigned 
                              flags);
             return kCudaSuccess;
         }
+        // Not a live UAR page. A `skipped` entry here is left from a UAR freed at
+        // this VA without an unregister (teardown keeps it for that unregister);
+        // the VA is ordinary memory now, so getdevptr must not hijack it.
+        s.skipped.erase(p);
     }
     if (debug_on())
         std::fprintf(stderr, "[hijack] cuMemHostRegister p=%p flags=0x%x -> passthrough\n", p,

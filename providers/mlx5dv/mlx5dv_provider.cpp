@@ -743,15 +743,20 @@ Profiler::Profiler() {
         rec().record(rec().now_instant(), comshu::core::records::EntityClose{
                                               {}, {}, h(umem), rr::Mlx5Umem::comshu_type_id});
     });
+    this->register_pre<devx_free_uar_tag>([](mlx5dv_devx_uar* uar, auto...) {
+        if (!uar)
+            return;
+        // Stop the repeater and restore uar->reg_addr BEFORE mlx5dv_devx_free_uar
+        // unmaps the BAR page and frees `uar` (CR-03). Idempotent with the
+        // teardown cuMemHostUnregister does, in whichever order they arrive.
+        if (hijack::enabled())
+            hijack::teardown(uar->reg_addr, /*forget_uar=*/true);
+        if (hostdb::enabled())
+            hostdb::disarm(uar);
+    });
     this->register_post<devx_free_uar_tag>([](mlx5dv_devx_uar* uar, auto...) {
         if (!uar)
             return;
-        // Stop the repeater before the page goes away. Idempotent with the
-        // teardown cuMemHostUnregister does, in whichever order they arrive.
-        if (hijack::enabled())
-            hijack::teardown(uar->reg_addr);
-        if (hostdb::enabled())
-            hostdb::disarm(uar);
         rec().record(rec().now_instant(), comshu::core::records::EntityClose{
                                               {}, {}, h(uar), rr::Mlx5Uar::comshu_type_id});
     });

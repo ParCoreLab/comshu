@@ -36,7 +36,7 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Store real function pointers atomically (or resolve under `std::call_once` / mutex, making `register_real` idempotent) and guard the `smart_dlsym` callback with `if (real_func && !is_self(real_func))`.
 
 ### `CR-03` — Use-After-Free & freed-heap write in `mlx5dv_devx_free_uar` post-hook
-- [ ] **Status:** Open
+- [x] **Status:** Done (moved `hijack::teardown` and `hostdb::disarm` to `register_pre<devx_free_uar_tag>` before `mlx5dv_devx_free_uar` unmaps/frees `uar`)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/mlx5dv_provider.cpp:746-757`, `providers/mlx5dv/host_doorbell.hpp:395-418`
 - **Problem:** `devx_free_uar_tag` is registered with `register_post`, running *after* `mlx5dv_devx_free_uar(uar)` has `munmap`'d the UAR BAR page and `free()`'d `uar`. Consequently: (1) the repeater thread can write to the unmapped BAR page during free, (2) `hijack::teardown(uar->reg_addr)` reads freed memory, and (3) `hostdb::disarm(uar)` executes `uar->reg_addr = it->second.real` into freed heap memory.
@@ -130,7 +130,7 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - **Fix:** Evict `qpx` from `wr::g_ops` on `ibv_destroy_qp` and invalidate `thread_local` `slot_for` caches via a generation counter bumped on QP destroy.
 
 #### `CR-16` — Dangling `reg_addr` in `hijack::state().uar_pages` / `uar_ptrs` causes false UAR hijack on VA reuse
-- [ ] **Status:** Open
+- [x] **Status:** Done (`hijack::teardown(reg_addr, /*forget_uar=*/true)` erases `reg_addr` from `uar_pages` and `uar_ptrs` on `mlx5dv_devx_free_uar`. `skipped` is kept so a `cuMemHostUnregister` arriving after the free still returns success without reaching the driver, which never saw the register; erasing it there returned `CUDA_ERROR_HOST_MEMORY_NOT_REGISTERED` to the app. A stale `skipped[p]` is dropped instead in `intercept_host_register`'s pass-through branch, when the VA is registered again as ordinary memory.)
 - **Subsystem:** `providers/mlx5dv`
 - **Locations:** `providers/mlx5dv/uar_hijack.hpp:199-200, 234-246, 843-865, 874-884`
 - **Problem:** `teardown()` never erases `reg_addr` from `s.uar_pages` or `s.uar_ptrs`. If the OS maps a regular host buffer at the recycled VA and the app calls `cuMemHostRegister(..., DEVICEMAP)`, `intercept_host_register` falsely hijacks it.
@@ -522,3 +522,4 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - [ ] **`CR-73`** (`ui/src/panels/Matrix.svelte:96`, `ui/src/panels/Graph.svelte:255`) — Empty `comm_edges` leaves both panels stuck on `"loading…"` forever instead of rendering an empty state.
 - [ ] **`CR-74`** (`agent/lib/preamble.mjs:26-27`) — Empty `names` list produces invalid SQL `SELECT t, n FROM () ...` in `tableCounts()`.
 - [ ] **`CR-75`** (Meta / Regression Coverage) — Add targeted unit/regression tests for each Critical/High fix above as tickets are closed (e.g., `query_guard_test`, `fork_smoke` verifying child `ClockAnchor`/`NodeIdentity`, concurrent `PreloadHookManager` resolution test, `sankey.js` unit test, `Objects.svelte` boolean-string check).
+- [ ] **`CR-76`** (`providers/mlx5dv/uar_hijack.hpp` `intercept_host_get_device_pointer` fail-open, `intercept_host_unregister`) — After a fail-open, the UAR page IS registered with the real driver (`reg(p, intent.bytesize, intent.flags)`), but `skipped[p]` stays, so `intercept_host_unregister` answers success and never calls the real `cuMemHostUnregister`: the registration leaks for the life of the process. Record the fail-open (e.g. erase `skipped[p]` after the real register succeeds, or mark the intent as really registered) so the unregister is forwarded.
