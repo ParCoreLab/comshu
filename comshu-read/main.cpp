@@ -282,12 +282,13 @@ struct Table;  // no primary definition: an unspecialized use is a missing entry
 template<> struct Table<GpuAccess> {
     static constexpr const char* name = "gpu_access";
     static constexpr const char* cols =
-        "ticks_lo,ticks_hi,launch,pc,object,addr,size,op,space,run_dev,mem_dev,thread";
+        "ticks_lo,ticks_hi,launch,pc,object,addr,owner_addr,size,op,space,run_dev,mem_dev,thread";
     static void row(std::FILE* f, const Stamped<GpuAccess>& s, const rec::InternDictionary&) {
-        std::fprintf(f, "%llu,%llu,%llu,%u,%u,0x%llx,%u,%s,%s,%u,%u,%u",
+        std::fprintf(f, "%llu,%llu,%llu,%u,%u,0x%llx,0x%llx,%u,%s,%s,%u,%u,%u",
                      (unsigned long long)s.temporal.a.ticks, (unsigned long long)s.temporal.b.ticks,
                      (unsigned long long)s.payload.launch, s.payload.pc, s.payload.object,
-                     (unsigned long long)s.payload.address, s.payload.size,
+                     (unsigned long long)s.payload.address,
+                     (unsigned long long)s.payload.owner_address, s.payload.size,
                      memop_name(s.payload.op), memspace_name(s.payload.space), s.payload.run_device,
                      s.payload.mem_device, s.payload.thread);
     }

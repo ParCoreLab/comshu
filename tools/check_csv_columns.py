@@ -95,6 +95,7 @@ RENAMES = {
     ("mlx5_umem", "range_base"): ["addr"],
     ("mlx5_umem", "range_size"): ["size"],
     ("gpu_access", "address"): ["addr"],
+    ("gpu_access", "owner_address"): ["owner_addr"],
     ("gpu_access", "run_device"): ["run_dev"],
     ("gpu_access", "mem_device"): ["mem_dev"],
     ("ib_post_send_sg", "index"): ["idx"],

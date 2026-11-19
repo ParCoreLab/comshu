@@ -664,6 +664,7 @@ int main() {
         c.payload.pc = 0xAABBCCDD;
         c.payload.object = 0x11223344;
         c.payload.address = 0x0102030405060708ull;
+        c.payload.owner_address = 0x0A0B0C0D0E0F1011ull;
         c.payload.launch = 0xFEDCBA9876543210ull;
         c.payload.size = 0xDEADBEEF;
         c.payload.op = static_cast<comshu::core::MemOp>(3);
@@ -673,7 +674,8 @@ int main() {
         c.payload.thread = 0x99887766;
         fb::GpuAccess f(fb::Temporal(fb::TimeKind_Instant, fb::TimePoint(7, 0x1122334455667788ull),
                                      fb::TimePoint(0, 0), 0),
-                        0xAABBCCDD, 0x11223344, 0x0102030405060708ull, 0xFEDCBA9876543210ull,
+                        0xAABBCCDD, 0x11223344, 0x0102030405060708ull, 0x0A0B0C0D0E0F1011ull,
+                        0xFEDCBA9876543210ull,
                         0xDEADBEEF, fb::MemOp_Prefetch, fb::MemSpace_Shared, 0x1234, 0x5678,
                         0x99887766);
         expect_identical("GpuAccess", &c, &f, sizeof(c));

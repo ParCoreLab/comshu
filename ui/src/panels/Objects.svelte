@@ -314,13 +314,11 @@
 
         <p class="text-xs mt-2 m-0" style="color: var(--text-3)">
           Binned over the address window actually touched
-          ({bytes(covered)} of {bytes(num(sel.size))}). The two sources do not
-          agree on where offset zero is: a <code>verbs</code> offset is exact,
-          because RDMA names the peer's real address and the object's base is
-          known; a <code>p2p</code> access arrives at this process's mapping of
-          the peer's buffer, whose distance from the base is not in the record
-          (measured 128 GiB on one capture), so its offsets run from the first
-          byte observed. Any bin mixing the two is marked approximate on hover.
+          ({bytes(covered)} of {bytes(num(sel.size))}). Offsets are
+          from the object's real base: RDMA names the peer's own address, and a
+          GPU access carries the address its owner recorded the buffer at. The
+          one inexact case is a receive whose work-request id named several
+          posted buffers; a bin holding one is marked approximate on hover.
           A <code>ucx_send</code> touch is a message that LEFT this object, by
           the rank it went to; a <code>ucx_rma</code> touch is a put or get that
           named this object's address. Both count UCP datatype

@@ -133,7 +133,7 @@ int main() {
         // (b) the same stream, written directly through the Recorder.
         auto& recorder = Tracer::instance().recorder();
         for (int i = 0; i < 100; ++i)
-            recorder.record(GpuAccess{{}, {}, 1, 0, 0x100, 4});
+            recorder.record(GpuAccess{{}, {}, 1, 0, 0x100, 0, 4});
 
         Tracer::instance().finalize();
 

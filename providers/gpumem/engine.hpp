@@ -151,36 +151,54 @@ public:
         // nvshmem_malloc sub-allocates from a pre-mapped heap and reaches no
         // CUDA call. Innermost wins there too, so a 4 KB buffer beats the
         // 512 MB region it sits in.
+        //
+        // Whatever names the object also fixes owner_address: the address the
+        // object was found AT, which is in its owner's address space by
+        // construction. An object and an address from two different lookups
+        // would be an offset into the wrong frame.
+        out.object = core::kNullHandle;
+        out.owner_address = 0;
         std::uint64_t cbase = 0, csize = 0;
         std::uint32_t cobj = 0;
         std::uint16_t cdev = 0;
-        if (comshu_engine_object_at(a.address, &cbase, &csize, &cobj, &cdev) && cobj)
-            out.object = cobj;
 
         const auto alloc = m_allocs->find(a.address);
-        if (!alloc)
-            return;
-        if (out.object == core::kNullHandle)
-            out.object = alloc->object;
 
-        // A peer's mapping resolves to the region; the buffer inside it is only
-        // addressable symmetrically, so translate and look again. Falls back to
-        // the region's own object when the finer one is not known — an
-        // application that never calls nvshmem_malloc, or a buffer allocated
-        // before we interposed.
-        if (alloc->sym_delta != 0) {
+        // A peer's mapping of a symmetric region: the buffer is only nameable
+        // at its symmetric address, so translate first and look up THERE. The
+        // heap is symmetric — NVSHMEM gives a buffer the same symmetric address
+        // on every PE — so that address is also where the owner recorded it.
+        // Falls back to the region's own object when the finer buffer is not
+        // known (an application that never calls nvshmem_malloc, or a buffer
+        // allocated before we interposed): still the right owner coordinates,
+        // at a coarser object.
+        if (alloc && alloc->sym_delta != 0) {
             const auto sym =
                 static_cast<std::uint64_t>(static_cast<std::int64_t>(a.address) + alloc->sym_delta);
-            // The core's table is keyed by symmetric address, which is what the
-            // translation produces — so a peer access lands on the very buffer
-            // the application allocated, named identically on every PE.
             if (comshu_engine_object_at(sym, &cbase, &csize, &cobj, &cdev) && cobj) {
                 out.object = cobj;
             } else if (const auto fine = m_allocs->find(sym);
                        fine && fine->object != core::kNullHandle) {
                 out.object = fine->object;
+            } else {
+                out.object = alloc->object;
             }
+            if (out.object != core::kNullHandle)
+                out.owner_address = sym;
+            return;
         }
+
+        // Everything else is memory this process addresses where its owner
+        // does: an object containing the address names it as is. A peer's
+        // buffer mapped from another process (NCCL's cuMemMap of an imported
+        // handle, CUDA IPC) has no object here — the importer records none —
+        // and stays unattributed rather than credited to the importer.
+        if (comshu_engine_object_at(a.address, &cbase, &csize, &cobj, &cdev) && cobj)
+            out.object = cobj;
+        else if (alloc && alloc->object != core::kNullHandle)
+            out.object = alloc->object;
+        if (out.object != core::kNullHandle)
+            out.owner_address = a.address;
     }
 
 private:

@@ -11,7 +11,7 @@ class GpuAccess(object):
 
     @classmethod
     def SizeOf(cls):
-        return 88
+        return 96
 
     # GpuAccess
     def Init(self, buf, pos):
@@ -29,22 +29,24 @@ class GpuAccess(object):
     # GpuAccess
     def Address(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(56))
     # GpuAccess
-    def Launch(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
+    def OwnerAddress(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(64))
     # GpuAccess
-    def Size(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
+    def Launch(self): return self._tab.Get(flatbuffers.number_types.Uint64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(72))
     # GpuAccess
-    def Op(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(76))
+    def Size(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
     # GpuAccess
-    def Space(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(77))
+    def Op(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
     # GpuAccess
-    def RunDevice(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(78))
+    def Space(self): return self._tab.Get(flatbuffers.number_types.Uint8Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(85))
     # GpuAccess
-    def MemDevice(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(80))
+    def RunDevice(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(86))
     # GpuAccess
-    def Thread(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(84))
+    def MemDevice(self): return self._tab.Get(flatbuffers.number_types.Uint16Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(88))
+    # GpuAccess
+    def Thread(self): return self._tab.Get(flatbuffers.number_types.Uint32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(92))
 
-def CreateGpuAccess(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, pc, object, address, launch, size, op, space, runDevice, memDevice, thread):
-    builder.Prep(8, 88)
+def CreateGpuAccess(builder, temporal_kind, temporal_a_domain, temporal_a_ticks, temporal_b_domain, temporal_b_ticks, temporal_value, pc, object, address, ownerAddress, launch, size, op, space, runDevice, memDevice, thread):
+    builder.Prep(8, 96)
     builder.PrependUint32(thread)
     builder.Pad(2)
     builder.PrependUint16(memDevice)
@@ -53,6 +55,7 @@ def CreateGpuAccess(builder, temporal_kind, temporal_a_domain, temporal_a_ticks,
     builder.PrependUint8(op)
     builder.PrependUint32(size)
     builder.PrependUint64(launch)
+    builder.PrependUint64(ownerAddress)
     builder.PrependUint64(address)
     builder.PrependUint32(object)
     builder.PrependUint32(pc)

@@ -177,25 +177,30 @@ CSV
 #
 # Rank 0 maps the symmetric object on BOTH peers, and its two mappings are a
 # billion bytes apart — which is the shape of the real thing, since each peer's
-# copy is mapped wherever the driver put it. Each mapping must get its OWN
-# offset window: partitioning on (rank, object) instead of
-# (rank, mem_device, object) takes one minimum across both and turns the
-# device-2 offsets into ~1e9, inside a 4096-byte object.
+# copy is mapped wherever the driver put it. `owner_address` is what the
+# capture's attributor recorded for each: the same byte at its symmetric
+# address, 20736 and 20992, i.e. offsets 256 and 512 into [20480, 24576). The
+# reader must take those, not estimate: the old rule anchored on the lowest
+# address touched and reported 0 and 256 — wrong by 256 for every row, because
+# the first 256 bytes of the buffer were never written.
 #
-# The last two rows are unplaceable, each for a different reason, and both must
-# be COUNTED rather than dropped into an empty panel that reads as "this
+# The last three rows are unplaceable, each for a different reason, and all
+# must be COUNTED rather than dropped into an empty panel that reads as "this
 # workload touched nothing":
 #   object 99 — rank 0 has no such object, so there is nothing to translate
 #   mem_device 5 — no GPU 5 on this node, so the owning rank is unnameable
+#   object 0 — the capture named no object: a peer buffer this process mapped
+#              from another one (NCCL's import), of which it records none
 cat > "$WORK/gpu_access.csv" <<'CSV'
-rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,pc,object,address,launch,size,op,space,run_device,mem_device,thread
-0,3,0,3000,0,3100,0,1,5,20736,0,8,1,0,0,1,0
-0,3,0,3000,0,3100,0,1,5,20992,0,8,1,0,0,1,0
-0,3,0,3000,0,3100,0,1,5,1000020736,0,8,1,0,0,2,0
-0,3,0,3000,0,3100,0,1,5,1000020992,0,8,1,0,0,2,0
-1,3,0,3000,0,3100,0,1,9,20608,0,4,1,0,1,1,0
-0,3,0,3000,0,3100,0,1,99,777,0,8,1,0,0,1,0
-2,3,0,3000,0,3100,0,1,7,5000,0,8,1,0,2,5,0
+rank,temporal_kind,temporal_a_domain,temporal_a_ticks,temporal_b_domain,temporal_b_ticks,temporal_value,pc,object,address,owner_address,launch,size,op,space,run_device,mem_device,thread
+0,3,0,3000,0,3100,0,1,5,500020736,20736,0,8,1,0,0,1,0
+0,3,0,3000,0,3100,0,1,5,500020992,20992,0,8,1,0,0,1,0
+0,3,0,3000,0,3100,0,1,5,1000020736,20736,0,8,1,0,0,2,0
+0,3,0,3000,0,3100,0,1,5,1000020992,20992,0,8,1,0,0,2,0
+1,3,0,3000,0,3100,0,1,9,20608,20608,0,4,1,0,1,1,0
+0,3,0,3000,0,3100,0,1,99,777,777,0,8,1,0,0,1,0
+2,3,0,3000,0,3100,0,1,7,5000,5000,0,8,1,0,2,5,0
+0,3,0,3000,0,3100,0,1,0,70000,0,0,8,1,0,0,1,0
 CSV
 
 # THE UCX HALF (PLAN-20261118-1930). Workers: rank 0 owns prefix 0xA0, rank 1
@@ -291,7 +296,7 @@ expect() {  # <label> <sql> <expected>
 # Every placement in one value. Each defect in the header changes it.
 expect "the placements" \
     "SELECT string_agg(source||':'||owner_rank||':'||object||':'||obj_offset||':'||size||':'||exact, ' ' ORDER BY source, owner_rank, object, obj_offset, size) FROM object_access" \
-    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:0:4:false p2p:1:9:0:8:false p2p:1:9:256:8:false p2p:2:7:0:8:false p2p:2:7:256:8:false ucx_rma:1:2:8:16:true ucx_rma:1:8:10:4:true ucx_send:0:3:16:64:true ucx_send:2:7:100:32:true verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
+    "devx:1:1:908:4:true devx:1:2:64:32:true devx:1:6:0:16:true devx:1:6:100:8:true devx:1:9:20:8:true p2p:1:9:128:4:true p2p:1:9:256:8:true p2p:1:9:512:8:true p2p:2:7:256:8:true p2p:2:7:512:8:true ucx_rma:1:2:8:16:true ucx_rma:1:8:10:4:true ucx_send:0:3:16:64:true ucx_send:2:7:100:32:true verbs:1:1:808:16:true verbs:1:2:64:32:true verbs:1:6:200:32:true verbs:1:8:100:4:true"
 
 # The column that meant two things. A peer write is owned by the rank whose
 # memory it landed in, never by the rank that issued it.
@@ -305,10 +310,11 @@ expect "the object id is the owner's, not the actor's" \
     "SELECT string_agg(DISTINCT object, ',' ORDER BY object) FROM object_access WHERE source = 'p2p'" \
     "7,9"
 
-# The partition bug in one number. Both mappings are of a 4096-byte object, so
-# no offset can reach 4096 — gluing them gives ~1e9.
-expect "each peer mapping gets its own offset window" \
-    "SELECT max(obj_offset) FROM object_access WHERE source = 'p2p'" "256"
+# Both mappings are of a 4096-byte object and land at the same two bytes, so
+# the largest offset is the true 512 — not ~1e9 (raw addresses across two
+# mappings), and not 256 (an anchor at the lowest byte touched).
+expect "the offset is the owner-side address minus the buffer's base" \
+    "SELECT max(obj_offset) FROM object_access WHERE source = 'p2p'" "512"
 
 expect "no offset escapes its object" \
     "SELECT count(*) FROM object_access WHERE obj_offset >= 4096 AND source = 'p2p'" "0"
@@ -322,17 +328,17 @@ expect "the smallest containing object wins" \
 expect "a send with no remote address is not placed" \
     "SELECT count(*) FROM object_access WHERE source = 'verbs' AND object NOT IN (6, 8)" "2"
 
-# RDMA names the peer's real virtual address, so the verbs offset is exact. A
-# p2p offset is anchored to the lowest address observed, so it is not — and the
-# panel renders "(approx.)" off this column.
-expect "verbs is exact and p2p is not" \
+# Every placement here is exact: RDMA names the peer's real address, and a GPU
+# access carries the owner-side address its attributor resolved.
+expect "every placement is exact" \
     "SELECT string_agg(DISTINCT source||'='||exact, ',' ORDER BY source||'='||exact) FROM object_access" \
-    "devx=true,p2p=false,ucx_rma=true,ucx_send=true,verbs=true"
+    "devx=true,p2p=true,ucx_rma=true,ucx_send=true,verbs=true"
 
-# Two accesses could not be placed, for two different reasons. An empty Objects
-# panel must read as a count here, not as "this workload touched nothing".
+# Three accesses could not be placed, for three different reasons. An empty
+# Objects panel must read as a count here, not as "this workload touched
+# nothing".
 expect "unplaceable accesses are counted, not dropped" \
-    "SELECT n FROM link_health WHERE finding = 'unattributed_p2p_accesses'" "2"
+    "SELECT n FROM link_health WHERE finding = 'unattributed_p2p_accesses'" "3"
 
 # A local access is still an access into an object — it is only the PEER ones
 # that need an owner resolved — so rank 1's own store must be placed.

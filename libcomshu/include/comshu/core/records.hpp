@@ -18,7 +18,20 @@ namespace comshu::core::records {
 COMSHU_RECORD(GpuAccess, RecordKind::Event, 700, "gpu_access") {
     Handle        pc;      // interned program counter
     Handle        object;  // interned mem-object id (0 if unattributed)
-    std::uint64_t address;
+    std::uint64_t address;  // as the accessing GPU issued it
+    // The same byte as the OWNER of the memory names it: the address `object`'s
+    // extent is recorded in, so obj_offset = owner_address - the object's base,
+    // exactly. 0 when no object was found (object = 0).
+    //
+    // Recorded here because only the attributor knows the translation. For
+    // memory this process maps at its owner's own address — one process, UVA —
+    // it equals `address`. For an NVSHMEM peer access it does not: the GPU
+    // writes through this PE's mapping of the peer's heap, which NVSHMEM places
+    // anywhere (`peer_base + (dest - heap_base)`, nvshmemi_common_device.cuh),
+    // and the attributor undoes that to find the buffer. Recording only
+    // `address` threw the answer away and left the reader estimating offsets
+    // from the lowest address it saw touched.
+    std::uint64_t owner_address;
     // Which kernel launch issued it — GpuKernel.correlation, same rank. 0 when
     // unknown (a launch path we do not intercept, or kernel timing off).
     //

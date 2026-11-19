@@ -362,11 +362,16 @@ that one incarnation (the engine and gpumem both record a `cudaMalloc`); `origin
 is their `ObjectOrigin` values, comma-separated (2 = cudaMalloc, see `mem_object`).
 Count buffers here, not in `mem_object`, which has a row per emitter per open.
 
-**`exact` matters.** A `verbs` offset is anchored to the object's true base and
-is exact. A `p2p` offset is anchored to the lowest address observed, because the
-local mapping delta is not in the record — so it is the true offset only if the
-workload touched the start of the buffer. Never average or compare offsets
-across `exact = true` and `exact = false` without saying which is which.
+**`exact` matters.** Every offset is anchored to the object's true base, and
+`exact = true` says so. A `p2p` offset is the capture's `gpu_access.owner_address`
+(the byte as the owner names it) minus the base. The rows that are not exact are
+`verbs_recv` receives whose work-request id named several posted buffers (the
+lowest address was taken). Never average or compare offsets across
+`exact = true` and `exact = false` without saying which is which.
+
+A GPU access into another process's buffer that the capture could not name —
+NCCL's mapping of a peer's buffer over NVLink is the common one — is NOT in
+`object_access`; it is counted in `link_health.unattributed_p2p_accesses`.
 
 ### `kernel_sends` — which kernel issued each GPU-initiated send
 `rank INT, device USMALLINT, kernel VARCHAR, t0_ns BIGINT, t1_ns BIGINT, sends BIGINT, bytes BIGINT, peers BIGINT, shared_sends BIGINT`
@@ -519,7 +524,7 @@ The ones worth knowing, by what they record:
 | `ib_mem_region_iova` | the `iova` an MR was registered at, by `mr`/`rkey`, **only** when it differs from `range_base`. A zero-based MR (NCCL GIN) is addressed by offset: VA = `range_base + (remote_addr - iova)`. `object_access` already applies it |
 | `ib_device`, `ib_port` | the HCA and its ports; `lid` lives here |
 | `mem_object` | a memory object — an allocation or a registration: `id`, `range_base`, `range_size`, `device`, and `attr_status` — WHY the device is what it is (0 Device, 1 HostNotCuda, 2 HostCudaKnown, 3 DriverAbsent, 4 NullAddr, 5 OrdinalFailed, 6 NotQueried; names in `vocabulary`). `device = 65535` with status 1 or 2 is host memory, not a failure. `origin` is the call that made it known — an application allocation (1 NvshmemMalloc, 2 CuMemAlloc = cudaMalloc, 3 CuMemAllocManaged, 4 CuMemAllocAsync, 5 CuMemHost = pinned host, 6 CuMemMap, 7 NvbitAlloc, 8 NvbitRegion) or a transport registration (9 IbRegMr, 10 DevxUmem, 11 NcclWindow); 0 Unstated. One buffer seen by two emitters has two rows with one range and two origins — count buffers by `(rank, range_base, range_size)`, not by rows |
-| `gpu_access` | one GPU memory access (p2p provider): `address`, `size`, `op`, `space`, `run_device`, `mem_device`, `thread`, `pc` |
+| `gpu_access` | one GPU memory access (p2p provider): `address` (as the GPU issued it), `owner_address` (the same byte where its owner recorded the object; 0 = no object), `size`, `op`, `space`, `run_device`, `mem_device`, `thread`, `pc` |
 | `gpu_kernel` | a kernel launch: grid/block dims, `stream`, `device`, `correlation` |
 | `mlx5_device_send`, `mlx5_devx_*`, `mlx5_doorbell`, `mlx5_uar`, `mlx5_umem`, `mlx5_send_coverage` | the DEVX path (IBGDA, ibdevx) — decoded send WQEs, whose `submitter` says which door saw them (`gpu_doorbell`, `host_doorbell`, `sq_watch`), the objects behind them, and the send-queue watcher's per-rank coverage (`published = decoded + lapped + dropped`) |
 | `node_identity` | `node_hash` per rank: which ranks share a physical node |

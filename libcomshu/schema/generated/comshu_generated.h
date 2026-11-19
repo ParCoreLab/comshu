@@ -797,6 +797,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
   uint32_t pc_;
   uint32_t object_;
   uint64_t address_;
+  uint64_t owner_address_;
   uint64_t launch_;
   uint32_t size_;
   uint8_t op_;
@@ -812,6 +813,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
         pc_(0),
         object_(0),
         address_(0),
+        owner_address_(0),
         launch_(0),
         size_(0),
         op_(0),
@@ -822,11 +824,12 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
         thread_(0) {
     (void)padding0__;
   }
-  GpuAccess(const comshu::fb::Temporal &_temporal, uint32_t _pc, uint32_t _object, uint64_t _address, uint64_t _launch, uint32_t _size, comshu::fb::MemOp _op, comshu::fb::MemSpace _space, uint16_t _run_device, uint16_t _mem_device, uint32_t _thread)
+  GpuAccess(const comshu::fb::Temporal &_temporal, uint32_t _pc, uint32_t _object, uint64_t _address, uint64_t _owner_address, uint64_t _launch, uint32_t _size, comshu::fb::MemOp _op, comshu::fb::MemSpace _space, uint16_t _run_device, uint16_t _mem_device, uint32_t _thread)
       : temporal_(_temporal),
         pc_(::flatbuffers::EndianScalar(_pc)),
         object_(::flatbuffers::EndianScalar(_object)),
         address_(::flatbuffers::EndianScalar(_address)),
+        owner_address_(::flatbuffers::EndianScalar(_owner_address)),
         launch_(::flatbuffers::EndianScalar(_launch)),
         size_(::flatbuffers::EndianScalar(_size)),
         op_(::flatbuffers::EndianScalar(static_cast<uint8_t>(_op))),
@@ -848,6 +851,9 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
   }
   uint64_t address() const {
     return ::flatbuffers::EndianScalar(address_);
+  }
+  uint64_t owner_address() const {
+    return ::flatbuffers::EndianScalar(owner_address_);
   }
   uint64_t launch() const {
     return ::flatbuffers::EndianScalar(launch_);
@@ -871,7 +877,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) GpuAccess FLATBUFFERS_FINAL_CLASS {
     return ::flatbuffers::EndianScalar(thread_);
   }
 };
-FLATBUFFERS_STRUCT_END(GpuAccess, 88);
+FLATBUFFERS_STRUCT_END(GpuAccess, 96);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(8) SourceLine FLATBUFFERS_FINAL_CLASS {
  private:

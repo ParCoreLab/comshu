@@ -1906,28 +1906,26 @@ WITH p2p AS (
     -- (1100757343744, 262144) exists on all four ranks as ids 725/730/701/719 —
     -- so the actor's extent identifies the owner's row exactly.
            om.id                                    AS object,
-    -- ANCHOR PER (ACTOR, DEVICE), NOT PER ACTOR.
+    -- THE OFFSET IS THE CAPTURE'S, NOT AN ESTIMATE.
     --
-    -- The partition was `(g.rank, g.object)`, and under a symmetric heap that is
-    -- not one window but several glued together: one actor maps the SAME object
-    -- id on every peer, at unrelated base addresses. Measured on the same
-    -- capture: rank 0 writes object 39 — 2048 bytes — into devices 1, 2 and 3 at
-    -- bases 1375635332608 / 1650513239552 / 1925391146496, and the single window
-    -- over all three reported offsets up to 549755815936. That is 512 GiB into a
-    -- 2 KiB object, and every real access collapsed into the first bin.
+    -- gpu_access.owner_address is the touched byte as the OWNER names it,
+    -- recorded by the attributor that found the object — it alone knows the
+    -- translation (for NVSHMEM, the peer-heap mapping back to the symmetric
+    -- address). It is in the same frame as om.range_base, which is what makes
+    -- the subtraction exact.
     --
-    -- mem_device is what separates them, because the mapping is per peer.
-    -- The window stays in the ACTOR's namespace (its rank, its device, its own
-    -- object id) because the mapping whose anchor is being removed is the
-    -- actor's. Partitioning on the translated id would merge two of the actor's
-    -- mappings that happen to resolve to one owner buffer.
-           po.address - min(po.address) OVER (PARTITION BY po.rank, po.mem_device, po.object)
-                                                    AS obj_offset,
+    -- This used to be `address - min(address)` over the actor's accesses,
+    -- because only the RAW address was recorded and, through an NVSHMEM peer
+    -- mapping, that lies outside the object's recorded extent (~275 GB away on
+    -- nvshmem_multinode-44451168). Anchoring on the lowest byte touched shifted
+    -- every offset whenever the start of the buffer went untouched, and the
+    -- rows were marked inexact for it.
+           (po.owner_address - om.range_base)::UBIGINT AS obj_offset,
            po.size                                  AS size,
            'p2p'                                    AS source,
            po.rank::BIGINT                          AS actor_rank,
            po.run_device::BIGINT                    AS actor_device,
-           FALSE                                    AS exact,
+           TRUE                                     AS exact,
            om.life                                  AS life,
            NULL::BOOLEAN                            AS in_window
     FROM (
@@ -1956,14 +1954,22 @@ LEFT JOIN _device_owner o  ON o.node = n.node AND o.dev_key = gk.dev_key
            ON om.rank = po.owner_rank
           AND om.range_base = am.range_base
           AND om.range_size = am.range_size
-    -- Two ways an access cannot be placed in an object, and neither may vanish
-    -- quietly — link_health counts both as unattributed_p2p_accesses:
-    --   the owning rank cannot be named (no node identity), or
+    -- Ways an access cannot be placed in an object, none of which may vanish
+    -- quietly — link_health counts them all as unattributed_p2p_accesses:
+    --   the capture named no object (owner_address = 0): memory this process
+    --   maps from another one, such as NCCL's import of a peer's buffer, of
+    --   which the importer records no object;
+    --   the owning rank cannot be named (no node identity);
     --   the owner has no buffer at the actor's extent, which means the memory is
-    --   not symmetric and the actor's handle names nothing on the far side.
-    -- Guessing either would put real accesses in the wrong object, which is the
-    -- failure this whole comment block exists to record.
+    --   not symmetric and the actor's handle names nothing on the far side; or
+    --   the owner-side address is outside that buffer, which the attributor
+    --   makes impossible and this states rather than trusts.
+    -- Guessing any of them would put real accesses in the wrong object, which
+    -- is the failure this whole comment block exists to record.
     WHERE po.owner_rank IS NOT NULL AND om.id IS NOT NULL
+      AND po.owner_address <> 0
+      AND po.owner_address >= om.range_base
+      AND po.owner_address <  om.range_base + om.range_size
 ),
 -- The remote address each send names, translated to a VA in the PEER's space.
 -- Plain remote_addr for an ordinary region; base + (remote_addr - iova) for a
@@ -3557,9 +3563,11 @@ UNION ALL
 SELECT 'unattributed_p2p_accesses',
        'defect',
        coalesce(count(*), 0)::BIGINT,
-       'GPU accesses object_access could not place: owning rank unnameable, or the owner has no buffer at the actor''s extent'
+       'GPU accesses object_access could not place: no object named at capture (a peer buffer mapped from another process), owning rank unnameable, or the owner has no buffer at the actor''s extent'
+-- The p2p branch's rule, restated: a kTable cannot read another. Keep the two
+-- WHERE clauses saying the same thing.
 FROM (
-    SELECT g.rank, g.object, g.run_device, g.mem_device,
+    SELECT g.rank, g.object, g.run_device, g.mem_device, g.owner_address,
            CASE WHEN g.run_device = g.mem_device THEN g.rank ELSE o.rank END AS owner_rank
     FROM gpu_access g
     LEFT JOIN _node n         ON n.rank = g.rank
@@ -3573,6 +3581,9 @@ LEFT JOIN (SELECT DISTINCT rank, id, range_base, range_size FROM mem_object) om
       AND om.range_base = am.range_base
       AND om.range_size = am.range_size
 WHERE po.owner_rank IS NULL OR om.id IS NULL
+   OR po.owner_address = 0
+   OR po.owner_address <  om.range_base
+   OR po.owner_address >= om.range_base + om.range_size
 UNION ALL
 -- Sends object_access DROPPED because their remote address is an offset into a
 -- region it cannot translate (_mr_rebase mode 'unknown'): a zero-based dmabuf

@@ -178,7 +178,8 @@ struct GpuAccess {
   temporal:Temporal;
   pc:uint32;           // interned handle
   object:uint32;       // interned handle, 0 = unattributed
-  address:uint64;
+  address:uint64;      // as the accessing GPU issued it
+  owner_address:uint64; // the same byte in the object owner's address space; 0 = unattributed
   launch:uint64;       // GpuKernel.correlation, same rank; 0 = unknown
   size:uint32;
   op:MemOp;
