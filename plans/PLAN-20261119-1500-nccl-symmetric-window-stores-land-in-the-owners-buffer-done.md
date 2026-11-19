@@ -65,8 +65,12 @@ objects per rank 101 → 100 (the self-slot alias gone).
 - Non-blocking communicators: `ncclInProgress` from `ncclCommWindowRegister`
   means the window is not ready; see the CR-25 note in
   PLAN-20261119-1242-codebase-correctness-review-backlog.md.
-- du04 ships NCCL 2.28.9, which has no `ncclGetPeerDevicePointer`: its window
-  stores stay unplaced (counted).
+- ~~du04 ships NCCL 2.28.9~~ — du04 now runs a user-local NCCL 2.32.6
+  (`/DATA/missa18/opt/nccl`, set by run_on_a100.sh; the shared system package
+  is untouched), and its runner builds gpumem + nccl. Case 28 PASS there (18/18,
+  0c82ce4) after one fix it found: NCCL 2.32 registers its own CE-sync and
+  RMA-signals windows internally but releases them through the public
+  deregister, so the provider now closes only windows it saw open.
 - Classic transport (case 05): still unplaced, deferred.
 - ~100 (NCCL) / ~780 (NVSHMEM) 2 MiB `CuMemMap` objects per rank: allocator
   backing, not investigated.
