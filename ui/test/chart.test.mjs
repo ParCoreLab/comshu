@@ -16,3 +16,13 @@ test('distinct/count do not coerce strings to NaN; sum does coerce', () => {
   assert.equal(r.transport, 'ib');
   assert.equal(r.bytes, 10);
 });
+
+test('a counting aggregate typed quantitative still leaves its field alone', () => {
+  // Vega-Lite's usual spelling: the RESULT of distinct is a number.
+  const rows = [{ transport: 'ib' }];
+  const spec = {
+    mark: 'bar',
+    encoding: { x: { field: 'transport', aggregate: 'distinct', type: 'quantitative' } },
+  };
+  assert.equal(coerce(spec, rows)[0].transport, 'ib');
+});

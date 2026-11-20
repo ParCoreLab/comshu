@@ -648,7 +648,8 @@
 
       <p class="text-[13px] mt-0 mb-3">
         <b>{actorLabel(actors.find((a) => a.k === vbActor)?.node,
-                       actors.find((a) => a.k === vbActor)?.device)}</b>
+                       actors.find((a) => a.k === vbActor)?.device,
+                       actors.find((a) => a.k === vbActor)?.devices)}</b>
         moved {bytes(vbTotalB)} in {count(vbTotalN)} messages —
         {#each reachParts as p, i}<b>{count(p.n)}</b> {p.phrase}{i <
           reachParts.length - 1 ? ', ' : ''}{/each}

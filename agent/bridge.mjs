@@ -131,17 +131,22 @@ async function ensureSession() {
   // answers were right and the description it reasoned from was false, which is
   // the worst shape for a bug like this. It costs ~1 s.
   systemPrompt = await buildSystemPrompt(capture);
-  session = new PiSession({
+  startupError = null;  // the capture answers now; /health must stop saying it did not
+  const s = new PiSession({
     uiUrl: opts.ui,
     systemPrompt,
     provider: opts.provider,
     model: opts.model,
   }).start();
-  session.exited.then((code) => {
-    if (session) process.stderr.write(`agent process exited (${code}); the next question will start a new one\n`);
+  session = s;
+  // Only THIS session's exit clears the slot: after a /reset a newer one may
+  // already sit there, and the old process exiting used to wipe it.
+  s.exited.then((code) => {
+    if (session !== s) return;
+    process.stderr.write(`agent process exited (${code}); the next question will start a new one\n`);
     session = null;
   });
-  return session;
+  return s;
 }
 
 const json = (res, code, body) => {
@@ -224,14 +229,23 @@ const server = createServer(async (req, res) => {
       json(res, 409, { error: 'the agent is still answering the previous question' });
       return;
     }
+    // Claimed BEFORE the first await: checking here and setting it after
+    // readBody let two concurrent asks both pass the check.
+    busy = true;
+    const mine = ++askGen;
+    const release = () => {
+      if (askGen === mine) busy = false;
+    };
     let message;
     try {
       message = JSON.parse(await readBody(req)).message;
     } catch {
+      release();
       json(res, 400, { error: 'expected a JSON body with a `message`' });
       return;
     }
     if (!message || typeof message !== 'string') {
+      release();
       json(res, 400, { error: 'expected a JSON body with a `message`' });
       return;
     }
@@ -244,21 +258,27 @@ const server = createServer(async (req, res) => {
     });
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
-    busy = true;
-    const mine = ++askGen;
     let closed = false;
     // On the RESPONSE: readBody() has already consumed the request, whose
     // 'close' therefore fired before this could listen for it — a tab closed
     // mid-answer never aborted the agent (CR-35). The response closes when the
     // client goes; if it closes after we ended it, that is just the end.
+    // Only while this ask still owns the agent: after a /reset and a newer
+    // ask, this client going away must not abort someone else's answer.
     res.on('close', () => {
       if (res.writableEnded) return;
       closed = true;
-      session?.abort();
+      if (askGen === mine) session?.abort();
     });
 
     try {
       const s = await ensureSession();
+      // Starting a session takes ~1 s; the client may have left, or a /reset
+      // handed the agent on, while it did.
+      if (closed || askGen !== mine) {
+        if (!closed) res.end();
+        return;
+      }
       const result = await s.ask(message, (ev) => {
         if (!closed) send(ev);
       });
@@ -273,7 +293,7 @@ const server = createServer(async (req, res) => {
         res.end();
       }
     } finally {
-      if (askGen === mine) busy = false;
+      release();
     }
     return;
   }

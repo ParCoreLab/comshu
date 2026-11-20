@@ -135,9 +135,9 @@
       An operation means something different per transport — a verbs message
       against an instrumented 4-byte GPU access — so the transport stage is the
       thing to read first, and widths across it are counts of different events.
-      Verbs and DEVX opcodes stay raw numbers because the Parquet layer is raw
-      by design: naming them belongs in a derived table in
-      <code>comshu-read --link</code>, not in a second copy of the mapping here.
+      Verbs and DEVX number their opcodes in different spaces, so each is named
+      under its own transport; an opcode with no name here shows as
+      <code>verbs op N</code> or <code>mlx5 op N</code>.
     </p>
   {/snippet}
 </Panel>

@@ -78,8 +78,11 @@ function quantitativeFields(spec) {
     // field turned a string column into NaN — so `distinct` of a transport
     // name counted one distinct NaN (CR-65).
     const counting = ['count', 'distinct', 'valid', 'missing'].includes(n.aggregate);
-    if (typeof n.field === 'string' &&
-        (n.type === 'quantitative' || (n.aggregate && !counting) || n.bin))
+    // `counting` wins over the declared type: Vega-Lite's own convention is
+    // `{aggregate: 'distinct', type: 'quantitative'}`, since the RESULT is a
+    // number, and that spelling still coerced the string column (CR-65 audit).
+    if (typeof n.field === 'string' && !counting &&
+        (n.type === 'quantitative' || n.aggregate || n.bin))
       fields.add(n.field);
     Object.values(n).forEach(walk);
   };
