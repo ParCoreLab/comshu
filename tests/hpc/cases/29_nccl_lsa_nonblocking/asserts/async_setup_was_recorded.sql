@@ -4,10 +4,11 @@
 -- Every row here is one the provider can only write AFTER the call that asked
 -- for it returned: the communicator's rank (filled in by init's async half),
 -- the window (its handle written back after ncclGroupEnd answered
--- ncclInProgress), and each peer's mapping of it (valid only once the
--- communicator is ready). Before the fix all three were absent on this
--- workload, and the placement asserts failed with no word on why; this one
--- says which.
+-- ncclInProgress), the device communicator (queued on the group the same
+-- way), and each peer's mapping of the window (valid only once the
+-- communicator is ready). Before the fix the window, peer and device-
+-- communicator rows were all absent on this workload, and the placement
+-- asserts failed with no word on why; this one says which.
 --
 -- Deliberately NOT `requires: nccl_comm nccl_window ...`: a required table with
 -- no rows makes the check SKIP, and missing rows are the failure under test.
@@ -44,6 +45,14 @@ SELECT * FROM (
 
   -- Every other rank's copy of it, mapped in this process: one node, so all
   -- of them are in the LSA team.
+  -- One device communicator per rank, created inside a group: queued at
+  -- return, made when the group ran.
+  UNION ALL
+  SELECT 'nccl_dev_comm rows', r,
+         (SELECT count(*) FROM nccl_dev_comm d WHERE CAST(d.rank AS INTEGER) = r), 1
+  FROM expected
+  WHERE (SELECT count(*) FROM nccl_dev_comm d WHERE CAST(d.rank AS INTEGER) = r) != 1
+
   UNION ALL
   SELECT 'nccl_window_peer rows', r,
          (SELECT count(DISTINCT p.peer) FROM nccl_window_peer p WHERE CAST(p.rank AS INTEGER) = r),

@@ -265,9 +265,16 @@ static void comm_init_returned(ncclResult_t res, ncclComm_t comm, std::uint64_t 
 // correct program keeps it alive until the communicator reports ready, and the
 // first ready observation is where it is read. A window still pending when its
 // communicator is destroyed is dropped without a read.
+//
+// ncclDevCommCreate rides the same lists (slot == nullptr): it too queues its
+// work on the group (dev_runtime.cc, ncclDevrCommCreateAsync between
+// ncclGroupStartInternal/EndInternal), so inside a caller's group or on a
+// non-blocking communicator its return says only that the work was QUEUED.
+// The device communicator exists once the communicator is ready, and not if
+// it failed — which is when, and whether, its row is written.
 struct PendingWindow {
     ncclComm_t    comm;
-    ncclWindow_t* slot;
+    ncclWindow_t* slot;  // nullptr: a pending ncclDevCommCreate
     void*         buff;
     std::size_t   size;
     int           flags;
@@ -340,6 +347,16 @@ static void record_window(ncclComm_t c, void* buff, std::size_t size, ncclWindow
     }
 }
 
+// The communicator is ready: write what the held call produced.
+static void finish(const PendingWindow& p) {
+    if (!p.slot) {
+        rec().record(span(p.begin, p.end), rr::NcclDevComm{{}, {}, h(p.comm), 0});
+        return;
+    }
+    if (ncclWindow_t w = *p.slot)
+        record_window(p.comm, p.buff, p.size, w, p.flags, p.begin, p.end);
+}
+
 enum class CommState { Ready, InProgress, Failed };
 static CommState comm_state(ncclComm_t c) {
     ncclResult_t state = ncclSuccess;
@@ -397,8 +414,7 @@ static void settle_windows(ncclComm_t comm) {
         }
     }
     for (const PendingWindow& p : ready)
-        if (ncclWindow_t w = *p.slot)
-            record_window(p.comm, p.buff, p.size, w, p.flags, p.begin, p.end);
+        finish(p);
 }
 
 // A destroyed communicator's windows can no longer become ready.
@@ -436,8 +452,7 @@ static void close_group_windows() {
     for (const PendingWindow& p : mine) {
         switch (comm_state(p.comm)) {
         case CommState::Ready:
-            if (ncclWindow_t w = *p.slot)
-                record_window(p.comm, p.buff, p.size, w, p.flags, p.begin, p.end);
+            finish(p);
             break;
         case CommState::InProgress:
             hold_async(p);
@@ -466,6 +481,20 @@ static void window_register_returned(ncclResult_t res, ncclComm_t c, void* buff,
     // else: ncclSuccess, no handle, no group — this communicator has no
     // symmetric memory and NCCL registered nothing (dev_runtime.cc returns
     // before queueing when !comm->symmetricSupport).
+}
+
+static void dev_comm_create_returned(ncclResult_t res, ncclComm_t c, std::uint64_t begin,
+                                     std::uint64_t end) {
+    if (!issued(res) || !c)
+        return;
+    settle(c);
+    const PendingWindow p{c, nullptr, nullptr, 0, 0, begin, end};
+    if (group_depth() > 0)
+        group_windows().push_back(p);  // queued: the outermost End runs it
+    else if (res != ncclSuccess)
+        hold_async(p);                 // ncclInProgress: NCCL's thread runs it
+    else
+        finish(p);                     // done, and it worked
 }
 #else
 static void settle_windows(ncclComm_t) {}
@@ -657,10 +686,10 @@ Profiler::Profiler() {
         }
         close(win, comshu::core::RecordTrait<rr::NcclWindow>::type_id);
     });
+    // Recorded once the device communicator exists: see PendingWindow.
     register_post<dev_comm_create_tag>(
         [](ncclResult_t res, ncclComm_t c, const void*, void*, auto begin, auto end) {
-            if (res == ncclSuccess)
-                rec().record(span(begin, end), rr::NcclDevComm{{}, {}, h(c), 0});
+            dev_comm_create_returned(res, c, begin, end);
         });
 #endif
 }

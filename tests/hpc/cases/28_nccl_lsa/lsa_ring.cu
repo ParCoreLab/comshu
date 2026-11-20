@@ -24,7 +24,9 @@
 // returns ncclInProgress and the window handle is written by NCCL's own thread
 // after ncclGroupEnd has returned. Each step then polls ncclCommGetAsyncError
 // until the communicator is ready, as NCCL requires before the handle may be
-// used. The ring itself is the same, so the same stores must land in the same
+// used. It also creates (and destroys) a device communicator inside a group,
+// which the ring does not use: ncclDevCommCreate is queued the same way, and
+// the capture must still say it was made. The ring itself is the same, so the same stores must land in the same
 // places: what changes is only WHEN the capture can learn where they land.
 //
 // Exit codes: 0 OK, 2 a CUDA/NCCL call failed, 3 data did not arrive, 4 this
@@ -183,6 +185,22 @@ int main(int argc, char** argv) {
         MPI_Abort(MPI_COMM_WORLD, 4);
     }
 
+    // No requirements beyond the header: nothing in the ring uses it, and a
+    // device communicator that asks for no barriers, GIN or LSA resources
+    // allocates nothing the gpumem provider could mistake for a peer access.
+    ncclDevComm dc;
+    if (nonblocking) {
+        ncclDevCommRequirements reqs = {};
+#if defined(NCCL_VERSION_CODE) && NCCL_VERSION_CODE >= 22900
+        reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+#endif
+        NCCL(ncclGroupStart());
+        const ncclResult_t dcr = ncclDevCommCreate(comm, &reqs, &dc);
+        const ncclResult_t ge = ncclGroupEnd();
+        wait_ready(comm, dcr, "device communicator create");
+        wait_ready(comm, ge, "device communicator create (group end)");
+    }
+
     unsigned long long* d_bad = nullptr;
     CUDA(cudaMalloc(&d_bad, sizeof *d_bad));
     CUDA(cudaMemset(d_bad, 0, sizeof *d_bad));
@@ -214,6 +232,8 @@ int main(int argc, char** argv) {
         std::printf("lsa ring OK: %d ranks, %zu B window, %d iters, %s, every word arrived\n",
                     size, bytes, iters, nonblocking ? "non-blocking" : "blocking");
 
+    if (nonblocking)
+        wait_ready(comm, ncclDevCommDestroy(comm, &dc), "device communicator destroy");
     wait_ready(comm, ncclCommWindowDeregister(comm, w), "window deregister");
     NCCL(ncclMemFree(winp));
     CUDA(cudaFree(d_bad));

@@ -14,6 +14,6 @@
     "elem_bytes": 4
   },
   "workload_params": ["window_bytes", "iters"],
-  "workload_note": "`lsa_ring 131072 10 nonblocking`: case 28's workload (its lsa_ring.cu) with ncclCommInitRankConfig(blocking = 0), the window registered between ncclGroupStart and ncclGroupEnd, and ncclCommGetAsyncError polled to ready after init, registration, deregistration and finalize. One communicator and one window per rank; window_bytes/4 * iters = 327,680 peer stores per rank, each owned by rank (r+1) % ranks.",
-  "expect_tables": ["gpu_access", "mem_object", "nccl_comm", "nccl_window", "nccl_window_peer"]
+  "workload_note": "`lsa_ring 131072 10 nonblocking`: case 28's workload (its lsa_ring.cu) with ncclCommInitRankConfig(blocking = 0), the window registered between ncclGroupStart and ncclGroupEnd, and ncclCommGetAsyncError polled to ready after init, registration, device-communicator create/destroy, deregistration and finalize. A device communicator with no requirements is created inside a group and never used. One communicator and one window per rank; window_bytes/4 * iters = 327,680 peer stores per rank, each owned by rank (r+1) % ranks.",
+  "expect_tables": ["gpu_access", "mem_object", "nccl_comm", "nccl_window", "nccl_window_peer", "nccl_dev_comm"]
 }
