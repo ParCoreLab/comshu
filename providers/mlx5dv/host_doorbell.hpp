@@ -345,15 +345,17 @@ inline void arm(mlx5dv_devx_uar* uar) {
     }
     auto& s = state();
 
+    void* real = nullptr;
     {
         std::lock_guard<std::mutex> lk(s.mutex);
         if (auto it = s.armed.find(uar); it != s.armed.end()) {
             ++it->second.refs;  // singleton NC UAR handed out again; already swapped
             return;
         }
+        // Under the lock that every swap and restore of reg_addr now holds, so
+        // this is the NIC's register and never another arm's decoy.
+        real = uar->reg_addr;
     }
-
-    void* real = uar->reg_addr;
 
     // A private, page-aligned, writable page. Plain host memory on purpose:
     // the writer in this mode is a CPU thread, so nothing here needs the CUDA
@@ -398,12 +400,15 @@ inline void arm(mlx5dv_devx_uar* uar) {
         a.real = real;
         a.refs = 1;
         a.handles.emplace_back(std::move(handle));
-    }
 
-    // THE SWAP. Everything above is set up; this line is what redirects the
-    // application, and it is last so that no doorbell can land on a page whose
-    // repeater is not yet running.
-    uar->reg_addr = decoy;
+        // THE SWAP. Everything above is set up, so no doorbell can land on a
+        // page whose repeater is not yet running. INSIDE the lock that
+        // published the entry (CR-18 audit): done after it, a disarm in the
+        // gap restored the register and unmapped the decoy, and this line
+        // then pointed the UAR at the unmapped page. And an arm() that finds
+        // the entry now finds the swap done too.
+        uar->reg_addr = decoy;
+    }
 
     s.uars_armed.fetch_add(1, std::memory_order_relaxed);
     if (debug_on())

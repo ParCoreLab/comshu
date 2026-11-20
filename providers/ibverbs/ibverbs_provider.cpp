@@ -288,6 +288,34 @@ std::vector<std::uint32_t>& pending_srq_slots() {
     return v;
 }
 
+// Each SRQ's ring size, from creation: the bound every slot read is checked
+// against (srq_walk_chain). libmlx5 sizes the ring at srq->max and reports
+// max_wr = srq->max - 1 to the kernel (rdma-core mlx5_create_srq), so the
+// queried max_wr + 1 never exceeds the buffer — at worst it under-counts a
+// wait queue's slots, which then read as unknown rather than past the end.
+// An SRQ not seen created has no bound and gets no slots.
+std::mutex& srq_size_mutex() {
+    static std::mutex m;
+    return m;
+}
+std::unordered_map<const ibv_srq*, std::uint32_t>& srq_sizes() {
+    static auto* m = new std::unordered_map<const ibv_srq*, std::uint32_t>();
+    return *m;
+}
+void note_srq_size(const ibv_srq* srq, std::uint32_t max_wr) {
+    std::lock_guard<std::mutex> lk(srq_size_mutex());
+    srq_sizes()[srq] = max_wr + 1;
+}
+std::uint32_t srq_size(const ibv_srq* srq) {
+    std::lock_guard<std::mutex> lk(srq_size_mutex());
+    const auto                  it = srq_sizes().find(srq);
+    return it == srq_sizes().end() ? 0 : it->second;
+}
+void forget_srq_size(const ibv_srq* srq) {
+    std::lock_guard<std::mutex> lk(srq_size_mutex());
+    srq_sizes().erase(srq);
+}
+
 // (context, qp_num) -> the SRQ that queue pair draws its receives from.
 //
 // WHY THIS MAP EXISTS, and why the obvious field could not be used instead.
@@ -333,6 +361,25 @@ void note_qp_created(ibv_qp* qp) {
         qp_srq_map()[{qp->context, qp->qp_num}] = qp->srq;
     else
         qp_srq_map().erase({qp->context, qp->qp_num});
+}
+
+// ibv_destroy_qp, told by the engine before the free (comshu_engine_on_qp_destroy):
+// a QP's address and its (context, qp_num) are free for the next QP, which may
+// be created through a door this provider never sees (mlx5dv_create_qp) and so
+// would never reach note_qp_created to clear them (CR-53 audit). The SRQ entry
+// is dropped only if it is still this QP's: a later QP may already own it.
+void forget_qp(void* p) {
+    auto* qp = static_cast<ibv_qp*>(p);
+    {
+        std::lock_guard<std::mutex> lk(g_lid_mutex);
+        g_qp_lid.erase(qp);
+    }
+    if (!qp->context)
+        return;
+    std::lock_guard<std::mutex> lk(qp_srq_mutex());
+    auto                        it = qp_srq_map().find({qp->context, qp->qp_num});
+    if (it != qp_srq_map().end() && it->second == qp->srq)
+        qp_srq_map().erase(it);
 }
 
 // close_device: every QP of `ctx` is gone, and the next context at this address
@@ -858,6 +905,8 @@ Profiler::Profiler() {
         return;  // the engine has already explained why on stderr
     ::comshu::provider::engine_hold().acquire(cfg.output_dir.c_str(), cfg.rank,
                                                  cfg.verbose ? 1 : 0);
+    // The engine owns ibv_destroy_qp; this is how a dead QP's state leaves.
+    comshu_engine_on_qp_destroy(&forget_qp);
 
     // Install object-ops trampolines into each device context as it opens.
     this->register_post<open_device_tag>(
@@ -1503,10 +1552,13 @@ Profiler::Profiler() {
             slots.clear();
             if (!srq || !wr)
                 return;
-            for (unsigned n = 0; wr; wr = wr->next, ++n) {
-                const auto s = cqeprobe::srq_slot(srq, n);
-                slots.push_back(s.valid ? s.slot : rr::kSlotUnknown);
-            }
+            unsigned n = 0;
+            for (auto* w = wr; w; w = w->next)
+                ++n;
+            // The whole chain from ONE snapshot of the ring, in one walk.
+            slots.assign(n, rr::kSlotUnknown);
+            std::uint32_t srqn = 0;
+            (void)cqeprobe::srq_slots(srq, srq_size(srq), n, slots.data(), &srqn);
         });
 
     this->register_post<post_srq_recv_tag>([](int ret, ibv_srq* srq, ibv_recv_wr* wr, ibv_recv_wr**,
@@ -1562,6 +1614,8 @@ Profiler::Profiler() {
             ibv_srq_attr        q{};
             const bool          ok = ibv_query_srq(srq, &q) == 0;
             const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
+            if (ok)
+                note_srq_size(srq, q.max_wr);
             rec().record(
                 comshu::core::Temporal::none(),
                 rr::IbSharedRecvQueue{{}, {}, h(srq), h(pd), s.max_wr, s.max_sge, s.srq_limit});
@@ -1578,6 +1632,8 @@ Profiler::Profiler() {
             const bool          ok = ibv_query_srq(srq, &q) == 0;
             const ibv_srq_attr& s = (ok || !a) ? q : a->attr;
             const bool          has_pd = a && (a->comp_mask & IBV_SRQ_INIT_ATTR_PD);
+            if (ok)
+                note_srq_size(srq, q.max_wr);
             rec().record(comshu::core::Temporal::none(),
                          rr::IbSharedRecvQueue{{},
                                                {},
@@ -1594,6 +1650,7 @@ Profiler::Profiler() {
         [](int ret, ibv_srq* srq, std::uint64_t t0, std::uint64_t t1) {
             if (ret != 0 || !srq)
                 return;
+            forget_srq_size(srq);
             rec().record(span(t0, t1), comshu::core::records::EntityClose{
                                            {}, {}, h(srq), rr::IbSharedRecvQueue::comshu_type_id});
         });

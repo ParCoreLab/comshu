@@ -709,11 +709,15 @@ Profiler::Profiler() {
         [](mlx5dv_devx_uar* out, ibv_context*, uint32_t flags, auto...) {
             if (!out)
                 return;
+            // Read BEFORE hostdb::arm swaps out->reg_addr for its decoy: the
+            // record below must carry the register the NIC owns, which it
+            // claimed to and did not (it read the field after the swap).
+            void* const reg_addr = out->reg_addr;
             // The hijack only ever swaps a page that came from here — this is
             // the "never manufacture a capability" rule made concrete. The uar
             // pointer is kept so a doorbell row can join back to Mlx5Uar (h(out)).
             if (hijack::enabled() || hostdb::enabled())
-                hijack::remember_uar(out->reg_addr, out, out->page_id);
+                hijack::remember_uar(reg_addr, out, out->page_id);
             // ...and only then swap, so remember_uar keys on the register the
             // NIC really owns and a doorbell row joins the Mlx5Uar recorded
             // below. The record therefore carries the true reg_addr in both
@@ -735,12 +739,12 @@ Profiler::Profiler() {
             // field to join to yet, so the correlation lives in the log.
             if (hostdb::debug_on())
                 std::fprintf(stderr, "[hostdb] UAR alloc page_id=%u flags=0x%x reg_addr=%p\n",
-                             out->page_id, flags, out->reg_addr);
+                             out->page_id, flags, reg_addr);
             rec().record(comshu::core::Temporal::none(),
                          rr::Mlx5Uar{{},
                                      {},
                                      h(out),
-                                     reinterpret_cast<std::uint64_t>(out->reg_addr),
+                                     reinterpret_cast<std::uint64_t>(reg_addr),
                                      reinterpret_cast<std::uint64_t>(out->base_addr),
                                      out->page_id,
                                      flags});
@@ -771,10 +775,16 @@ Profiler::Profiler() {
         // Stop the repeater and restore uar->reg_addr BEFORE mlx5dv_devx_free_uar
         // unmaps the BAR page and frees `uar` (CR-03). Idempotent with the
         // teardown cuMemHostUnregister does, in whichever order they arrive.
-        if (hijack::enabled())
-            hijack::teardown(uar->reg_addr, /*forget_uar=*/true);
+        //
+        // disarm FIRST: it puts the real register back in uar->reg_addr, and
+        // everything remember_uar recorded is keyed on that, not on the
+        // decoy. Then forget the page in EITHER mode — remember_uar runs for
+        // both, and hostdb-only runs used to leave it behind for the next
+        // allocation at that address (CR-16 audit).
         if (hostdb::enabled())
             hostdb::disarm(uar);
+        if (hijack::enabled() || hostdb::enabled())
+            hijack::teardown(uar->reg_addr, /*forget_uar=*/true);
     });
     this->register_post<devx_free_uar_tag>([](mlx5dv_devx_uar* uar, auto...) {
         if (!uar)

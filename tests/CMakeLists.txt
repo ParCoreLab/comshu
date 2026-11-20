@@ -299,6 +299,16 @@ add_test(NAME csv_export_contract
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/csv_export_contract.sh $<TARGET_FILE:comshu_launcher>
                  $<TARGET_FILE:csv_export_contract_writer>)
 
+# `comshu ui`'s POST /query over real HTTP: one read-only SELECT, per-request
+# connections, JSON-escaped text (CR-01, CR-27, CR-64; the CR-75 audit). Only
+# where the server is built.
+if(COMSHU_UI)
+  add_test(NAME ui_query_rule
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/ui_query_rule.sh $<TARGET_FILE:comshu_launcher>
+                   $<TARGET_FILE:csv_export_contract_writer>)
+  set_tests_properties(ui_query_rule PROPERTIES TIMEOUT 60)
+endif()
+
 # comshu bake in place, and archive footers whose bounds arithmetic would wrap (CR-31).
 add_test(NAME bake_rule
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/bake_rule.sh $<TARGET_FILE:comshu_launcher>

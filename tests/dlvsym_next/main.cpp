@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 
 extern "C" void* caller_next(const char* version);
+extern "C" void* caller_next_compat();
 
 int main() {
     // The engine must actually be the dlvsym in front, or this proves nothing.
@@ -28,6 +29,18 @@ int main() {
             std::fprintf(stderr, "dlvsym_next: RTLD_NEXT vsym_probe@%s returned %d, want %d%s\n",
                          c.version, got, c.want,
                          got == 1 ? " (the caller's OWN definition)" : "");
+            fail = 1;
+        }
+    }
+    // A version that exists in the next library ONLY as compat (@V1, no @@):
+    // the CR-10 audit — the default-version walk found nothing there and fell
+    // back to resolving from the engine, which hands back the caller's own.
+    {
+        auto*     fn = reinterpret_cast<int (*)()>(caller_next_compat());
+        const int got = fn ? fn() : -1;
+        if (got != 201) {
+            std::fprintf(stderr, "dlvsym_next: RTLD_NEXT vsym_compat@V1 returned %d, want 201%s\n",
+                         got, got == 2 ? " (the caller's OWN definition)" : "");
             fail = 1;
         }
     }

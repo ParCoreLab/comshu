@@ -145,7 +145,12 @@ struct Arena final : rec::IDrainable {
         std::unique_lock<std::mutex> lk(m_drain, std::try_to_lock);
         if (!lk.owns_lock())
             return false;
-        drain_locked();
+        // Never reset, even on the owner: the signal may have interrupted this
+        // very thread inside append() between reading `count` and storing
+        // count + 1. If the application's handler then returns (runtimes that
+        // recover from SIGSEGV do), that store resurrects every record just
+        // submitted. Advancing the watermark is safe either way (CR-08 audit).
+        drain_locked(/*may_reset=*/false);
         return true;
     }
 
@@ -159,9 +164,9 @@ struct Arena final : rec::IDrainable {
     }
 
 private:
-    void drain_locked() {
+    void drain_locked(bool may_reset = true) {
         const std::uint32_t n = __atomic_load_n(&pub.count, __ATOMIC_ACQUIRE);
-        const bool          is_owner = pthread_equal(owner, pthread_self()) != 0;
+        const bool is_owner = may_reset && pthread_equal(owner, pthread_self()) != 0;
         if (n > drained) {
             auto& tracer = Tracer::instance();
             if (tracer.has_recorder())
@@ -1597,7 +1602,15 @@ std::atomic<PfnDestroyQp>& real_destroy_qp() {
 // exactly once however it was reached. Interning the pointer value the instant
 // the real call returns is safe: no other allocation runs before this thread
 // returns to the caller, so the handle still names this QP.
+constexpr int                      kQpDestroyListeners = 8;
+std::atomic<comshu_qp_destroy_fn> g_qp_destroy_listeners[kQpDestroyListeners]{};
+
 int ibv_destroy_qp_hook(void* qp) {
+    // Providers' per-QP state goes first, while the QP is still readable.
+    if (qp)
+        for (auto& l : g_qp_destroy_listeners)
+            if (auto fn = l.load(std::memory_order_acquire))
+                fn(qp);
     PfnDestroyQp real = real_destroy_qp().load(std::memory_order_acquire);
     if (!real) {
         // No dlsym registration captured `next` yet — a pure-PLT caller like
@@ -1626,6 +1639,30 @@ int ibv_destroy_qp_hook(void* qp) {
 
 }  // namespace
 
+extern "C" int comshu_engine_on_qp_destroy(comshu_qp_destroy_fn fn) {
+    if (!fn)
+        return -1;
+    for (auto& l : g_qp_destroy_listeners) {
+        comshu_qp_destroy_fn expected = nullptr;
+        if (l.load(std::memory_order_acquire) == fn)
+            return 0;  // already registered
+        if (l.compare_exchange_strong(expected, fn, std::memory_order_acq_rel))
+            return 0;
+    }
+    return -1;
+}
+
+// Whether `p` is code in this library (the engine).
+static bool in_engine(const void* p) {
+    static const void* base = [] {
+        Dl_info i{};
+        return dladdr(reinterpret_cast<const void*>(&ibv_destroy_qp_hook), &i) ? i.dli_fbase
+                                                                               : nullptr;
+    }();
+    Dl_info i{};
+    return base && dladdr(p, &i) && i.dli_fbase == base;
+}
+
 // The PLT door: exported global so a direct caller binds here.
 extern "C" int ibv_destroy_qp(void* qp) {
     return ibv_destroy_qp_hook(qp);
@@ -1642,7 +1679,11 @@ static void comshu_install_ibv_destroy_qp_hook() {
         return;
     comshu::smart_dlsym::register_symbol(
         "ibv_destroy_qp", [](void* next, void*, const char*) -> void* {
-            if (next)
+            // Never our own: dlsym(RTLD_DEFAULT, "ibv_destroy_qp") finds the
+            // engine's exported door above, and storing that as the real one
+            // makes the hook call itself (CR-02's guard, missing here). Left
+            // unset, the hook resolves libibverbs' own symbol on first use.
+            if (next && !in_engine(next))
                 real_destroy_qp().store(reinterpret_cast<PfnDestroyQp>(next),
                                         std::memory_order_release);
             return reinterpret_cast<void*>(&ibv_destroy_qp_hook);

@@ -981,6 +981,15 @@ inline CuResult intercept_host_get_device_pointer(CuDevicePtr* pdptr, void* p, u
     {
         std::lock_guard<std::mutex> lk(s.mutex);
         auto                        skip_it = s.skipped.find(p);
+        // A `skipped` entry outlives its UAR's free on purpose (a late
+        // unregister must still be answered), so it alone does not make p a
+        // UAR: memory cuMemHostAlloc placed at the freed address never passes
+        // through register, and would be hijacked as one (CR-16 audit). Only a
+        // page still remembered as a live UAR is ours.
+        if (skip_it != s.skipped.end() && !s.uar_pages.count(p)) {
+            s.skipped.erase(skip_it);
+            skip_it = s.skipped.end();
+        }
         if (skip_it == s.skipped.end()) {
             if (debug_on())
                 std::fprintf(stderr,

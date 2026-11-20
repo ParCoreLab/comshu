@@ -136,21 +136,10 @@ struct RecvCqe {
  */
 RecvCqe read_recv_cqe(ibv_cq* cq, int ret, int i, const ibv_wc& wc);
 
-/** Where the next posted WQE will land in an SRQ ring, and that ring's number. */
-struct SrqSlot {
-    std::uint32_t srqn = 0;
-    std::uint32_t slot = 0;
-    bool          valid = false;
-};
-
-/**
- * The slot `n` posts ahead of the SRQ's current head, following the ring's own
- * free list — which is how libmlx5 assigns them, and why a post chain does not
- * simply occupy consecutive indices.
- *
- * Must be called BEFORE ibv_post_srq_recv runs: afterwards the head has moved
- * and the slots this call would report are the next post's, not this one's.
- */
-SrqSlot srq_slot(ibv_srq* srq, unsigned n);
+// The slots a post chain of `n` WQEs will occupy, from one snapshot of the SRQ
+// (srq_walk_chain): writes out[0..k), returns k; *srqn is set when k > 0.
+// `nwqe` is the ring's size as recorded at creation (0: unknown, nothing known).
+unsigned srq_slots(ibv_srq* srq, std::uint32_t nwqe, unsigned n, std::uint32_t* out,
+                   std::uint32_t* srqn);
 
 }  // namespace ibv::cqeprobe

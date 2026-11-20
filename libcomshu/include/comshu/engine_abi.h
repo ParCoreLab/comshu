@@ -146,6 +146,23 @@ int comshu_engine_object_at(uint64_t addr, uint64_t* base, uint64_t* size, uint3
  * anything. */
 void comshu_engine_note_qp(void* qp, uint16_t opener_type_id);
 
+/* Be told, just BEFORE the real ibv_destroy_qp runs, that `qp` is going away.
+ *
+ * The destroy door is the engine's (above), so a provider that keeps state per
+ * queue pair otherwise never learns its QP died — and a QP created where it
+ * cannot see (the ibverbs provider does not see mlx5dv_create_qp) then
+ * inherits the dead one's state at a recycled address or qp_num (CR-53 audit).
+ * Called before the free so `qp` is still readable; a destroy that then fails
+ * has only cost the provider its cached facts about a live QP.
+ *
+ * Returns 0, or -1 when the (small, fixed) listener table is full. A callback
+ * must be cheap and must not call ibv_destroy_qp.
+ *
+ * Added without bumping COMSHU_ENGINE_ABI_VERSION, on comshu_engine_note_qp's
+ * precedent and for its reasons. */
+typedef void (*comshu_qp_destroy_fn)(void* qp);
+int comshu_engine_on_qp_destroy(comshu_qp_destroy_fn fn);
+
 /* The process-wide dmabuf fd -> GPU range table (core/dmabuf_registry.hpp).
  *
  * It was one table per provider, each filled by that provider's own

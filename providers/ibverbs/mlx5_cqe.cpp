@@ -46,8 +46,8 @@ RecvCqe read_recv_cqe(ibv_cq*, int, int, const ibv_wc&) {
 }
 void forget_cq(const ibv_cq*) {}
 void forget_context(const ibv_context*) {}
-SrqSlot srq_slot(ibv_srq*, unsigned) {
-    return {};
+unsigned srq_slots(ibv_srq*, std::uint32_t, unsigned, std::uint32_t*, std::uint32_t*) {
+    return 0;
 }
 
 void on_poll(ibv_cq*, int, ibv_wc*) {
@@ -255,9 +255,10 @@ RecvCqe read_recv_cqe(ibv_cq* cq, int ret, int i, const ibv_wc& wc) {
     return out;
 }
 
-SrqSlot srq_slot(ibv_srq* srq, unsigned n) {
-    if (!srq)
-        return {};
+unsigned srq_slots(ibv_srq* srq, std::uint32_t nwqe, unsigned n, std::uint32_t* slots,
+                   std::uint32_t* srqn) {
+    if (!srq || !n || !slots)
+        return 0;
     static auto* init_obj = reinterpret_cast<int (*)(mlx5dv_obj*, std::uint64_t)>([] {
         void* h = dlopen("libmlx5.so.1", RTLD_NOW | RTLD_NOLOAD);
         if (!h)
@@ -266,7 +267,7 @@ SrqSlot srq_slot(ibv_srq* srq, unsigned n) {
         return sym ? sym : dlsym(RTLD_DEFAULT, "mlx5dv_init_obj");
     }());
     if (!init_obj)
-        return {};
+        return 0;
 
     mlx5dv_srq out{};
     // srqn IS OPTIONAL OUTPUT AND MUST BE ASKED FOR. mlx5dv_get_srq fills it
@@ -282,11 +283,11 @@ SrqSlot srq_slot(ibv_srq* srq, unsigned n) {
     obj.srq.in = srq;
     obj.srq.out = &out;
     if (init_obj(&obj, MLX5DV_OBJ_SRQ) != 0 || !out.buf || !out.stride)
-        return {};
+        return 0;
     // A capture whose slots all say srqn=0 cannot be joined to a completion, so
     // refuse rather than fill a stream with rows nothing can use.
     if (!(out.comp_mask & MLX5DV_SRQ_MASK_SRQN) || out.srqn == 0)
-        return {};
+        return 0;
 
     // A POST CHAIN DOES NOT OCCUPY CONSECUTIVE SLOTS. libmlx5 keeps the SRQ's
     // free WQEs as a linked list and takes the head each time
@@ -309,10 +310,10 @@ SrqSlot srq_slot(ibv_srq* srq, unsigned n) {
     // is libmlx5's own); what keeps a race from becoming a wrong attribution
     // is the CQE cross-check: a receive's wqe_counter names the slot it
     // actually used, and the reader joins on that.
-    std::uint32_t slot = 0;
-    if (!srq_walk(out.buf, out.stride, out.head, out.tail, n, &slot))
-        return {};
-    return {out.srqn, slot, true};
+    const unsigned k = srq_walk_chain(out.buf, out.stride, out.head, out.tail, nwqe, n, slots);
+    if (k && srqn)
+        *srqn = out.srqn;
+    return k;
 }
 
 // One poll's worth of completions, checked against the CQEs they came from.

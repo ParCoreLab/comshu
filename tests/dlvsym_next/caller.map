@@ -1,1 +1,1 @@
-V1 { global: vsym_probe; caller_next; local: *; };
+V1 { global: vsym_probe; vsym_compat; caller_next; caller_next_compat; local: *; };

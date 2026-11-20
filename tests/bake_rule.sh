@@ -48,10 +48,14 @@ craft "$WORK/wrap32" 64 36 1 "f0ffffff$(printf '00%.0s' $(seq 32))"
 for f in wrap64 wrap32; do
     "$COMSHU" bake --list "$WORK/$f" > "$WORK/$f.out" 2>&1
     rc=$?
+    # Not crashing is not enough: a footer the bounds check let through could
+    # list garbage entries and exit 0 (the CR-75 audit). It must be REFUSED.
     if [ "$rc" -ge 128 ]; then
         echo "FAIL: --list on a crafted $f footer crashed (rc=$rc)"; fail=1
+    elif ! grep -q "carries no baked providers" "$WORK/$f.out"; then
+        echo "FAIL: --list accepted a crafted $f footer:"; sed 's/^/    /' "$WORK/$f.out"; fail=1
     else
-        echo "ok: crafted $f footer refused without a crash (rc=$rc)"
+        echo "ok: crafted $f footer refused (rc=$rc)"
     fi
 done
 

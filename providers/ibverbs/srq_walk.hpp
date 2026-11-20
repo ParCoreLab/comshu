@@ -22,21 +22,37 @@ namespace ibv::cqeprobe {
 
 // The 16-bit big-endian link sits at bytes [2, 4) of each WQE
 // (struct mlx5_wqe_srq_next_seg { uint16_t rsvd0; __be16 next_wqe_index; ... }).
-inline bool srq_walk(const void* buf, std::uint32_t stride, std::uint32_t head,
-                     std::uint32_t tail, unsigned n, std::uint32_t* out) {
-    if (!buf || !stride || !out)
-        return false;
+//
+// The slots of a whole post chain of `n` WQEs, in ONE walk from one (head,
+// tail) snapshot: writes out[0..k) and returns k, the number known. Asking
+// per WQE (as the post hook once did) re-read the SRQ and re-walked from the
+// head each time — quadratic, and each answer from a possibly different
+// snapshot (CR-19 audit).
+//
+// `nwqe` bounds every index read: a link is read out of the SRQ's own ring, and
+// one that another thread is rewriting, or that is stale, can name any 16-bit
+// value; an index at or past the ring's end ends the walk instead of reading
+// past the buffer. 0 means the ring size is not known, and nothing is.
+inline unsigned srq_walk_chain(const void* buf, std::uint32_t stride, std::uint32_t head,
+                               std::uint32_t tail, std::uint32_t nwqe, unsigned n,
+                               std::uint32_t* out) {
+    if (!buf || !stride || !out || !nwqe)
+        return 0;
     std::uint32_t slot = head;
     for (unsigned k = 0; k < n; ++k) {
+        if (slot >= nwqe)
+            return k;
+        out[k] = slot;
+        if (k + 1 == n)
+            return n;
         if (slot == tail)
-            return false;  // libmlx5 links past the tail only while posting
+            return k + 1;  // libmlx5 links past the tail only while posting
         std::uint16_t be;
         std::memcpy(&be, static_cast<const std::uint8_t*>(buf) + std::size_t{slot} * stride + 2,
                     sizeof be);
         slot = be16toh(be);
     }
-    *out = slot;
-    return true;
+    return n;
 }
 
 }  // namespace ibv::cqeprobe

@@ -5,11 +5,18 @@
 
 extern "C" int vsym_probe_own() { return 1; }
 __asm__(".symver vsym_probe_own,vsym_probe@@V1");
+extern "C" int vsym_compat_own() { return 2; }
+__asm__(".symver vsym_compat_own,vsym_compat@@V1");
 
 // NOT a tail call: RTLD_NEXT is relative to the return address, and `return
 // dlvsym(...)` compiles to a jump that leaves main's address there instead.
 extern "C" void* caller_next(const char* version) {
     void* r = dlvsym(RTLD_NEXT, "vsym_probe", version);
+    __asm__ volatile("" : "+r"(r));
+    return r;
+}
+extern "C" void* caller_next_compat() {
+    void* r = dlvsym(RTLD_NEXT, "vsym_compat", "V1");
     __asm__ volatile("" : "+r"(r));
     return r;
 }

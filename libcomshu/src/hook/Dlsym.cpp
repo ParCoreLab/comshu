@@ -7,6 +7,8 @@
 #include <set>
 
 #include <dlfcn.h>
+#include <vector>
+#include <link.h>
 
 #include <functional>
 #include <string>
@@ -160,8 +162,9 @@ static void trace_dlsym_lookup(const char* symbol_name, bool hooked) {
 }
 
 void* on_symbol_load(void* real_symbol, void* handle, const char* symbol_name) {
-    // dlsym(h, NULL) is legal to call and glibc answers it; there is nothing to
-    // look up, and std::string(nullptr) is undefined behaviour (CR-11).
+    // A null name: there is nothing to look up, and std::string(nullptr) is
+    // undefined behaviour (CR-11). (glibc itself segfaults on dlsym(h, NULL) —
+    // measured, even for RTLD_DEFAULT — so this is defence, not a service.)
     if (!real_symbol || !symbol_name) {
         return real_symbol;
     }
@@ -250,6 +253,59 @@ static void init_once() {
 }
 #pragma GCC diagnostic pop
 
+// The libraries loaded AFTER the one containing `caller`, in search order, by
+// path. Names are collected first and opened afterwards: dl_iterate_phdr holds
+// the loader's lock, and dlopen inside its callback is asking for a deadlock.
+static std::vector<std::string> libraries_after(void* caller) {
+    struct Ctx {
+        void*                    caller;
+        bool                     passed = false;
+        std::vector<std::string> names;
+    } ctx{caller};
+    dl_iterate_phdr(
+        [](dl_phdr_info* info, size_t, void* data) -> int {
+            auto* c = static_cast<Ctx*>(data);
+            if (!c->passed) {
+                for (size_t i = 0; i < info->dlpi_phnum; ++i) {
+                    const auto& ph = info->dlpi_phdr[i];
+                    if (ph.p_type != PT_LOAD)
+                        continue;
+                    const auto lo = info->dlpi_addr + ph.p_vaddr;
+                    const auto a = reinterpret_cast<ElfW(Addr)>(c->caller);
+                    if (a >= lo && a < lo + ph.p_memsz) {
+                        c->passed = true;
+                        break;
+                    }
+                }
+                return 0;
+            }
+            if (info->dlpi_name && info->dlpi_name[0])
+                c->names.emplace_back(info->dlpi_name);
+            return 0;
+        },
+        &ctx);
+    return ctx.names;
+}
+
+// dlvsym(RTLD_NEXT, sym, ver) relative to the real caller: the first library
+// after it in which glibc finds THAT version. The version is asked of each
+// library directly, so a symbol present there only as a compat version (@V1,
+// no default) is found — the earlier route through find_symbol_next's
+// default-version walk missed it and fell back to resolving from the engine,
+// which hands an interposer its own definition (CR-10 audit).
+static void* find_versioned_next(void* caller, const char* symbol, const char* version) {
+    for (const std::string& name : libraries_after(caller)) {
+        void* lib = comshu::smart_dlsym::real_dlopen(name.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+        if (!lib)
+            continue;
+        void* sym = comshu::smart_dlsym::real_dlvsym(lib, symbol, version);
+        comshu::smart_dlsym::real_dlclose(lib);
+        if (sym)
+            return sym;
+    }
+    return nullptr;
+}
+
 static void log_dlsym(const char* symbol, void* caller, void* result, void* glibc_result) {
     if constexpr (comshu::smart_dlsym::LogDebug) {
         Dl_info caller_info = {};
@@ -279,12 +335,21 @@ extern "C" void* dlsym(void* handle, const char* symbol) {
     // a wrapper library tries to find the real symbol behind it.
     // __builtin_return_address(0) must be called here, not in a helper,
     // to capture the actual caller of dlsym.
+    // A null name goes to glibc untouched, so the program fails exactly as it
+    // would without us (glibc segfaults on it) rather than in our ELF walk.
+    if (!symbol)
+        return comshu::smart_dlsym::real_dlsym(handle, symbol);
     if (handle == RTLD_NEXT) {
         void* caller = __builtin_return_address(0);
         void* result = find_symbol_next(caller, symbol);
         // Always call real_dlsym to let glibc populate its internal state
         // (lazy binding, symbol caches, etc.) even though we prefer our result.
         void* glibc_result = comshu::smart_dlsym::real_dlsym(handle, symbol);
+        // ...but if glibc failed where we succeeded, its error must not
+        // outlive a call that returned a symbol: `dlerror()` after a
+        // successful dlsym is how callers tell a NULL symbol from a miss.
+        if (result && !glibc_result)
+            (void)dlerror();
 
         // Debug
         log_dlsym(symbol, caller, result, glibc_result);
@@ -302,31 +367,24 @@ extern "C" void* dlvsym(void* handle, const char* symbol, const char* version) {
                                           version);  // FIRST. Before init(), before anything.
     init();  // once; a no-op after the first
 
+    if (!symbol)
+        return comshu::smart_dlsym::real_dlvsym(handle, symbol, version);
+
     // See Note[RTLD_NEXT]
     //
     // glibc's own answer is relative to the object that CALLED it, which here is
     // libcomshu_engine.so, not the application's library — so it skips every
     // object between the caller and us, and an interposer asking RTLD_NEXT for
-    // the "real" function can be handed its own definition back. find_symbol_next
-    // walks from the real caller, but finds only the DEFAULT version. So: use it
-    // to name the next library that defines the symbol, then ask glibc for the
-    // requested VERSION in that library (CR-10). Its answer used to be computed
-    // and thrown away, and glibc asked a second time from the wrong place.
+    // the "real" function can be handed its own definition back. So the
+    // requested VERSION is asked of each library after the real caller, in
+    // order (CR-10), and glibc's engine-relative answer is only the fallback —
+    // asked for only when that finds nothing, so it cannot leave a dlerror()
+    // behind a call that succeeded.
     if (handle == RTLD_NEXT) {
         void* caller = __builtin_return_address(0);
-        void* next_default = find_symbol_next(caller, symbol);
-        void* result = nullptr;
-        if (next_default) {
-            Dl_info info{};
-            if (dladdr(next_default, &info) && info.dli_fname) {
-                if (void* lib = comshu::smart_dlsym::real_dlopen(info.dli_fname,
-                                                                 RTLD_LAZY | RTLD_NOLOAD)) {
-                    result = comshu::smart_dlsym::real_dlvsym(lib, symbol, version);
-                    comshu::smart_dlsym::real_dlclose(lib);
-                }
-            }
-        }
-        void* glibc_result = comshu::smart_dlsym::real_dlvsym(handle, symbol, version);
+        void* result = find_versioned_next(caller, symbol, version);
+        void* glibc_result =
+            result ? nullptr : comshu::smart_dlsym::real_dlvsym(handle, symbol, version);
 
         // Debug
         log_dlsym(symbol, caller, result, glibc_result);

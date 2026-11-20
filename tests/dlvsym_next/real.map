@@ -1,2 +1,2 @@
-V1 { global: vsym_probe; local: *; };
+V1 { global: vsym_probe; vsym_compat; local: *; };
 V2 { global: vsym_probe; } V1;
