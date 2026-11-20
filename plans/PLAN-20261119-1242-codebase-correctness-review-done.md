@@ -524,3 +524,42 @@ Scope: Full correctness review across `libcomshu/`, `providers/ibverbs/`, `provi
 - [x] **`CR-74`** (`agent/lib/preamble.mjs:26-27`) — Empty `names` list produces invalid SQL `SELECT t, n FROM () ...` in `tableCounts()`. **Done:** an empty table list returns [] before building SQL.
 - [x] **`CR-75`** (Meta / Regression Coverage) — Add targeted unit/regression tests for each Critical/High fix above as tickets are closed (e.g., `query_guard_test`, `fork_smoke` verifying child `ClockAnchor`/`NodeIdentity`, concurrent `PreloadHookManager` resolution test, `sankey.js` unit test, `Objects.svelte` boolean-string check). **Done:** covered by the tests added with the fixes: query_guard_test, hook_smoke (registry concurrency, re-install), fork_smoke (child anchors), crash_identity arm 5, arena_drain_race, dlvsym_next, intern_damage, cq_ring_cache, srq_walk, nccl_event_pool, ucx_rkey_abi, csv_export_contract, bake_rule, sql_cli_rule (quoted paths), wr_flow/object_access/capture_integrity fixtures, ui/test (sankey, query bool, chart), agent/test (session, lexer, spec guard). NOT covered: concurrent `PreloadHookManager::register_real` resolution, which hook_smoke documents cannot resolve from a test binary; it needs an interposing .so harness.
 - [x] **`CR-76`** (`providers/mlx5dv/uar_hijack.hpp` `intercept_host_get_device_pointer` fail-open, `intercept_host_unregister`) — After a fail-open, the UAR page IS registered with the real driver (`reg(p, intent.bytesize, intent.flags)`), but `skipped[p]` stays, so `intercept_host_unregister` answers success and never calls the real `cuMemHostUnregister`: the registration leaks for the life of the process. Record the fail-open (e.g. erase `skipped[p]` after the real register succeeds, or mark the intent as really registered) so the unregister is forwarded. **Done:** with CR-49: fail_open erases `skipped[p]` after a successful real register
+
+---
+
+## Audit of the fixes (2026-11-20)
+
+An audit re-checked all 76 tickets against the tree. Every claim was checked
+against the code before anything changed; where a claim was wrong it says so.
+
+| Ticket | Claim | Verdict | Commit |
+|---|---|---|---|
+| CR-01 | `SELECT 1; /* done */` refused, `SELECT 1; -- x\n/* open` accepted | real | a7a2059 |
+| CR-13 | start() stores our own handler as the app's after an early sigaction | real — arm 6 HANGS on the old code | a7a2059 |
+| CR-13 | seqlock memory ordering | **wrong**: Boehm's fence pattern; only the memcpy-is-a-race nit holds, inherent to a C++ seqlock | — |
+| CR-13 | signal() answers SIG_DFL when nothing is stored | real (SIG_IGN survives exec) | a7a2059 |
+| CR-15 | refresh clobbers an open batch's wr_complete; install() TOCTOU | real | a7a2059 |
+| CR-17 | forget_qp between two locks resurrects copy state | real | a7a2059 |
+| CR-23 | concurrent double stop emits twice; resolve_live outside the lock | real | a7a2059 |
+| CR-25 | destroy leaks a pending comm; failed group end; reads at destroy | real | a7a2059 |
+| CR-72 | --verbose reads .text of a thrown case | real | a7a2059 |
+| CR-34/35/71 | bridge session/busy/abort/health races | real — agent/test/bridge.test.mjs fails on the old bridge | 6f97288 |
+| CR-65 | distinct typed quantitative coerced; Devices heading | real | 6f97288 |
+| CR-08 | signal-path drain resets under an interrupted append | real | 11e524b |
+| CR-10 | compat-only version missed; dlerror clobbered | real — dlvsym_next vsym_compat returned the caller's own | 11e524b |
+| CR-11 | dlsym(RTLD_NEXT, NULL) segfaults in our walk | **moot**: glibc segfaults on dlsym(h, NULL) itself (measured); now forwarded untouched | 11e524b |
+| CR-16 | hostdb-only never forgets; stale skipped hijacks reused VA | real, plus teardown keyed on the decoy | 11e524b |
+| CR-18 | disarm between publish and swap | real (narrow) | 11e524b |
+| CR-19 | unbounded link read; O(N²) per-WR walk | real | 11e524b |
+| CR-53 | mlx5dv_create_qp QPs inherit stale state | real — engine now notifies providers of ibv_destroy_qp | 11e524b |
+| CR-75 | bake_rule only checks no-crash; no /query HTTP test | real — ui_query_rule.sh added | 11e524b |
+| adjacent | engine destroy_qp registration accepts itself; Mlx5Uar records the decoy; stale Sankey caption | real | 11e524b, 6f97288 |
+
+Hardware at 11e524b: MN5 jobs 49270988 (01–21) and 49272812 (22–29) all PASS
+(09/10 SKIP: no PeerMappingOverride); du04 09–12, 28, 29 PASS (25 SKIP: no
+RoCE port).
+
+Still untested: the CR-15/17/18/23 races and CR-53's mlx5dv-QP path have no
+deterministic local reproduction; they are covered only by the boards not
+regressing. Concurrent PreloadHookManager::register_real (CR-75) still needs an
+interposing-.so harness.
