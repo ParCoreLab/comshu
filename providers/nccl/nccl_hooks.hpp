@@ -59,6 +59,12 @@ DEFINE_PRELOAD_HOOK(nccl, comm_destroy, "ncclCommDestroy", ncclResult_t, ncclCom
 // would otherwise leave every communicator looking un-closed —
 // entity_close_accounted's third clause, firing on a legal teardown path.
 DEFINE_PRELOAD_HOOK(nccl, comm_abort, "ncclCommAbort", ncclResult_t, ncclComm_t);
+// Records nothing. A non-blocking communicator's owner polls this until it
+// reports ncclSuccess, and that first ncclSuccess is the earliest moment work
+// NCCL finished asynchronously can be read: a pending init's rank and size,
+// and the handle a pending ncclCommWindowRegister writes back (CR-25).
+DEFINE_PRELOAD_HOOK(nccl, comm_get_async_error, "ncclCommGetAsyncError", ncclResult_t,
+                    ncclComm_t, ncclResult_t*);
 
 // --- collectives ------------------------------------------------------------
 DEFINE_PRELOAD_HOOK(nccl, all_reduce, "ncclAllReduce", ncclResult_t, const void*, void*, size_t,

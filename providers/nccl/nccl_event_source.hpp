@@ -15,11 +15,13 @@ namespace nccl {
 #if COMSHU_NCCL_HAS_WINDOW
 #define COMSHU_NCCL_TAGS                                                                            \
     comm_init_rank_tag, comm_init_rank_config_tag, comm_destroy_tag, comm_abort_tag,               \
+    comm_get_async_error_tag,                                                                      \
         all_reduce_tag, broadcast_tag, reduce_tag, all_gather_tag, reduce_scatter_tag, send_tag,   \
         recv_tag, window_register_tag, window_deregister_tag, dev_comm_create_tag
 #else
 #define COMSHU_NCCL_TAGS                                                                            \
     comm_init_rank_tag, comm_init_rank_config_tag, comm_destroy_tag, comm_abort_tag,               \
+    comm_get_async_error_tag,                                                                      \
         all_reduce_tag, broadcast_tag, reduce_tag, all_gather_tag, reduce_scatter_tag, send_tag,   \
         recv_tag
 #endif

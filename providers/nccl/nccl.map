@@ -12,6 +12,7 @@
     ncclCommInitRankConfig;
     ncclCommDestroy;
     ncclCommAbort;
+    ncclCommGetAsyncError;
     ncclAllReduce;
     ncclBroadcast;
     ncclReduce;

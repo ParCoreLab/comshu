@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <dlfcn.h>
 
@@ -230,10 +231,258 @@ static void comm_init_returned(ncclResult_t res, ncclComm_t comm, std::uint64_t 
     }
 }
 
+#if COMSHU_NCCL_HAS_WINDOW
+// --- windows NCCL has not finished registering (CR-25) -----------------------
+//
+// ncclCommWindowRegister does not hand back a window. It sets *win = nullptr,
+// queues the registration on the group machinery and returns; NCCL writes the
+// handle through the caller's pointer when the group completes
+// (reference/nccl-git/src/dev_runtime.cc, ncclCommWindowRegister: outWinDev =
+// win). Whether that has happened by the time the call returns depends on two
+// things, and the old hooks recorded only the case where neither applies:
+//
+//   - inside the caller's ncclGroupStart/End, the group does not run until the
+//     OUTERMOST ncclGroupEnd. The call returns ncclSuccess with *win still
+//     null, on a blocking communicator too, so such a window was never
+//     recorded at all;
+//   - on a non-blocking communicator the group runs on NCCL's own thread and
+//     the call (or the group end) returns ncclInProgress. *win, and the peer
+//     mappings ncclGetPeerDevicePointer reports, are valid only once
+//     ncclCommGetAsyncError says ncclSuccess.
+//
+// So a registration that has not produced its window is held, with the call's
+// timing and the caller's handle slot, and recorded when NCCL is done:
+//
+//   in a group      on this thread's list, looked at by the outermost
+//                   ncclGroupEnd. A communicator ready then is definitive
+//                   (handle or no handle); one still in progress moves to
+//                   the shared list.
+//   in progress     on the shared list, looked at the first time the
+//                   communicator is seen ready: the owner's
+//                   ncclCommGetAsyncError poll, or any later hooked call on it.
+//
+// The slot is the CALLER's memory. NCCL itself writes it after returning, so a
+// correct program keeps it alive until the communicator reports ready, and the
+// first ready observation is where it is read. A window still pending when its
+// communicator is destroyed is dropped without a read.
+struct PendingWindow {
+    ncclComm_t    comm;
+    ncclWindow_t* slot;
+    void*         buff;
+    std::size_t   size;
+    int           flags;
+    std::uint64_t begin, end;
+};
+
+static void record_window(ncclComm_t c, void* buff, std::size_t size, ncclWindow_t win, int flags,
+                          std::uint64_t begin, std::uint64_t end) {
+    {
+        std::lock_guard<std::mutex> lk(windows_mutex());
+        if (!windows_open().insert(win).second)
+            return;  // already recorded: one open per window
+    }
+    rec().record(span(begin, end), rr::NcclWindow{{},
+                                                  {},
+                                                  h(win),
+                                                  h(c),
+                                                  h(buff),
+                                                  static_cast<std::uint64_t>(size),
+                                                  flags,
+                                                  0,
+                                                  reinterpret_cast<std::uint64_t>(buff)});
+    // ...and the buffer itself, in the shared vocabulary, so a put placed into
+    // this window lands in an OBJECT. Interned on the base address in the
+    // Pointer domain like every other emitter, so if gpumem or ibverbs saw the
+    // same buffer the rows merge rather than double.
+    if (buff) {
+        const auto attr = comshu::core::attribute(buff);
+        rec().record(rec().now_instant(),
+                     comshu::core::records::MemObject{{},
+                                                      {},
+                                                      h(buff),
+                                                      comshu::core::kNullHandle,
+                                                      {reinterpret_cast<std::uint64_t>(buff),
+                                                       static_cast<std::uint64_t>(size)},
+                                                      attr.device,
+                                                      attr.status,
+                                                      comshu::core::ObjectOrigin::NcclWindow});
+    }
+    // ...and where every PEER's copy of it sits in this process, which is what
+    // lets a store through ncclGetLsaPointer be placed in the owner's buffer
+    // (see NcclWindowPeer). Asked of NCCL's public host API, resolved at run
+    // time because the provider may be built against headers older than 2.29,
+    // where the call does not exist: then there are no rows, which the reader
+    // reports as unplaced stores rather than guessing.
+    using PeerPtrFn = ncclResult_t (*)(ncclWindow_t, size_t, int, void**);
+    static const auto peer_ptr =
+        reinterpret_cast<PeerPtrFn>(dlsym(RTLD_DEFAULT, "ncclGetPeerDevicePointer"));
+    if (!peer_ptr)
+        return;
+    int self = -1, nranks = 0;
+    if (pncclCommUserRank(c, &self) != ncclSuccess || pncclCommCount(c, &nranks) != ncclSuccess)
+        return;
+    for (int p = 0; p < nranks; ++p) {
+        if (p == self)
+            continue;  // our own window: nccl_window.base already says where
+        void* q = nullptr;
+        // A peer outside this process's LSA team (another node) has no
+        // mapping here: NCCL returns an error or a null, and that peer's
+        // traffic crosses the network, where the verbs records place it.
+        if (peer_ptr(win, 0, p, &q) != ncclSuccess || !q)
+            continue;
+        rec().record(rec().now_instant(),
+                     rr::NcclWindowPeer{{},
+                                        {},
+                                        h(win),
+                                        p,
+                                        reinterpret_cast<std::uint64_t>(q),
+                                        static_cast<std::uint64_t>(size)});
+    }
+}
+
+enum class CommState { Ready, InProgress, Failed };
+static CommState comm_state(ncclComm_t c) {
+    ncclResult_t state = ncclSuccess;
+    if (pncclCommGetAsyncError(c, &state) != ncclSuccess)
+        return CommState::Failed;
+    if (state == ncclSuccess)
+        return CommState::Ready;
+    return issued(state) ? CommState::InProgress : CommState::Failed;
+}
+
+// Leaked, like pending_comms: reachable from hooks that run during teardown.
+static std::mutex& async_windows_mutex() {
+    static auto* m = new std::mutex();
+    return *m;
+}
+static std::vector<PendingWindow>& async_windows() {
+    static auto* v = new std::vector<PendingWindow>();
+    return *v;
+}
+static std::atomic<int> g_async_windows{0};  // the hot path's only cost
+
+// Per thread, because grouping is (see group_depth). A leaked pointer rather
+// than a thread_local vector: no destructor to have run by the time a late
+// hook on this thread looks at it.
+static std::vector<PendingWindow>& group_windows() {
+    static thread_local std::vector<PendingWindow>* v = nullptr;
+    if (!v)
+        v = new std::vector<PendingWindow>();
+    return *v;
+}
+
+// The shared list: record the entries whose communicator is ready (all of
+// them, or only `comm`'s), drop the ones whose communicator failed. Recorded
+// outside the lock, which record_window's NCCL queries do not need.
+static void settle_windows(ncclComm_t comm) {
+    if (g_async_windows.load(std::memory_order_acquire) == 0)
+        return;
+    std::vector<PendingWindow> ready;
+    {
+        std::lock_guard<std::mutex> lk(async_windows_mutex());
+        auto&                       v = async_windows();
+        for (std::size_t i = 0; i < v.size();) {
+            const PendingWindow& p = v[i];
+            const CommState      st =
+                (comm && p.comm != comm) ? CommState::InProgress : comm_state(p.comm);
+            if (st == CommState::InProgress) {
+                ++i;
+                continue;
+            }
+            if (st == CommState::Ready)
+                ready.push_back(p);
+            v[i] = v.back();
+            v.pop_back();
+            g_async_windows.fetch_sub(1, std::memory_order_release);
+        }
+    }
+    for (const PendingWindow& p : ready)
+        if (ncclWindow_t w = *p.slot)
+            record_window(p.comm, p.buff, p.size, w, p.flags, p.begin, p.end);
+}
+
+// A destroyed communicator's windows can no longer become ready.
+static void forget_windows(ncclComm_t comm) {
+    if (g_async_windows.load(std::memory_order_acquire) == 0)
+        return;
+    std::lock_guard<std::mutex> lk(async_windows_mutex());
+    auto&                       v = async_windows();
+    for (std::size_t i = 0; i < v.size();) {
+        if (v[i].comm != comm) {
+            ++i;
+            continue;
+        }
+        v[i] = v.back();
+        v.pop_back();
+        g_async_windows.fetch_sub(1, std::memory_order_release);
+    }
+}
+
+static void hold_async(const PendingWindow& p) {
+    std::lock_guard<std::mutex> lk(async_windows_mutex());
+    async_windows().push_back(p);
+    g_async_windows.fetch_add(1, std::memory_order_release);
+}
+
+// The outermost ncclGroupEnd has returned: every registration this thread made
+// inside the group has either completed (blocking communicator: a handle, or
+// none because NCCL declined) or been handed to NCCL's thread (in progress).
+static void close_group_windows() {
+    auto& v = group_windows();
+    if (v.empty())
+        return;
+    std::vector<PendingWindow> mine;
+    mine.swap(v);
+    for (const PendingWindow& p : mine) {
+        switch (comm_state(p.comm)) {
+        case CommState::Ready:
+            if (ncclWindow_t w = *p.slot)
+                record_window(p.comm, p.buff, p.size, w, p.flags, p.begin, p.end);
+            break;
+        case CommState::InProgress:
+            hold_async(p);
+            break;
+        case CommState::Failed:
+            break;
+        }
+    }
+}
+
+static void window_register_returned(ncclResult_t res, ncclComm_t c, void* buff, size_t size,
+                                     ncclWindow_t* win, int flags, std::uint64_t begin,
+                                     std::uint64_t end) {
+    if (!issued(res) || !win)
+        return;
+    settle(c);
+    if (res == ncclSuccess && *win) {
+        record_window(c, buff, size, *win, flags, begin, end);
+        return;
+    }
+    const PendingWindow p{c, win, buff, size, flags, begin, end};
+    if (group_depth() > 0)
+        group_windows().push_back(p);
+    else if (res != ncclSuccess)
+        hold_async(p);
+    // else: ncclSuccess, no handle, no group — this communicator has no
+    // symmetric memory and NCCL registered nothing (dev_runtime.cc returns
+    // before queueing when !comm->symmetricSupport).
+}
+#else
+static void settle_windows(ncclComm_t) {}
+static void forget_windows(ncclComm_t) {}
+static void close_group_windows() {}
+#endif
+
+// Everything a communicator owes the capture once it is ready.
+static void settle_all(ncclComm_t comm) {
+    settle(comm);
+    settle_windows(comm);
+}
+
 static void record_coll(rr::CollOp op, const void* sendbuff, void* recvbuff, std::size_t count,
                         ncclDataType_t datatype, int redop, int root, ncclComm_t comm,
                         cudaStream_t stream, std::uint64_t begin, std::uint64_t end) {
-    settle(comm);
+    settle_all(comm);
     rec().record(span(begin, end), rr::NcclCollective{{},
                                                       {},
                                                       h(comm),
@@ -285,12 +534,16 @@ Profiler::Profiler() {
     // A communicator still pending here was never recorded, so it gets no
     // close either (CR-25).
     register_pre<comm_destroy_tag>([](ncclComm_t comm, auto) {
+        settle_windows(comm);
+        forget_windows(comm);
         const Settled st = settle(comm);
         if (st == Settled::StillPending || st == Settled::Failed)
             return;
         close(comm, comshu::core::RecordTrait<rr::NcclComm>::type_id);
     });
     register_pre<comm_abort_tag>([](ncclComm_t comm, auto) {
+        settle_windows(comm);
+        forget_windows(comm);
         const Settled st = settle(comm);
         if (st == Settled::StillPending) {
             std::lock_guard<std::mutex> lk(pending_mutex());
@@ -302,6 +555,14 @@ Profiler::Profiler() {
             return;
         close(comm, comshu::core::RecordTrait<rr::NcclComm>::type_id);
     });
+
+    // The owner of a non-blocking communicator polls this until ncclSuccess:
+    // the first moment its pending init and windows can be read (CR-25).
+    register_post<comm_get_async_error_tag>(
+        [](ncclResult_t res, ncclComm_t comm, ncclResult_t* state, auto, auto) {
+            if (res == ncclSuccess && state && *state == ncclSuccess)
+                settle_all(comm);
+        });
 
     // --- collectives ---------------------------------------------------------
     // `root` is -1 where the operation has none, and `redop` 0xff where it does
@@ -350,7 +611,7 @@ Profiler::Profiler() {
                                int peer, ncclComm_t c, cudaStream_t st, auto begin, auto end) {
         if (!issued(res))
             return;
-        settle(c);
+        settle_all(c);
         rec().record(span(begin, end), rr::NcclP2p{{},
                                                        {},
                                                        h(c),
@@ -366,7 +627,7 @@ Profiler::Profiler() {
                                ncclComm_t c, cudaStream_t st, auto begin, auto end) {
         if (!issued(res))
             return;
-        settle(c);
+        settle_all(c);
         rec().record(span(begin, end), rr::NcclP2p{{},
                                                        {},
                                                        h(c),
@@ -381,77 +642,14 @@ Profiler::Profiler() {
 
 #if COMSHU_NCCL_HAS_WINDOW
     // --- symmetric memory ----------------------------------------------------
+    // Recorded when NCCL has written the handle back, which is not always by
+    // the time this returns: see PendingWindow.
     register_post<window_register_tag>([](ncclResult_t res, ncclComm_t c, void* buff, size_t size,
                                           ncclWindow_t* win, int flags, auto begin, auto end) {
-        if (res == ncclSuccess && win && *win) {
-            std::lock_guard<std::mutex> lk(windows_mutex());
-            windows_open().insert(*win);
-        }
-        if (res == ncclSuccess && win && *win)
-            rec().record(span(begin, end), rr::NcclWindow{{},
-                                                          {},
-                                                          h(*win),
-                                                          h(c),
-                                                          h(buff),
-                                                          static_cast<std::uint64_t>(size),
-                                                          flags,
-                                                          0,
-                                                          reinterpret_cast<std::uint64_t>(buff)});
-        // ...and the buffer itself, in the shared vocabulary, so a put placed
-        // into this window lands in an OBJECT. Interned on the base address in
-        // the Pointer domain like every other emitter, so if gpumem or ibverbs
-        // saw the same buffer the rows merge rather than double.
-        if (res == ncclSuccess && win && *win && buff) {
-            const auto attr = comshu::core::attribute(buff);
-            rec().record(rec().now_instant(),
-                         comshu::core::records::MemObject{{},
-                                                          {},
-                                                          h(buff),
-                                                          comshu::core::kNullHandle,
-                                                          {reinterpret_cast<std::uint64_t>(buff),
-                                                           static_cast<std::uint64_t>(size)},
-                                                          attr.device,
-                                                          attr.status,
-                                                          comshu::core::ObjectOrigin::NcclWindow});
-        }
+        window_register_returned(res, c, buff, size, win, flags, begin, end);
     });
-    // ...and where every PEER's copy of it sits in this process, which is what
-    // lets a store through ncclGetLsaPointer be placed in the owner's buffer
-    // (see NcclWindowPeer). Asked of NCCL's public host API, resolved at run
-    // time because the provider may be built against headers older than 2.29,
-    // where the call does not exist: then there are no rows, which the reader
-    // reports as unplaced stores rather than guessing.
-    register_post<window_register_tag>([](ncclResult_t res, ncclComm_t c, void*, size_t size,
-                                          ncclWindow_t* win, int, auto, auto) {
-        if (res != ncclSuccess || !win || !*win)
-            return;
-        using PeerPtrFn = ncclResult_t (*)(ncclWindow_t, size_t, int, void**);
-        static const auto peer_ptr =
-            reinterpret_cast<PeerPtrFn>(dlsym(RTLD_DEFAULT, "ncclGetPeerDevicePointer"));
-        if (!peer_ptr)
-            return;
-        int self = -1, nranks = 0;
-        if (pncclCommUserRank(c, &self) != ncclSuccess || pncclCommCount(c, &nranks) != ncclSuccess)
-            return;
-        for (int p = 0; p < nranks; ++p) {
-            if (p == self)
-                continue;  // our own window: nccl_window.base already says where
-            void* q = nullptr;
-            // A peer outside this process's LSA team (another node) has no
-            // mapping here: NCCL returns an error or a null, and that peer's
-            // traffic crosses the network, where the verbs records place it.
-            if (peer_ptr(*win, 0, p, &q) != ncclSuccess || !q)
-                continue;
-            rec().record(rec().now_instant(),
-                         rr::NcclWindowPeer{{},
-                                            {},
-                                            h(*win),
-                                            p,
-                                            reinterpret_cast<std::uint64_t>(q),
-                                            static_cast<std::uint64_t>(size)});
-        }
-    });
-    register_pre<window_deregister_tag>([](ncclComm_t, ncclWindow_t win, auto) {
+    register_pre<window_deregister_tag>([](ncclComm_t c, ncclWindow_t win, auto) {
+        settle_all(c);  // a window still pending is recorded before it closes
         {
             std::lock_guard<std::mutex> lk(windows_mutex());
             if (windows_open().erase(win) == 0)
@@ -488,6 +686,9 @@ extern "C" ncclResult_t ncclCommDestroy(ncclComm_t comm) {
 }
 extern "C" ncclResult_t ncclCommAbort(ncclComm_t comm) {
     return nccl::Profiler::invoke_preload<nccl::comm_abort_tag>(comm);
+}
+extern "C" ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t* asyncError) {
+    return nccl::Profiler::invoke_preload<nccl::comm_get_async_error_tag>(comm, asyncError);
 }
 extern "C" ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
                                       ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm,
@@ -553,6 +754,10 @@ extern "C" ncclResult_t ncclGroupEnd() {
     const auto   end = comshu::helpers::ts::RdtscTimestampSource::Now();
     if (nccl::issued(res))
         nccl::record_group(nccl::rr::GroupEdge::End, begin, end);
+    // The outermost End ran the group (or failed it): this thread's in-group
+    // window registrations are done or handed to NCCL's thread.
+    if (nccl::group_depth() == 0 || !nccl::issued(res))
+        nccl::close_group_windows();
     return res;
 }
 #if COMSHU_NCCL_HAS_WINDOW

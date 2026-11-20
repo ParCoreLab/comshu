@@ -1,6 +1,6 @@
 // lsa_ring — a store ring through NCCL's symmetric windows, over NVLink.
 //
-//   mpirun -np <P> lsa_ring [window_bytes=131072] [iters=10]
+//   mpirun -np <P> lsa_ring [window_bytes=131072] [iters=10] [blocking|nonblocking]
 //
 // NCCL 2.27+ maps every local rank's window into ONE flat address range: peer
 // r's copy of a window sits at lsaFlatBase + r * stride + offset, and an offset
@@ -19,6 +19,14 @@
 // left neighbour's pattern. A missing, stale or misplaced word fails the job
 // non-zero, so "OK" is a claim — the same promise gin_putring makes.
 //
+// `nonblocking` (case 29) builds the communicator with config.blocking = 0 and
+// registers the window INSIDE an ncclGroupStart/End, so every setup call
+// returns ncclInProgress and the window handle is written by NCCL's own thread
+// after ncclGroupEnd has returned. Each step then polls ncclCommGetAsyncError
+// until the communicator is ready, as NCCL requires before the handle may be
+// used. The ring itself is the same, so the same stores must land in the same
+// places: what changes is only WHEN the capture can learn where they land.
+//
 // Exit codes: 0 OK, 2 a CUDA/NCCL call failed, 3 data did not arrive, 4 this
 // communicator has no symmetric-memory support (the case skips on 4 only).
 
@@ -31,6 +39,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #define CUDA(call)                                                                      \
     do {                                                                                \
@@ -49,6 +58,24 @@
             MPI_Abort(MPI_COMM_WORLD, 2);                                               \
         }                                                                               \
     } while (0)
+
+// A non-blocking communicator answers issued work with ncclInProgress and
+// finishes it on NCCL's thread; ready is the first ncclCommGetAsyncError that
+// says ncclSuccess. On a blocking one this returns at once.
+static void wait_ready(ncclComm_t comm, ncclResult_t issued_as, const char* what) {
+    if (issued_as != ncclSuccess && issued_as != ncclInProgress) {
+        std::fprintf(stderr, "lsa_ring: %s: %s\n", what, ncclGetErrorString(issued_as));
+        MPI_Abort(MPI_COMM_WORLD, 2);
+    }
+    ncclResult_t state = ncclInProgress;
+    do {
+        NCCL(ncclCommGetAsyncError(comm, &state));
+    } while (state == ncclInProgress);
+    if (state != ncclSuccess) {
+        std::fprintf(stderr, "lsa_ring: %s: async %s\n", what, ncclGetErrorString(state));
+        MPI_Abort(MPI_COMM_WORLD, 2);
+    }
+}
 
 __host__ __device__ inline std::uint32_t pattern(int rank, int iter, std::size_t i) {
     std::uint32_t x = static_cast<std::uint32_t>(rank) * 0x9E3779B1u ^
@@ -91,9 +118,12 @@ int main(int argc, char** argv) {
 
     const std::size_t bytes = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 131072;
     const int         iters = argc > 2 ? std::atoi(argv[2]) : 10;
-    if (bytes == 0 || bytes % 4 != 0 || iters <= 0) {
+    const bool        nonblocking = argc > 3 && std::strcmp(argv[3], "nonblocking") == 0;
+    if (bytes == 0 || bytes % 4 != 0 || iters <= 0 ||
+        (argc > 3 && !nonblocking && std::strcmp(argv[3], "blocking") != 0)) {
         if (rank == 0)
-            std::fprintf(stderr, "usage: lsa_ring [window_bytes%%4==0] [iters]\n");
+            std::fprintf(stderr,
+                         "usage: lsa_ring [window_bytes%%4==0] [iters] [blocking|nonblocking]\n");
         MPI_Abort(MPI_COMM_WORLD, 2);
     }
     const std::size_t words = bytes / 4;
@@ -107,7 +137,14 @@ int main(int argc, char** argv) {
         NCCL(ncclGetUniqueId(&id));
     MPI_Bcast(&id, sizeof id, MPI_BYTE, 0, MPI_COMM_WORLD);
     ncclComm_t comm;
-    NCCL(ncclCommInitRank(&comm, size, id, rank));
+    if (nonblocking) {
+        ncclConfig_t cfg = NCCL_CONFIG_INITIALIZER;
+        cfg.blocking = 0;
+        const ncclResult_t r = ncclCommInitRankConfig(&comm, size, id, rank, &cfg);
+        wait_ready(comm, r, "init");  // two statements: comm is written by the call
+    } else {
+        NCCL(ncclCommInitRank(&comm, size, id, rank));
+    }
 
     // The ring is over the LSA team, whose ranks are the ones a flat-range
     // pointer can reach. On one node that is every rank, and the job runs on
@@ -124,8 +161,22 @@ int main(int argc, char** argv) {
 
     void* winp = nullptr;
     NCCL(ncclMemAlloc(&winp, bytes));
-    ncclWindow_t w;
-    ncclResult_t wr = ncclCommWindowRegister(comm, winp, bytes, &w, NCCL_WIN_COLL_SYMMETRIC);
+    ncclWindow_t w = nullptr;
+    ncclResult_t wr;
+    if (nonblocking) {
+        // Inside a group: the call returns with w still null, and NCCL's thread
+        // writes it after ncclGroupEnd returns ncclInProgress.
+        NCCL(ncclGroupStart());
+        wr = ncclCommWindowRegister(comm, winp, bytes, &w, NCCL_WIN_COLL_SYMMETRIC);
+        const ncclResult_t ge = ncclGroupEnd();
+        if (wr == ncclSuccess) {
+            wait_ready(comm, ge, "window register");
+            if (!w)
+                wr = ncclInvalidUsage;  // ready, and NCCL registered nothing
+        }
+    } else {
+        wr = ncclCommWindowRegister(comm, winp, bytes, &w, NCCL_WIN_COLL_SYMMETRIC);
+    }
     if (wr != ncclSuccess) {
         std::fprintf(stderr, "lsa_ring: rank %d: no symmetric window here (%s)\n", rank,
                      ncclGetErrorString(wr));
@@ -160,13 +211,13 @@ int main(int argc, char** argv) {
     if (bad_all)
         MPI_Abort(MPI_COMM_WORLD, 3);
     if (rank == 0)
-        std::printf("lsa ring OK: %d ranks, %zu B window, %d iters, every word arrived\n", size,
-                    bytes, iters);
+        std::printf("lsa ring OK: %d ranks, %zu B window, %d iters, %s, every word arrived\n",
+                    size, bytes, iters, nonblocking ? "non-blocking" : "blocking");
 
-    NCCL(ncclCommWindowDeregister(comm, w));
+    wait_ready(comm, ncclCommWindowDeregister(comm, w), "window deregister");
     NCCL(ncclMemFree(winp));
     CUDA(cudaFree(d_bad));
-    NCCL(ncclCommFinalize(comm));
+    wait_ready(comm, ncclCommFinalize(comm), "finalize");
     NCCL(ncclCommDestroy(comm));
     MPI_Comm_free(&local);
     MPI_Finalize();
