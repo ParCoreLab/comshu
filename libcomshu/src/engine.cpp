@@ -1447,10 +1447,16 @@ void comshu_install_signal_handlers() {
         auto real = comshu_real_sigaction();
         for (int sig : kFatalSignals) {
             /* Record whatever is already there, so a handler installed BEFORE
-             * us is chained to rather than lost. */
+             * us is chained to rather than lost. Unless it is OURS: the
+             * interposers below are live from the moment the library loads, so
+             * an application sigaction() that ran before Tracer::start() has
+             * already stored its own action and put this handler in front.
+             * Storing that as "the application's" would overwrite theirs with
+             * ours, and the next fatal signal would call itself forever. */
             struct sigaction prev;
             std::memset(&prev, 0, sizeof prev);
-            if (real && real(sig, nullptr, &prev) == 0 && prev.sa_handler != SIG_DFL)
+            if (real && real(sig, nullptr, &prev) == 0 && prev.sa_handler != SIG_DFL &&
+                prev.sa_sigaction != &comshu_fatal_signal_handler)
                 app_action_store(sig, prev);
             comshu_install_one(sig);
         }
@@ -1496,8 +1502,19 @@ extern "C" sighandler_t signal(int sig, sighandler_t handler) {
         static auto real = comshu_next_sym<sighandler_t (*)(int, sighandler_t)>("signal");
         return real ? real(sig, handler) : SIG_ERR;
     }
+    /* The previous disposition as sigaction() reports it: the application's
+     * stored action, else what the kernel holds (SIG_IGN survives exec, and
+     * nothing of ours stored it), with our own handler reading as SIG_DFL. */
     const AppActionView app = app_action_load(sig);
-    sighandler_t        previous = app.set ? app.act.sa_handler : SIG_DFL;
+    sighandler_t        previous = SIG_DFL;
+    if (app.set) {
+        previous = app.act.sa_handler;
+    } else if (auto real = comshu_real_sigaction()) {
+        struct sigaction cur;
+        std::memset(&cur, 0, sizeof cur);
+        if (real(sig, nullptr, &cur) == 0 && cur.sa_sigaction != &comshu_fatal_signal_handler)
+            previous = cur.sa_handler;
+    }
     struct sigaction act;
     std::memset(&act, 0, sizeof act);
     act.sa_handler = handler;

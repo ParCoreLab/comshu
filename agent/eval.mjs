@@ -188,7 +188,8 @@ for (const r of results) {
   for (const [, , why] of bad) process.stdout.write(`        ${why}\n`);
   if (opts.verbose) {
     for (const q of r.queries ?? []) process.stdout.write(`        sql: ${q.replace(/\s+/g, ' ').slice(0, 120)}\n`);
-    process.stdout.write(`        ${r.text.replace(/\n+/g, ' ').slice(0, 300)}\n`);
+    // A case that threw has no text: its reason is already printed above.
+    if (r.text) process.stdout.write(`        ${r.text.replace(/\n+/g, ' ').slice(0, 300)}\n`);
   }
 }
 

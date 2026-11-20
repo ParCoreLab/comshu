@@ -44,6 +44,13 @@ int main() {
     assert(!looks_like_select("SELECT 1; /* unterminated"));
     assert(!looks_like_select("SELECTIVE 1"));
 
+    // A closed comment after the semicolon is fine; one that never closes is
+    // not, whatever comes before it (the audit's two directions of CR-01).
+    assert(looks_like_select("SELECT 1; /* done */"));
+    assert(looks_like_select("SELECT 1; /* a */ -- b\n  /* c */\n"));
+    assert(!looks_like_select("SELECT 1; -- ok\n/* unterminated"));
+    assert(!looks_like_select("SELECT 1; /* a */ DROP TABLE comm_edges"));
+
     std::puts("ok: query_guard skips leading comments and still refuses writes");
     return 0;
 }

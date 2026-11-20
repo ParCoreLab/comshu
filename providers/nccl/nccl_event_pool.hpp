@@ -174,27 +174,33 @@ public:
         return e->generation.load(std::memory_order_acquire) == gen ? e : nullptr;
     }
 
-    // resolve(), for stopEvent: also nullptr once the event has been released,
-    // so a second stop of one handle emits nothing.
-    Event* resolve_live(void* handle) {
-        Event* e = resolve(handle);
-        return e && !e->released.load(std::memory_order_acquire) ? e : nullptr;
-    }
-
-    // To the BACK of the queue, never the front. A LIFO free list hands the
-    // just-stopped collective straight to the next proxy op that starts, which
-    // is exactly the pairing that must not happen.
+    // stopEvent, step 1: take the event for THIS stop, or nullptr if the
+    // handle's slot was re-issued or another stop already took it. Generation
+    // check and `released` flip happen under mu_, the lock acquire() re-issues
+    // under, so they cannot straddle a re-issue, and of two concurrent stops of
+    // one handle exactly one gets the event (CR-23 audit: resolve-then-check
+    // outside the lock let both emit, or a stale handle read the new
+    // occupant's `released == false`).
     //
-    // Idempotent: a second release of the same handle used to append the slot
-    // to the free list again, which linked it to itself (a cycle) and later
-    // handed one slot to two events (CR-23). The generation is NOT bumped here:
-    // a released event's handle must stay resolvable for parent lookups while
-    // the slot is quarantined.
-    void release(void* handle) {
+    // The slot is NOT yet on the free list: the caller reads the payload and
+    // emits, and only retire() makes the slot re-issuable.
+    Event* claim(void* handle) {
         std::lock_guard<std::mutex> lk(mu_);
         Event* e = resolve(handle);
         if (!e || e->released.exchange(true, std::memory_order_acq_rel))
-            return;
+            return nullptr;
+        return e;
+    }
+
+    // stopEvent, step 2, after the emit: to the BACK of the queue, never the
+    // front. A LIFO free list hands the just-stopped collective straight to the
+    // next proxy op that starts, which is exactly the pairing that must not
+    // happen. The generation is NOT bumped here: a stopped event's handle must
+    // stay resolvable for parent lookups while the slot is quarantined.
+    // Only for a handle this caller claim()ed — that is what makes it run once
+    // per slot occupancy, so a slot cannot be linked into the list twice.
+    void retire(void* handle) {
+        std::lock_guard<std::mutex> lk(mu_);
         const auto index = static_cast<std::uint32_t>(reinterpret_cast<std::uint64_t>(handle) >> 32);
         at(index)->next_free = kNoSlot;
         if (tail_ == kNoSlot)
@@ -203,6 +209,14 @@ public:
             at(tail_)->next_free = index;
         tail_ = index;
         ++quarantined_;
+    }
+
+    // claim() and retire() together, for a stop that emits nothing.
+    // Idempotent: a second release of a handle finds it claimed and does
+    // nothing (a double release used to link the slot to itself, CR-23).
+    void release(void* handle) {
+        if (claim(handle))
+            retire(handle);
     }
 
 private:

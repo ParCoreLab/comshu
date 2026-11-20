@@ -92,6 +92,15 @@ static int& group_depth() {
 // The End is clamped at 0 rather than allowed to underflow: an unbalanced
 // ncclGroupEnd is the application's bug, and wrapping to four billion would
 // turn it into ours.
+// A FAILED ncclGroupEnd still leaves the group: NCCL decrements its depth
+// before it looks at the group's error (group.cc, ncclGroupEndInternal), so the
+// count is popped with no row — the group was left, but nothing launched.
+static void pop_group_depth() {
+    int& d = group_depth();
+    if (d > 0)
+        --d;
+}
+
 static void record_group(rr::GroupEdge edge, std::uint64_t begin, std::uint64_t end) {
     int&          d = group_depth();
     std::uint32_t at;
@@ -216,6 +225,12 @@ static Settled settle(ncclComm_t comm) {
     }
     record_comm(comm, p.comm_hash, p.nccl_hash, p.begin, p.end);
     return Settled::Recorded;
+}
+
+static void forget_pending_comm(ncclComm_t comm) {
+    std::lock_guard<std::mutex> lk(pending_mutex());
+    if (pending_comms().erase(comm))
+        g_pending_count.fetch_sub(1, std::memory_order_release);
 }
 
 static void comm_init_returned(ncclResult_t res, ncclComm_t comm, std::uint64_t comm_hash,
@@ -443,6 +458,11 @@ static void hold_async(const PendingWindow& p) {
 // The outermost ncclGroupEnd has returned: every registration this thread made
 // inside the group has either completed (blocking communicator: a handle, or
 // none because NCCL declined) or been handed to NCCL's thread (in progress).
+// A failed group ran nothing: the held calls are dropped unread. Reading them
+// would ask a communicator that may well still report ready, and record a
+// device communicator the failed group never made.
+static void drop_group_windows() { group_windows().clear(); }
+
 static void close_group_windows() {
     auto& v = group_windows();
     if (v.empty())
@@ -500,6 +520,7 @@ static void dev_comm_create_returned(ncclResult_t res, ncclComm_t c, std::uint64
 static void settle_windows(ncclComm_t) {}
 static void forget_windows(ncclComm_t) {}
 static void close_group_windows() {}
+static void drop_group_windows() {}
 #endif
 
 // Everything a communicator owes the capture once it is ready.
@@ -562,22 +583,25 @@ Profiler::Profiler() {
     // rather than a pre-emptive filter over a case we have not observed.
     // A communicator still pending here was never recorded, so it gets no
     // close either (CR-25).
+    //
+    // Held window/devcomm calls on it are dropped UNREAD (see PendingWindow):
+    // a teardown is no promise that the caller's handle slots are still alive.
     register_pre<comm_destroy_tag>([](ncclComm_t comm, auto) {
-        settle_windows(comm);
         forget_windows(comm);
         const Settled st = settle(comm);
-        if (st == Settled::StillPending || st == Settled::Failed)
+        if (st == Settled::StillPending) {
+            forget_pending_comm(comm);  // or the entry outlives the comm's address
+            return;
+        }
+        if (st == Settled::Failed)
             return;
         close(comm, comshu::core::RecordTrait<rr::NcclComm>::type_id);
     });
     register_pre<comm_abort_tag>([](ncclComm_t comm, auto) {
-        settle_windows(comm);
         forget_windows(comm);
         const Settled st = settle(comm);
         if (st == Settled::StillPending) {
-            std::lock_guard<std::mutex> lk(pending_mutex());
-            if (pending_comms().erase(comm))
-                g_pending_count.fetch_sub(1, std::memory_order_release);
+            forget_pending_comm(comm);
             return;
         }
         if (st == Settled::Failed)
@@ -781,11 +805,16 @@ extern "C" ncclResult_t ncclGroupEnd() {
     const auto   begin = comshu::helpers::ts::RdtscTimestampSource::Now();
     ncclResult_t res = pncclGroupEnd();
     const auto   end = comshu::helpers::ts::RdtscTimestampSource::Now();
-    if (nccl::issued(res))
-        nccl::record_group(nccl::rr::GroupEdge::End, begin, end);
-    // The outermost End ran the group (or failed it): this thread's in-group
-    // window registrations are done or handed to NCCL's thread.
-    if (nccl::group_depth() == 0 || !nccl::issued(res))
+    if (!nccl::issued(res)) {
+        nccl::pop_group_depth();
+        if (nccl::group_depth() == 0)
+            nccl::drop_group_windows();
+        return res;
+    }
+    nccl::record_group(nccl::rr::GroupEdge::End, begin, end);
+    // The outermost End ran the group: this thread's in-group window
+    // registrations are done or handed to NCCL's thread.
+    if (nccl::group_depth() == 0)
         nccl::close_group_windows();
     return res;
 }

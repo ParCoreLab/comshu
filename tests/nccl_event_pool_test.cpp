@@ -4,6 +4,8 @@
 // names nothing rather than the new occupant.
 #include <cassert>
 #include <cstdio>
+#include <atomic>
+#include <thread>
 #include <set>
 #include <vector>
 
@@ -18,8 +20,30 @@ int main() {
 
     pool.release(h1);
     assert(pool.id_of(h1) == 1001 && "a stopped parent stays nameable while quarantined");
-    assert(pool.resolve_live(h1) == nullptr && "a second stop of the same handle emits nothing");
+    assert(pool.claim(h1) == nullptr && "a second stop of the same handle emits nothing");
     pool.release(h1);  // the double release: must not enter the free list again
+
+    // Concurrent stops of ONE handle: exactly one claims it (the audit of
+    // CR-23 — resolve-then-check outside the lock let both emit).
+    for (int round = 0; round < 2000; ++round) {
+        void* h = nullptr;
+        assert(pool.acquire(&h));
+        std::atomic<int>  winners{0};
+        std::atomic<bool> go{false};
+        std::vector<std::thread> ts;
+        for (int t = 0; t < 4; ++t)
+            ts.emplace_back([&] {
+                while (!go.load(std::memory_order_acquire)) {}
+                if (pool.claim(h)) {
+                    winners.fetch_add(1);
+                    pool.retire(h);
+                }
+            });
+        go.store(true, std::memory_order_release);
+        for (auto& t : ts)
+            t.join();
+        assert(winners.load() == 1 && "a concurrent double stop emitted twice");
+    }
 
     // Drain fresh storage so the pool must reuse freed slots, then check that
     // no slot is handed to two live events at once.

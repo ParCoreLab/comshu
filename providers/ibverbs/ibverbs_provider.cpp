@@ -425,6 +425,10 @@ struct Slot {
     Ops           ops{};
     WrBuilder     builder{};
     std::uint64_t t0{0};
+    // Between w_start and w_complete/w_abort. Its ops then hold the
+    // wr_complete/wr_abort the provider chose for THIS batch (see w_start), and
+    // a generation refresh must not swap them for install-time ones mid-batch.
+    bool open{false};
 };
 
 // The saved originals for a QP, straight from the shared map. Only used when
@@ -448,8 +452,13 @@ static Slot* slot_for(ibv_qp_ex* qpx) {
         // slot may hold a dead QP's ops. Refresh them from g_ops IN PLACE —
         // clearing would also throw away a batch this thread has open on some
         // other QP between its wr_start and wr_complete.
+        //
+        // A slot with a batch open is skipped: its QP is live (a QP is not
+        // destroyed mid-batch), so its ops are not stale, and they carry the
+        // batch's own wr_complete/wr_abort, which g_ops does not know.
         for (auto& [q, slot] : slots)
-            (void)global_ops(q, slot.ops);
+            if (!slot.open)
+                (void)global_ops(q, slot.ops);
         gen = now;
     }
     if (last && last->qpx == qpx)
@@ -492,6 +501,7 @@ static void w_start(ibv_qp_ex* qpx) {
     if (auto* s = slot_for(qpx)) {
         s->builder.start();
         s->t0 = comshu::helpers::TscClock::now();
+        s->open = true;
         s->ops.wr_start(qpx);
         // mlx5 re-installs its own wr_complete (and may re-install wr_abort)
         // from inside wr_start, choosing an implementation for this batch. That
@@ -691,6 +701,7 @@ static int w_complete(ibv_qp_ex* qpx) {
         return global_ops(qpx, ops) ? ops.wr_complete(qpx) : 0;
     }
     const int  ret = s->ops.wr_complete(qpx);
+    s->open = false;
     const auto t1 = comshu::helpers::TscClock::now();
     for (const auto& w : s->builder.complete(ret == 0))
         rec().record(span(s->t0, t1), rr::IbPostSend{{},
@@ -711,6 +722,7 @@ static void w_abort(ibv_qp_ex* qpx) {
     if (auto* s = slot_for(qpx)) {
         s->builder.abort();
         s->ops.wr_abort(qpx);
+        s->open = false;
         return;
     }
     Ops ops;
@@ -726,7 +738,15 @@ static void install(ibv_qp* qp, ibv_qp_ex* qpx) {
     if (!qp || !qpx)
         return;
 
-    Ops ops;
+    // ONE lock around read, record and patch. Reading the pointers before the
+    // lock and patching after it let a second conversion of the same new QP,
+    // racing the first, read some slots already patched and some not: its
+    // wr_start was still the provider's, so it took the QP for a recycled one
+    // and replaced the good entry with one whose "originals" were our own
+    // trampolines — a send that calls itself. The trampolines never take this
+    // lock on the send path, only on a thread's first look at a QP.
+    std::lock_guard lk(g_ops_mutex);
+    Ops             ops;
     ops.wr_start = qpx->wr_start;
     ops.wr_complete = qpx->wr_complete;
     ops.wr_abort = qpx->wr_abort;
@@ -753,7 +773,6 @@ static void install(ibv_qp* qp, ibv_qp_ex* qpx) {
         return;  // provider does not support it
 
     {
-        std::lock_guard lk(g_ops_mutex);
         auto [it, inserted] = g_ops.emplace(qpx, ops);
         if (!inserted) {
             // This QP's pointers are ours already: a second conversion of the

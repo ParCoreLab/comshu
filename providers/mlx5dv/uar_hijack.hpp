@@ -726,7 +726,15 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
     // Mlx5DeviceSend — best-effort: needs the QP's send-queue address, a CUDA
     // context on this thread, and the copy machinery. Any miss leaves the
     // doorbell row standing and simply emits no send row.
-    QpInfo qp;
+    //
+    // The QP and its copy state are taken under ONE lock. They used to be two:
+    // a forget_qp (mlx5dv_devx_obj_destroy) landing between them erased both,
+    // and the second lock then created a FRESH copy state for the destroyed
+    // QP — not dead, so it copied out of a freed send queue and was never
+    // released. Here a QP is either still in qp_info, and its state is live
+    // until forget_qp marks it dead under copy->mutex, or it is not picked.
+    QpInfo                  qp;
+    std::shared_ptr<QpCopy> copy;
     {
         std::lock_guard<std::mutex> lk(s.mutex);
         const auto                  pg = s.uar_pages.find(reg_addr);
@@ -734,9 +742,13 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
         if (!q)
             return;  // doorbell recorded; send queue unknown or ambiguous
         qp = *q;
+        if (qp.sq_gpu_base == 0 || !s.device_send_sink)
+            return;
+        auto& slot = s.qp_copy[qp.obj];
+        if (!slot)
+            slot = std::make_shared<QpCopy>();
+        copy = slot;
     }
-    if (qp.sq_gpu_base == 0 || !s.device_send_sink)
-        return;
 
     // Resolve the copy machinery once.
     static PfnCtxSetCurrent ctx_set =
@@ -759,16 +771,6 @@ inline void on_doorbell(void* reg_addr, std::uint64_t val) {
         if (ctx_set(ctx) != kCudaSuccess)
             return;
         ctx_bound = true;
-    }
-
-    // Per-QP copy state.
-    std::shared_ptr<QpCopy> copy;
-    {
-        std::lock_guard<std::mutex> lk(s.mutex);
-        auto&                       slot = s.qp_copy[qp.obj];
-        if (!slot)
-            slot = std::make_shared<QpCopy>();
-        copy = slot;
     }
 
     std::lock_guard<std::mutex> lk(copy->mutex);

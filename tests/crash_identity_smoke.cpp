@@ -79,7 +79,7 @@ static void     app_sigsegv_handler(int) {
 // code paths in glibc: signal() does not route through the public sigaction, so
 // interposing one does not cover the other. OpenMPI imports `sigaction`, which
 // makes that the arm that reproduces the real failure.
-enum class AppDoor { None, Signal, Sigaction, IgnoreTermFirst };
+enum class AppDoor { None, Signal, Sigaction, IgnoreTermFirst, SigactionBeforeStart };
 
 static void app_sigaction_handler(int, siginfo_t*, void*) {
     const int fd = ::open(g_marker.c_str(), O_CREAT | O_WRONLY, 0644);
@@ -101,6 +101,18 @@ static int run_dying_child(const fs::path& out, int sig, int n, AppDoor door = A
         // so this test keeps meaning exactly what it means today even after item
         // 15 installs a handler for the catchable signals. It measures the
         // FLUSH, not the handler.
+        // The application's handler goes in BEFORE the tracer is up: the
+        // interposer is live from load, so it stores the action and fronts
+        // ours, and start() must not then mistake ours for the application's.
+        if (door == AppDoor::SigactionBeforeStart) {
+            g_marker = out / "app-handler-ran";
+            struct sigaction sa {};
+            sa.sa_sigaction = &app_sigaction_handler;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = SA_SIGINFO;
+            ::sigaction(SIGSEGV, &sa, nullptr);
+        }
+
         Config cfg;
         cfg.output_dir = out;
         cfg.rank = 0;
@@ -357,6 +369,33 @@ int main() {
                      "  followed an ignored SIGTERM — the ignored signal disabled the crash\n"
                      "  flush for the rest of the process\n",
                      recovered5);
+        fail = 1;
+    }
+
+    // ── ARM 6: the application's handler is installed BEFORE start() ────────
+    //
+    // The audit of CR-13. The sigaction interposer is live from load, so an
+    // application handler set before Tracer::start() is stored and OURS put in
+    // front; start() then read the kernel's disposition, found our handler,
+    // and stored it as the application's — so the chain called itself until
+    // the alternate stack ran out, and the application's handler never ran.
+    const fs::path out6 = base / "sigaction-before-start";
+    const int      died6 = run_dying_child(out6, SIGSEGV, 8, AppDoor::SigactionBeforeStart);
+    if (!fs::exists(out6 / "app-handler-ran")) {
+        std::fprintf(stderr,
+                     "crash_identity_smoke: an application handler installed before start()\n"
+                     "  did not run — start() overwrote it with comshu's own handler\n");
+        fail = 1;
+    }
+    if (rows<MemObject>(out6 / "rank-0") != 8) {
+        std::fprintf(stderr, "crash_identity_smoke: sigaction-before-start arm did not recover "
+                             "all 8 records\n");
+        fail = 1;
+    }
+    if (died6 != SIGSEGV) {
+        std::fprintf(stderr,
+                     "crash_identity_smoke: sigaction-before-start arm died by %d, not SIGSEGV\n",
+                     died6);
         fail = 1;
     }
 

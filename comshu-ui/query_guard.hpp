@@ -62,6 +62,33 @@ inline std::size_t skip_leading_comments(const std::string& sql, std::size_t sta
     }
 }
 
+// True iff everything from `p` on is whitespace and CLOSED comments (a `--`
+// comment may run to the end). skip_leading_comments cannot answer this: its
+// npos means both "nothing follows" and "a /* never closes", and telling them
+// apart afterwards by peeking at the first token got both directions wrong —
+// `SELECT 1; /* done */` refused, `SELECT 1; -- ok\n/* open` let through.
+inline bool only_comments_remain(const std::string& sql, std::size_t p) {
+    for (;;) {
+        p = sql.find_first_not_of(" \t\r\n", p);
+        if (p == std::string::npos)
+            return true;
+        if (sql.compare(p, 2, "--") == 0) {
+            p = sql.find('\n', p);
+            if (p == std::string::npos)
+                return true;
+            continue;
+        }
+        if (sql.compare(p, 2, "/*") == 0) {
+            const std::size_t end = sql.find("*/", p + 2);
+            if (end == std::string::npos)
+                return false;
+            p = end + 2;
+            continue;
+        }
+        return false;
+    }
+}
+
 // Returns true iff `sql` is a single SELECT / WITH statement with balanced
 // parentheses and no trailing statement after a semicolon (CR-01).
 // comshu-ui/main.cpp also verifies the statement with DuckDB's own parser
@@ -84,17 +111,10 @@ inline bool looks_like_select(const std::string& sql) {
     for (std::size_t p = i; p < sql.size();) {
         const char c = sql[p];
         if (saw_semi) {
-            // Only whitespace and comments may follow a trailing semicolon.
-            const std::size_t next = skip_leading_comments(sql, p);
-            if (next == std::string::npos) {
-                // Either all trailing whitespace/comments, or an unterminated /*.
-                // Check if an unterminated /* caused npos.
-                const std::size_t ws = sql.find_first_not_of(" \t\r\n", p);
-                if (ws != std::string::npos && sql.compare(ws, 2, "/*") == 0)
-                    return false;
-                break;
-            }
-            return false;
+            // Only whitespace and closed comments may follow a trailing semicolon.
+            if (!only_comments_remain(sql, p))
+                return false;
+            break;
         }
         if (c == '\'' || c == '"') {
             const char q = c;

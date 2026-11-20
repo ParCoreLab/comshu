@@ -258,9 +258,9 @@ static int prof_start_event(void* context, void** eHandle,
 }
 
 static int prof_stop_event(void* eHandle) {
-    Event* ev = pool().resolve_live(eHandle);
+    Event* ev = pool().claim(eHandle);
     if (!ev)
-        return 0;  // a handle for a slot already re-issued; nothing to emit
+        return 0;  // re-issued, or another stop already emitted it
     const std::uint64_t end = now();
 
     switch (ev->kind) {
@@ -300,7 +300,7 @@ static int prof_stop_event(void* eHandle) {
     // holding for this event stays RESOLVABLE until the slot is re-issued —
     // and once it is, the generation makes the stale handle report 0 rather
     // than name the new occupant. See EventPool.
-    pool().release(eHandle);
+    pool().retire(eHandle);
     return 0;
 }
 
