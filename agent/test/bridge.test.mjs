@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ function fakePi() {
   writeFileSync(
     join(dir, 'pi'),
     `#!/bin/sh
+echo $$ >> "$(dirname "$0")/pids"
 while read line; do
   sleep 0.5
   echo '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hi"}}'
@@ -32,13 +33,17 @@ done
   return dir;
 }
 
-function fakeUi(port = 0) {
+// `slow.ms` delays every answer, set after the bridge is up so a session's
+// prompt build can be held open.
+function fakeUi(port = 0, slow = { ms: 0 }) {
   const srv = createServer((req, res) => {
     req.resume();
-    req.on('end', () => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ columns: [], rows: [] }));
-    });
+    req.on('end', () =>
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ columns: [], rows: [] }));
+      }, slow.ms),
+    );
   });
   return new Promise((resolve) => srv.listen(port, '127.0.0.1', () => resolve(srv)));
 }
@@ -52,8 +57,9 @@ const freePort = async () => {
 
 async function startBridge(uiPort) {
   const port = await freePort();
+  const piDir = fakePi();
   const child = spawn(process.execPath, [BRIDGE, '--ui', `http://127.0.0.1:${uiPort}`, '--port', String(port)], {
-    env: { ...process.env, PATH: `${fakePi()}:/usr/bin:/bin` },
+    env: { ...process.env, PATH: `${piDir}:/usr/bin:/bin` },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let stderr = '';
@@ -62,7 +68,7 @@ async function startBridge(uiPort) {
   for (let i = 0; i < 100; i++) {
     try {
       await fetch(`${base}/health`);
-      return { base, child, stderr: () => stderr };
+      return { base, child, piDir, stderr: () => stderr };
     } catch {
       await new Promise((r) => setTimeout(r, 50));
     }
@@ -120,5 +126,42 @@ test('a capture that comes up after the bridge: /health recovers after an ask', 
   } finally {
     b.child.kill();
     ui?.close();
+  }
+});
+
+// Live fake-pi processes the bridge started.
+const livePis = (dir) => {
+  const f = join(dir, 'pids');
+  if (!existsSync(f)) return [];
+  return readFileSync(f, 'utf8').split('\n').filter(Boolean).map(Number).filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+};
+
+test('a /reset while a session is starting leaves no orphaned agent', { timeout: 30000 }, async () => {
+  const slow = { ms: 0 };
+  const ui = await fakeUi(0, slow);
+  const b = await startBridge(ui.address().port);
+  try {
+    slow.ms = 400;  // the next prompt build takes a few round trips of this
+    const first = ask(b.base, 'one');  // starts a session, held in the prompt build
+    await new Promise((r) => setTimeout(r, 150));
+    await fetch(`${b.base}/reset`, { method: 'POST' });
+    const second = await ask(b.base, 'two');  // starts its own
+    await first;
+    assert.equal(second.status, 200);
+    await new Promise((r) => setTimeout(r, 300));
+    // One session is current; the one the reset overtook must have been
+    // stopped, not left running under an overwritten slot.
+    assert.equal(livePis(b.piDir).length, 1, `live agents: ${livePis(b.piDir)}`);
+  } finally {
+    b.child.kill();
+    for (const pid of livePis(b.piDir)) process.kill(pid);
+    ui.close();
   }
 });

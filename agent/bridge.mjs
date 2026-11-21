@@ -121,8 +121,26 @@ let busy = false;
 let askGen = 0;
 let startupError = null;
 
+// A session being started, and which reset epoch it was started in. The
+// prompt build takes ~1 s of round trips; a /reset and a second /ask arriving
+// in that window each started a session, and the first to finish was
+// overwritten without being stopped — an orphaned agent process.
+let starting = null;
+let resetEpoch = 0;
+
 async function ensureSession() {
   if (session) return session;
+  if (starting) return starting;  // one start at a time; later askers share it
+  const p = startSession(resetEpoch);
+  starting = p;
+  try {
+    return await p;
+  } finally {
+    if (starting === p) starting = null;
+  }
+}
+
+async function startSession(epoch) {
   // Rebuilt per session, not cached from startup. A long-lived bridge outlives
   // the `comshu ui` it points at, and when that server is restarted on a
   // different capture the port stays the same while everything behind it
@@ -138,6 +156,12 @@ async function ensureSession() {
     provider: opts.provider,
     model: opts.model,
   }).start();
+  // A /reset arrived while this was starting: it is no longer wanted, and the
+  // slot may already hold the session started after the reset.
+  if (epoch !== resetEpoch) {
+    s.stop();
+    throw new Error('the conversation was reset while the agent was starting');
+  }
   session = s;
   // Only THIS session's exit clears the slot: after a /reset a newer one may
   // already sit there, and the old process exiting used to wipe it.
@@ -218,6 +242,8 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/reset' && req.method === 'POST') {
     session?.stop();
     session = null;
+    resetEpoch++;     // a session still starting will stop itself when it lands
+    starting = null;  // and the next ask starts a fresh one rather than joining it
     busy = false;
     askGen++;  // whatever ask was running no longer owns `busy`
     json(res, 200, { ok: true });
