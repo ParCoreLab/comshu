@@ -307,6 +307,12 @@ if(COMSHU_UI)
            COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/ui_query_rule.sh $<TARGET_FILE:comshu_launcher>
                    $<TARGET_FILE:csv_export_contract_writer>)
   set_tests_properties(ui_query_rule PROPERTIES TIMEOUT 60)
+  # The agent's tests against a live server, so their server half cannot
+  # quietly skip (agent/test/lib.test.mjs skips it when nothing listens).
+  add_test(NAME agent_live_rule
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/agent_live_rule.sh $<TARGET_FILE:comshu_launcher>
+                   ${CMAKE_CURRENT_SOURCE_DIR}/data/ib_pingpong-44578115)
+  set_tests_properties(agent_live_rule PROPERTIES TIMEOUT 120)
 endif()
 
 # comshu bake in place, and archive footers whose bounds arithmetic would wrap (CR-31).

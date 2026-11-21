@@ -1,6 +1,7 @@
 <script>
   import { query, num } from '../lib/query.js';
-  import { bytes, count, ramp, isDark } from '../lib/viz.js';
+  import { bytes, count, ramp, series, isDark } from '../lib/viz.js';
+  import { busiest, fmtTick } from '../lib/timeline.js';
   import Card from '../lib/Card.svelte';
 
   // A timeline, finally — but a small one, on purpose.
@@ -49,8 +50,16 @@
   // BIGINT arithmetic is exact. Every number this component holds is an offset
   // (< 1e10 for a 7 s capture), which a float64 carries exactly.
 
-  const PX = 1400;              // query resolution; canvas is scaled to fit
-  const SPAN_MODE_MAX = 2.0;    // events per pixel below which we draw real spans
+  // Query resolution: one density bucket per BUCKET_W css px of plot. It was a
+  // fixed 1400 buckets, which on a ~900 px plot made every bucket narrower than
+  // a pixel — so a busy lane read as a barcode of hairlines and an isolated
+  // event as a single-pixel dot. Two px per bucket is the finest a mark can be
+  // and still be seen as a mark.
+  const BUCKET_W = 2;
+  const SPAN_MODE_MAX = 2.0;    // events per bucket below which we draw real spans
+  // Instant calls draw at least this wide in spans mode: a 60 ns ibv_post_send
+  // in a 1 ms window is 0.05 px, and floored at 1 px it vanished into the grid.
+  const MIN_MARK_W = 2;
   // Density buckets an event by its START, so an event LONGER than one bucket
   // is not a bucket — it is a bar. Drawn as a bucket it lights the column it
   // began in and nothing after, and when it began before the window it computes
@@ -63,8 +72,20 @@
   // to the current zoom — and the cap below is the guard for the case where
   // that stops being true.
   const LONG_CAP = 20000;
-  const ROW_H = 26, LANE_H = 5, LANE_GAP = 1, ROW_PAD = 4;
-  const LEFT = 52, AXIS_H = 22;
+  // Lanes get room to be read: 9 px each, labelled, when the plot can afford
+  // it. They were 3–5 px and unlabelled, so a rank's five lanes were one
+  // indistinct stripe. With many ranks the lanes shrink toward LANE_MIN to keep
+  // the plot under MAX_PLOT_H, and the per-lane labels drop out below
+  // LABEL_MIN_H, where 9 px text no longer fits beside them.
+  const LANE_H = 9, LANE_MIN = 3, LANE_GAP = 2, ROW_PAD = 5;
+  const LABEL_MIN_H = 8, MAX_PLOT_H = 720;
+  const LEFT = 96, AXIS_H = 22;
+  // The overview strip: the whole run, binned, with the current view marked.
+  const OV_BINS = 400, OV_H = 40;
+  // Streams whose marks are DURATIONS — the width means something. Every
+  // other lane is an instant (an API call of tens of ns), and drawing the two
+  // in one colour is what made "how long" and "how many" indistinguishable.
+  const DURATION = new Set(['gpu_kernel', 'ib_wr_flight']);
 
   // Ordered so a rank's lanes read top-to-bottom in causal order: you post,
   // you ring, the device sends, you reap. An alphabetical sort would put
@@ -98,6 +119,8 @@
 
   let origin = $state(null);    // capture start, absolute ns, AS A STRING — never Number()
   let win = $state(null);       // {lo, hi} — the whole capture, in ns since origin
+  let busyWin = $state(null);   // {lo, hi} — where most of the events are; the opening view
+  let ov = $state([]);          // OV_BINS counts over `win`: the overview strip
   let view = $state(null);      // {lo, hi} — what is on screen, in ns since origin
   let ranks = $state([]);
   let lanes = $state([]);       // streams actually present in this capture
@@ -121,7 +144,7 @@
   let hover = $state(null);
   // $state, not plain lets: the render and resize effects read these, so the
   // first paint depends on the bind:this assignment being reactive.
-  let canvas = $state(null), wrap = $state(null);
+  let canvas = $state(null), wrap = $state(null), ovCanvas = $state(null);
   let width = $state(900);
 
   // The viewport lives in the fragment next to the view id (#time,lo,hi), so a
@@ -166,9 +189,22 @@
         const hi = Math.max(...live.map((x) => num(x.hi)));
         win = { lo: 0, hi: Math.max(1, hi) };
         lanes = STREAMS.filter((s) => live.some((x) => x.stream === s));
-        view = readHash() ?? { ...win };
-        return query('SELECT DISTINCT rank FROM timeline_span ORDER BY rank')
-          .then((rr) => (ranks = rr.map((x) => num(x.rank))));
+        return Promise.all([
+          query('SELECT DISTINCT rank FROM timeline_span ORDER BY rank'),
+          // The whole run in OV_BINS bins, by start time: the overview strip,
+          // and the input to busiest().
+          query(`SELECT least(((t0_ns - ${origin}) * ${OV_BINS} / ${win.hi})::BIGINT,
+                              ${OV_BINS - 1})::INTEGER AS b,
+                        count(*)::BIGINT AS n
+                 FROM timeline_span GROUP BY 1`),
+        ]).then(([rr, bins]) => {
+          ranks = rr.map((x) => num(x.rank));
+          const o = new Array(OV_BINS).fill(0);
+          for (const x of bins) o[Math.max(0, num(x.b))] += num(x.n);
+          ov = o;
+          busyWin = busiest(o, win);
+          view = readHash() ?? { ...busyWin };
+        });
       })
       .catch((e) => (error = e.message));
   });
@@ -187,6 +223,7 @@
     if (inflight || !pending) return;
     const v = pending; pending = null; inflight = true; busy = true;
     const span = v.hi - v.lo;
+    const PX = Math.max(50, Math.round(plotW / BUCKET_W));  // buckets for THIS query
     try {
       // Bounds are rebuilt in SQL as `origin + offset` so the comparison
       // happens in exact BIGINT, and every value returned is an offset.
@@ -237,7 +274,7 @@
       // Set together: a frame that read `rows` against the wrong `qview` would
       // reintroduce exactly the misplacement this pair exists to prevent.
       mode = m; rows = r; longRows = lng;
-      qview = { lo, span: Math.max(1, Math.round(span)) }; error = null;
+      qview = { lo, span: Math.max(1, Math.round(span)), px: PX }; error = null;
     } catch (e) {
       error = e.message;
     } finally {
@@ -247,10 +284,17 @@
   }
   $effect(() => { if (view) { writeHash(view); refresh(); } });
 
-  const rowY = (i) => AXIS_H + i * ROW_H;
-  const height = $derived(AXIS_H + ranks.length * ROW_H + 8);
-  const laneH = $derived(Math.max(3, Math.min(LANE_H,
-    (ROW_H - 2 * ROW_PAD - (lanes.length - 1) * LANE_GAP) / Math.max(1, lanes.length))));
+  // Lane height from the plot budget: LANE_H when everything fits under
+  // MAX_PLOT_H, shrinking toward LANE_MIN for many ranks, never below it.
+  const laneH = $derived.by(() => {
+    const per = MAX_PLOT_H / Math.max(1, ranks.length);
+    const fit = (per - 2 * ROW_PAD - (lanes.length - 1) * LANE_GAP) / Math.max(1, lanes.length);
+    return Math.max(LANE_MIN, Math.min(LANE_H, Math.floor(fit)));
+  });
+  const ROW_H_ = $derived(2 * ROW_PAD + lanes.length * laneH + (lanes.length - 1) * LANE_GAP);
+  const labelled = $derived(laneH >= LABEL_MIN_H);
+  const rowY = (i) => AXIS_H + i * ROW_H_;
+  const height = $derived(AXIS_H + ranks.length * ROW_H_ + 8);
   const laneY = (li) => ROW_PAD + li * (laneH + LANE_GAP);
 
   // ns -> canvas x, and back. Every interaction is expressed through these two
@@ -306,7 +350,70 @@
     }
     hover = pick(e.offsetX, e.offsetY);
   }
-  const reset = () => win && (view = { ...win });
+  const fullRun = () => win && (view = { ...win });
+  const busyRegion = () => busyWin && (view = { ...busyWin });
+
+  // ---- overview strip ----------------------------------------------------
+  // Same x mapping as the plot, over the WHOLE run: ovX(t) puts t on it.
+  const ovX = (t) => LEFT + ((t - win.lo) / (win.hi - win.lo)) * plotW;
+  const ovT = (x) => win.lo + ((x - LEFT) / plotW) * (win.hi - win.lo);
+  // Drag to select a range; a click (no drag) re-centres the current span.
+  let ovDrag = $state(null);
+  function ovDown(e) {
+    if (!win || e.offsetX < LEFT) return;
+    ovDrag = { x0: e.offsetX, moved: false };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+  function ovMove(e) {
+    if (!ovDrag) return;
+    if (Math.abs(e.offsetX - ovDrag.x0) > 3) ovDrag.moved = true;
+    if (ovDrag.moved) {
+      const a = ovT(Math.min(ovDrag.x0, e.offsetX)), b = ovT(Math.max(ovDrag.x0, e.offsetX));
+      view = clamp({ lo: a, hi: Math.max(a + 100, b) }, Math.max(100, b - a));
+    }
+  }
+  function ovUp(e) {
+    if (ovDrag && !ovDrag.moved && view) {
+      const span = view.hi - view.lo, t = ovT(e.offsetX);
+      view = clamp({ lo: t - span / 2, hi: t + span / 2 }, span);
+    }
+    ovDrag = null;
+  }
+  $effect(() => {
+    ov; view; width; win;
+    if (!ovCanvas || !win || !view || !ov.length) return;
+    const dpr = devicePixelRatio || 1;
+    ovCanvas.width = width * dpr; ovCanvas.height = OV_H * dpr;
+    ovCanvas.style.width = `${width}px`; ovCanvas.style.height = `${OV_H}px`;
+    const g = ovCanvas.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, width, OV_H);
+    const css = getComputedStyle(document.documentElement);
+    const tok = (n) => css.getPropertyValue(n).trim();
+    const r = ramp();
+    g.font = '9px ui-monospace, monospace'; g.textBaseline = 'middle'; g.textAlign = 'left';
+    g.fillStyle = tok('--text-3');
+    g.fillText('whole run', 4, OV_H / 2 - 6);
+    g.fillText(fmtT(win.hi - win.lo), 4, OV_H / 2 + 6);
+    // Bars: log count per bin, so a setup trickle still shows beside the burst.
+    let nmax = 1;
+    for (const n of ov) nmax = Math.max(nmax, n);
+    const hi = Math.log1p(nmax), bw = plotW / ov.length, base = OV_H - 4;
+    g.fillStyle = r[isDark() ? 3 : r.length - 5];
+    ov.forEach((n, i) => {
+      if (!n) return;
+      const h = Math.max(2, (Math.log1p(n) / hi) * (OV_H - 10));
+      g.fillRect(LEFT + i * bw, base - h, Math.max(1, bw - (bw > 3 ? 1 : 0)), h);
+    });
+    g.fillStyle = tok('--border'); g.fillRect(LEFT, base, plotW, 1);
+    // The current view: the rest dimmed, the view outlined.
+    const x0 = ovX(view.lo), x1 = Math.max(x0 + 2, ovX(view.hi));
+    g.fillStyle = tok('--surface-0'); g.globalAlpha = 0.65;
+    g.fillRect(LEFT, 0, x0 - LEFT, OV_H); g.fillRect(x1, 0, LEFT + plotW - x1, OV_H);
+    g.globalAlpha = 1;
+    g.strokeStyle = tok('--text-1'); g.lineWidth = 1.5;
+    g.strokeRect(x0 + 0.75, 1.75, x1 - x0 - 1.5, OV_H - 3.5);
+  });
 
   // Nearest mark under the cursor, in the lane under the cursor. Hit-testing in
   // DATA space rather than reading pixels back, so it stays correct at any DPR.
@@ -314,22 +421,22 @@
     // Long spans alone are still hoverable: a window holding only a kernel
     // that runs through it has no short rows at all (CR-65).
     if (!rows || (!rows.length && !longRows.length) || x < LEFT) return null;
-    const ri = Math.floor((y - AXIS_H) / ROW_H);
+    const ri = Math.floor((y - AXIS_H) / ROW_H_);
     if (ri < 0 || ri >= ranks.length) return null;
     const rank = ranks[ri];
     const li = Math.max(0, Math.min(lanes.length - 1,
-      Math.floor((y - AXIS_H - ri * ROW_H - ROW_PAD) / (laneH + LANE_GAP))));
+      Math.floor((y - AXIS_H - ri * ROW_H_ - ROW_PAD) / (laneH + LANE_GAP))));
     const stream = lanes[li];
     const t = toT(x);
     let best = null, bestD = Infinity;
     // Density buckets are resolved against the window they were QUERIED for,
     // exactly as the draw does — hit-testing against the drawn viewport would
     // put the cursor on a different bucket than the one under it.
-    const q = qview ?? { lo: view.lo, span: view.hi - view.lo };
+    const q = qview ?? { lo: view.lo, span: view.hi - view.lo, px: 1 };
     for (const r of rows) {
       if (num(r.rank) !== rank || r.stream !== stream) continue;
-      const t0 = mode === 'spans' ? num(r.t0_ns) : q.lo + (num(r.px) / PX) * q.span;
-      const t1 = mode === 'spans' ? num(r.t1_ns) : t0 + q.span / PX;
+      const t0 = mode === 'spans' ? num(r.t0_ns) : q.lo + (num(r.px) / q.px) * q.span;
+      const t1 = mode === 'spans' ? num(r.t1_ns) : t0 + q.span / q.px;
       const d = t < t0 ? t0 - t : t > t1 ? t - t1 : 0;
       if (d < bestD) { bestD = d; best = r; }
     }
@@ -355,7 +462,7 @@
   // ---- render ------------------------------------------------------------
   $effect(() => {
     // read the reactive deps so the effect re-runs on any of them
-    rows; view; width; height; lanes; ranks; mode; hover; qview; longRows;
+    rows; view; width; height; lanes; ranks; mode; hover; qview; longRows; laneH;
     if (!canvas || !view) return;
     const dpr = devicePixelRatio || 1;
     canvas.width = width * dpr; canvas.height = height * dpr;
@@ -368,17 +475,25 @@
     const border = tok('--border'), t2 = tok('--text-2'), t3 = tok('--text-3');
     const r = ramp();
 
-    // rank rows + labels
-    g.font = '10px ui-monospace, monospace';
+    // Rank rows: a rank label, and — when the lanes are tall enough to carry
+    // one — each lane's name beside it, so a mark's lane is read, not counted.
     g.textBaseline = 'middle';
     ranks.forEach((rk, i) => {
       const y = rowY(i);
-      if (i % 2) { g.fillStyle = tok('--surface-0'); g.fillRect(LEFT, y, plotW, ROW_H); }
-      g.fillStyle = t3; g.textAlign = 'right';
-      g.fillText(`r${rk}`, LEFT - 6, y + ROW_H / 2);
+      if (i % 2) { g.fillStyle = tok('--surface-0'); g.fillRect(0, y, LEFT + plotW, ROW_H_); }
+      g.fillStyle = t2; g.textAlign = 'left';
+      g.font = '600 10px ui-monospace, monospace';
+      g.fillText(`r${rk}`, 4, y + (labelled ? ROW_PAD + laneH / 2 : ROW_H_ / 2));
+      if (labelled) {
+        g.font = '9px ui-monospace, monospace';
+        g.fillStyle = t3; g.textAlign = 'right';
+        lanes.forEach((s, li) =>
+          g.fillText(SHORT[s] ?? s, LEFT - 6, y + laneY(li) + laneH / 2));
+      }
     });
 
     // time axis: ticks at a 1/2/5 step, so labels land on numbers a human reads
+    g.font = '10px ui-monospace, monospace';
     const span = view.hi - view.lo;
     const raw = span / 6;
     const p10 = 10 ** Math.floor(Math.log10(raw));
@@ -387,11 +502,21 @@
     for (let t = Math.ceil(view.lo / step) * step; t <= view.hi; t += step) {
       const x = Math.round(toX(t)) + 0.5;
       g.beginPath(); g.moveTo(x, AXIS_H - 4); g.lineTo(x, height); g.stroke();
-      g.fillText(fmtT(t), x, AXIS_H / 2);
+      g.fillText(fmtTick(t, step), x, AXIS_H / 2);
     }
 
     const rowIx = new Map(ranks.map((v, i) => [v, i]));
     const laneIx = new Map(lanes.map((v, i) => [v, i]));
+
+    // Colour says what a mark IS: instant calls in the sequential blue (its
+    // shade is how many fell in the bucket), durations in the second series
+    // hue (its width is the time). Validated as a pair, light and dark, with
+    // the dataviz palette script. Lane identity is the label, never colour.
+    const [, durHue] = series();
+    // The ramp from its 5th step: the first steps are near-white, and a bucket
+    // of one event drawn in them was indistinguishable from an empty one.
+    const R0 = 4;
+    const shade = (t) => r[R0 + Math.round(t * (r.length - 1 - R0))];
 
     // Clip to the plot area. The window selects any span that OVERLAPS it, so
     // a span starting before view.lo has a negative x and would otherwise be
@@ -400,6 +525,27 @@
     g.beginPath();
     g.rect(LEFT, AXIS_H, plotW, height - AXIS_H);
     g.clip();
+
+    // A span at its true extent: bars for durations, and for instants a tick
+    // at least MIN_MARK_W wide, so a 60 ns call is a mark, not a lost pixel.
+    //
+    // Durations are translucent with a solid cap at their start: sends are
+    // pipelined, so flights overlap continuously, and drawn opaque they merged
+    // into one bar that said nothing about how many were in flight or where
+    // each began. Now overlap depth reads as darkness and each start is a mark.
+    const bar = (d, ri, li, fill) => {
+      const x0 = toX(num(d.t0_ns)), y = rowY(ri) + laneY(li);
+      const w = Math.max(MIN_MARK_W, toX(num(d.t1_ns)) - x0);
+      g.fillStyle = fill;
+      if (DURATION.has(d.stream) && w > 2 * MIN_MARK_W) {
+        g.globalAlpha = 0.35;
+        g.fillRect(x0, y, w, laneH);
+        g.globalAlpha = 1;
+        g.fillRect(x0, y, MIN_MARK_W, laneH);
+      } else {
+        g.fillRect(x0, y, w, laneH);
+      }
+    };
 
     if (mode === 'density') {
       // Log scale, for the reason logScale() carries: the corpus spans five
@@ -412,35 +558,36 @@
       // Bucket width in TIME, converted through the current view — so a stale
       // frame drawn at a new zoom scales instead of lying about its resolution.
       // Falls back to the drawn viewport if a frame somehow arrives without one.
-      const q = qview ?? { lo: view.lo, span: view.hi - view.lo };
-      const bucketNs = q.span / PX;
+      const q = qview ?? { lo: view.lo, span: view.hi - view.lo, px: Math.round(plotW / BUCKET_W) };
+      const bucketNs = q.span / q.px;
       const bw = Math.max(1, (bucketNs / (view.hi - view.lo)) * plotW);
       for (const d of rows) {
         const ri = rowIx.get(num(d.rank)), li = laneIx.get(d.stream);
         if (ri === undefined || li === undefined) continue;
         const t = Math.min(1, Math.log(Math.max(1, num(d.n))) / (hi || 1));
-        g.fillStyle = r[Math.round(t * (r.length - 1))];
+        if (DURATION.has(d.stream)) {
+          // Short durations, bucketed: their hue, count as opacity.
+          g.fillStyle = durHue; g.globalAlpha = 0.35 + 0.65 * t;
+        } else {
+          g.fillStyle = shade(t);
+        }
         g.fillRect(toX(q.lo + num(d.px) * bucketNs), rowY(ri) + laneY(li), bw, laneH);
+        g.globalAlpha = 1;
       }
       // The long ones, at their true extent and on top — a kernel running
       // through the whole window is the most important thing in it, and it is
       // exactly what bucketing by start time cannot say.
-      g.fillStyle = r[isDark() ? 2 : r.length - 4];
       for (const d of longRows) {
         const ri = rowIx.get(num(d.rank)), li = laneIx.get(d.stream);
         if (ri === undefined || li === undefined) continue;
-        const x0 = toX(num(d.t0_ns));
-        g.fillRect(x0, rowY(ri) + laneY(li), Math.max(1, toX(num(d.t1_ns)) - x0), laneH);
+        bar(d, ri, li, DURATION.has(d.stream) ? durHue : r[r.length - 4]);
       }
     } else {
-      // Spans at their true width, floored at 1 px so a 122 ns mark in a 3 ms
-      // window is still visible rather than rounding away to nothing.
-      g.fillStyle = r[isDark() ? 2 : r.length - 4];
+      const inst = r[isDark() ? 2 : r.length - 4];
       for (const d of rows) {
         const ri = rowIx.get(num(d.rank)), li = laneIx.get(d.stream);
         if (ri === undefined || li === undefined) continue;
-        const x0 = toX(num(d.t0_ns));
-        g.fillRect(x0, rowY(ri) + laneY(li), Math.max(1, toX(num(d.t1_ns)) - x0), laneH);
+        bar(d, ri, li, DURATION.has(d.stream) ? durHue : inst);
       }
     }
     g.restore();
@@ -484,8 +631,8 @@
     }
     // The bucket's time through the window it was QUERIED for, as the draw
     // and the hit-test do; the drawn view can differ mid-zoom (CR-65).
-    const q = qview ?? { lo: view.lo, span: view.hi - view.lo };
-    return [head, `t ${fmtT(q.lo + (num(d.px) / PX) * q.span)}`,
+    const q = qview ?? { lo: view.lo, span: view.hi - view.lo, px: 1 };
+    return [head, `t ${fmtT(q.lo + (num(d.px) / q.px) * q.span)}`,
             `${count(num(d.n))} events`, `max ${durLabel(stream)} ${fmtDur(num(d.dmax))}`,
             num(d.bytes) ? bytes(num(d.bytes)) : null].filter(Boolean);
   });
@@ -496,10 +643,10 @@
 
 <Card
   title="Timeline"
-  subtitle={rows && rows.length
+  subtitle={rows && (rows.length || longRows.length)
     ? (mode === 'spans'
         ? `each mark is one event · ${zoomLabel}`
-        : `each mark is a bin of events, colour is count (log) · ${zoomLabel}`)
+        : `each call mark is a bin of events, its shade the count (log) · ${zoomLabel}`)
     : ''}
 >
   {#if error}
@@ -518,13 +665,36 @@
       <button
         class="rounded-md px-2 py-1 border"
         style="border-color: var(--border); background: var(--surface-1); color: var(--text-2)"
-        onclick={reset}>reset zoom</button>
-      <span>wheel = zoom · drag / shift-wheel = pan</span>
+        onclick={busyRegion}>busy region</button>
+      <button
+        class="rounded-md px-2 py-1 border"
+        style="border-color: var(--border); background: var(--surface-1); color: var(--text-2)"
+        onclick={fullRun}>full run</button>
+      <span>wheel = zoom · drag / shift-wheel = pan · drag the strip to pick a range</span>
       {#if busy}<span style="color: var(--text-3)">…</span>{/if}
-      <span class="ml-auto flex gap-2">
-        {#each lanes as s}<span style="color: var(--text-3)">{SHORT[s] ?? s}</span>{/each}
+      <span class="ml-auto flex items-center gap-3">
+        <span class="flex items-center gap-1">
+          <span class="inline-block w-2.5 h-2.5 rounded-sm" style="background: {series()[0]}"></span>
+          call (shade = how many)
+        </span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block w-2.5 h-2.5 rounded-sm" style="background: {series()[1]}"></span>
+          duration (width = time)
+        </span>
+        {#if !labelled}
+          <span style="color: var(--text-3)">lanes: {lanes.map((s) => SHORT[s] ?? s).join(' · ')}</span>
+        {/if}
       </span>
     </div>
+
+    <canvas
+      bind:this={ovCanvas}
+      class="block w-full mb-1 select-none"
+      style="cursor: ew-resize"
+      onpointerdown={ovDown}
+      onpointermove={ovMove}
+      onpointerup={ovUp}
+    ></canvas>
 
     <div bind:this={wrap} class="relative w-full select-none">
       <canvas
